@@ -505,6 +505,18 @@ subroutine rad_cnst_get_gas(list_idx, gasname, state, pbuf, mmr)
       mmr => state%q(:,:,idx)
    case ('N')
       call pbuf_get_field(pbuf, idx, mmr)
+   case ('HA')
+      mmr => state%q(:,:,idx)
+      mmr = mmr*0.5
+   case ('HN')
+      call pbuf_get_field(pbuf, idx, mmr)
+      mmr = mmr*0.5
+   case ('DA')
+      mmr => state%q(:,:,idx)
+      mmr = mmr*2.0
+   case ('DN')
+      call pbuf_get_field(pbuf, idx, mmr)
+      mmr = mmr*2.0
    case ('Z')
       mmr => zero_cols
    end select
@@ -944,6 +956,18 @@ subroutine rad_cnst_out(list_idx, state, pbuf)
          mmr => state%q(:,:,idx)
       case ('N')
          call pbuf_get_field(pbuf, idx, mmr)
+      case ('HA')
+         mmr => state%q(:,:,idx)
+         mmr = mmr*0.5
+      case ('HN')
+         call pbuf_get_field(pbuf, idx, mmr)
+         mmr = mmr*0.5
+      case ('DA')
+         mmr => state%q(:,:,idx)
+         mmr = mmr*2.0
+      case ('DN')
+         call pbuf_get_field(pbuf, idx, mmr)
+         mmr = mmr*2.0
       end select
 
       mass(:ncol,:) = mmr(:ncol,:) * state%pdeldry(:ncol,:) * rga
@@ -969,6 +993,18 @@ subroutine rad_cnst_out(list_idx, state, pbuf)
          mmr => state%q(:,:,idx)
       case ('N')
          call pbuf_get_field(pbuf, idx, mmr)
+      case ('HA')
+         mmr => state%q(:,:,idx)
+         mmr = mmr*0.5
+      case ('HN')
+         call pbuf_get_field(pbuf, idx, mmr)
+         mmr = mmr*0.5
+      case ('DA')
+         mmr => state%q(:,:,idx)
+         mmr = mmr*2.0
+      case ('DN')
+         call pbuf_get_field(pbuf, idx, mmr)
+         mmr = mmr*2.0
       end select
 
       mass(:ncol,:) = mmr(:ncol,:) * state%pdeldry(:ncol,:) * rga
@@ -1047,14 +1083,14 @@ integer function get_cam_idx(source, name, routine)
    integer :: errcode
    !-----------------------------------------------------------------------------
    
-   if (source(1:1) == 'N') then
+   if (source(1:1) == 'N' .or. source(1:1) == 'HN' .or. source(1:1) == 'DN') then
 
       idx = pbuf_get_index(trim(name),errcode)
       if (errcode < 0) then
          call endrun(routine//' ERROR: cannot find physics buffer field '//trim(name))
       end if
 
-   else if (source(1:1) == 'A') then
+   else if (source(1:1) == 'A' .or. source(1:1) == 'HA' .or. source(1:1) == 'DA') then
 
       call cnst_get_ind(trim(name), idx, abrtf=.false.)
       if (idx < 0) then
@@ -1106,7 +1142,7 @@ subroutine list_init1(namelist, gaslist, aerlist, ma_list)
    naero = 0
    nmodes = 0
    do ii = 1, namelist%ncnst
-      if (trim(namelist%type(ii)) == 'A') naero  = naero + 1
+      if (trim(namelist%type(ii)) == 'A' .or. trim(namelist%type(ii)) == 'HA' .or. trim(namelist%type(ii)) == 'DA') naero  = naero + 1
       if (trim(namelist%type(ii)) == 'M') nmodes = nmodes + 1
    end do
    aerlist%numaerosols = naero
@@ -1141,13 +1177,15 @@ subroutine list_init1(namelist, gaslist, aerlist, ma_list)
 
       ! Check that the source specifier is legal.
       if (namelist%source(ii) /= 'A' .and. namelist%source(ii) /= 'M' .and. &
-          namelist%source(ii) /= 'N' .and. namelist%source(ii) /= 'Z' ) then
+          namelist%source(ii) /= 'N' .and. namelist%source(ii) /= 'Z' .and. &
+          namelist%source(ii) /= 'HA' .and. namelist%source(ii) /= 'HN' .and. &
+          namelist%source(ii) /= 'DA' .and. namelist%source(ii) /= 'DN' ) then
          call endrun(routine//": source must either be A, M, N or Z:"//&
                      " illegal specifier in namelist input: "//namelist%source(ii))
       end if
 
       ! Add component to appropriate list (gas, modal or bulk aerosol)
-      if (namelist%type(ii) == 'A') then 
+      if (namelist%type(ii) == 'A' .or. namelist%type(ii) == 'HA' .or. namelist%type(ii) == 'DA') then 
 
          ! Add to bulk aerosol list
          ba_idx = ba_idx + 1
@@ -1547,8 +1585,9 @@ subroutine parse_mode_defs(nl_in, modes)
          ipos = index(tmpstr, ':')
          if (ipos < 2) call parse_error('expect to find source field first', tmpstr)
          ! check for valid source
-         if (tmpstr(:ipos-1) /= 'A' .and. tmpstr(:ipos-1) /= 'N' .and. tmpstr(:ipos-1) /= 'Z') &
-            call parse_error('source must be A, N or Z', tmpstr)
+         if (tmpstr(:ipos-1) /= 'A' .and. tmpstr(:ipos-1) /= 'N' .and. tmpstr(:ipos-1) /= 'Z' .and. &
+            tmpstr(:ipos-1) /= 'HA' .and. tmpstr(:ipos-1) /= 'HN' .and. tmpstr(:ipos-1) /= 'DA' .and. tmpstr(:ipos-1) /= 'DN') &
+               call parse_error('source must be A, N or Z', tmpstr)
          tmp_src_a = tmpstr(:ipos-1)
          tmpstr    = tmpstr(ipos+1:)
 
@@ -1562,8 +1601,9 @@ subroutine parse_mode_defs(nl_in, modes)
          ipos = index(tmpstr, ':')
          if (ipos < 2) call parse_error('expect to find a source field', tmpstr)
          ! check for valid source
-         if (tmpstr(:ipos-1) /= 'A' .and. tmpstr(:ipos-1) /= 'N' .and. tmpstr(:ipos-1) /= 'Z') &
-            call parse_error('source must be A, N or Z', tmpstr)
+         if (tmpstr(:ipos-1) /= 'A' .and. tmpstr(:ipos-1) /= 'N' .and. tmpstr(:ipos-1) /= 'Z' .and. &
+            tmpstr(:ipos-1) /= 'HA' .and. tmpstr(:ipos-1) /= 'HN' .and. tmpstr(:ipos-1) /= 'DA' .and. tmpstr(:ipos-1) /= 'DN') &
+               call parse_error('source must be A, N or Z', tmpstr)
          tmp_src_c = tmpstr(:ipos-1)
          tmpstr    = tmpstr(ipos+1:)
 
@@ -1832,6 +1872,18 @@ subroutine rad_cnst_get_aer_mmr_by_idx(list_idx, aer_idx, state, pbuf, mmr)
       mmr => state%q(:,:,idx)
    case ('N')
       call pbuf_get_field(pbuf, idx, mmr)
+   case ('HA')
+      mmr => state%q(:,:,idx)
+      mmr = mmr*0.5
+   case ('HN')
+      call pbuf_get_field(pbuf, idx, mmr)
+      mmr = mmr*0.5
+   case ('DA')
+      mmr => state%q(:,:,idx)
+      mmr = mmr*2.0
+   case ('DN')
+      call pbuf_get_field(pbuf, idx, mmr)
+      mmr = mmr*2.0
    case ('Z')
       mmr => zero_cols
    end select
@@ -1904,6 +1956,18 @@ subroutine rad_cnst_get_mam_mmr_by_idx(list_idx, mode_idx, spec_idx, phase, stat
       mmr => state%q(:,:,idx)
    case ('N')
       call pbuf_get_field(pbuf, idx, mmr)
+   case ('HA')
+      mmr => state%q(:,:,idx)
+      mmr = mmr*0.5
+   case ('HN')
+      call pbuf_get_field(pbuf, idx, mmr)
+      mmr = mmr*0.5
+   case ('DA')
+      mmr => state%q(:,:,idx)
+      mmr = mmr*2.0
+   case ('DN')
+      call pbuf_get_field(pbuf, idx, mmr)
+      mmr = mmr*2.0
    case ('Z')
       mmr => zero_cols
    end select
@@ -2015,6 +2079,18 @@ subroutine rad_cnst_get_mode_num(list_idx, mode_idx, phase, state, pbuf, num)
       num => state%q(:,:,idx)
    case ('N')
       call pbuf_get_field(pbuf, idx, num)
+   case ('HA')
+      num => state%q(:,:,idx)
+      num = num*0.5
+   case ('HN')
+      call pbuf_get_field(pbuf, idx, num)
+      num = num*0.5
+   case ('DA')
+      num => state%q(:,:,idx)
+      num = num*2.0
+   case ('DN')
+      call pbuf_get_field(pbuf, idx, num)
+      num = num*2.0
    case ('Z')
       num => zero_cols
    end select
