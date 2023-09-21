@@ -1,0 +1,25 @@
+name: test
+
+on:
+  # Runs every time master branch is updated
+  push:
+    branches: ["master"]
+  # Runs every time a PR is open against master
+  pull_request:
+    branches: ["master"]
+  workflow_dispatch:
+  
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4.7.0
+        with:
+          python-version: "3.10"
+      - name: Build with CIME
+        run: |
+          .cime/scripts/create_test SMS.ne4_oQU480.F2010 --wait
