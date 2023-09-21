@@ -21,5 +21,6 @@ jobs:
         with:
           python-version: "3.10"
       - name: Build with CIME
+        working-directory: cime/scripts
         run: |
-          .cime/scripts/create_test SMS.ne4_oQU480.F2010 --wait
+          ./create_test SMS.ne4_oQU480.F2010 --wait
