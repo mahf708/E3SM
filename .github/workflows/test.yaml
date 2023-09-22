@@ -23,7 +23,7 @@ jobs:
           environment-name: cime-env
           create-args: >-
             python=3.10
-            netcdf
+            libnetcdf
             libxml2
       - name: Build with CIME
         working-directory: cime/scripts
