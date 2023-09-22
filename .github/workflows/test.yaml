@@ -43,7 +43,6 @@ jobs:
           ./create_test SMS_Ln1.ne4_oQU480.F2010 --machine linux-generic --no-run --input-dir $HOME/projects/e3sm/cesm-inputdata
           cat $HOME/projects/acme/scratch/SMS_Ln1.ne4_oQU480.F2010.linux-generic_gnu.*/bld/mct.bldlog.*
 #           # export NETCDF_PATH=$CONDA_PREFIX/lib/libnetcdf.so
-s
   # run:
   #   runs-on: ubuntu-latest
   #   steps:
