@@ -10,8 +10,8 @@ on:
   workflow_dispatch:
 
 defaults:
-    run:
-        shell: bash -l {0}
+  run:
+    shell: bash -l {0}
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -33,7 +33,7 @@ jobs:
         run: |
           micromamba activate cime-env
           mkdir -p $HOME/projects/e3sm/cesm-inputdata
-          ./create_newcase --case SMS --compset F2010 --res ne4_oQU480
+          ./create_newcase --case SMS --compset F2010 --res ne4_oQU480 --machine linux-generic
           cd SMS
           ./xmlchange GMAKE_J=2
           ./case.setup
