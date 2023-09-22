@@ -27,6 +27,7 @@ jobs:
           environment-name: cime-env
           create-args: >-
             python=3.10
+            netcdf
             libnetcdf
             netcdf-fortran
             libxml2
@@ -41,6 +42,8 @@ jobs:
           ln -s $CONDA_PREFIX/bin/make $CONDA_PREFIX/bin/gmake
           mkdir -p $HOME/projects/e3sm/cesm-inputdata
           ./create_test SMS_Ln1.ne4_oQU480.F2010 --machine linux-generic --no-run --input-dir $HOME/projects/e3sm/cesm-inputdata
+          echo $HOME
+          ls $HOME/projects/acme/scratch/SMS_Ln1.ne4_oQU480.F2010.linux-generic_gnu.*
           cat $HOME/projects/acme/scratch/SMS_Ln1.ne4_oQU480.F2010.linux-generic_gnu.*/bld/mct.bldlog.*
 
   # run:
