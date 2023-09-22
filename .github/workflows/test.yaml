@@ -27,7 +27,7 @@ jobs:
           environment-name: cime-env
           create-args: >-
             python=3.10
-            netcdf
+            netcdf4
             libnetcdf
             netcdf-fortran
             libxml2
