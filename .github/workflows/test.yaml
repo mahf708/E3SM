@@ -27,7 +27,7 @@ jobs:
           environment-name: cime-env
           create-args: >-
             python=3.10
-            libnetcdf
+            libnetcdf=*=*mpich*
             netcdf-fortran
             libxml2
             compilers
@@ -39,9 +39,13 @@ jobs:
         run: |
           micromamba activate cime-env
           ln -s $CONDA_PREFIX/bin/make $CONDA_PREFIX/bin/gmake
+          export NETCDF_PATH=$CONDA_PREFIX/lib/libnetcdf.so
           mkdir -p $HOME/projects/e3sm/cesm-inputdata
           ./create_test SMS_Ln1.ne4_oQU480.F2010 --machine linux-generic --no-run --input-dir $HOME/projects/e3sm/cesm-inputdata
+      - name: check logs
+        run: |
           cat $HOME/projects/acme/scratch/SMS_Ln1.ne4_oQU480.F2010.linux-generic_gnu.*/bld/mct.bldlog.*
+
 #           # export NETCDF_PATH=$CONDA_PREFIX/lib/libnetcdf.so
   # run:
   #   runs-on: ubuntu-latest
