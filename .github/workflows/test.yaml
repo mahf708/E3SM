@@ -1,10 +1,8 @@
-name: test
+name: SMS_Ln1.ne4_oQU480.F2010.linux-generic
 
 on:
-  # Runs every time master branch is updated
   push:
     branches: ["master"]
-  # Runs every time a PR is open against master
   pull_request:
     branches: ["master"]
   workflow_dispatch:
@@ -13,7 +11,7 @@ defaults:
   run:
     shell: bash -l {0}
 jobs:
-  test:
+  SMS-ne4_oQU480:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,8 +31,4 @@ jobs:
         run: |
           micromamba activate cime-env
           mkdir -p $HOME/projects/e3sm/cesm-inputdata
-          ./create_newcase --case SMS --compset F2010 --res ne4_oQU480 --machine linux-generic
-          cd SMS
-          ./xmlchange GMAKE_J=2
-          ./case.setup
-          ./case.build
+          ./create_test SMS_Ln1.ne4_oQU480.F2010 --debug --machine linux-generic
