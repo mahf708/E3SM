@@ -32,4 +32,9 @@ jobs:
         working-directory: cime/scripts
         run: |
           micromamba activate cime-env
-          ./create_test SMS.ne4_oQU480.F2010 --wait
+          mkdir -p $HOME/projects/e3sm/cesm-inputdata
+          ./create_newcase --case SMS --compset F2010 --res ne4_oQU480
+          cd SMS
+          ./xmlchange GMAKE_J=2
+          ./case.setup
+          ./case.build
