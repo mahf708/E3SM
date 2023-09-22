@@ -29,12 +29,14 @@ jobs:
             python=3.10
             libnetcdf
             libxml2
+            compilers
+            mpich
       - name: Build with CIME
         working-directory: cime/scripts
         run: |
           micromamba activate cime-env
           mkdir -p $HOME/projects/e3sm/cesm-inputdata
-          ./create_test SMS_Ln1.ne4_oQU480.F2010 --debug --machine linux-generic --no-run  --verbose --input-dir $HOME/projects/e3sm/cesm-inputdata
+          ./create_test SMS_Ln1.ne4_oQU480.F2010 --debug --machine linux-generic --no-run --verbose --input-dir $HOME/projects/e3sm/cesm-inputdata
 
   run:
     runs-on: ubuntu-latest
@@ -51,9 +53,11 @@ jobs:
             python=3.10
             libnetcdf
             libxml2
+            compilers
+            mpich
       - name: Build with CIME
         working-directory: cime/scripts
         run: |
           micromamba activate cime-env
           mkdir -p $HOME/projects/e3sm/cesm-inputdata
-          ./create_test SMS_Ln1.ne4_oQU480.F2010 --debug --machine linux-generic  --verbose --input-dir $HOME/projects/e3sm/cesm-inputdata
+          ./create_test SMS_Ln1.ne4_oQU480.F2010 --debug --machine linux-generic --verbose --input-dir $HOME/projects/e3sm/cesm-inputdata
