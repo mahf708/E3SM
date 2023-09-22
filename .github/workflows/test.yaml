@@ -20,7 +20,10 @@ jobs:
         uses: actions/setup-python@v4.7.0
         with:
           python-version: "3.10"
+      - name: Install CIME stuff
+        run: |
+            sudo apt install xmllint
       - name: Build with CIME
         working-directory: cime/scripts
         run: |
-          ./create_test SMS.ne4_oQU480.F2010 --wait
+            ./create_test SMS.ne4_oQU480.F2010 --wait
