@@ -32,5 +32,7 @@ jobs:
           # cd master.WCYCL1850.ne4_oQU240.baseline
           # ./case.setup
           # ./case.build -v
-          ./create_test SMS_Ln2.ne4_oQU480.F2010 --machine ghaoci --wait
+          ./create_test SMS_Ln2.ne4_oQU480.F2010 --tag test --machine ghaoci --debug
           cat /github/home/projects/e3sm/scratch/SMS_Ln2.ne4_oQU480.F2010.ghaoci_gnu.*/run/e3sm.log.*
+          ls $HOME/projects/e3sm/scratch/
+
