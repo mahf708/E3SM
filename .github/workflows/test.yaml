@@ -31,5 +31,5 @@ jobs:
         working-directory: cime/scripts
         run: |
           mkdir -p $HOME/projects/e3sm/cesm-inputdata
-          export $USER=test
+          export USER=test
           ./create_test SMS_Ln1.ne4_oQU480.F2010 --machine linux-generic --input-dir $HOME/projects/e3sm/cesm-inputdata --no-batch --wait
