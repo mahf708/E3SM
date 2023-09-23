@@ -32,9 +32,9 @@ jobs:
         run: |
           mkdir -p $HOME/projects/e3sm/cesm-inputdata
           export USER=test
-          ./create_newcase --case master.WCYCL1850.ne4_oQU240.baseline --compset WCYCL1850 --res ne4_oQU240 --machine singularity --mpilib mpi-serial
+          ./create_newcase --case master.WCYCL1850.ne4_oQU240.baseline --compset WCYCL1850 --res ne4_oQU240 --machine singularity
           cd master.WCYCL1850.ne4_oQU240.baseline
           ./case.setup
           ./case.build -v
-          cat /github/home/projects/e3sm/scratch/master.WCYCL1850.ne4_oQU240.baseline/bld/e3sm.bldlog.*
+          # cat /github/home/projects/e3sm/scratch/master.WCYCL1850.ne4_oQU240.baseline/bld/e3sm.bldlog.*
           # ./case.run
