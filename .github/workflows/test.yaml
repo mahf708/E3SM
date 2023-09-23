@@ -28,6 +28,7 @@ jobs:
         run: |
           mkdir -p $HOME/projects/e3sm/cesm-inputdata
           wget https://web.lcrc.anl.gov/public/e3sm/inputdata/atm/cam/physprops/p3_lookup_table_1.dat-v4.1.2
+          mkdir -p $HOME/projects/e3sm/cesm-inputdata/atm/cam/physprops/
           mv p3_lookup_table_1.dat-v4.1.2 $HOME/projects/e3sm/cesm-inputdata/atm/cam/physprops/
           export USER=test
           # ./create_newcase --case master.WCYCL1850.ne4_oQU240.baseline --compset WCYCL1850 --res ne4_oQU240 --machine ghaoci
