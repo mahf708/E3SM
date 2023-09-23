@@ -30,58 +30,42 @@ jobs:
       - name: patch config_machines.xml
         working-directory: cime_config/machines/
         run : |
-          cat << EOF >> config_machines.xml
-          <machine MACH="sing">
-          <DESC>Singularity container</DESC>
-          <NODENAME_REGEX>singularity</NODENAME_REGEX>
-          <OS>LINUX</OS>
-          <COMPILERS>gnu</COMPILERS>
-          <MPILIBS>mpich</MPILIBS>
-          <CIME_OUTPUT_ROOT>$ENV{HOME}/projects/e3sm/scratch</CIME_OUTPUT_ROOT>
-          <DIN_LOC_ROOT>$ENV{HOME}/projects/e3sm/cesm-inputdata</DIN_LOC_ROOT>
-          <DIN_LOC_ROOT_CLMFORC>$ENV{HOME}/projects/e3sm/ptclm-data</DIN_LOC_ROOT_CLMFORC>
-          <DOUT_S_ROOT>$ENV{HOME}/projects/e3sm/scratch/archive/$CASE</DOUT_S_ROOT>
-          <BASELINE_ROOT>$ENV{HOME}/projects/e3sm/baselines/$COMPILER</BASELINE_ROOT>
-          <CCSM_CPRNC>$CCSMROOT/tools/cprnc/build/cprnc</CCSM_CPRNC>
-          <GMAKE>make</GMAKE>
-          <GMAKE_J>4</GMAKE_J>
-          <TESTS>e3sm_developer</TESTS>
-          <BATCH_SYSTEM>none</BATCH_SYSTEM>
-          <SUPPORTED_BY>lukasz at uchicago dot edu</SUPPORTED_BY>
-          <MAX_TASKS_PER_NODE>16</MAX_TASKS_PER_NODE>
-          <MAX_MPITASKS_PER_NODE>16</MAX_MPITASKS_PER_NODE>
-          <mpirun mpilib="default">
-            <executable>mpirun</executable>
-            <arguments>
-              <arg name="num_tasks"> -launcher fork -hosts localhost -np {{ total_tasks }}</arg>
-            </arguments>
-          </mpirun>
-          <module_system type="none"/>
-          <RUNDIR>$ENV{HOME}/projects/e3sm/scratch/$CASE/run</RUNDIR>
-          <EXEROOT>$ENV{HOME}/projects/e3sm/scratch/$CASE/bld</EXEROOT>
-          <environment_variables>
-            <env name="E3SM_SRCROOT">$SRCROOT</env>
-          </environment_variables>
-          <environment_variables mpilib="mpi-serial">
-            <env name="NETCDF_PATH">/usr/local/packages/netcdf-serial</env>
-            <env name="PATH">/usr/local/packages/cmake/bin:/usr/local/packages/hdf5-serial/bin:/usr/local/packages/netcdf-serial/bin:$ENV{PATH}</env>
-            <env name="LD_LIBRARY_PATH">/usr/local/packages/szip/lib:/usr/local/packages/hdf5-serial/lib:/usr/local/packages/netcdf-serial/lib</env>
-          </environment_variables>
-          <environment_variables mpilib="!mpi-serial">
-            <env name="NETCDF_PATH">/usr/local/packages/netcdf-parallel</env>
-            <env name="PNETCDF_PATH">/usr/local/packages/pnetcdf-1.12.1</env>
-            <env name="HDF5_PATH">/usr/local/packages/hdf5-parallel</env>
-            <env name="PATH">/usr/local/packages/cmake/bin:/usr/local/packages/mpich-3.3.2/bin:/usr/local/packages/hdf5-1.10.6-parallel/bin:/usr/local/packages/netcdf-parallel/bin:/usr/local/packages/pnetcdf-1.12.1/bin:$ENV{PATH}</env>
-            <env name="LD_LIBRARY_PATH">/usr/local/packages/mpich-3.3.2/lib:/usr/local/packages/szip/lib:/usr/local/packages/hdf5-1.10.6-parallel/lib:/usr/local/packages/netcdf-parallel/lib:/usr/local/packages/pnetcdf-1.12.1/lib</env>
-          </environment_variables>
-          </machine>
+          cat << EOF >> some.patch
+          diff --git a/cime_config/machines/config_machines.xml b/cime_config/machines/config_machines.xml
+          --- cime_config/machines/config_machines.xml
+          +++ cime_config/machines/config_machines.xml
+          @@ -1236,18 +1236,17 @@
+                 <env name="E3SM_SRCROOT">$SRCROOT</env>
+               </environment_variables>
+               <environment_variables mpilib="mpi-serial">
+                 <env name="NETCDF_PATH">/usr/local/packages/netcdf-serial</env>
+          -      <env name="PATH">/usr/local/packages/cmake/bin:/usr/local/packages/hdf5-serial/bin:/usr/local/packages/netcdf-serial/bin:$ENV{PATH}</env>
+          -      <env name="LD_LIBRARY_PATH">/usr/local/packages/szip/lib:/usr/local/packages/hdf5-serial/lib:/usr/local/packages/netcdf-serial/lib</env>
+          +      <env name="PATH">/usr/local/packages/cmake/bin:/usr/local/packages/hdf5-1.10.6-serial/bin:/usr/local/packages/netcdf-serial/bin:$ENV{PATH}</env>
+          +      <env name="LD_LIBRARY_PATH">/usr/local/packages/szip/lib:/usr/local/packages/hdf5-1.10.6-serial/lib:/usr/local/packages/netcdf-serial/lib</env>
+               </environment_variables>
+               <environment_variables mpilib="!mpi-serial">
+                 <env name="NETCDF_PATH">/usr/local/packages/netcdf-parallel</env>
+                 <env name="PNETCDF_PATH">/usr/local/packages/pnetcdf</env>
+                 <env name="HDF5_PATH">/usr/local/packages/hdf5-parallel</env>
+          -      <env name="PATH">/usr/local/packages/cmake/bin:/usr/local/packages/mpich/bin:/usr/local/packages/hdf5-parallel/bin:/usr/local/packages/netcdf-parallel/bin:/usr/local/packages/pnetcdf/bin:$ENV{PATH}</env>
+          -      <env name="LD_LIBRARY_PATH">/usr/local/packages/mpich/lib:/usr/local/packages/szip/lib:/usr/local/packages/hdf5-parallel/lib:/usr/local/packages/netcdf-parallel/lib:/usr/local/packages/pnetcdf/lib</env>
+          -    </environment_variables>
+          +      <env name="PATH">/usr/local/packages/cmake/bin:/usr/local/packages/mpich-3.3.2/bin:/usr/local/packages/hdf5-1.10.6-parallel/bin:/usr/local/packages/netcdf-parallel/bin:/usr/local/packages/pnetcdf-1.12.1/bin:$ENV{PATH}</env>
+          +      <env name="LD_LIBRARY_PATH">/usr/local/packages/mpich-3.3.2/lib:/usr/local/packages/szip-2.1.1/lib:/usr/local/packages/hdf5-1.10.6-parallel/lib:/usr/local/packages/netcdf-parallel/lib:/usr/local/packages/pnetcdf-1.12.1/lib</env>    </environment_variables>
+             </machine>
+           
+             <machine MACH="melvin">
+               <DESC>Linux workstation for Jenkins testing</DESC>
+          
           EOF
+          git apply some.patch -v
       - name: CIME
         working-directory: cime/scripts
         run: |
           mkdir -p $HOME/projects/e3sm/cesm-inputdata
           export USER=test
-          ./create_newcase --case master.WCYCL1850.ne4_oQU240.baseline --compset WCYCL1850 --res ne4_oQU240 --machine sing
+          ./create_newcase --case master.WCYCL1850.ne4_oQU240.baseline --compset WCYCL1850 --res ne4_oQU240 --machine singularity
           cd master.WCYCL1850.ne4_oQU240.baseline
           ./case.setup
           ./case.build -v
