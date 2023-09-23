@@ -21,10 +21,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v3
-        with:
-          submodules: recursive
+        # with:
+          # submodules: recursive
       - name: CIME
-        working-directory: cime/scripts
         run: |
+          git submodule update --init --recursive
           mkdir -p $HOME/projects/e3sm/cesm-inputdata
+          cd cime/scripts
           ./create_test SMS_Ln1.ne4_oQU480.F2010 --machine linux-generic --no-run --input-dir $HOME/projects/e3sm/cesm-inputdata
