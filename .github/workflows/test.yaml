@@ -19,12 +19,12 @@ jobs:
     container: 
       image: ghcr.io/mahf708/e3sm-imgs:main
     steps:
-      - name: new git
+      - name: addenda
         run: |
           apt-get update
-          apt-get -y upgrade git
+          apt-get -y install python3-distutils
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           submodules: recursive
       - name: CIME
