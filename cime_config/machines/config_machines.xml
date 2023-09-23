@@ -1242,10 +1242,10 @@
     </environment_variables>
     <environment_variables mpilib="!mpi-serial">
       <env name="NETCDF_PATH">/usr/local/packages/netcdf-parallel</env>
-      <env name="PNETCDF_PATH">/usr/local/packages/pnetcdf</env>
-      <env name="HDF5_PATH">/usr/local/packages/hdf5-parallel</env>
-      <env name="PATH">/usr/local/packages/cmake/bin:/usr/local/packages/mpich/bin:/usr/local/packages/hdf5-parallel/bin:/usr/local/packages/netcdf-parallel/bin:/usr/local/packages/pnetcdf/bin:$ENV{PATH}</env>
-      <env name="LD_LIBRARY_PATH">/usr/local/packages/mpich/lib:/usr/local/packages/szip/lib:/usr/local/packages/hdf5-parallel/lib:/usr/local/packages/netcdf-parallel/lib:/usr/local/packages/pnetcdf/lib</env>
+      <env name="PNETCDF_PATH">/usr/local/packages/pnetcdf-1.12.1</env>
+      <env name="HDF5_PATH">/usr/local/packages/hdf5-1.10.6-parallel</env>
+      <env name="PATH">/usr/local/packages/cmake/bin:/usr/local/packages/mpich-3.3.2/bin:/usr/local/packages/hdf5-1.10.6-parallel/bin:/usr/local/packages/netcdf-parallel/bin:/usr/local/packages/pnetcdf-1.12.1/bin:$ENV{PATH}</env>
+      <env name="LD_LIBRARY_PATH">/usr/local/packages/mpich-3.3.2/lib:/usr/local/packages/szip-2.1.1/lib:/usr/local/packages/hdf5-1.10.6-parallel/lib:/usr/local/packages/netcdf-parallel/lib:/usr/local/packages/pnetcdf-1.12.1/lib</env>
     </environment_variables>
   </machine>
 
