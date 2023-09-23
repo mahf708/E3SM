@@ -1,4 +1,4 @@
-name: SMS_Ln1.ne4_oQU480.F2010.linux-generic
+name: WCYCL1850.ne4_oQU240
 
 on:
   push:
@@ -8,16 +8,12 @@ on:
  
   workflow_dispatch:
 
-defaults:
-  run:
-    shell: bash -l {0}
-
 jobs:
 
   build:
     runs-on: ubuntu-latest
     container: 
-      image: ghcr.io/mahf708/e3sm-imgs:main
+      image: ghcr.io/mahf708/e3sm-imgs@sha256:2657196ea9eec7dbd04f7da61f4e7d5e566d4b501dff5881f0cb5125ba031158
     steps:
       - name: addenda
         run: |
@@ -32,9 +28,8 @@ jobs:
         run: |
           mkdir -p $HOME/projects/e3sm/cesm-inputdata
           export USER=test
-          ./create_newcase --case master.WCYCL1850.ne4_oQU240.baseline --compset WCYCL1850 --res ne4_oQU240 --machine singularity
-          cd master.WCYCL1850.ne4_oQU240.baseline
-          ./case.setup
-          ./case.build -v
-          # cat /github/home/projects/e3sm/scratch/master.WCYCL1850.ne4_oQU240.baseline/bld/e3sm.bldlog.*
-          # ./case.run
+          # ./create_newcase --case master.WCYCL1850.ne4_oQU240.baseline --compset WCYCL1850 --res ne4_oQU240 --machine singularity
+          # cd master.WCYCL1850.ne4_oQU240.baseline
+          # ./case.setup
+          # ./case.build -v
+          ./create_test SMS_Ln1.ne4_oQU480.F2010 --machine singularity --wait
