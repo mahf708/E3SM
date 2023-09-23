@@ -28,8 +28,8 @@ jobs:
         run: |
           mkdir -p $HOME/projects/e3sm/cesm-inputdata
           export USER=test
-          # ./create_newcase --case master.WCYCL1850.ne4_oQU240.baseline --compset WCYCL1850 --res ne4_oQU240 --machine ghas
+          # ./create_newcase --case master.WCYCL1850.ne4_oQU240.baseline --compset WCYCL1850 --res ne4_oQU240 --machine ghaoci
           # cd master.WCYCL1850.ne4_oQU240.baseline
           # ./case.setup
           # ./case.build -v
-          ./create_test SMS_Ln1.ne4_oQU480.F2010 --machine ghas --wait
+          ./create_test SMS_Ln1.ne4_oQU480.F2010 --machine ghaoci --wait

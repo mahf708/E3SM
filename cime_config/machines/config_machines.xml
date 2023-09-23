@@ -1249,9 +1249,9 @@
     </environment_variables>
   </machine>
 
-  <machine MACH="ghas">
+  <machine MACH="ghaoci">
     <DESC>Singularity container</DESC>
-    <NODENAME_REGEX>ghas</NODENAME_REGEX>
+    <NODENAME_REGEX>ghaoci</NODENAME_REGEX>
     <OS>LINUX</OS>
     <COMPILERS>gnu</COMPILERS>
     <MPILIBS>mpich</MPILIBS>
