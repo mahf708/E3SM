@@ -15,7 +15,7 @@ defaults:
 jobs:
 
   build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     container: 
       image: ghcr.io/mahf708/e3sm-imgs:main
     steps:
@@ -32,6 +32,5 @@ jobs:
         run: |
           mkdir -p $HOME/projects/e3sm/cesm-inputdata
           export USER=test
-          export NETCDF_PATH=/usr/local/packages/netcdf-serial/lib/libnetcdf.a
           ./create_test SMS_Ln1.ne4_oQU480.F2010 --machine linux-generic --input-dir $HOME/projects/e3sm/cesm-inputdata --no-batch --wait
           cat /github/home/projects/acme/scratch/SMS_Ln1.ne4_oQU480.F2010.linux-generic_gnu.*/bld/cprnc.bldlog.*
