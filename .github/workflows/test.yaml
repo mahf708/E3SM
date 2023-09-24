@@ -1,38 +1,40 @@
-name: WCYCL1850.ne4_oQU240
+name: test
 
 on:
   push:
     branches: [ master ]
   pull_request:
     branches: [ master ]
- 
+
   workflow_dispatch:
 
 jobs:
 
-  build:
+  run:
+    strategy:
+      matrix:
+        typ: ["SMS", "SMS_D", "ERP_Ln18", "PEM_Ln5", "REP_Ln5"]
+        res: ["ne4_oQU480"]
+        com: ["F2010"]
     runs-on: ubuntu-latest
     container: 
       image: ghcr.io/mahf708/e3sm-imgs@sha256:2657196ea9eec7dbd04f7da61f4e7d5e566d4b501dff5881f0cb5125ba031158
+
     steps:
-      - name: addenda
+      - name: Addenda
         run: |
           apt-get update
           apt-get -y install python3-distutils
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          show-progress: false
           submodules: recursive
       - name: CIME
         working-directory: cime/scripts
         run: |
-          mkdir -p $HOME/projects/e3sm/cesm-inputdata
-          wget https://web.lcrc.anl.gov/public/e3sm/inputdata/atm/cam/physprops/p3_lookup_table_1.dat-v4.1.2
           mkdir -p $HOME/projects/e3sm/cesm-inputdata/atm/cam/physprops/
+          wget https://web.lcrc.anl.gov/public/e3sm/inputdata/atm/cam/physprops/p3_lookup_table_1.dat-v4.1.2
           mv p3_lookup_table_1.dat-v4.1.2 $HOME/projects/e3sm/cesm-inputdata/atm/cam/physprops/
           export USER=test
-          # ./create_newcase --case master.WCYCL1850.ne4_oQU240.baseline --compset WCYCL1850 --res ne4_oQU240 --machine ghaoci
-          # cd master.WCYCL1850.ne4_oQU240.baseline
-          # ./case.setup
-          # ./case.build -v
-          ./create_test SMS_Ln2.ne4_oQU480.F2010 -t test --machine ghaoci --debug --wait
+          ./create_test ${{ matrix.typ }}.${{ matrix.res }}.${{ matrix.com }} --machine ghaoci --wait --debug
