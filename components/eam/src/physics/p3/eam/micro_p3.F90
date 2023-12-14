@@ -1256,7 +1256,7 @@ end function bfb_expm1
   SUBROUTINE p3_main(qc,nc,qr,nr,th_atm,qv,dt,qi,qm,ni,bm,                                                                                                               &
        pres,dz,nc_nuceat_tend,nccn_prescribed,ni_activated,frzimm,frzcnt,frzdep,inv_qc_relvar,it,precip_liq_surf,precip_ice_surf,its,ite,kts,kte,diag_eff_radius_qc,     &
        diag_eff_radius_qi,rho_qi,do_predict_nc, do_prescribed_CCN,p3_autocon_coeff,p3_accret_coeff,p3_qc_autocon_expon,p3_nc_autocon_expon,p3_qc_accret_expon,           &
-       p3_wbf_coeff,p3_mincdnc,p3_max_mean_rain_size,p3_embryonic_rain_size,                                                                                             &
+       p3_wbf_coeff,p3_mincdnc,p3_cld_sed,p3_max_mean_rain_size,p3_embryonic_rain_size,                                                                                             &
        dpres,exner,qv2qi_depos_tend,precip_total_tend,nevapr,qr_evap_tend,precip_liq_flux,precip_ice_flux,rflx,sflx,cflx,cld_frac_r,cld_frac_l,cld_frac_i,               &
        p3_tend_out,mu_c,lamc,liq_ice_exchange,vap_liq_exchange,                                                                                                          &
        vap_ice_exchange,qv_prev,t_prev,col_location,diag_equiv_reflectivity,diag_ze_rain,diag_ze_ice                                                                     &
@@ -1345,6 +1345,7 @@ end function bfb_expm1
     real(rtype), intent(in)                                     :: p3_qc_accret_expon       ! accretion qc and qr exponent
     real(rtype), intent(in)                                     :: p3_wbf_coeff             ! WBF coefficient
     real(rtype), intent(in)                                     :: p3_mincdnc               ! Lower bound of Nc
+    real(rtype), intent(in)                                     :: p3_cld_sed               ! Cloud sedimentation scaling
     real(rtype), intent(in)                                     :: p3_max_mean_rain_size    ! max mean rain size allowed
     real(rtype), intent(in)                                     :: p3_embryonic_rain_size   ! embryonic rain size from autoconversion
 
@@ -1584,7 +1585,7 @@ end function bfb_expm1
        call cloud_sedimentation(kts,kte,ktop,kbot,kdir, &
          qc_incld(i,:),rho(i,:),inv_rho(i,:),cld_frac_l(i,:),acn(i,:),inv_dz(i,:), &
          dt,inv_dt,dnu,do_predict_nc, &
-         qc(i,:),nc(i,:),nc_incld(i,:),mu_c(i,:),lamc(i,:),precip_liq_surf(i),cflx(i,:),p3_tend_out(i,:,36),p3_tend_out(i,:,37))
+         qc(i,:),nc(i,:),nc_incld(i,:),mu_c(i,:),lamc(i,:),precip_liq_surf(i),cflx(i,:),p3_tend_out(i,:,36),p3_tend_out(i,:,37),p3_cld_sed)
 
        !------------------------------------------------------------------------------------------!
        ! Rain sedimentation:  (adaptive substepping)
@@ -3864,7 +3865,7 @@ end subroutine get_time_space_phys_variables
 subroutine cloud_sedimentation(kts,kte,ktop,kbot,kdir,   &
    qc_incld,rho,inv_rho,cld_frac_l,acn,inv_dz,&
    dt,inv_dt,dnu,do_predict_nc, &
-   qc, nc, nc_incld,mu_c,lamc,precip_liq_surf,cflx,qc_tend,nc_tend)
+   qc, nc, nc_incld,mu_c,lamc,precip_liq_surf,cflx,qc_tend,nc_tend,p3_cld_sed)
 
    implicit none
    integer, intent(in) :: kts, kte
@@ -3877,6 +3878,7 @@ subroutine cloud_sedimentation(kts,kte,ktop,kbot,kdir,   &
    real(rtype), intent(in), dimension(kts:kte) :: inv_dz
    real(rtype), intent(in) :: dt
    real(rtype), intent(in) :: inv_dt
+   real(rtype), intent(in) :: p3_cld_sed
    real(rtype), dimension(:), intent(in) :: dnu
    logical(btype), intent(in) :: do_predict_nc
 
@@ -3961,8 +3963,8 @@ subroutine cloud_sedimentation(kts,kte,ktop,kbot,kdir,   &
                   nc(k) = nc_incld(k)*cld_frac_l(k)
 
                   dum = 1._rtype / bfb_pow(lamc(k), bcn)
-                  V_qc(k) = acn(k)*bfb_gamma(4._rtype+bcn+mu_c(k))*dum/(bfb_gamma(mu_c(k)+4._rtype))
-                  V_nc(k) = acn(k)*bfb_gamma(1._rtype+bcn+mu_c(k))*dum/(bfb_gamma(mu_c(k)+1._rtype))
+                  V_qc(k) = p3_cld_sed*acn(k)*bfb_gamma(4._rtype+bcn+mu_c(k))*dum/(bfb_gamma(mu_c(k)+4._rtype))
+                  V_nc(k) = p3_cld_sed*acn(k)*bfb_gamma(1._rtype+bcn+mu_c(k))*dum/(bfb_gamma(mu_c(k)+1._rtype))
 
                endif qc_notsmall_c2
                Co_max = max(Co_max, V_qc(k)*dt_left*inv_dz(k))
@@ -3999,7 +4001,7 @@ subroutine cloud_sedimentation(kts,kte,ktop,kbot,kdir,   &
                   nc(k) = nc_incld(k)*cld_frac_l(k)
 
                   dum = 1._rtype / bfb_pow(lamc(k), bcn)
-                  V_qc(k) = acn(k)*bfb_gamma(4._rtype+bcn+mu_c(k))*dum/(bfb_gamma(mu_c(k)+4._rtype))
+                  V_qc(k) = p3_cld_sed*acn(k)*bfb_gamma(4._rtype+bcn+mu_c(k))*dum/(bfb_gamma(mu_c(k)+4._rtype))
                endif qc_notsmall_c1
 
                Co_max = max(Co_max, V_qc(k)*dt_left*inv_dz(k))

@@ -2520,6 +2520,12 @@ Minimum droplet number conc (#/m3) imposed when p3_mincdnc > 0.
 Default: -999.
 </entry>
 
+<entry id="p3_cld_sed" type="real" category="microphys"
+       group="micro_nl" valid_values="" >
+Scaling cloud sedimentation
+Default: -999.
+</entry>
+
 <entry id="micro_mg_version" type="integer" category="microphys"
        group="micro_mg_nl" valid_values="" >
 Version number for MG microphysics
