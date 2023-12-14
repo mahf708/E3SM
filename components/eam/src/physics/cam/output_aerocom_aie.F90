@@ -49,6 +49,7 @@ module output_aerocom_aie
    integer :: ccn_idx      ! cloud condensation nuclei number concentration for liquid water
                                        ! clouds where activation corresponding to CDR and CDN
    integer :: ttop_idx     ! Temperature at top of clouds (K)
+   integer :: htop_idx     ! Height at top of clouds (m)
    integer :: ptop_idx     ! Pressure at top fo clouds (Pa)
    integer :: autoconv_idx      ! Column-integrated autoconversion rate
    integer :: accretn_idx      ! Column-integrated autoconversion rate
@@ -97,6 +98,7 @@ CONTAINS
    call pbuf_add_field('cod',  'physpkg', dtype_r8, (/pcols/),      cod_idx)
    call pbuf_add_field('ccn',  'physpkg', dtype_r8, (/pcols/),      ccn_idx)
    call pbuf_add_field('ttop', 'physpkg', dtype_r8, (/pcols/),      ttop_idx)
+   call pbuf_add_field('htop', 'physpkg', dtype_r8, (/pcols/),      htop_idx)
    call pbuf_add_field('ptop', 'physpkg', dtype_r8, (/pcols/),      ptop_idx)
 
    call pbuf_add_field('autoconv', 'physpkg', dtype_r8, (/pcols/),      autoconv_idx)
@@ -154,6 +156,7 @@ CONTAINS
    call addfld ('ccn', horiz_only ,'A'    ,   '#/m3',    &
                'CCN number concentration at 0.3% at the top layer of liquid water clouds',  flag_xyfill=.true.)
    call addfld ('ttop', horiz_only ,'A'    ,  'K',      'Temperature at top of clouds',  flag_xyfill=.true.)
+   call addfld ('htop', horiz_only ,'A'    ,  'm',      'Height at top of clouds',  flag_xyfill=.true.)
    call addfld ('ptop', horiz_only ,'A'    ,  'Pa',      'Pressure at top of clouds',  flag_xyfill=.true.)
    call addfld ('autoconv', horiz_only ,'A'    ,  'kg/m2/s',   'Grid-mean surface precipitation rate',  flag_xyfill=.true.)
    call addfld ('accretn', horiz_only ,'A'    ,  'kg/m2/s',    'Grid-mean surface precipitation rate',  flag_xyfill=.true.)
@@ -258,6 +261,7 @@ CONTAINS
    real(r8), pointer, dimension(:) ::  icc
    real(r8), pointer, dimension(:) ::  lcc
    real(r8), pointer, dimension(:) ::  ttop 
+   real(r8), pointer, dimension(:) ::  htop
    real(r8), pointer, dimension(:) ::  ptop
    real(r8), pointer, dimension(:) ::  cdr 
    real(r8), pointer, dimension(:) ::  icr
@@ -330,6 +334,7 @@ CONTAINS
    call pbuf_get_field(pbuf, icc_idx, icc)
    call pbuf_get_field(pbuf, lcc_idx, lcc)
    call pbuf_get_field(pbuf, ttop_idx, ttop)
+   call pbuf_get_field(pbuf, htop_idx, htop)
    call pbuf_get_field(pbuf, ptop_idx, ptop)
    call pbuf_get_field(pbuf, cdr_idx, cdr)
    call pbuf_get_field(pbuf, icr_idx, icr)
@@ -372,6 +377,7 @@ CONTAINS
    icc(:) = 0.0_r8
    lcc(:) = 0.0_r8
    ttop(:) = 0.0_r8
+   htop(:) = 0.0_r8
    ptop(:) = 0.0_r8
    cdr(:) = 0.0_r8
    icr(:) = 0.0_r8
@@ -415,6 +421,7 @@ CONTAINS
         endif 
 
         ttop(i) = ttop(i) + state%t(i,k) * ( clt(i) - ftmp(i) )*flag_max 
+        htop(i) = htop(i) + state%t(i,k) * ( clt(i) - ftmp(i) )*flag_max 
         ptop(i) = ptop(i) + state%pmid(i,k) *( clt(i) - ftmp(i) )*flag_max
 
         if(cldice(i,k).gt.1.0e-8) then
@@ -459,9 +466,11 @@ CONTAINS
     end if 
 !    if ( clt(i).le.thres_cld) then
 !      ttop(i) = fillvalue
+!      htop(i) = fillvalue
 !      ptop(i) = fillvalue
 !    else 
 !      ttop(i) = ttop(i)/clt(i)
+!      htop(i) = htop(i)/clt(i)
 !      ptop(i) = ptop(i)/clt(i)
 !    end if
 !    if (lcc(i).le.thres_cld) then
@@ -562,6 +571,7 @@ CONTAINS
    call outfld('ccn', ccn, pcols, lchnk)
    call outfld('ptop', ptop, pcols, lchnk)
    call outfld('ttop', ttop, pcols, lchnk)
+   call outfld('htop', htop, pcols, lchnk)
    call outfld('intccn', intccn, pcols, lchnk)
    call outfld('colrv', colrv, pcols, lchnk)
    call outfld('rwp', rwp, pcols, lchnk)
