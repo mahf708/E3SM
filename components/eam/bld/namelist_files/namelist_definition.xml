@@ -2965,6 +2965,18 @@ cloud droplet-rain autoconversion enhancement factor in convective microphysics 
 Default: set by build-namelist  
 </entry>
 
+<entry id="zmconv_autocon_coeff" type="real" category="conv"
+       group="zmconv_nl" valid_values="" >    
+cloud droplet-rain autoconversion linear prefactor convective microphysics scheme.
+Default: set by build-namelist  
+</entry>
+
+<entry id="zmconv_nc_autocon_expon" type="real" category="conv"
+       group="zmconv_nl" valid_values="" >    
+cloud droplet-rain autoconversion Nc exponent in convective microphysics scheme.
+Default: set by build-namelist  
+</entry>
+
 <entry id="zmconv_accr_fac" type="real" category="conv"
        group="zmconv_nl" valid_values="" >    
 cloud droplet-rain accretion enhancement factor in convective microphysics scheme.      

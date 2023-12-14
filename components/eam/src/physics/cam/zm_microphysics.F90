@@ -376,7 +376,7 @@ subroutine zm_mphy(su,    qu,   mu,   du,   eu,    cmel,  cmei,  zf,   pm,   te,
                    accgrm, accglm, accgslm,accgsrm,accgirm,accgrim,accgrsm,accgsln,accgsrn,   &
                    accgirn,accsrim,acciglm,accigrm,accsirm,accigln,accigrn,accsirn,accgln,    &
                    accgrn ,accilm, acciln ,fallrm ,fallsm ,fallgm ,fallrn ,fallsn ,fallgn,    &
-                   fhmrm  ,dsfm, dsfn, auto_fac, accr_fac, dcs)
+                   fhmrm  ,dsfm, dsfn, auto_fac, autocon_coeff, nc_autocon_expon, accr_fac, dcs)
    
 
 ! Purpose:
@@ -418,6 +418,8 @@ subroutine zm_mphy(su,    qu,   mu,   du,   eu,    cmel,  cmei,  zf,   pm,   te,
   real(r8) cp                                   ! heat capacity of dry air
   real(r8) rd                                   ! gas constant for dry air
   real(r8) auto_fac                             ! droplet-rain autoconversion enhancement factor  
+  real(r8) autocon_coeff                        ! droplet-rain autoconversion linear prefactor
+  real(r8) nc_autocon_expon                     ! droplet-rain autoconversion Nc exponent
   real(r8) accr_fac                             ! droplet-rain accretion enhancement factor
   real(r8) dcs                                  ! autoconversion size threshold for cloud ice to snow (m)
 
@@ -1488,8 +1490,8 @@ subroutine zm_mphy(su,    qu,   mu,   du,   eu,    cmel,  cmei,  zf,   pm,   te,
 !                 prc(k) = 1350._r8*qcic(i,k)**2.47_r8*    &
 !                    (ncic(i,k)/1.e6_r8*rho(i,k))**(-1.79_r8)
                  ! parameters with updated values for 72 layer model 
-                 prc(k) = auto_fac*30500._r8*qcic(i,k)**3.19_r8*    &
-                    (ncic(i,k)/1.e6_r8*rho(i,k))**(-1.2_r8)
+                 prc(k) = auto_fac*autocon_coeff*qcic(i,k)**3.19_r8*    &
+                    (ncic(i,k)/1.e6_r8*rho(i,k))**(nc_autocon_expon)
                  nprc1(k) = prc(k)/(qcic(i,k)/ncic(i,k))
                  nprc(k) = prc(k) * (1._r8/droplet_mass_25um)
 

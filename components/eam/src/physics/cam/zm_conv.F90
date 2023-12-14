@@ -77,6 +77,8 @@ module zm_conv
    integer  :: zmconv_mx_bot_lyr_adj = unset_int
    real(r8) :: zmconv_tp_fac         = unset_r8
    real(r8) :: zmconv_auto_fac       = unset_r8
+   real(r8) :: zmconv_autocon_coeff    = unset_r8
+   real(r8) :: zmconv_nc_autocon_expon = unset_r8
    real(r8) :: zmconv_accr_fac       = unset_r8
    real(r8) :: zmconv_micro_dcs      = unset_r8
    real(r8) :: zmconv_MCSP_heat_coeff = 0._r8
@@ -129,6 +131,8 @@ module zm_conv
 
    real(r8) :: tp_fac = unset_r8  
    real(r8) :: auto_fac = unset_r8
+   real(r8) :: autocon_coeff = unset_r8
+   real(r8) :: nc_autocon_expon = unset_r8
    real(r8) :: accr_fac = unset_r8
    real(r8) :: micro_dcs= unset_r8
 
@@ -156,6 +160,7 @@ subroutine zmconv_readnl(nlfile)
            zmconv_dmpdz, zmconv_alfa, zmconv_tiedke_add,     &
            zmconv_cape_cin, zmconv_mx_bot_lyr_adj, zmconv_tp_fac, zmconv_trigdcape_ull, &
            zmconv_trig_dcape_only, zmconv_trig_ull_only, zmconv_microp, zmconv_auto_fac,&
+           zmconv_autocon_coeff, zmconv_nc_autocon_expon,                               &
            zmconv_accr_fac, zmconv_micro_dcs, zmconv_clos_dyn_adj, zmconv_tpert_fix,    &
            zmconv_MCSP_heat_coeff, zmconv_MCSP_moisture_coeff, &
            zmconv_MCSP_uwind_coeff, zmconv_MCSP_vwind_coeff   
@@ -192,6 +197,8 @@ subroutine zmconv_readnl(nlfile)
       dmpdz            = zmconv_dmpdz
       tp_fac           = zmconv_tp_fac
       auto_fac         = zmconv_auto_fac
+      autocon_coeff    = zmconv_autocon_coeff
+      nc_autocon_expon = zmconv_nc_autocon_expon
       accr_fac         = zmconv_accr_fac
       micro_dcs        = zmconv_micro_dcs
       MCSP_heat_coeff  = zmconv_MCSP_heat_coeff
@@ -259,6 +266,8 @@ subroutine zmconv_readnl(nlfile)
    call mpibcast(mx_bot_lyr_adj,    1, mpiint, 0, mpicom)
    call mpibcast(tp_fac,            1, mpir8,  0, mpicom)
    call mpibcast(auto_fac,          1, mpir8,  0, mpicom)
+   call mpibcast(autocon_coeff,     1, mpir8,  0, mpicom)
+   call mpibcast(nc_autocon_expon,  1, mpir8,  0, mpicom)
    call mpibcast(accr_fac,          1, mpir8,  0, mpicom)
    call mpibcast(micro_dcs,         1, mpir8,  0, mpicom)  
    call mpibcast(MCSP,              1, mpilog, 0, mpicom)
@@ -3524,7 +3533,7 @@ subroutine cldprp(lchnk   , &
                     loc_microp_st%accsirn,loc_microp_st%accgln ,loc_microp_st%accgrn ,loc_microp_st%accilm , &
                     loc_microp_st%acciln ,loc_microp_st%fallrm ,loc_microp_st%fallsm ,loc_microp_st%fallgm , &
                     loc_microp_st%fallrn ,loc_microp_st%fallsn ,loc_microp_st%fallgn ,loc_microp_st%fhmrm  , &
-                    dsfm,   dsfn, auto_fac, accr_fac, micro_dcs) 
+                    dsfm,   dsfn, auto_fac, autocon_coeff, nc_autocon_expon, accr_fac, micro_dcs) 
 
 
       do k = pver,msg + 2,-1
