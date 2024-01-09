@@ -1368,7 +1368,6 @@ contains
         do j = 1, nlevdecomp
            ! carbon fluxes
            do l = 1, ndecomp_pools
-              m_decomp_cpools_to_fire_vr(c,j,l) = 0._r8 
               if ( is_litter(l) ) then
                  m_decomp_cpools_to_fire_vr(c,j,l) = decomp_cpools_vr(c,j,l) * f * 0.5_r8
               end if
@@ -1387,7 +1386,6 @@ contains
 
            ! nitrogen fluxes
            do l = 1, ndecomp_pools
-              m_decomp_npools_to_fire_vr(c,j,l) = 0.0_r8 
               if ( is_litter(l) ) then
                  m_decomp_npools_to_fire_vr(c,j,l) = decomp_npools_vr(c,j,l) * f * 0.5_r8
               end if
@@ -1405,7 +1403,6 @@ contains
 
            ! phosphorus fluxes - loss due to fire
            do l = 1, ndecomp_pools
-              m_decomp_ppools_to_fire_vr(c,j,l) = 0._r8  
               if ( is_litter(l) ) then
                  m_decomp_ppools_to_fire_vr(c,j,l) = decomp_ppools_vr(c,j,l) * f * 0.5_r8
               end if
