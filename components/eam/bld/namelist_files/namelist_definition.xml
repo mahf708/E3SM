@@ -2526,6 +2526,12 @@ Scaling cloud sedimentation
 Default: -999.
 </entry>
 
+<entry id="p3_rain_evap" type="real" category="microphys"
+       group="micro_nl" valid_values="" >
+Scaling rain evaporation
+Default: -999.
+</entry>
+
 <entry id="micro_mg_version" type="integer" category="microphys"
        group="micro_mg_nl" valid_values="" >
 Version number for MG microphysics

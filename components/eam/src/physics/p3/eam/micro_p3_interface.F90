@@ -131,6 +131,7 @@ module micro_p3_interface
       p3_wbf_coeff             = huge(1.0_rtype), &
       p3_mincdnc               = huge(1.0_rtype), & 
       p3_cld_sed               = huge(1.0_rtype), &
+      p3_rain_evap             = huge(1.0_rtype), &
       p3_max_mean_rain_size    = huge(1.0_rtype), &
       p3_embryonic_rain_size   = huge(1.0_rtype)
    
@@ -166,7 +167,7 @@ subroutine micro_p3_readnl(nlfile)
        micro_p3_tableversion, micro_p3_lookup_dir, micro_aerosolactivation, micro_subgrid_cloud, &
        micro_tend_output, p3_autocon_coeff, p3_qc_autocon_expon, p3_nc_autocon_expon, p3_accret_coeff, &
        p3_qc_accret_expon, p3_wbf_coeff, p3_max_mean_rain_size, p3_embryonic_rain_size, &
-       do_prescribed_CCN, do_Cooper_inP3, p3_mincdnc, p3_cld_sed
+       do_prescribed_CCN, do_Cooper_inP3, p3_mincdnc, p3_cld_sed, p3_rain_evap
 
   !-----------------------------------------------------------------------------
 
@@ -197,6 +198,7 @@ subroutine micro_p3_readnl(nlfile)
      write(iulog,'(A30,1x,8e12.4)') 'p3_wbf_coeff',            p3_wbf_coeff
      write(iulog,'(A30,1x,8e12.4)') 'p3_mincdnc',              p3_mincdnc 
      write(iulog,'(A30,1x,8e12.4)') 'p3_cld_sed',              p3_cld_sed
+     write(iulog,'(A30,1x,8e12.4)') 'p3_rain_evap',            p3_rain_evap
      write(iulog,'(A30,1x,8e12.4)') 'p3_max_mean_rain_size',   p3_max_mean_rain_size
      write(iulog,'(A30,1x,8e12.4)') 'p3_embryonic_rain_size',  p3_embryonic_rain_size
      write(iulog,'(A30,1x,L)')    'do_prescribed_CCN: ',       do_prescribed_CCN
@@ -219,6 +221,7 @@ subroutine micro_p3_readnl(nlfile)
   call mpibcast(p3_wbf_coeff,            1 ,                         mpir8,   0, mpicom)
   call mpibcast(p3_mincdnc,              1 ,                         mpir8,   0, mpicom) 
   call mpibcast(p3_cld_sed,              1 ,                         mpir8,   0, mpicom)
+  call mpibcast(p3_rain_evap,            1,                          mpir8,   0, mpicom)
   call mpibcast(p3_max_mean_rain_size,   1 ,                         mpir8,   0, mpicom)
   call mpibcast(p3_embryonic_rain_size,  1 ,                         mpir8,   0, mpicom)
   call mpibcast(do_prescribed_CCN,       1,                          mpilog,  0, mpicom)
@@ -1341,6 +1344,7 @@ end subroutine micro_p3_readnl
          p3_wbf_coeff,                & ! IN  WBF process coefficient
          p3_mincdnc,                  & ! IN  imposing minimal Nc 
          p3_cld_sed,                  & ! IN  cloud sedimentation scaling
+         p3_rain_evap,                & ! IN rain evaporation scaling
          p3_max_mean_rain_size,       & ! IN  max mean rain size
          p3_embryonic_rain_size,      & ! IN  embryonic rain size for autoconversion
          ! AaronDonahue new stuff
