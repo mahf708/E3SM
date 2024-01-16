@@ -7762,6 +7762,8 @@ contains
        this%coutputs(i)                  = value_column
        this%cwdc_hr(i)                   = value_column
        this%litterc_loss(i)              = value_column
+       
+       this%nee(i)                       = value_column
 
        ! Zero p2c column fluxes
        this%rr(i)                    = value_column
@@ -7787,7 +7789,6 @@ contains
          this%totfire(i)                   = value_column
          this%nep(i)                       = value_column
          this%nbp(i)                       = value_column
-         this%nee(i)                       = value_column
          this%fire_closs(i)                = value_column
          this%cwdc_loss(i)                 = value_column
          this%som_c_leached(i)             = value_column
