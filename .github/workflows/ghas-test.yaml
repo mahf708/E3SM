@@ -28,6 +28,7 @@ jobs:
         working-directory: cime/scripts
         run: |
           mkdir -p $HOME/projects/e3sm/cesm-inputdata
+          export USER=test
           ./create_newcase --case "${COM}.${RES}.${MAC}" --compset ${COM} --res ${RES} --machine ${MAC}
           cd "${COM}.${RES}.${MAC}"
           ./case.setup
