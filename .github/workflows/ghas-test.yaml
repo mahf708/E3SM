@@ -14,8 +14,7 @@ jobs:
 
     runs-on: ubuntu-latest
     container: 
-      image: ghcr.io/mahf708/e3sm-imgs:main
-      options: --user 0000
+      image: ghcr.io/mahf708/e3sm-imgs:test
 
     steps:
       - 
