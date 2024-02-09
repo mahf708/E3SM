@@ -48,4 +48,4 @@ jobs:
           wget https://web.lcrc.anl.gov/public/e3sm/inputdata/atm/cam/physprops/p3_lookup_table_1.dat-v4.1.2
           mv p3_lookup_table_1.dat-v4.1.2 $HOME/projects/e3sm/cesm-inputdata/atm/cam/physprops/
           export USER=test
-          ./create_test ${{ matrix.typ }}.${{ matrix.res }}.${{ matrix.com }} --machine ghas --wait --debug
+          ./create_test ${{ matrix.typ }}.${{ matrix.res }}.${{ matrix.com }} --machine singularity --wait --debug
