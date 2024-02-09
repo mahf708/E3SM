@@ -15,22 +15,29 @@ jobs:
       fail-fast: false
       matrix:
         typ: 
-          - "SMS"
-          - "REP"
-          - "ERS"
-          - "ERP"
-          - "ERI"
-          - "ERT"
-          - "ERR"
-          - "PET"
-          - "PEM"
-          - "PEA"
-          - "SEQ"
-          # - "SMS_D"
-          # - "ERP_Ln18"
-          # - "PEM_Ln5"
-          # - "REP_Ln5"
-        res: ["ne4pg2_oQU480"]
+          - "SMS_P20"   # 0h20m
+          - "REP_P20"   # 0h30m
+          - "ERS_P20"   # 1h00m
+          - "ERP_P20"   # 1h15m
+          - "ERI_P20" # Exception from case_test: [Errno 2] No such file or directory:
+          - "ERT_P20" # Exception from case_test: ERROR: No variable AVG_HIST_N found in case
+          - "ERR_P20"   # 1h00m
+          - "PET_P20"   # 0h35m
+          - "PEM_P20"   # 0h45m
+          - "PEA_P20" # ERROR: BUILD FAIL: build e3sm failed
+          - "SEQ_P20" # 3h00m+
+          - "SMS_D_P20"   # 0h20m
+          - "REP_D_P20"   # 0h30m
+          - "ERS_D_P20"   # 1h00m
+          - "ERP_D_P20"   # 1h15m
+          - "ERI_D_P20" # Exception from case_test: [Errno 2] No such file or directory:
+          - "ERT_D_P20" # Exception from case_test: ERROR: No variable AVG_HIST_N found in case
+          - "ERR_D_P20"   # 1h00m
+          - "PET_D_P20"   # 0h35m
+          - "PEM_D_P20"   # 0h45m
+          - "PEA_D_P20" # ERROR: BUILD FAIL: build e3sm failed
+          - "SEQ_D_P20" # 3h00m+
+        res: ["ne4pg2_oQU480", "ne30pg2_r05_IcoswISC30E3r5"]
         com: ["F2010"]
     runs-on: ubuntu-latest
     container: 
@@ -49,4 +56,4 @@ jobs:
           wget https://web.lcrc.anl.gov/public/e3sm/inputdata/atm/cam/physprops/p3_lookup_table_1.dat-v4.1.2
           mv p3_lookup_table_1.dat-v4.1.2 $HOME/projects/e3sm/cesm-inputdata/atm/cam/physprops/
           export USER=test
-          ./create_test ${{ matrix.typ }}_P3.${{ matrix.res }}.${{ matrix.com }} --machine singularity --wait --debug
+          ./create_test ${{ matrix.typ }}.${{ matrix.res }}.${{ matrix.com }} --machine singularity --wait --debug
