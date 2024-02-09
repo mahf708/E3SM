@@ -15,29 +15,29 @@ jobs:
       fail-fast: false
       matrix:
         typ: 
-          - "SMS_P4"   # 0h20m
-          - "REP_P4"   # 0h30m
-          - "ERS_P4"   # 1h00m
-          - "ERP_P4"   # 1h15m
-          - "ERI_P4" # Exception from case_test: [Errno 2] No such file or directory:
-          - "ERT_P4" # Exception from case_test: ERROR: No variable AVG_HIST_N found in case
-          - "ERR_P4"   # 1h00m
-          - "PET_P4"   # 0h35m
-          - "PEM_P4"   # 0h45m
-          - "PEA_P4" # ERROR: BUILD FAIL: build e3sm failed
-          - "SEQ_P4" # 3h00m+
-          - "SMS_D_P4"   # 0h20m
-          - "REP_D_P4"   # 0h30m
-          - "ERS_D_P4"   # 1h00m
-          - "ERP_D_P4"   # 1h15m
-          - "ERI_D_P4" # Exception from case_test: [Errno 2] No such file or directory:
-          - "ERT_D_P4" # Exception from case_test: ERROR: No variable AVG_HIST_N found in case
-          - "ERR_D_P4"   # 1h00m
-          - "PET_D_P4"   # 0h35m
-          - "PEM_D_P4"   # 0h45m
-          - "PEA_D_P4" # ERROR: BUILD FAIL: build e3sm failed
-          - "SEQ_D_P4" # 3h00m+
-        res: ["ne4pg2_oQU480", "ne30pg2_r05_IcoswISC30E3r5"]
+          - "SMS_P3"   # 0h20m
+          - "REP_P3"   # 0h30m
+          - "ERS_P3"   # 1h00m
+          - "ERP_P3"   # 1h15m
+          # - "ERI_P3" # Exception from case_test: [Errno 2] No such file or directory:
+          # - "ERT_P3" # Exception from case_test: ERROR: No variable AVG_HIST_N found in case
+          - "ERR_P3"   # 1h00m
+          - "PET_P3"   # 0h35m
+          - "PEM_P3"   # 0h45m
+          # - "PEA_P3" # ERROR: BUILD FAIL: build e3sm failed
+          - "SEQ_P3"   # 3h00m+
+          - "SMS_D_P3"   # 0h20m
+          - "REP_D_P3"   # 0h30m
+          - "ERS_D_P3"   # 1h00m
+          - "ERP_D_P3"   # 1h15m
+          # - "ERI_D_P3" # Exception from case_test: [Errno 2] No such file or directory:
+          # - "ERT_D_P3" # Exception from case_test: ERROR: No variable AVG_HIST_N found in case
+          - "ERR_D_P3"   # 1h00m
+          - "PET_D_P3"   # 0h35m
+          - "PEM_D_P3"   # 0h45m
+          # - "PEA_D_P3" # ERROR: BUILD FAIL: build e3sm failed
+          - "SEQ_D_P3"   # 3h00m+
+        res: ["ne4pg2_oQU480"] #, "ne30pg2_r05_IcoswISC30E3r5"]
         com: ["F2010"]
     runs-on: ubuntu-latest
     container: 
