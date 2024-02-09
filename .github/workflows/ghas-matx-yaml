@@ -1,0 +1,51 @@
+name: test
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+  workflow_dispatch:
+
+jobs:
+
+  run:
+    strategy:
+      matrix:
+        typ: 
+          - "SMS"
+          - "REP"
+          - "ERS"
+          - "ERP"
+          - "ERI"
+          - "ERT"
+          - "ERR"
+          - "PET"
+          - "PEM"
+          - "PEA"
+          - "SEQ"
+          # - "SMS_D"
+          # - "ERP_Ln18"
+          # - "PEM_Ln5"
+          # - "REP_Ln5"
+        res: ["ne4pg2_oQU480"]
+        com: ["F2010"]
+    runs-on: ubuntu-latest
+    container: 
+      image: ghcr.io/mahf708/e3sm-imgs:v0.0.6
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          show-progress: false
+          submodules: recursive
+      - name: CIME
+        working-directory: cime/scripts
+        run: |
+          mkdir -p $HOME/projects/e3sm/cesm-inputdata/atm/cam/physprops/
+          wget https://web.lcrc.anl.gov/public/e3sm/inputdata/atm/cam/physprops/p3_lookup_table_1.dat-v4.1.2
+          mv p3_lookup_table_1.dat-v4.1.2 $HOME/projects/e3sm/cesm-inputdata/atm/cam/physprops/
+          export USER=test
+          ./create_test ${{ matrix.typ }}.${{ matrix.res }}.${{ matrix.com }} --machine ghas --wait --debug
