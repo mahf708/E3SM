@@ -14,7 +14,6 @@ jobs:
       matrix:
         res: ["ne4pg2_oQU480"]
         com: ["F2010"]
-        nbd: [false]
         typ: 
           - "SMS"   # 0h20m
           - "SMS_D" # 0h30m
