@@ -59,6 +59,6 @@ jobs:
         if: ${{ always() }}
         with:
           path: |
-            ~/projects/e3sm/*/bld/*.bldlog.*
-            ~/projects/e3sm/*/run/*.log.*
-            ~/projects/e3sm/*/archive/logs/*.log.*
+            ~/projects/e3sm/scratch/*/bld/*.bldlog.*
+            ~/projects/e3sm/scratch/*/run/*.log.*
+            ~/projects/e3sm/scratch/*/archive/logs/*.log.*
