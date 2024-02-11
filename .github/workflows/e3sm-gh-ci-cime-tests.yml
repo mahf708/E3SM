@@ -1,0 +1,117 @@
+name: test
+
+on:
+  pull_request:
+    branches: [ master ]
+
+  workflow_dispatch:
+
+jobs:
+
+  e3sm-developer:
+    strategy:
+      fail-fast: false
+      matrix:
+        test:
+            - ERIO_P3.ne30_g16_rx1.A.singularity_gnu
+            - ERP_Ln18_P3.ne4_oQU240.F2010.singularity_gnu
+            - ERS_P3.ELM_USRDAT.I1850ELM.singularity_gnu.elm-usrdat
+            - ERS_P3.ELM_USRDAT.IELM.singularity_gnu.elm-surface_water_dynamics
+            - ERS_P3.MOS_USRDAT.RMOSGPCC.singularity_gnu.mosart-mos_usrdat
+            - ERS_P3.MOS_USRDAT.RMOSNLDAS.singularity_gnu.mosart-sediment
+            - ERS_P3.f09_f09.IELM.singularity_gnu.elm-lnd_rof_2way
+            - ERS_P3.f09_g16.I1850ELMCN.singularity_gnu.elm-bgcinterface
+            - ERS_P3.f09_g16.I1850GSWCNPRDCTCBC.singularity_gnu.elm-vstrd
+            - ERS_P3.f09_g16.IELMBC.singularity_gnu
+            - ERS_P3.f09_g16.IELMBC.singularity_gnu.elm-simple_decomp
+            - ERS_P3.f09_g16_g.MALISIA.singularity_gnu
+            - ERS_P3.f19_f19.I1850ELMCN.singularity_gnu
+            - ERS_P3.f19_f19.I20TRELMCN.singularity_gnu
+            - ERS_P3.f19_g16.I1850CNECACNTBC.singularity_gnu.elm-eca
+            - ERS_P3.f19_g16.I1850CNECACTCBC.singularity_gnu.elm-eca
+            - ERS_P3.f19_g16.I1850CNRDCTCBC.singularity_gnu.elm-rd
+            - ERS_P3.f19_g16.I1850ELM.singularity_gnu.elm-betr
+            - ERS_P3.f19_g16.I1850ELM.singularity_gnu.elm-vst
+            - ERS_P3.f19_g16.I1850GSWCNPECACNTBC.singularity_gnu.elm-eca_f19_g16_I1850GSWCNPECACNTBC
+            - ERS_P3.f19_g16.I20TRGSWCNPECACNTBC.singularity_gnu.elm-eca_f19_g16_I20TRGSWCNPECACNTBC
+            - ERS_P3.f19_g16.I20TRGSWCNPRDCTCBC.singularity_gnu.elm-ctc_f19_g16_I20TRGSWCNPRDCTCBC
+            - ERS_P3.f19_g16_rx1.A.singularity_gnu
+            - ERS_P3.hcru_hcru.I20TRGSWCNPRDCTCBC.singularity_gnu.elm-erosion
+            - ERS_P3.ne30_g16_rx1.A.singularity_gnu
+            - ERS_P3.ne30pg2_r05_EC30to60E2r2.GPMPAS-JRA.singularity_gnu.mosart-rof_ocn_2way
+            - ERS_P3.r05_r05.IELM.singularity_gnu.elm-V2_ELM_MOSART_features
+            - ERS_P3.r05_r05.RMOSGPCC.singularity_gnu.mosart-gpcc_1972
+            - ERS_P3.r05_r05.RMOSGPCC.singularity_gnu.mosart-heat
+            - ERS_D_P3.f09_f09.IELM.singularity_gnu.elm-koch_snowflake
+            - ERS_D_P3.f09_f09.IELM.singularity_gnu.elm-solar_rad
+            - ERS_D_P3.f09_g16.I1850ELMCN.singularity_gnu
+            - ERS_D_P3.f19_f19.IELM.singularity_gnu.elm-ic_f19_f19_ielm
+            - ERS_D_P3.f19_g16.I1850GSWCNPRDCTCBC.singularity_gnu.elm-ctc_f19_g16_I1850GSWCNPRDCTCBC
+            - ERS_D_P3.ne11_oQU240.I20TRELM.singularity_gnu
+            - ERS_D_P3.ne4_oQU240.F2010.singularity_gnu.eam-hommexx
+            - ERS_Ld20_P3.f45_f45.IELMFATES.singularity_gnu.elm-fates
+            - ERS_Ld3_P3.ne4pg2_oQU480.F2010.singularity_gnu.eam-thetahy_sl_pg2
+            - ERS_Ld3_P3.ne4pg2_oQU480.F2010.singularity_gnu.eam-thetahy_sl_pg2_ftype0
+            - ERS_Ld5_P3.T62_oQU120.CMPASO-NYF.singularity_gnu
+            - ERS_Ld5_P3.T62_oQU240.DTESTM.singularity_gnu
+            - ERS_Ln9_P3.ne4pg2_ne4pg2.F2010-MMF1.singularity_gnu.eam-mmf_crmout
+            - NCK_P3.f19_g16_rx1.A.singularity_gnu
+            - PEM_Ln5_P3.T62_oQU240wLI.DTESTM.singularity_gnu
+            - PET_Ln5_P3.T62_oQU240.DTESTM.singularity_gnu
+            - SEQ_P3.f19_g16.X.singularity_gnu
+            - SMS_P3.MOS_USRDAT.RMOSGPCC.singularity_gnu.mosart-unstructure
+            - SMS_P3.T62_oQU120_ais20.MPAS_LISIO_TEST.singularity_gnu
+            - SMS_P3.f09_g16_a.IGELM_MLI.singularity_gnu
+            - SMS_P3.ne30_f19_g16_rx1.A.singularity_gnu
+            - SMS_P3.ne4_oQU240.F2010.singularity_gnu.eam-cosplite
+            - SMS_P3.r05_r05.I1850ELMCN.singularity_gnu.elm-qian_1948
+            - SMS_P3.r05_r05.IELM.singularity_gnu.elm-topounit
+            - SMS_D_Ld1_P3.TL319_EC30to60E2r2.DTESTM-JRA1p5.singularity_gnu.mpassi-jra_1958
+            - SMS_D_Ln5_P3.ne4_oQU240.F2010.singularity_gnu
+            - SMS_Ld1_P3.T62_oQU240wLI.GMPAS-IAF-DISMF.singularity_gnu
+            - SMS_Ld1_P3.hcru_hcru.I1850CRUELMCN.singularity_gnu
+            - SMS_Ld20_P3.f45_f45.IELMFATES.singularity_gnu.elm-fates_eca
+            - SMS_Ld20_D_P3.f45_f45.IELMFATES.singularity_gnu.elm-fates_rd
+            - SMS_Ld30_P3.f45_f45.IELMFATES.singularity_gnu.elm-fates_satphen
+            - SMS_Ln5_P3.ne4pg2_oQU480.F2010.singularity_gnu
+            - SMS_Ln5_P3.ne4pg2_oQU480.F2010.singularity_gnu.eam-thetahy_pg2
+            - SMS_Ln5_P3.ne4pg2_oQU480.F2010.singularity_gnu.eam-thetahy_sl_pg2
+            - SMS_Ln5_P3.ne4pg2_oQU480.F2010.singularity_gnu.eam-thetahy_sl_pg2_ftype0
+            - SMS_Ln9_P3.ne4_oQU240.F2010.singularity_gnu.eam-outfrq9s
+            - SMS_Ln9_P3x1.ne4_ne4.FDPSCREAM-ARM97.singularity_gnu
+            - SMS_Ly2_P1x1.1x1_smallvilleIA.IELMCNCROP.singularity_gnu.elm-fan
+            - SMS_Ly2_P1x1.1x1_smallvilleIA.IELMCNCROP.singularity_gnu.elm-force_netcdf_pio
+            - SMS_Ly2_P1x1.1x1_smallvilleIA.IELMCNCROP.singularity_gnu.elm-per_crop
+            - SMS_Ly2_P1x1_D.1x1_smallvilleIA.IELMCNCROP.singularity_gnu.elm-lulcc_sville
+            - SMS_P3x2.ne4_oQU240.WCYCL1850NS.singularity_gnu.allactive-mach_mods
+            - SMS_R_Ld5_P3.ne4_ne4.FSCM-ARM97.singularity_gnu.eam-scm
+    runs-on: ubuntu-latest
+    container: 
+      image: ghcr.io/mahf708/e3sm-imgs:v0.0.6
+
+    steps:
+      - 
+        name: Checkout
+        uses: actions/checkout@v4
+        with:
+          show-progress: false
+          submodules: recursive
+      - 
+        name: CIME
+        working-directory: cime/scripts
+        continue-on-error: true
+        run: |
+          mkdir -p $HOME/projects/e3sm/cesm-inputdata/atm/cam/physprops/
+          wget https://web.lcrc.anl.gov/public/e3sm/inputdata/atm/cam/physprops/p3_lookup_table_1.dat-v4.1.2
+          mv p3_lookup_table_1.dat-v4.1.2 $HOME/projects/e3sm/cesm-inputdata/atm/cam/physprops/
+          export USER=test
+          ./create_test ${{ matrix.test }} --wait --debug
+      - 
+        name: Artifacts
+        uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: ${{ matrix.test }}
+          # Wildcard pattern to upload logs (can add more if desired)
+          path: |
+            ~/projects/e3sm/scratch/**/*log.*
