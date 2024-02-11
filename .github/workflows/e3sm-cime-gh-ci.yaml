@@ -32,12 +32,14 @@ jobs:
       image: ghcr.io/mahf708/e3sm-imgs:v0.0.6
 
     steps:
-      - name: Checkout
+      - 
+        name: Checkout
         uses: actions/checkout@v4
         with:
           show-progress: false
           submodules: recursive
-      - name: CIME
+      - 
+        name: CIME
         working-directory: cime/scripts
         # the following combos currently fail, so let's mark them nbd: true (ci remains green)
         # typ: "ERI" # Exception from case_test: [Errno 2] No such file or directory:
@@ -54,8 +56,9 @@ jobs:
       - 
         name: Artifacts
         uses: actions/upload-artifact@v4
+        if: ${{ always() }}
         with:
           path: |
-            $HOME/projects/e3sm/*/bld/*.bldlog.*
-            $HOME/projects/e3sm/*/run/*.log.*
-            $HOME/projects/e3sm/*/archive/logs/*.log.*
+            ~/projects/e3sm/*/bld/*.bldlog.*
+            ~/projects/e3sm/*/run/*.log.*
+            ~/projects/e3sm/*/archive/logs/*.log.*
