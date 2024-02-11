@@ -58,7 +58,6 @@ jobs:
         uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
+          name: ${{ matrix.typ }}_P3.${{ matrix.res }}.${{ matrix.com }}
           path: |
-            ~/projects/e3sm/scratch/*/bld/*.bldlog.*
-            ~/projects/e3sm/scratch/*/run/*.log.*
-            ~/projects/e3sm/scratch/*/archive/logs/*.log.*
+            ~/projects/e3sm/scratch/**/*log.*
