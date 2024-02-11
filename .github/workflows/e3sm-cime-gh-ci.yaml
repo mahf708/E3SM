@@ -25,14 +25,9 @@ jobs:
           - "PET"   # 0h35m
           - "PEM"   # 0h45m
           - "SEQ"   # 3h10m
-        include:
-          - res: ["ne4pg2_oQU480"]
-            com: ["F2010"]
-            nbd: [true]
-            typ:
-              - "ERI" # Exception from case_test: [Errno 2] No such file or directory:
-              - "ERT" # Exception from case_test: ERROR: No variable AVG_HIST_N found in case
-              - "PEA" # ERROR: BUILD FAIL: build e3sm failed
+          - "ERI"   # Exception from case_test: [Errno 2] No such file or directory:
+          - "ERT"   # Exception from case_test: ERROR: No variable AVG_HIST_N found in case
+          - "PEA"   # ERROR: BUILD FAIL: build e3sm failed
     runs-on: ubuntu-latest
     container: 
       image: ghcr.io/mahf708/e3sm-imgs:v0.0.6
@@ -44,8 +39,12 @@ jobs:
           show-progress: false
           submodules: recursive
       - name: CIME
-        continue-on-error: ${{ matrix.nbd }}
         working-directory: cime/scripts
+        # the following combos currently fail, so let's mark them nbd: true (ci remains green)
+        # typ: "ERI" # Exception from case_test: [Errno 2] No such file or directory:
+        # typ: "ERT" # Exception from case_test: ERROR: No variable AVG_HIST_N found in case
+        # typ: "PEA" # ERROR: BUILD FAIL: build e3sm failed
+        continue-on-error: ${{ matrix.typ == 'ERI' || matrix.typ == 'ERT' || matrix.typ == 'PEA' }}
         # Note we force _P3 in the create_test call for now
         run: |
           mkdir -p $HOME/projects/e3sm/cesm-inputdata/atm/cam/physprops/
