@@ -51,3 +51,11 @@ jobs:
           mv p3_lookup_table_1.dat-v4.1.2 $HOME/projects/e3sm/cesm-inputdata/atm/cam/physprops/
           export USER=test
           ./create_test ${{ matrix.typ }}_P3.${{ matrix.res }}.${{ matrix.com }} --machine singularity --wait --debug
+      - 
+        name: Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          path: |
+            $HOME/projects/e3sm/*/bld/*.bldlog.*
+            $HOME/projects/e3sm/*/run/*.log.*
+            $HOME/projects/e3sm/*/archive/logs/*.log.*
