@@ -58,7 +58,7 @@ jobs:
           mkdir -p $HOME/projects/e3sm/cesm-inputdata/atm/cam/physprops/
           wget https://web.lcrc.anl.gov/public/e3sm/inputdata/atm/cam/physprops/p3_lookup_table_1.dat-v4.1.2
           mv p3_lookup_table_1.dat-v4.1.2 $HOME/projects/e3sm/cesm-inputdata/atm/cam/physprops/
-          docker run -v "${HOME}":"${HOME}","${PWD}":/app/ ghcr.io/mahf708/e3sm-imgs:v0.0.6 /bin/bash -c "export USER=test && cd /app/cime/scripts && ./create_test ${{ matrix.test }} --proc-pool 4 --wait --debug"
+          docker run -v "${HOME}":"${HOME}" -v "${PWD}":/app/ ghcr.io/mahf708/e3sm-imgs:v0.0.6 /bin/bash -c "export USER=test && cd /app/cime/scripts && ./create_test ${{ matrix.test }} --proc-pool 4 --wait --debug"
       - 
         name: Artifacts
         uses: actions/upload-artifact@v4
