@@ -14,6 +14,7 @@ jobs:
       matrix:
         test:
           - ERIO_P4.ne30_g16_rx1.A.singularity_gnu
+          - SMS_P4.ne4pg2_oQU480.WCYCL1850.singularity_gnu
           # - ERP_Ld3_P4.ne30pg2_EC30to60E2r2.WCYCL1850.singularity_gnu.allactive-pioroot1
           # - ERP_Ld9_P4.ne4_ne4.FIDEAL.singularity_gnu.allactive-pioroot1
           # - ERP_Ln18_P4.ne4_oQU240.F2010.singularity_gnu
