@@ -1891,6 +1891,7 @@ contains
       do j = 1 , np
          do i = 1 , np
             if ( (vtheta_dp(i,j,k) - vtheta_thresh*dp3d(i,j,k)) < 0 ) then
+               write(iulog,*) 'theta<vtheta_thresh at column location lat,lon (radians):',elem(ie)%spherep(i,j)%lat,elem(ie)%spherep(i,j)%lon
                vtheta_dp(i,j,k)=vtheta_thresh*dp3d(i,j,k)
             endif
          enddo
