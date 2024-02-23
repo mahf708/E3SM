@@ -139,7 +139,7 @@ contains
     call c_f_pointer(vtheta_dp_ptr, vtheta_dp, [np,np,  nlev,  timelevels, nelemd])
 
     do ie=1,nelemd
-      call limiter_dp3d_k(dp(:,:,:,np1,ie),vtheta_dp(:,:,:,np1,ie),elem(ie)%spheremp,hvcoord%dp0)
+      call limiter_dp3d_k(dp(:,:,:,np1,ie),vtheta_dp(:,:,:,np1,ie),elem(ie),hvcoord%dp0)
     enddo
 
   end subroutine run_limiter_f90
