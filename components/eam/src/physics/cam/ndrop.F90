@@ -56,6 +56,8 @@ real(r8), parameter :: supersat(psat)= & ! supersaturation (%) to determine ccn 
                        (/ 0.02_r8, 0.05_r8, 0.1_r8, 0.2_r8, 0.5_r8, 1.0_r8 /)
 character(len=8) :: ccn_name(psat)= &
                     (/'CCN1','CCN2','CCN3','CCN4','CCN5','CCN6'/)
+character(len=8) :: ccnm_name(psat)= &
+                    (/'CCN1M','CCN2M','CCN3M','CCN4M','CCN5M','CCN6M'/)
 
 ! indices in state and pbuf structures
 integer :: numliq_idx = -1
@@ -265,6 +267,12 @@ subroutine ndrop_init
    call addfld('CCN5',(/ 'lev' /), 'A','1/cm3','CCN concentration at S=0.5%')
    call addfld('CCN6',(/ 'lev' /), 'A','1/cm3','CCN concentration at S=1.0%')
 
+   call addfld('CCN1M',(/ 'lev' /), 'A','1/kg','CCN concentration at S=0.02%')
+   call addfld('CCN2M',(/ 'lev' /), 'A','1/kg','CCN concentration at S=0.05%')
+   call addfld('CCN3M',(/ 'lev' /), 'A','1/kg','CCN concentration at S=0.1%')
+   call addfld('CCN4M',(/ 'lev' /), 'A','1/kg','CCN concentration at S=0.2%')
+   call addfld('CCN5M',(/ 'lev' /), 'A','1/kg','CCN concentration at S=0.5%')
+   call addfld('CCN6M',(/ 'lev' /), 'A','1/kg','CCN concentration at S=1.0%')
 
    call addfld('WTKE', (/ 'lev' /), 'A', 'm/s', 'Standard deviation of updraft velocity')
    call addfld('NDROPMIX', (/ 'lev' /), 'A', '1/kg/s', 'Droplet number mixing')
@@ -427,6 +435,7 @@ subroutine dropmixnuc( &
    real(r8), allocatable :: coltend(:,:)       ! column tendency for diagnostic output
    real(r8), allocatable :: coltend_cw(:,:)    ! column tendency
    real(r8) :: ccn(pcols,pver,psat)    ! number conc of aerosols activated at supersat
+   real(r8) :: ccnm(pcols,pver,psat)   ! mass conc of aerosols activated at supersat
    integer :: ccn3d_idx  
    real(r8), pointer :: ccn3d(:, :) 
 
@@ -1096,9 +1105,10 @@ subroutine dropmixnuc( &
    call outfld('NDROPMIX', ndropmix, pcols, lchnk)
    call outfld('WTKE    ', wtke,     pcols, lchnk)
 
-   call ccncalc(state, pbuf, cs, ccn)
+   call ccncalc(state, pbuf, cs, ccn, ccnm)
    do l = 1, psat
       call outfld(ccn_name(l), ccn(1,1,l), pcols, lchnk)
+      call outfld(ccnm_name(l), ccnm(1,1,l), pcols, lchnk)
    enddo
 
    if(do_aerocom_ind3) then 
@@ -1695,7 +1705,7 @@ end subroutine maxsat
 
 !===============================================================================
 
-subroutine ccncalc(state, pbuf, cs, ccn)
+subroutine ccncalc(state, pbuf, cs, ccn, ccnm)
 
    ! calculates number concentration of aerosols activated as CCN at
    ! supersaturation supersat.
@@ -1712,6 +1722,7 @@ subroutine ccncalc(state, pbuf, cs, ccn)
 
    real(r8), intent(in)  :: cs(pcols,pver)       ! air density (kg/m3)
    real(r8), intent(out) :: ccn(pcols,pver,psat) ! number conc of aerosols activated at supersat (#/m3)
+   real(r8), intent(out) :: ccnm(pcols,pver,psat)! mass conc of aerosols activated at supersat (#/kg)
 
    ! local
 
@@ -1761,6 +1772,7 @@ subroutine ccncalc(state, pbuf, cs, ccn)
    end do
 
    ccn = 0._r8
+   ccnm = 0._r8
    do k=top_lev,pver
 
       do i=1,ncol
@@ -1787,6 +1799,7 @@ subroutine ccncalc(state, pbuf, cs, ccn)
             do i=1,ncol
                arg(i)=argfactor(m)*log(sm(i)/super(l))
                ccn(i,k,l)=ccn(i,k,l)+naerosol(i)*0.5_r8*(1._r8-erf(arg(i)))
+               ccnm(i,k,l)=ccn(i,k,l)/cs(i,k) ! convert from #/m3 to #/kg
             enddo
          enddo
       enddo
