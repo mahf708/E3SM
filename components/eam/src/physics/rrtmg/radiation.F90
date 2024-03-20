@@ -21,6 +21,7 @@ use physics_types,   only: physics_state, physics_ptend
 use physconst,       only: cappa
 use time_manager,    only: get_nstep, is_first_restart_step
 use cam_abortutils,      only: endrun
+use cam_history_support, only: add_hist_coord
 use error_messages,  only: handle_err
 use cam_control_mod, only: lambm0, obliqr, mvelpp, eccen
 use scamMod,         only: scm_crm_mode, single_column,have_cld,cldobs,&
@@ -29,7 +30,8 @@ use perf_mod,        only: t_startf, t_stopf
 use cam_logfile,     only: iulog
 
 use rad_constituents, only: N_DIAG, rad_cnst_get_call_list, rad_cnst_get_info
-use radconstants,     only: rrtmg_sw_cloudsim_band, rrtmg_lw_cloudsim_band, nswbands, nlwbands
+use radconstants,     only: rrtmg_sw_cloudsim_band, rrtmg_lw_cloudsim_band, nswbands, nlwbands, &
+                            rrtmg_to_rrtmgp_swbands, get_sw_spectral_midpoints, get_lw_spectral_midpoints
 
 implicit none
 private
@@ -90,6 +92,11 @@ real(r8) :: dt_avg=0.0_r8  ! time step to use for the shr_orb_cosz calculation, 
 
 logical :: pergro_mods = .false. ! for activating pergro mods
 integer :: firstblock, lastblock      ! global block indices
+
+! Band midpoints; these need to be module variables because of how cam_history works;
+! add_hist_coord sets up pointers to these, so they need to persist.
+real(r8), target :: sw_band_midpoints(nswbands), lw_band_midpoints(nlwbands)
+
 
 !===============================================================================
 contains
@@ -581,6 +588,20 @@ end function radiation_nextsw_cday
     call addfld('ICE_ICLD_VISTAU', (/ 'lev' /), 'A',  '1', 'Ice in-cloud extinction visible sw optical depth', &
                                                        sampling_seq='rad_lwsw', flag_xyfill=.true.)
 
+    call get_sw_spectral_midpoints(sw_band_midpoints, 'cm-1')
+    call get_lw_spectral_midpoints(lw_band_midpoints, 'cm-1')
+    call add_hist_coord('swband', nswbands, 'Shortwave wavenumber', 'cm-1', sw_band_midpoints)
+    call add_hist_coord('lwband', nlwbands, 'Longwave wavenumber', 'cm-1', lw_band_midpoints)
+    ! Band-by-band aerosol optical properties
+    call addfld('AER_TAU_SW', (/'lev   ','swband'/), 'I', '1', &
+                'Aerosol shortwave extinction optical depth', sampling_seq='rad_lwsw')
+    call addfld('AER_SSA_SW', (/'lev   ','swband'/), 'I', '1', &
+                'Aerosol shortwave single scattering albedo', sampling_seq='rad_lwsw')
+    call addfld('AER_G_SW', (/'lev   ','swband'/), 'I', '1', &
+                'Aerosol shortwave assymmetry parameter', sampling_seq='rad_lwsw')
+    call addfld('AER_TAU_LW', (/'lev   ','lwband'/), 'I', '1', &
+                'Aerosol longwave absorption optical depth', sampling_seq='rad_lwsw')
+
     ! get list of active radiation calls
     call rad_cnst_get_call_list(active_calls)
 
@@ -987,7 +1008,9 @@ end function radiation_nextsw_cday
     logical  :: conserve_energy = .true.       ! flag to carry (QRS,QRL)*dp across time steps
 
     ! Local variables from radctl
-    integer :: i, k, iseed, ilchnk                  ! index
+    integer :: i, k, iseed, ilchnk, icol, ilay ! index
+    integer :: ibndsw_in, ibndsw_out           ! index
+    integer :: irrtmg_to_irrtmgp               ! reorder index from rrtmgp to rrtmgp?
     integer :: istat
     integer :: clm_seed (pcols,kiss_seed_num)
     real(r8) solin(pcols)         ! Solar incident flux
@@ -1042,6 +1065,10 @@ end function radiation_nextsw_cday
     real(r8) :: aer_tau_w_g(pcols,0:pver,nbndsw) ! aerosol assymetry parameter * w * tau
     real(r8) :: aer_tau_w_f(pcols,0:pver,nbndsw) ! aerosol forward scattered fraction * w * tau
     real(r8) :: aer_lw_abs (pcols,pver,nbndlw)   ! aerosol absorption optics depth (LW)
+
+    real(r8) :: aer_tau_bnd_sw(pcols,0:pver,nswbands) ! aerosol extinction optical depth
+    real(r8) :: aer_ssa_bnd_sw(pcols,0:pver,nswbands) ! aerosol single scattering albedo
+    real(r8) :: aer_asm_bnd_sw(pcols,0:pver,nswbands) ! aerosol assymetry parameter
 
     ! Gathered indicies of day and night columns 
     !  chunk_column_index = IdxDay(daylight_column_index)
@@ -1307,6 +1334,43 @@ end function radiation_nextsw_cday
                   call aer_rad_props_sw( icall, dt, state, pbuf, nnite, idxnite, is_cmip6_volc, &
                                          aer_tau, aer_tau_w, aer_tau_w_g, aer_tau_w_f)
 
+                  aer_tau_bnd_sw = 0._r8
+                  aer_ssa_bnd_sw = 0._r8
+                  aer_asm_bnd_sw = 0._r8
+
+                  irrtmg_to_irrtmgp = 1 ! yes, reorder index from rrtmg to rrtmgp
+
+                  ! Extract quantities from products
+                  do icol = 1,ncol
+                     do ibndsw_out = 1,nswbands
+                        ! reorder bands if desired
+                        if (irrtmg_to_irrtmgp == 1) then
+                           ibndsw_in = rrtmg_to_rrtmgp_swbands(ibndsw_out)
+                        else
+                           ibndsw_in = ibndsw_out
+                        end if
+                        ! Copy cloud optical depth over directly
+                        aer_tau_bnd_sw(icol,1:pver,ibndsw_out) = aer_tau(icol,1:pver,ibndsw_in)
+                        ! Extract single scattering albedo from the product-defined fields
+                        where (aer_tau(icol,1:pver,ibndsw_in) > 0)
+                           aer_ssa_bnd_sw(icol,1:pver,ibndsw_out) &
+                              = aer_tau_w(icol,1:pver,ibndsw_in) / aer_tau(icol,1:pver,ibndsw_in)
+                        elsewhere
+                           aer_ssa_bnd_sw(icol,1:pver,ibndsw_out) = 1._r8
+                        endwhere
+                        ! Extract assymmetry parameter from the product-defined fields
+                        where (aer_tau_w(icol,1:pver,ibndsw_in) > 0)
+                           aer_asm_bnd_sw(icol,1:pver,ibndsw_out) &
+                              = aer_tau_w_g(icol,1:pver,ibndsw_in) / aer_tau_w(icol,1:pver,ibndsw_in)
+                        elsewhere
+                           aer_asm_bnd_sw(icol,1:pver,ibndsw_out) = 0._r8
+                        endwhere
+                     end do
+                  end do
+
+                  ! Output aerosol SW optical depth
+                  call output_aerosol_optics_sw(state, aer_tau_bnd_sw, aer_ssa_bnd_sw, aer_asm_bnd_sw)
+
                   call t_startf ('rad_rrtmg_sw')
                   call rad_rrtmg_sw( &
                        lchnk,        ncol,         num_rrtmg_levs, r_state,                    &
@@ -1458,7 +1522,10 @@ end function radiation_nextsw_cday
                   call  rrtmg_state_update( state, pbuf, icall, r_state)
 
                   call aer_rad_props_lw(is_cmip6_volc, icall, dt, state, pbuf,  aer_lw_abs)
-                  
+
+                  ! Output aerosol LW optical depth
+                  call output_aerosol_optics_lw(state, aer_lw_abs)
+
                   call t_startf ('rad_rrtmg_lw')
                   call rad_rrtmg_lw( &
                        lchnk,        ncol,         num_rrtmg_levs,  r_state,                     &
@@ -1752,6 +1819,48 @@ subroutine calc_col_mean(state, mmr_pointer, mean_value)
 end subroutine calc_col_mean
 
 !===============================================================================
+
+subroutine output_aerosol_optics_sw(state, tau, ssa, asm)
+   use ppgrid, only: pver
+   use physics_types, only: physics_state
+   use cam_history, only: outfld
+   use radconstants, only: idx_sw_diag
+
+   type(physics_state), intent(in) :: state
+   real(r8), intent(in), dimension(:,:,:) :: tau, ssa, asm
+   character(len=*), parameter :: subname = 'output_aerosol_optics_sw'
+
+   ! Send outputs to history buffer
+   call outfld('AER_TAU_SW', &
+               tau(1:state%ncol,1:pver,1:nswbands), &
+               state%ncol, state%lchnk)
+   call outfld('AER_SSA_SW', &
+               ssa(1:state%ncol,1:pver,1:nswbands), &
+               state%ncol, state%lchnk)
+   call outfld('AER_G_SW', &
+               asm(1:state%ncol,1:pver,1:nswbands), &
+               state%ncol, state%lchnk)
+end subroutine output_aerosol_optics_sw
+
+!----------------------------------------------------------------------------
+
+subroutine output_aerosol_optics_lw(state, tau)
+
+   use ppgrid, only: pver
+   use physics_types, only: physics_state
+   use cam_history, only: outfld
+
+   type(physics_state), intent(in) :: state
+   real(r8), intent(in), dimension(:,:,:) :: tau
+
+   ! Output
+   call outfld('AER_TAU_LW', &
+               tau(1:state%ncol,1:pver,1:nlwbands), &
+               state%ncol, state%lchnk)
+
+end subroutine output_aerosol_optics_lw
+
+!----------------------------------------------------------------------------
 
 end module radiation
 

@@ -29,6 +29,11 @@ real(r8),parameter :: wavenum_high(nbndsw) = & ! in cm^-1
   (/3250._r8, 4000._r8, 4650._r8, 5150._r8, 6150._r8, 7700._r8, 8050._r8, &
    12850._r8,16000._r8,22650._r8,29000._r8,38000._r8,50000._r8, 2600._r8/)
 
+! Mapping from old RRTMG sw bands to new band ordering in RRTMGP
+integer, parameter, dimension(14), public :: rrtmg_to_rrtmgp_swbands = (/ &
+   14, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 &
+/)
+
 ! Solar irradiance at 1 A.U. in W/m^2 assumed by radiation code
 ! Rescaled so that sum is precisely 1368.22 and fractional amounts sum to 1.0
 real(r8), parameter :: solar_ref_band_irradiance(nbndsw) = & 
