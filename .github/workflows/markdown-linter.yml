@@ -1,11 +1,13 @@
-name: md linter
+name: markdown
 
 on:
   pull_request:
     branches: ["master"]
+    paths:
+        - '**/*.md'
 
 jobs:
-  lint:
+  linter:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
