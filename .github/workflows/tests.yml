@@ -6,8 +6,8 @@ on:
     paths:
       - 'cime_config/**'
       - 'components/eam/**'
-    paths-ignore:
-      - 'components/eam/docs/**'
+    # paths-ignore:
+    #   - 'components/eam/docs/**'
 
   workflow_dispatch:
 
