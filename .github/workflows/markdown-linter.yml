@@ -8,5 +8,7 @@ jobs:
     - uses: DavidAnson/markdownlint-cli2-action@v16
       with:
         globs: |
-          - 'docs/**/*.md'
-          - 'components/*/docs/**/*.md'
+            'docs/**/*.md'
+            'components/*/docs/**/*.md'
+            !README.md
+
