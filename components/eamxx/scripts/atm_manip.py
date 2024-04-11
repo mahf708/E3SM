@@ -3,7 +3,7 @@ Retrieve nodes from EAMxx XML config file.
 """
 
 import sys, os, re
-
+ 
 # Used for doctests
 import xml.etree.ElementTree as ET # pylint: disable=unused-import
 
