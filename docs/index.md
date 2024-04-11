@@ -2,7 +2,7 @@
 
 The documentation for the components of E3SM is found here.
 
-## Components
+## Components 
 
 - [EAM](./EAM/index.md)
 - [EAMxx](./EAMxx/index.md)
