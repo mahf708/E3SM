@@ -44,6 +44,11 @@ jobs:
           show-progress: false
           submodules: recursive
       - 
+        name: Set up Python 3.11
+        uses: actions/setup-python@v5.1.0
+        with:
+          python-version: "3.11"
+      - 
         name: CIME
         working-directory: cime/scripts
         run: |
