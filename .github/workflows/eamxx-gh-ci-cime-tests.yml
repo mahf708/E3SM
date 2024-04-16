@@ -26,13 +26,14 @@ jobs:
       fail-fast: false
       matrix:
         test: 
-          - SMS_D_P4.ne30pg2_ne30pg2.F2010-SCREAMv1.singularity_gnu
-          - SMS_P4.ne30pg2_ne30pg2.F2010-SCREAMv1.singularity_gnu
-          - REP_P4.ne30pg2_ne30pg2.F2010-SCREAMv1.singularity_gnu
-          - ERS_P4.ne30pg2_ne30pg2.F2010-SCREAMv1.singularity_gnu
-          - ERP_P4.ne30pg2_ne30pg2.F2010-SCREAMv1.singularity_gnu
-          - PET_P4.ne30pg2_ne30pg2.F2010-SCREAMv1.singularity_gnu
-          - PEM_P4.ne30pg2_ne30pg2.F2010-SCREAMv1.singularity_gnu
+          - SMS_D_P4.ne4pg2_oQU480.WYCL1850.singularity_gnu
+          - SMS_P4.ne4pg2_oQU480.WYCL1850.singularity_gnu
+          - REP_P4.ne4pg2_oQU480.WYCL1850.singularity_gnu
+          - ERS_P4.ne4pg2_oQU480.WYCL1850.singularity_gnu
+          - ERS_P4.ne4pg2_oQU480.WYCL1850.singularity_gnu.eam-wcprod_WYCL1850
+          - ERP_P4.ne4pg2_oQU480.WYCL1850.singularity_gnu
+          - PET_P4.ne4pg2_oQU480.WYCL1850.singularity_gnu
+          - PEM_P4.ne4pg2_oQU480.WYCL1850.singularity_gnu
     container: 
       image: ghcr.io/mahf708/e3sm-imgs:v0.0.6
 
@@ -47,9 +48,9 @@ jobs:
         name: CIME
         working-directory: cime/scripts
         run: |
-          wget https://bootstrap.pypa.io/get-pip.py
-          python3 get-pip.py
           mkdir -p $HOME/projects/e3sm/cesm-inputdata/atm/cam/physprops/
+          wget https://web.lcrc.anl.gov/public/e3sm/inputdata/atm/cam/physprops/p3_lookup_table_1.dat-v4.1.2
+          mv p3_lookup_table_1.dat-v4.1.2 $HOME/projects/e3sm/cesm-inputdata/atm/cam/physprops/
           export USER=test
           ./create_test ${{ matrix.test }} --wait --debug
       - 
