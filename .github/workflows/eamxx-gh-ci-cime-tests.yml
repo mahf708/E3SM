@@ -26,14 +26,14 @@ jobs:
       fail-fast: false
       matrix:
         test: 
-          - SMS_D_P4.ne4pg2_oQU480.WYCL1850.singularity_gnu
-          - SMS_P4.ne4pg2_oQU480.WYCL1850.singularity_gnu
-          - REP_P4.ne4pg2_oQU480.WYCL1850.singularity_gnu
-          - ERS_P4.ne4pg2_oQU480.WYCL1850.singularity_gnu
-          - ERS_P4.ne4pg2_oQU480.WYCL1850.singularity_gnu.eam-wcprod_WYCL1850
-          - ERP_P4.ne4pg2_oQU480.WYCL1850.singularity_gnu
-          - PET_P4.ne4pg2_oQU480.WYCL1850.singularity_gnu
-          - PEM_P4.ne4pg2_oQU480.WYCL1850.singularity_gnu
+          - SMS_D_P4.ne4pg2_oQU480.WCYCL1850.singularity_gnu
+          - SMS_P4.ne4pg2_oQU480.WCYCL1850.singularity_gnu
+          - REP_P4.ne4pg2_oQU480.WCYCL1850.singularity_gnu
+          - ERS_P4.ne4pg2_oQU480.WCYCL1850.singularity_gnu
+          - ERS_P4.ne4pg2_oQU480.WCYCL1850.singularity_gnu.eam-wcprod_WCYCL1850
+          - ERP_P4.ne4pg2_oQU480.WCYCL1850.singularity_gnu
+          - PET_P4.ne4pg2_oQU480.WCYCL1850.singularity_gnu
+          - PEM_P4.ne4pg2_oQU480.WCYCL1850.singularity_gnu
     container: 
       image: ghcr.io/mahf708/e3sm-imgs:v0.0.6
 
