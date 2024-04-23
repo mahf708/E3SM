@@ -75,6 +75,11 @@
   <alias>WCYCL2010NS</alias>
   <lname>2010_EAM%CMIP6_ELM%CNPRDCTCBCTOP_MPASSI_MPASO_MOSART_SGLC_SWAV</lname>
 </compset>
+<!-- Same as WCYCL1850-4xCO2 but mimicking WCYCL2010NS above. Mainly for testing. -->
+<compset>
+  <alias>WCYCL2010NS-4xCO2</alias>
+  <lname>2010_EAM%CMIP6-4xCO2_ELM%CNPRDCTCBCTOP_MPASSI_MPASO_MOSART_SGLC_SWAV</lname>
+</compset>
 
 <compset>
   <alias>WCYCL1950</alias>
