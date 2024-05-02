@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         test: 
-          - SMS_D_P8.ne4pg2_oQU480.WCYCL2010NS.singularity_gnu
+          - SMS_D_P8.ne4pg2_oQU480.WCYCL2010NS.singularity_gnu.allactive-wcprod_1850
           - SMS_P8.ne4pg2_oQU480.WCYCL2010NS.singularity_gnu
           - REP_P8.ne4pg2_oQU480.WCYCL2010NS.singularity_gnu
           - ERS_P8.ne4pg2_oQU480.WCYCL2010NS.singularity_gnu
