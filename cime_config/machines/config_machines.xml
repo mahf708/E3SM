@@ -1701,16 +1701,16 @@
       <env name="E3SM_SRCROOT">$SRCROOT</env>
     </environment_variables>
     <environment_variables mpilib="mpi-serial">
-      <env name="NETCDF_PATH">/usr/local/packages/netcdf-serial</env>
-      <env name="PATH">/usr/local/packages/cmake/bin:/usr/local/packages/hdf5-serial/bin:/usr/local/packages/netcdf-serial/bin:$ENV{PATH}</env>
-      <env name="LD_LIBRARY_PATH">/usr/local/packages/szip/lib:/usr/local/packages/hdf5-serial/lib:/usr/local/packages/netcdf-serial/lib</env>
+      <env name="NETCDF_PATH">/usr/local/packages</env>
+      <env name="PATH">/usr/local/packages/bin:$ENV{PATH}</env>
+      <env name="LD_LIBRARY_PATH">/usr/local/packages/lib</env>
     </environment_variables>
     <environment_variables mpilib="!mpi-serial">
-      <env name="NETCDF_PATH">/usr/local/packages/netcdf-parallel</env>
-      <env name="PNETCDF_PATH">/usr/local/packages/pnetcdf</env>
-      <env name="HDF5_ROOT">/usr/local/packages/hdf5-parallel</env>
-      <env name="PATH">/usr/local/packages/cmake/bin:/usr/local/packages/mpich/bin:/usr/local/packages/hdf5-parallel/bin:/usr/local/packages/netcdf-parallel/bin:/usr/local/packages/pnetcdf/bin:$ENV{PATH}</env>
-      <env name="LD_LIBRARY_PATH">/usr/local/packages/mpich/lib:/usr/local/packages/szip/lib:/usr/local/packages/hdf5-parallel/lib:/usr/local/packages/netcdf-parallel/lib:/usr/local/packages/pnetcdf/lib</env>
+      <env name="NETCDF_PATH">/usr/local/packages</env>
+      <env name="PNETCDF_PATH">/usr/local/packages</env>
+      <env name="HDF5_ROOT">/usr/local/packages</env>
+      <env name="PATH">/usr/local/packages/bin:$ENV{PATH}</env>
+      <env name="LD_LIBRARY_PATH">/usr/local/packages/lib</env>
     </environment_variables>
   </machine>
 
