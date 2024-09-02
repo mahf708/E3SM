@@ -5,6 +5,7 @@ on:
     branches: [ master ]
     paths:
       # first, yes to these
+      - '.github/workflows/e3sm-gh-ci-cime-tests.yml'
       - 'cime_config/**'
       - 'components/eam/**'
       - 'components/elm/**'
