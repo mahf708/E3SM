@@ -29,6 +29,7 @@ jobs:
         test: 
           - SMS_D_P4.ne4pg2_oQU480.F2010.singularity2_gnu
           - SMS_P4.ne4pg2_oQU480.F2010.singularity2_gnu
+          - SMS_P4.ne4pg2_oQU480.F2010-SCREAMv1.singularity2_gnu
           - REP_P4.ne4pg2_oQU480.F2010.singularity2_gnu
           - ERS_P4.ne4pg2_oQU480.F2010.singularity2_gnu
           - ERS_P4.ne4pg2_oQU480.F2010.singularity2_gnu.eam-wcprod_F2010
