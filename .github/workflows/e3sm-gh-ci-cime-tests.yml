@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [ master ]
     paths:
-      # first, yes to these
+      # first, yes to these here
       - '.github/workflows/e3sm-gh-ci-cime-tests.yml'
       - 'cime_config/**'
       - 'components/eam/**'
