@@ -1719,7 +1719,7 @@
     <COMPILERS>gnu</COMPILERS>
     <MPILIBS>mpich</MPILIBS>
     <CIME_OUTPUT_ROOT>$ENV{HOME}/projects/e3sm/scratch</CIME_OUTPUT_ROOT>
-    <DIN_LOC_ROOT>$ENV{HOME}/projects/e3sm/cesm-inputdata</DIN_LOC_ROOT>
+    <DIN_LOC_ROOT>$ENV{HOME}/projects/e3sm/inputdata</DIN_LOC_ROOT>
     <DIN_LOC_ROOT_CLMFORC>$ENV{HOME}/projects/e3sm/ptclm-data</DIN_LOC_ROOT_CLMFORC>
     <DOUT_S_ROOT>$ENV{HOME}/projects/e3sm/scratch/archive/$CASE</DOUT_S_ROOT>
     <BASELINE_ROOT>$ENV{HOME}/projects/e3sm/baselines/$COMPILER</BASELINE_ROOT>
