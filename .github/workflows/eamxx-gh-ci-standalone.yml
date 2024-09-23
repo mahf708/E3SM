@@ -1,0 +1,51 @@
+name: gh
+
+on:
+  pull_request:
+    branches: [ master ]
+    paths:
+      # first, yes to these
+      - '.github/workflows/eamxx-gh-ci-standalone'
+      - 'cime_config/**'
+      - 'components/eam/**'
+      - 'components/eamxx/**'
+      - 'components/elm/**'
+      - 'driver-moab/**'
+      - 'driver-mct/**'
+      # second, no to these
+      - '!components/eam/docs/**'
+      - '!components/eam/mkdocs.yml'
+      - '!components/eamxx/docs/**'
+      - '!components/eamxx/mkdocs.yml'
+      - '!components/elm/docs/**'
+      - '!components/elm/mkdocs.yml'
+
+  workflow_dispatch:
+
+jobs:
+
+  ci:
+    if: ${{ github.event.repository.name == 'e3sm' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        test:
+          - opt
+          - dbg
+          - sp
+    container: 
+      image: ghcr.io/e3sm-project/containers-ghci:ghci-0.1.1
+
+    steps:
+      - 
+        name: Checkout
+        uses: actions/checkout@v4
+        with:
+          show-progress: false
+          submodules: recursive
+      - 
+        name: standalone
+        working-directory: components/eamxx/scripts
+        run: |
+          ./test-all-scream -m ghci-oci -t ${{ matrix.test }}
