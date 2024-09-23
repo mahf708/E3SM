@@ -44,15 +44,11 @@ jobs:
           show-progress: false
           submodules: recursive
       - 
-        name: prelim
+        name: standalone
         working-directory: components/eamxx/scripts
         run: |
           export SHELL=sh
           git config --global --add safe.directory ../../../../E3SM
           git config --global --add safe.directory ../../../../E3SM/externals/ekat/extern/kokkos
           git config --global --add safe.directory ../../../../E3SM/externals/haero
-      - 
-        name: standalone
-        working-directory: components/eamxx/scripts
-        run: |
           ./test-all-scream -m ghci-oci -t ${{ matrix.test }}
