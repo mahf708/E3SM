@@ -47,7 +47,5 @@ jobs:
         name: standalone
         run: |
           export SHELL=sh
-          git config --global --add safe.directory .
-          git config --global --add safe.directory externals/ekat/extern/kokkos
-          git config --global --add safe.directory externals/haero
+          git config --global safe.directory '*'
           ./components/eamxx/scripts/test-all-scream -m ghci-oci -t ${{ matrix.test }}
