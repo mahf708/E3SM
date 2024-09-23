@@ -34,7 +34,7 @@ jobs:
           - dbg
           - sp
     container: 
-      image: ghcr.io/e3sm-project/containers-ghci:ghci-0.1.1
+      image: ghcr.io/e3sm-project/containers-ghci:main
 
     steps:
       - 
