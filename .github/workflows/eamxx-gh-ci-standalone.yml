@@ -47,4 +47,5 @@ jobs:
         name: standalone
         working-directory: components/eamxx/scripts
         run: |
+          export SHELL=sh
           ./test-all-scream -m ghci-oci -t ${{ matrix.test }}
