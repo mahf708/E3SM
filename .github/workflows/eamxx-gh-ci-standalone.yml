@@ -45,10 +45,9 @@ jobs:
           submodules: recursive
       - 
         name: standalone
-        working-directory: components/eamxx/scripts
         run: |
           export SHELL=sh
-          git config --global --add safe.directory ../../../../E3SM
-          git config --global --add safe.directory ../../../../E3SM/externals/ekat/extern/kokkos
-          git config --global --add safe.directory ../../../../E3SM/externals/haero
-          ./test-all-scream -m ghci-oci -t ${{ matrix.test }}
+          git config --global --add safe.directory .
+          git config --global --add safe.directory externals/ekat/extern/kokkos
+          git config --global --add safe.directory externals/haero
+          ./components/eamxx/scripts/test-all-scream -m ghci-oci -t ${{ matrix.test }}
