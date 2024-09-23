@@ -5,7 +5,7 @@ on:
     branches: [ master ]
     paths:
       # first, yes to these
-      - '.github/workflows/eamxx-gh-ci-standalone'
+      - '.github/workflows/eamxx-gh-ci-standalone.yml'
       - 'cime_config/**'
       - 'components/eam/**'
       - 'components/eamxx/**'
@@ -24,7 +24,7 @@ on:
 
 jobs:
 
-  ci-standalone:
+  ci:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
