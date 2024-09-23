@@ -25,7 +25,6 @@ on:
 jobs:
 
   ci-standalone:
-    if: ${{ github.event.repository.name == 'e3sm' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
