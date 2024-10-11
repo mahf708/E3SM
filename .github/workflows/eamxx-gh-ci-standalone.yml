@@ -48,4 +48,4 @@ jobs:
         run: |
           export SHELL=sh
           git config --global safe.directory '*'
-          ./components/eamxx/scripts/test-all-scream -m ghci-oci -t ${{ matrix.test }}
+          ./components/eamxx/scripts/test-all-scream -m ghci-oci -t ${{ matrix.test }} -c BUILD_SHARED_LIBS=ON
