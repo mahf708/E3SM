@@ -41,7 +41,7 @@ jobs:
         name: Install dependencies
         run: |
           echo $CONDA_PREFIX
-          mamba install -y nco xarray numba numpy netcdf4
+          conda install -y nco xarray numba numpy netcdf4
       - 
         name: Run tests
         working-directory: components/eam/tools/mkatmsrffile
