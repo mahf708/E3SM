@@ -15,7 +15,7 @@ concurrency:
   
 jobs:
   Build-and-Deploy-docs:
-    if: ${{ github.repository == 'E3SM-Project/E3SM' }}
+    if: ${{ github.repository == 'mahf708/E3SM' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

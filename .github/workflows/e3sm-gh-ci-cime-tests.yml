@@ -25,7 +25,7 @@ on:
 jobs:
 
   ci:
-    if: ${{ github.repository == 'E3SM-Project/E3SM' }}
+    if: ${{ github.repository == 'mahf708/E3SM' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
