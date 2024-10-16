@@ -8,6 +8,7 @@
   <!ENTITY eamv3_phys_defaults "-nlev 80 -clubb_sgs -microphys p3">
   <!ENTITY eamv3_chem_defaults "-chem chemuci_linozv3_mam5_vbs -rain_evap_to_coarse_aero -vbs">
   <!ENTITY scream_phys_defaults "-shoc_sgs -microphys p3 -chem spa -rad rrtmgp">
+  <!ENTITY eamv3_rrtmgp_spa "-nlev 80 -clubb_sgs -microphys p3 -chem spa -rad rrtmgp">
 ]>
 
 <definitions_variables>
@@ -52,6 +53,7 @@
       <value compset=""                        >-mach $MACH</value>
       <value compset="_EAM"                    >-phys default</value>
       <value compset="_EAM%CMIP6.*"            >&eamv3_phys_defaults; &eamv3_chem_defaults;</value>
+      <value compset="_EAM%SPA.*"              >&eamv3_rrtmgp_spa;</value>
       <value compset="_ELM%[^_]*BC"            >-bc_dep_to_snow_updates</value>
       <value compset="_EAM.*_BGC%*"            >-co2_cycle</value>
 
@@ -118,6 +120,7 @@
       <value compset="1850(?:SOI)?_EAM.*CHEMUCI.*LINOZ.*MAM5"  >1850_eam_chemUCI-Linoz-mam5</value>
       <value compset="1950(?:SOI)?_EAM.*CMIP6"          >1950_eam_CMIP6_chemUCI-Linoz-mam5-vbs</value>
       <value compset="1850(?:SOI)?_EAM.*CMIP6.*_BGC%*"  >1850_eam_CMIP6_chemUCI-Linoz-mam5-vbs</value>
+      <value compset="2010(?:SOI)?_EAM.*SPA"            >2010_eam_spa</value>
       <value compset="2010(?:SOI)?_EAM.*CMIP6"          >2010_eam_CMIP6_chemUCI-Linoz-mam5-vbs</value>
       <value compset="2010(?:SOI)?_EAM.*CHEMUCI.*LINOZ"  >2010_eam_chemUCI-Linoz</value>
       <value compset="2010(?:SOI)?_EAM.*CHEMUCI.*LINOZ.*MAM5"  >2010_eam_chemUCI-Linoz-mam5</value>

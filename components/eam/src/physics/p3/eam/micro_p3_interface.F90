@@ -96,6 +96,7 @@ module micro_p3_interface
       qv_prev_idx,        &
       t_prev_idx,         &
       accre_enhan_idx,    &
+      ccn3_idx,           &
       mon_ccn_1_idx,      &
       mon_ccn_2_idx,      &
       current_month      !Needed for prescribed CCN option         
@@ -436,6 +437,9 @@ end subroutine micro_p3_readnl
     use cam_history,    only: addfld, add_default, horiz_only 
     use micro_p3_utils, only: micro_p3_utils_init
 
+    use read_spa_data,  only: ccn_names
+    use read_spa_data,  only: is_spa_active
+
     type(physics_buffer_desc),  pointer :: pbuf2d(:,:)
     integer        :: m, mm
     integer        :: ierr
@@ -478,6 +482,9 @@ end subroutine micro_p3_readnl
     snow_sed_idx = pbuf_get_index('SNOW_SED') !! from physpkg 
     prec_pcw_idx = pbuf_get_index('PREC_PCW') !! from physpkg 
     snow_pcw_idx = pbuf_get_index('SNOW_PCW') !! from physpkg 
+
+    !Get indices for SPA treatment
+    if(do_prescribed_CCN .and. is_spa_active)ccn3_idx = pbuf_get_index(ccn_names(1))
 
     if(use_hetfrz_classnuc)then
       ! fields for the CNT primary/heterogeneous freezing
@@ -785,7 +792,7 @@ end subroutine micro_p3_readnl
       end if
    end if
 
-   if (do_prescribed_CCN) then !intialize mon_ccn_1 and mon_ccn_2
+   if (do_prescribed_CCN .and. .not. is_spa_active) then !intialize mon_ccn_1 and mon_ccn_2
 
       !find current_month
       call get_curr_date(year,month,day,tod)
@@ -971,6 +978,7 @@ end subroutine micro_p3_readnl
                               qsmall, &
                               mincld, & 
                               inv_cp 
+    use read_spa_data,  only: is_spa_active
 
     !INPUT/OUTPUT VARIABLES
     type(physics_state),         intent(in)    :: state
@@ -1102,6 +1110,7 @@ end subroutine micro_p3_readnl
     real(rtype), parameter :: dcon   = 25.e-6_rtype         ! Convective size distribution effective radius (um)
     real(rtype), parameter :: mucon  = 5.3_rtype            ! Convective size distribution shape parameter
     real(rtype), parameter :: deicon = 50._rtype            ! Convective ice effective diameter (um)
+    real(rtype), pointer :: ccn_trcdat(:,:) !BSINGH - receive ccn values in this variable
 
     call t_startf('micro_p3_tend_init')
  
@@ -1286,8 +1295,19 @@ end subroutine micro_p3_readnl
     end do
     p3_main_inputs(its:ite,pver+1,5) = state%zi(its:ite,pver+1)
 
+    ! if do_prescribed_CCN and NOT SPA
     !read in prescribed CCN if log_prescribeCCN is true
-    if (do_prescribed_CCN) call get_prescribed_CCN(nccn_prescribed,micro_p3_lookup_dir,its,ite,kts,kte,pbuf,lchnk)
+    if (do_prescribed_CCN .and. .not. is_spa_active) call get_prescribed_CCN(nccn_prescribed,micro_p3_lookup_dir,its,ite,kts,kte,pbuf,lchnk)
+    ! if do_prescribed_CCN and SPA
+    if (do_prescribed_CCN .and. is_spa_active) then
+       call pbuf_get_field(pbuf, ccn3_idx, ccn_trcdat) ! now you can use ccn_trcdat anywhere in this code
+       ! ccn is uniformly distributed throughout the cell, but P3 computes in-cloud values assuming cell-averages are comprised
+       ! of zero values outside cloud. Preemptively multiplying by cldfrac here is needed to get the correct in-cloud ccn value in P3
+       nccn_prescribed = ccn_trcdat
+       do k = 1,pver
+          nccn_prescribed(:,k) = nccn_prescribed(:,k) * cld_frac_l(:,k)
+       end do
+    end if
 
     ! CALL P3
     !==============

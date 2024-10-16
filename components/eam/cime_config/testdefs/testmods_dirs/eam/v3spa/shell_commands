@@ -1,0 +1,4 @@
+
+#!/bin/bash
+
+./xmlchange --append CAM_CONFIG_OPTS='-nlev 80 -clubb_sgs -microphys p3 -chem spa -rad rrtmgp'

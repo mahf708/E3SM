@@ -335,6 +335,12 @@
 <mam4_mode3_file rad="rrtmgp">atm/cam/physprops/mam4_mode3_rrtmg_aeronetdust_c141106.nc</mam4_mode3_file>
 <mam4_mode4_file rad="rrtmgp">atm/cam/physprops/mam4_mode4_rrtmg_c130628.nc</mam4_mode4_file>
 
+<mam5_mode1_file rad="rrtmgp">atm/cam/physprops/mam4_mode1_rrtmg_aeronetdust_c141106.nc</mam5_mode1_file>
+<mam5_mode2_file rad="rrtmgp">atm/cam/physprops/mam4_mode2_rrtmg_c130628.nc</mam5_mode2_file>
+<mam5_mode3_file rad="rrtmgp">atm/cam/physprops/mam4_mode3_rrtmg_aeronetdust_c141106.nc</mam5_mode3_file>
+<mam5_mode4_file rad="rrtmgp">atm/cam/physprops/mam4_mode4_rrtmg_c130628.nc</mam5_mode4_file>
+<mam5_mode5_file rad="rrtmgp">atm/cam/physprops/mam5_mode5_rrtmg_sig1.2_dgnl.40_c03072023.nc</mam5_mode5_file>
+
 <mam7_mode1_file rad="rrtmgp">atm/cam/physprops/mam7_mode1_rrtmg_c120904.nc</mam7_mode1_file>
 <mam7_mode2_file rad="rrtmgp">atm/cam/physprops/mam7_mode2_rrtmg_c120904.nc</mam7_mode2_file>
 <mam7_mode3_file rad="rrtmgp">atm/cam/physprops/mam7_mode3_rrtmg_c120904.nc</mam7_mode3_file>
@@ -1826,6 +1832,7 @@ with se_tstep, dt_remap_factor, dt_tracer_factor set to -1
 <hist_hetfrz_classnuc              >.false.</hist_hetfrz_classnuc>
 <use_hetfrz_classnuc phys="default">.true.</use_hetfrz_classnuc>
 <use_hetfrz_classnuc use_MMF="1">.false.</use_hetfrz_classnuc>
+<use_hetfrz_classnuc phys="default" chem="spa">.false.</use_hetfrz_classnuc>
 <use_preexisting_ice               >.false.</use_preexisting_ice>
 <micro_mg_dcs_tdep phys="default">.true.</micro_mg_dcs_tdep>
 <microp_aero_wsub_scheme               >1</microp_aero_wsub_scheme>
