@@ -150,8 +150,14 @@ module micro_p3_interface
    logical            :: do_prescribed_CCN       = .false.   ! Use prescribed CCN
 
    logical :: p3_activation_cldbot = .false.
-   real(rtype) :: p3_activation_slope = huge(1.0_rtype)
-   real(rtype) :: p3_activation_factor = huge(1.0_rtype)
+   real(rtype) :: p3_activation_slope1 = huge(1.0_rtype)
+   real(rtype) :: p3_activation_factor1 = huge(1.0_rtype)
+   real(rtype) :: p3_activation_cutoff1 = huge(1.0_rtype)
+   real(rtype) :: p3_activation_slope2 = huge(1.0_rtype)
+   real(rtype) :: p3_activation_factor2 = huge(1.0_rtype)
+   real(rtype) :: p3_activation_cutoff2 = huge(1.0_rtype)
+   real(rtype) :: p3_activation_slope3 = huge(1.0_rtype)
+   real(rtype) :: p3_activation_factor3 = huge(1.0_rtype)
 
    contains
 !===============================================================================
@@ -171,7 +177,10 @@ subroutine micro_p3_readnl(nlfile)
        micro_p3_tableversion, micro_p3_lookup_dir, micro_aerosolactivation, micro_subgrid_cloud, &
        micro_tend_output, p3_autocon_coeff, p3_qc_autocon_expon, p3_nc_autocon_expon, p3_accret_coeff, &
        p3_qc_accret_expon, p3_wbf_coeff, p3_max_mean_rain_size, p3_embryonic_rain_size, &
-       p3_activation_slope, p3_activation_factor, p3_activation_cldbot, &
+       p3_activation_cldbot, &
+       p3_activation_slope1, p3_activation_factor1, p3_activation_cutoff1,  &
+       p3_activation_slope2, p3_activation_factor2, p3_activation_cutoff2,  &
+       p3_activation_slope3, p3_activation_factor3, &
        do_prescribed_CCN, do_Cooper_inP3, p3_mincdnc, micro_nccons
 
   !-----------------------------------------------------------------------------
@@ -202,8 +211,14 @@ subroutine micro_p3_readnl(nlfile)
      write(iulog,'(A30,1x,8e12.4)') 'p3_qc_accret_expon',      p3_qc_accret_expon
      write(iulog,'(A30,1x,8e12.4)') 'p3_wbf_coeff',            p3_wbf_coeff
      write(iulog,'(A30,1x,8e12.4)') 'p3_mincdnc',              p3_mincdnc 
-     write(iulog,'(A30,1x,8e12.4)') 'p3_activation_slope',     p3_activation_slope
-     write(iulog,'(A30,1x,8e12.4)') 'p3_activation_factor',    p3_activation_factor
+     write(iulog,'(A30,1x,8e12.4)') 'p3_activation_slope1',    p3_activation_slope1
+     write(iulog,'(A30,1x,8e12.4)') 'p3_activation_factor1',   p3_activation_factor1
+     write(iulog,'(A30,1x,8e12.4)') 'p3_activation_cutoff1',   p3_activation_cutoff1
+     write(iulog,'(A30,1x,8e12.4)') 'p3_activation_slope2',    p3_activation_slope2
+     write(iulog,'(A30,1x,8e12.4)') 'p3_activation_factor2',   p3_activation_factor2
+     write(iulog,'(A30,1x,8e12.4)') 'p3_activation_cutoff2',   p3_activation_cutoff2
+     write(iulog,'(A30,1x,8e12.4)') 'p3_activation_slope3',    p3_activation_slope3
+     write(iulog,'(A30,1x,8e12.4)') 'p3_activation_factor3',   p3_activation_factor3
      write(iulog,'(A30,1x,L)')      'p3_activation_cldbot ',   p3_activation_cldbot
      write(iulog,'(A30,1x,8e12.4)') 'p3_max_mean_rain_size',   p3_max_mean_rain_size
      write(iulog,'(A30,1x,8e12.4)') 'p3_embryonic_rain_size',  p3_embryonic_rain_size
@@ -226,8 +241,14 @@ subroutine micro_p3_readnl(nlfile)
   call mpibcast(p3_qc_accret_expon,      1 ,                         mpir8,   0, mpicom)
   call mpibcast(p3_wbf_coeff,            1 ,                         mpir8,   0, mpicom)
   call mpibcast(p3_mincdnc,              1 ,                         mpir8,   0, mpicom) 
-  call mpibcast(p3_activation_slope,     1 ,                         mpir8,   0, mpicom) 
-  call mpibcast(p3_activation_factor,    1 ,                         mpir8,   0, mpicom) 
+  call mpibcast(p3_activation_slope1,    1 ,                         mpir8,   0, mpicom) 
+  call mpibcast(p3_activation_factor1,   1 ,                         mpir8,   0, mpicom) 
+  call mpibcast(p3_activation_cutoff1,    1 ,                        mpir8,   0, mpicom) 
+  call mpibcast(p3_activation_slope2,    1 ,                         mpir8,   0, mpicom) 
+  call mpibcast(p3_activation_factor2,   1 ,                         mpir8,   0, mpicom) 
+  call mpibcast(p3_activation_cutoff2,    1 ,                        mpir8,   0, mpicom) 
+  call mpibcast(p3_activation_slope3,    1 ,                         mpir8,   0, mpicom) 
+  call mpibcast(p3_activation_factor3,   1 ,                         mpir8,   0, mpicom) 
   call mpibcast(p3_activation_cldbot,    1 ,                         mpilog,  0, mpicom)
   call mpibcast(p3_max_mean_rain_size,   1 ,                         mpir8,   0, mpicom)
   call mpibcast(p3_embryonic_rain_size,  1 ,                         mpir8,   0, mpicom)
@@ -1319,12 +1340,24 @@ end subroutine micro_p3_readnl
          do k = 1,pver
             if (p3_activation_cldbot) then
                if (k > 1 .and. cld_frac_l(icol,k) == 0.0_rtype .and. cld_frac_l(icol, k-1) .gt. 0.0_rtype) then
-                  nccn_prescribed(icol,k-1) = p3_activation_factor * exp(p3_activation_slope * log(ccn_trcdat(icol,k-1))) * cld_frac_l(icol,k-1)
+                  if (ccn_trcdat(icol,k-1) < p3_activation_cutoff1) then
+                     nccn_prescribed(icol,k-1) = p3_activation_factor1 * exp(p3_activation_slope1 * log(ccn_trcdat(icol,k-1))) * cld_frac_l(icol,k-1)
+                  else if (ccn_trcdat(icol,k-1) > p3_activation_cutoff1 .and. ccn_trcdat(icol,k-1) < p3_activation_cutoff2) then
+                     nccn_prescribed(icol,k-1) = p3_activation_factor2 * exp(p3_activation_slope2 * log(ccn_trcdat(icol,k-1))) * cld_frac_l(icol,k-1)
+                  else
+                     nccn_prescribed(icol,k-1) = p3_activation_factor3 * exp(p3_activation_slope3 * log(ccn_trcdat(icol,k-1))) * cld_frac_l(icol,k-1)
+                  end if
                else
                   nccn_prescribed(icol,k) = 0.0_rtype
                end if
             else
-               nccn_prescribed(icol,k) = p3_activation_factor * exp(p3_activation_slope * log(ccn_trcdat(icol,k))) * cld_frac_l(icol,k)
+               if (ccn_trcdat(icol,k) < p3_activation_cutoff1) then
+                  nccn_prescribed(icol,k) = p3_activation_factor1 * exp(p3_activation_slope1 * log(ccn_trcdat(icol,k))) * cld_frac_l(icol,k)
+               else if (ccn_trcdat(icol,k) > p3_activation_cutoff1 .and. ccn_trcdat(icol,k) < p3_activation_cutoff2) then
+                  nccn_prescribed(icol,k) = p3_activation_factor2 * exp(p3_activation_slope2 * log(ccn_trcdat(icol,k))) * cld_frac_l(icol,k)
+               else
+                  nccn_prescribed(icol,k) = p3_activation_factor3 * exp(p3_activation_slope3 * log(ccn_trcdat(icol,k))) * cld_frac_l(icol,k)
+               end if
             end if
          end do
       end do

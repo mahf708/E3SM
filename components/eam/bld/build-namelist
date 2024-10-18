@@ -3912,9 +3912,15 @@ if ($cfg->get('microphys') =~ /^p3/) {
       add_default($nl, 'p3_embryonic_rain_size');
       add_default($nl, 'do_prescribed_CCN');
       add_default($nl, 'do_Cooper_inP3');  
-      add_default($nl, 'p3_mincdnc'); 
-      add_default($nl, 'p3_activation_slope');
-      add_default($nl, 'p3_activation_factor');
+      add_default($nl, 'p3_mincdnc');
+      add_default($nl, 'p3_activation_slope1');
+      add_default($nl, 'p3_activation_factor1');
+      add_default($nl, 'p3_activation_cutoff1');
+      add_default($nl, 'p3_activation_slope2');
+      add_default($nl, 'p3_activation_factor2');
+      add_default($nl, 'p3_activation_cutoff2');
+      add_default($nl, 'p3_activation_slope3');
+      add_default($nl, 'p3_activation_factor3');
       add_default($nl, 'p3_activation_cldbot');
    }
 }
