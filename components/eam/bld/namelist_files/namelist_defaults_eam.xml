@@ -927,6 +927,9 @@
 <micro_nicons         microphys="mg2">  0.1D6       </micro_nicons>
 <micro_mincdnc        microphys="mg2">  -999.       </micro_mincdnc>
 <p3_mincdnc           microphys="p3">  -999.        </p3_mincdnc> 
+<p3_activation_slope  microphys="p3">  1.           </p3_activation_slope>
+<p3_activation_factor microphys="p3">  1.           </p3_activation_factor>
+<p3_activation_cldbot microphys="p3">  .false.      </p3_activation_cldbot>
 
 <!-- P3 specific namelist variables -->
 <micro_aerosolactivation            microphys="p3"> .true.  </micro_aerosolactivation>
@@ -1900,6 +1903,9 @@ with se_tstep, dt_remap_factor, dt_tracer_factor set to -1
 <nucleate_ice_subgrid phys="default" clubb_sgs="1" microphys="p3" >1.35D0</nucleate_ice_subgrid>
 <sscav_tuning phys="default" microphys="p3">.false.</sscav_tuning>
 <p3_mincdnc phys="default" microphys="p3"> 20.D6      </p3_mincdnc>
+<p3_activation_slope phys="default" microphys="p3">1.</p3_activation_slope>
+<p3_activation_factor phys="default" microphys="p3">1.</p3_activation_factor>
+<p3_activation_cldbot phys="default" microphys="p3">.false.</p3_activation_cldbot>
 <p3_wbf_coeff phys="default" clubb_sgs="1" microphys="p3"> 1.0      </p3_wbf_coeff>
 <p3_nc_autocon_expon  phys="default" clubb_sgs="1" microphys="p3">  -1.10D0   </p3_nc_autocon_expon>
 <n_so4_monolayers_pcage  phys="default" clubb_sgs="1" microphys="p3">  3.0D0   </n_so4_monolayers_pcage>

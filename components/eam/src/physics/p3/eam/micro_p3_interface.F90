@@ -149,6 +149,10 @@ module micro_p3_interface
    logical            :: micro_tend_output       = .false.   ! Default microphysics tendencies to output file
    logical            :: do_prescribed_CCN       = .false.   ! Use prescribed CCN
 
+   logical :: p3_activation_cldbot = .false.
+   real(rtype) :: p3_activation_slope = huge(1.0_rtype)
+   real(rtype) :: p3_activation_factor = huge(1.0_rtype)
+
    contains
 !===============================================================================
 subroutine micro_p3_readnl(nlfile)
@@ -167,6 +171,7 @@ subroutine micro_p3_readnl(nlfile)
        micro_p3_tableversion, micro_p3_lookup_dir, micro_aerosolactivation, micro_subgrid_cloud, &
        micro_tend_output, p3_autocon_coeff, p3_qc_autocon_expon, p3_nc_autocon_expon, p3_accret_coeff, &
        p3_qc_accret_expon, p3_wbf_coeff, p3_max_mean_rain_size, p3_embryonic_rain_size, &
+       p3_activation_slope, p3_activation_factor, p3_activation_cldbot, &
        do_prescribed_CCN, do_Cooper_inP3, p3_mincdnc, micro_nccons
 
   !-----------------------------------------------------------------------------
@@ -197,6 +202,9 @@ subroutine micro_p3_readnl(nlfile)
      write(iulog,'(A30,1x,8e12.4)') 'p3_qc_accret_expon',      p3_qc_accret_expon
      write(iulog,'(A30,1x,8e12.4)') 'p3_wbf_coeff',            p3_wbf_coeff
      write(iulog,'(A30,1x,8e12.4)') 'p3_mincdnc',              p3_mincdnc 
+     write(iulog,'(A30,1x,8e12.4)') 'p3_activation_slope',     p3_activation_slope
+     write(iulog,'(A30,1x,8e12.4)') 'p3_activation_factor',    p3_activation_factor
+     write(iulog,'(A30,1x,L)')      'p3_activation_cldbot ',   p3_activation_cldbot
      write(iulog,'(A30,1x,8e12.4)') 'p3_max_mean_rain_size',   p3_max_mean_rain_size
      write(iulog,'(A30,1x,8e12.4)') 'p3_embryonic_rain_size',  p3_embryonic_rain_size
      write(iulog,'(A30,1x,L)')    'do_prescribed_CCN: ',       do_prescribed_CCN
@@ -218,6 +226,9 @@ subroutine micro_p3_readnl(nlfile)
   call mpibcast(p3_qc_accret_expon,      1 ,                         mpir8,   0, mpicom)
   call mpibcast(p3_wbf_coeff,            1 ,                         mpir8,   0, mpicom)
   call mpibcast(p3_mincdnc,              1 ,                         mpir8,   0, mpicom) 
+  call mpibcast(p3_activation_slope,     1 ,                         mpir8,   0, mpicom) 
+  call mpibcast(p3_activation_factor,    1 ,                         mpir8,   0, mpicom) 
+  call mpibcast(p3_activation_cldbot,    1 ,                         mpilog,  0, mpicom)
   call mpibcast(p3_max_mean_rain_size,   1 ,                         mpir8,   0, mpicom)
   call mpibcast(p3_embryonic_rain_size,  1 ,                         mpir8,   0, mpicom)
   call mpibcast(do_prescribed_CCN,       1,                          mpilog,  0, mpicom)
@@ -1300,13 +1311,24 @@ end subroutine micro_p3_readnl
     if (do_prescribed_CCN .and. .not. is_spa_active) call get_prescribed_CCN(nccn_prescribed,micro_p3_lookup_dir,its,ite,kts,kte,pbuf,lchnk)
     ! if do_prescribed_CCN and SPA
     if (do_prescribed_CCN .and. is_spa_active) then
-       call pbuf_get_field(pbuf, ccn3_idx, ccn_trcdat) ! now you can use ccn_trcdat anywhere in this code
-       ! ccn is uniformly distributed throughout the cell, but P3 computes in-cloud values assuming cell-averages are comprised
-       ! of zero values outside cloud. Preemptively multiplying by cldfrac here is needed to get the correct in-cloud ccn value in P3
-       nccn_prescribed = ccn_trcdat
-       do k = 1,pver
-          nccn_prescribed(:,k) = nccn_prescribed(:,k) * cld_frac_l(:,k)
-       end do
+      call pbuf_get_field(pbuf, ccn3_idx, ccn_trcdat) ! now you can use ccn_trcdat anywhere in this code
+      ! ccn is uniformly distributed throughout the cell, but P3 computes in-cloud values assuming cell-averages are comprised
+      ! of zero values outside cloud. Preemptively multiplying by cldfrac here is needed to get the correct in-cloud ccn value in P3
+ 
+      do icol = 1,ncol
+         do k = 1,pver
+            if (p3_activation_cldbot) then
+               if (k > 1 .and. cld_frac_l(icol,k) == 0.0_rtype .and. cld_frac_l(icol, k-1) .gt. 0.0_rtype) then
+                  nccn_prescribed(icol,k-1) = p3_activation_factor * exp(p3_activation_slope * log(ccn_trcdat(icol,k-1))) * cld_frac_l(icol,k-1)
+               else
+                  nccn_prescribed(icol,k) = 0.0_rtype
+               end if
+            else
+               nccn_prescribed(icol,k) = p3_activation_factor * exp(p3_activation_slope * log(ccn_trcdat(icol,k))) * cld_frac_l(icol,k)
+            end if
+         end do
+      end do
+
     end if
 
     ! CALL P3

@@ -3913,6 +3913,9 @@ if ($cfg->get('microphys') =~ /^p3/) {
       add_default($nl, 'do_prescribed_CCN');
       add_default($nl, 'do_Cooper_inP3');  
       add_default($nl, 'p3_mincdnc'); 
+      add_default($nl, 'p3_activation_slope');
+      add_default($nl, 'p3_activation_factor');
+      add_default($nl, 'p3_activation_cldbot');
    }
 }
 

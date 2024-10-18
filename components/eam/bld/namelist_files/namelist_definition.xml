@@ -2540,6 +2540,27 @@ Minimum droplet number conc (#/m3) imposed when p3_mincdnc > 0.
 Default: -999.
 </entry>
 
+<entry id="p3_activation_slope" type="real" category="microphys"
+       group="micro_nl" valid_values="" >
+Activation slope for CCN activation in P3 in log--log scale
+Nc = p3_activation_factor * EXP ( p3_activation_slope * log ( CCN ) )
+Default: 1.
+</entry>
+
+<entry id="p3_activation_factor" type="real" category="microphys"
+       group="micro_nl" valid_values="" >
+Activation factor for CCN activation in P3 in log--log scale
+Nc = p3_activation_factor * EXP ( p3_activation_slope * log ( CCN ) )
+Default: 1.
+</entry>
+
+<entry id="p3_activation_cldbot" type="logical" category="microphys"
+       group="micro_nl" valid_values="" >
+Activation flag for CCN activation in P3 in log--log scale
+If TRUE, only apply Nc = fxn (CCN) at cloud base
+Default: False
+</entry>
+
 <entry id="micro_mg_version" type="integer" category="microphys"
        group="micro_mg_nl" valid_values="" >
 Version number for MG microphysics
