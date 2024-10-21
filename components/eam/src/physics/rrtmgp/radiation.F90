@@ -1827,8 +1827,8 @@ contains
 
       ! Compute and output diagnostics for single (550 nm) band
       sw_band_index = get_band_index_sw(550._r8, 'nm')
-      do icol = 1,size(tau, 1)
-         do ilay = 1,size(tau, 2)
+      do icol = 1,ncol
+         do ilay = 1,pver
             ! NOTE: this logical is inside the loop to make this play nice with GPU parallelism
             if (coszrs(icol) > 0) then
                tot_icld_vistau(icol,ilay) = tau    (icol,ilay,sw_band_index)

@@ -396,6 +396,8 @@ end subroutine microp_aero_readnl
 subroutine microp_aero_run ( &
    state, ptend, deltatin, pbuf, liqcldfo )
 
+   use read_spa_data,  only: is_spa_active
+
    ! input arguments
    type(physics_state), target, intent(in)    :: state
    type(physics_ptend),         intent(out)   :: ptend
@@ -761,7 +763,7 @@ subroutine microp_aero_run ( &
       do k = top_lev, pver
          do i = 1, ncol
 
-            if (qc(i,k) >= qsmall) then
+            if (qc(i,k) >= qsmall .and. .not. is_spa_active) then
 
                ! get droplet activation rate
 

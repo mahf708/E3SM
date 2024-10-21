@@ -150,6 +150,9 @@ module micro_p3_interface
    logical            :: do_prescribed_CCN       = .false.   ! Use prescribed CCN
 
    logical :: p3_activation_cldbot = .false.
+   real(rtype) :: p3_activation_cldbot_flag = huge(1.0_rtype)
+   real(rtype) :: p3_activation_factor = huge(1.0_rtype)
+   real(rtype) :: p3_activation_slope = huge(1.0_rtype)
    real(rtype) :: p3_activation_slope1 = huge(1.0_rtype)
    real(rtype) :: p3_activation_factor1 = huge(1.0_rtype)
    real(rtype) :: p3_activation_cutoff1 = huge(1.0_rtype)
@@ -1339,25 +1342,28 @@ end subroutine micro_p3_readnl
       do icol = 1,ncol
          do k = 1,pver
             if (p3_activation_cldbot) then
-               if (k > 1 .and. cld_frac_l(icol,k) == 0.0_rtype .and. cld_frac_l(icol, k-1) .gt. 0.0_rtype) then
-                  if (ccn_trcdat(icol,k-1) < p3_activation_cutoff1) then
-                     nccn_prescribed(icol,k-1) = p3_activation_factor1 * exp(p3_activation_slope1 * log(ccn_trcdat(icol,k-1))) * cld_frac_l(icol,k-1)
-                  else if (ccn_trcdat(icol,k-1) > p3_activation_cutoff1 .and. ccn_trcdat(icol,k-1) < p3_activation_cutoff2) then
-                     nccn_prescribed(icol,k-1) = p3_activation_factor2 * exp(p3_activation_slope2 * log(ccn_trcdat(icol,k-1))) * cld_frac_l(icol,k-1)
-                  else
-                     nccn_prescribed(icol,k-1) = p3_activation_factor3 * exp(p3_activation_slope3 * log(ccn_trcdat(icol,k-1))) * cld_frac_l(icol,k-1)
-                  end if
+               if (k .lt. pver .and. cld_frac_l(icol,k+1) == 0.0_rtype .and. cld_frac_l(icol, k) .gt. 0.0_rtype) then
+                  p3_activation_cldbot_flag = 1.0_rtype
                else
-                  nccn_prescribed(icol,k) = 0.0_rtype
+                  p3_activation_cldbot_flag = 0.0_rtype
                end if
             else
-               if (ccn_trcdat(icol,k) < p3_activation_cutoff1) then
-                  nccn_prescribed(icol,k) = p3_activation_factor1 * exp(p3_activation_slope1 * log(ccn_trcdat(icol,k))) * cld_frac_l(icol,k)
-               else if (ccn_trcdat(icol,k) > p3_activation_cutoff1 .and. ccn_trcdat(icol,k) < p3_activation_cutoff2) then
-                  nccn_prescribed(icol,k) = p3_activation_factor2 * exp(p3_activation_slope2 * log(ccn_trcdat(icol,k))) * cld_frac_l(icol,k)
-               else
-                  nccn_prescribed(icol,k) = p3_activation_factor3 * exp(p3_activation_slope3 * log(ccn_trcdat(icol,k))) * cld_frac_l(icol,k)
-               end if
+               p3_activation_cldbot_flag = 1.0_rtype
+            end if
+            if (ccn_trcdat(icol,k) .lt. p3_activation_cutoff1) then
+               p3_activation_factor = p3_activation_factor1
+               p3_activation_slope = p3_activation_slope1
+            else if (ccn_trcdat(icol,k) .gt. p3_activation_cutoff1 .and. ccn_trcdat(icol,k) .lt. p3_activation_cutoff2) then
+               p3_activation_factor = p3_activation_factor2
+               p3_activation_slope = p3_activation_slope2
+            else
+               p3_activation_factor = p3_activation_factor3
+               p3_activation_slope = p3_activation_slope3
+            end if
+            if (ccn_trcdat(icol,k) .gt. 0.0_rtype) then
+               nccn_prescribed(icol,k) = p3_activation_cldbot_flag * p3_activation_factor * exp(p3_activation_slope * log(ccn_trcdat(icol,k))) * cld_frac_l(icol,k)
+            else
+               nccn_prescribed(icol,k) = 0.0_rtype
             end if
          end do
       end do

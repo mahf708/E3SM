@@ -1,1 +1,4 @@
-rad_climate            = 'A:Q:H2O', 'N:O2:O2', 'N:CO2:CO2', 'N:ozone:O3', 'N:N2O:N2O', 'N:CH4:CH4', 'N:CFC11:CFC11', 'N:CFC12:CFC12'
+! -- SPA files --------
+spa_datapath = '$DIN_LOC_ROOT/atm/cam/chem/spa'
+spa_file = 'spa_v3.LR.F2010.2011-2025.c_20240405_v3spa.nc'
+spa_cycle_yr = 1

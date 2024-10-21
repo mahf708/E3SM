@@ -1033,6 +1033,14 @@ subroutine zm_mphy(su,    qu,   mu,   du,   eu,    cmel,  cmei,  zf,   pm,   te,
         end do
      end do
 
+   else
+
+      do k=1,pver
+         do i=1,il2g
+            ntaer(i,k) = 0.0_r8
+         end do
+      end do
+
   end if
 
   do i=1,il2g
@@ -2149,6 +2157,8 @@ subroutine zm_mphy(su,    qu,   mu,   du,   eu,    cmel,  cmei,  zf,   pm,   te,
 
                     dum2l(i,k) = dum2
 
+                 else
+                    dum2l(i,k) = 0._r8
                  end if
 
               else
