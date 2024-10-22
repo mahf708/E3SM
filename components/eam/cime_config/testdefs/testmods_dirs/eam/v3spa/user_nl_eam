@@ -2,3 +2,27 @@
 spa_datapath = '$DIN_LOC_ROOT/atm/cam/chem/spa'
 spa_file = 'spa_v3.LR.F2010.2011-2025.c_20240405_v3spa.nc'
 spa_cycle_yr = 1
+
+! --- p3 spa settings ------
+p3_activation_factor1 = 1.0
+p3_activation_factor2 = 1.0
+p3_activation_factor3 = 1.0
+p3_activation_slope1 = 1.0
+p3_activation_slope2 = 1.0
+p3_activation_slope3 = 1.0
+
+! -- output settings
+cosp_lite = .true.
+empty_htapes = .false.
+
+! -- turn on ind3 aerocom -------------
+do_aerocom_ind3     = .true.
+
+avgflag_pertape = 'I'
+nhtfrq = 1
+mfilt  = 10
+
+fincl1 = 'FSNT','FLNT','FSNTC','FLNTC','FSNS','FLNS','FSNSC','FLNSC', ! radiation fields
+         'lcc','cdnc', ! aerocom fields
+         'nccn_raw','nccn_set','nccn_nuc', ! p3 spa fields
+         'CLOUDFRAC_LIQ_MICRO','NUMLIQ' ! p3 fields

@@ -436,7 +436,7 @@ end function bfb_expm1
   !==========================================================================================!
 
   SUBROUTINE p3_main_part1(kts, kte, kbot, ktop, kdir, do_predict_nc, do_prescribed_CCN, dt,                &
-       pres, dpres, dz, nc_nuceat_tend, nccn_prescribed, exner, inv_exner, inv_cld_frac_l, inv_cld_frac_i,  &
+       pres, dpres, dz, nc_nuceat_tend, nccn_prescribed, nc_minus_nccn_out, exner, inv_exner, inv_cld_frac_l, inv_cld_frac_i,  &
        inv_cld_frac_r, latent_heat_vapor, latent_heat_sublim, latent_heat_fusion,                           &
        t_atm, rho, inv_rho, qv_sat_l, qv_sat_i, qv_supersat_i, rhofacr, rhofaci, acn, qv, th_atm,           &
        qc, nc, qr, nr,                                                                                      &
@@ -453,6 +453,7 @@ end function bfb_expm1
 
     real(rtype), intent(in), dimension(kts:kte) :: pres, dpres, dz, nc_nuceat_tend, exner, inv_exner, &
          inv_cld_frac_l, inv_cld_frac_i, inv_cld_frac_r, latent_heat_vapor, latent_heat_sublim, latent_heat_fusion, nccn_prescribed
+    real(rtype), intent(out), dimension(kts:kte) :: nc_minus_nccn_out
 
     real(rtype), intent(inout), dimension(kts:kte) :: t_atm, rho, inv_rho, qv_sat_l, qv_sat_i, qv_supersat_i, rhofacr, rhofaci, &
          acn, qv, th_atm, qc, nc, qr, nr, qi, ni, qm, bm, qc_incld, qr_incld, qi_incld, &
@@ -504,6 +505,11 @@ end function bfb_expm1
 
           if (do_prescribed_CCN) then
              nc(k) = max(nc(k),nccn_prescribed(k))
+             if (nccn_prescribed(k) > nc(k)) then
+                  nc_minus_nccn_out(k) = nccn_prescribed(k) - nc(k)
+               else
+                  nc_minus_nccn_out(k) = 0._rtype
+              end if 
           else if (do_predict_nc) then
              nc(k) = max(nc(k) + nc_nuceat_tend(k) * dt,0.0_rtype)
           else
@@ -1254,7 +1260,7 @@ end function bfb_expm1
   !==========================================================================================!
 
   SUBROUTINE p3_main(qc,nc,qr,nr,th_atm,qv,dt,qi,qm,ni,bm,                                                                                                               &
-       pres,dz,nc_nuceat_tend,nccn_prescribed,ni_activated,frzimm,frzcnt,frzdep,inv_qc_relvar,it,precip_liq_surf,precip_ice_surf,its,ite,kts,kte,diag_eff_radius_qc,     &
+       pres,dz,nc_nuceat_tend,nccn_prescribed,nc_minus_nccn_out,ni_activated,frzimm,frzcnt,frzdep,inv_qc_relvar,it,precip_liq_surf,precip_ice_surf,its,ite,kts,kte,diag_eff_radius_qc,     &
        diag_eff_radius_qi,rho_qi,do_predict_nc, do_prescribed_CCN,p3_autocon_coeff,p3_accret_coeff,p3_qc_autocon_expon,p3_nc_autocon_expon,p3_qc_accret_expon,           &
        p3_wbf_coeff,p3_mincdnc,p3_max_mean_rain_size,p3_embryonic_rain_size,                                                                                             &
        dpres,exner,qv2qi_depos_tend,precip_total_tend,nevapr,qr_evap_tend,precip_liq_flux,precip_ice_flux,rflx,sflx,cflx,cld_frac_r,cld_frac_l,cld_frac_i,               &
@@ -1299,6 +1305,7 @@ end function bfb_expm1
     real(rtype), intent(in),    dimension(its:ite,kts:kte)      :: dz        ! vertical grid spacing            m
     real(rtype), intent(in),    dimension(its:ite,kts:kte)      :: nc_nuceat_tend      ! IN ccn activated number tendency kg-1 s-1
     real(rtype), intent(in),    dimension(its:ite,kts:kte)      :: nccn_prescribed
+    real(rtype), intent(out),   dimension(its:ite,kts:kte)      :: nc_minus_nccn_out  ! OUT ccn activated number tendency kg-1 s-1
     real(rtype), intent(in),    dimension(its:ite,kts:kte)      :: ni_activated       ! IN actived ice nuclei concentration  1/kg
     real(rtype), intent(in),    dimension(its:ite,kts:kte)      :: frzimm,frzcnt,frzdep ! From macrophysics aerop (CNT scheme) [#/cm3]
     real(rtype), intent(in)                                     :: dt         ! model time step                  s
@@ -1467,6 +1474,8 @@ end function bfb_expm1
     cflx    = 0._rtype
     p3_tend_out = 0._rtype
 
+    nc_minus_nccn_out = 0._rtype
+
     inv_cld_frac_i = 1.0_rtype/cld_frac_i
     inv_cld_frac_l = 1.0_rtype/cld_frac_l
     inv_cld_frac_r = 1.0_rtype/cld_frac_r
@@ -1515,7 +1524,7 @@ end function bfb_expm1
 
 
        call p3_main_part1(kts, kte, kbot, ktop, kdir, do_predict_nc, do_prescribed_CCN, dt, &
-            pres(i,:), dpres(i,:), dz(i,:), nc_nuceat_tend(i,:), nccn_prescribed(i,:), exner(i,:), inv_exner(i,:), &
+            pres(i,:), dpres(i,:), dz(i,:), nc_nuceat_tend(i,:), nccn_prescribed(i,:), nc_minus_nccn_out(i,:), exner(i,:), inv_exner(i,:), &
             inv_cld_frac_l(i,:), inv_cld_frac_i(i,:), inv_cld_frac_r(i,:), latent_heat_vapor(i,:), latent_heat_sublim(i,:), latent_heat_fusion(i,:), &
             t_atm(i,:), rho(i,:), inv_rho(i,:), qv_sat_l(i,:), qv_sat_i(i,:), qv_supersat_i(i,:), rhofacr(i,:), &
             rhofaci(i,:), acn(i,:), qv(i,:), th_atm(i,:), qc(i,:), nc(i,:), qr(i,:), nr(i,:), &

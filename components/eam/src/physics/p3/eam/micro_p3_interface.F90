@@ -584,6 +584,13 @@ end subroutine micro_p3_readnl
     call addfld('CLOUDFRAC_ICE_MICRO', (/ 'lev' /), 'A', 'unitless', 'Grid box ice cloud fraction in microphysics' )
     call addfld('CLOUDFRAC_RAIN_MICRO', (/ 'lev' /), 'A', 'unitless', 'Grid box rain cloud fraction in microphysics' )
 
+    ! diagnoise SPA-related stuff
+    if (do_prescribed_CCN .and. is_spa_active) then
+       call addfld('nccn_raw', (/ 'lev' /), 'A', '1/kg', 'CCN3 prescribed from SPA' )
+       call addfld('nccn_set', (/ 'lev' /), 'A', '1/kg', 'Nc prescribed from SPA' )
+       call addfld('nccn_nuc', (/ 'lev' /), 'A', '1/kg', 'P3 Nc minus nccn_prescribed' )
+    end if
+
     call addfld ('CME', (/ 'lev' /), 'A', 'kg/kg/s', 'Rate of cond-evap within the cloud'                      )
     call addfld ('FICE', (/ 'lev' /), 'A', 'fraction', 'Fractional ice content within cloud'                     )
     call addfld ('ICWMRST', (/ 'lev' /), 'A', 'kg/kg', 'Prognostic in-stratus water mixing ratio'                )
@@ -1050,6 +1057,9 @@ end subroutine micro_p3_readnl
     real(rtype) :: cld_frac_r(pcols,pver)      !rain cloud fraction
     real(rtype) :: cld_frac_l(pcols,pver)      !liquid cloud fraction
     real(rtype) :: cld_frac_i(pcols,pver)      !ice cloud fraction
+    real(rtype) :: ccn3_out(pcols,pver)
+    real(rtype) :: nccn_prescribed_out(pcols,pver)
+    real(rtype) :: nc_minus_nccn_out(pcols,pver)
     real(rtype) :: tend_out(pcols,pver,49) !microphysical tendencies
     real(rtype), dimension(pcols,pver) :: liq_ice_exchange ! sum of liq-ice phase change tendenices
     real(rtype), dimension(pcols,pver) :: vap_liq_exchange ! sum of vap-liq phase change tendenices
@@ -1396,6 +1406,7 @@ end subroutine micro_p3_readnl
          dz(its:ite,kts:kte),        & ! IN     vertical grid spacing            m
          npccn(its:ite,kts:kte),      & ! IN ccn activation number tendency kg-1 s-1
          nccn_prescribed(its:ite,kts:kte), & ! IN ccn prescribed concentration
+         nc_minus_nccn_out(its:ite,kts:kte), & ! OUT ccn prescribed concentration
          ni_activated(its:ite,kts:kte),    & ! IN activated ice nuclei concentration kg-1
          frzimm_in(its:ite,kts:kte), &
          frzcnt_in(its:ite,kts:kte), & ! IN     CNT coupling
@@ -1610,6 +1621,16 @@ end subroutine micro_p3_readnl
    cdnumc      = 0._rtype
    nfice       = 0._rtype
 
+   ! output spa-related fields
+   if (do_prescribed_CCN .and. is_spa_active) then
+      do k = 1, pver
+         do icol = 1,ncol
+            ccn3_out(icol,k) = ccn_trcdat(icol,k)
+            nccn_prescribed_out(icol,k) = nccn_prescribed(icol,k)
+         end do
+      end do
+   end if 
+
    ! FICE
    do k = top_lev, pver
       do icol = 1, ncol
@@ -1721,6 +1742,13 @@ end subroutine micro_p3_readnl
    call outfld('CLOUDFRAC_LIQ_MICRO',  cld_frac_l,      pcols, lchnk)
    call outfld('CLOUDFRAC_ICE_MICRO',  cld_frac_i,      pcols, lchnk)
    call outfld('CLOUDFRAC_RAIN_MICRO', cld_frac_r,      pcols, lchnk)
+
+    ! diagnoise SPA-related stuff
+    if (do_prescribed_CCN .and. is_spa_active) then
+       call outfld('nccn_raw', ccn3_out, pcols, lchnk)
+       call outfld('nccn_set', nccn_prescribed_out, pcols, lchnk)
+       call outfld('nccn_nuc', nc_minus_nccn_out, pcols, lchnk) 
+    end if
 
    ! Write p3 tendencies as output 
    ! warm-phase process rates
