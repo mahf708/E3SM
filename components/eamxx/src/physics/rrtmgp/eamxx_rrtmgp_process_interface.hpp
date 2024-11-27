@@ -7,6 +7,8 @@
 #include "ekat/ekat_parameter_list.hpp"
 #include "ekat/util/ekat_string_utils.hpp"
 #include <string>
+#include <Kokkos_Random.hpp>
+#include <random>
 
 namespace scream {
 /*
@@ -137,11 +139,49 @@ public:
   // Whether or not to do subcolumn sampling of cloud state for MCICA
   bool m_do_subcol_sampling;
 
+  struct generate_random {
+#ifdef RRTMGP_ENABLE_KOKKOS   
+    ureal2dk vals;
+#endif
+#ifdef RRTMGP_ENABLE_YAKL
+    real2d vals;
+#endif
+
+    Kokkos::Random_XorShift64_Pool<> rand_pool;
+
+    int samples;
+    int beg;
+
+#ifdef RRTMGP_ENABLE_KOKKOS
+    generate_random(ureal2dk vals_, Kokkos::Random_XorShift64_Pool<> rand_pool_,
+                    int samples_, int beg_)
+#endif
+#ifdef RRTMGP_ENABLE_YAKL
+    generate_random(real2d vals_, Kokkos::Random_XorShift64_Pool<> rand_pool_,
+                    int samples_, int beg_)
+#endif
+        : vals(vals_), rand_pool(rand_pool_), samples(samples_), beg(beg_) {}
+
+    KOKKOS_INLINE_FUNCTION
+    void operator()(int i) const {
+        typename Kokkos::Random_XorShift64_Pool<>::generator_type rand_gen = rand_pool.get_state();
+        // hardcode to double for now
+
+#ifdef RRTMGP_ENABLE_KOKKOS
+        for (int k = 0; k < samples; k++) vals(beg+i, k) = rand_gen.drand(0.80, 1.20);
+#endif
+#ifdef RRTMGP_ENABLE_YAKL
+        for (int k = 0; k < samples; k++) vals(beg+i+1, k+1) = rand_gen.drand(0.80, 1.20);
+#endif
+        rand_pool.free_state(rand_gen);
+    }
+  };
+
   // Structure for storing local variables initialized using the ATMBufferManager
   struct Buffer {
     static constexpr int num_1d_ncol        = 10;
-    static constexpr int num_2d_nlay        = 16;
-    static constexpr int num_2d_nlay_p1     = 23;
+    static constexpr int num_2d_nlay        = 16+3;
+    static constexpr int num_2d_nlay_p1     = 23+12;
     static constexpr int num_2d_nswbands    = 2;
     static constexpr int num_3d_nlev_nswbands = 4;
     static constexpr int num_3d_nlev_nlwbands = 2;
@@ -186,11 +226,14 @@ public:
     real2d nc;
     real2d qi;
     real2d cldfrac_tot;
+    real2d cldfrac_tot_pert;
     real2d eff_radius_qc;
     real2d eff_radius_qi;
     real2d tmp2d;
     real2d lwp;
+    real2d lwp_pert;
     real2d iwp;
+    real2d iwp_pert;
     real2d sw_heating;
     real2d lw_heating;
 #endif
@@ -203,11 +246,14 @@ public:
     ureal2dk nc_k;
     ureal2dk qi_k;
     ureal2dk cldfrac_tot_k;
+    ureal2dk cldfrac_tot_k_pert;
     ureal2dk eff_radius_qc_k;
     ureal2dk eff_radius_qi_k;
     ureal2dk tmp2d_k;
     ureal2dk lwp_k;
+    ureal2dk lwp_k_pert;
     ureal2dk iwp_k;
+    ureal2dk iwp_k_pert;
     ureal2dk sw_heating_k;
     ureal2dk lw_heating_k;
 #endif
@@ -218,10 +264,22 @@ public:
     real2d p_lev;
     real2d t_lev;
     real2d sw_flux_up;
+    real2d sw_flux_up_lwp;
+    real2d sw_flux_up_iwp;
+    real2d sw_flux_up_cldfrac_tot;
     real2d sw_flux_dn;
+    real2d sw_flux_dn_lwp;
+    real2d sw_flux_dn_iwp;
+    real2d sw_flux_dn_cldfrac_tot;
     real2d sw_flux_dn_dir;
     real2d lw_flux_up;
+    real2d lw_flux_up_lwp;
+    real2d lw_flux_up_iwp;
+    real2d lw_flux_up_cldfrac_tot;
     real2d lw_flux_dn;
+    real2d lw_flux_dn_lwp;
+    real2d lw_flux_dn_iwp;
+    real2d lw_flux_dn_cldfrac_tot;
     real2d sw_clnclrsky_flux_up;
     real2d sw_clnclrsky_flux_dn;
     real2d sw_clnclrsky_flux_dn_dir;
@@ -242,10 +300,22 @@ public:
     ureal2dk p_lev_k;
     ureal2dk t_lev_k;
     ureal2dk sw_flux_up_k;
+    ureal2dk sw_flux_up_k_lwp;
+    ureal2dk sw_flux_up_k_iwp;
+    ureal2dk sw_flux_up_k_cldfrac_tot;
     ureal2dk sw_flux_dn_k;
+    ureal2dk sw_flux_dn_k_lwp;
+    ureal2dk sw_flux_dn_k_iwp;
+    ureal2dk sw_flux_dn_k_cldfrac_tot;
     ureal2dk sw_flux_dn_dir_k;
     ureal2dk lw_flux_up_k;
+    ureal2dk lw_flux_up_k_lwp;
+    ureal2dk lw_flux_up_k_iwp;
+    ureal2dk lw_flux_up_k_cldfrac_tot;
     ureal2dk lw_flux_dn_k;
+    ureal2dk lw_flux_dn_k_lwp;
+    ureal2dk lw_flux_dn_k_iwp;
+    ureal2dk lw_flux_dn_k_cldfrac_tot;
     ureal2dk sw_clnclrsky_flux_up_k;
     ureal2dk sw_clnclrsky_flux_dn_k;
     ureal2dk sw_clnclrsky_flux_dn_dir_k;

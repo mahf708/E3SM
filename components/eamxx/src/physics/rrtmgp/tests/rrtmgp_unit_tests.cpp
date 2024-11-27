@@ -663,14 +663,16 @@ TEST_CASE("rrtmgp_aerocom_cloudtop") {
   memset(qi, 1.0);
   memset(cldfrac_tot, 0.0);
   memset(nc, 5.0);
+  memset(lwp, 10.0);
+  memset(iwp, 10.0);
   memset(rel, 10.0);
   memset(rei, 10.0);
   // Call the function
   scream::rrtmgp::compute_aerocom_cloudtop(
-      ncol, nlay, tmid, pmid, p_del, z_del, qc, qi, rel, rei, cldfrac_tot, nc,
+      ncol, nlay, tmid, pmid, p_del, z_del, qc, qi, rel, rei, cldfrac_tot, nc, lwp, iwp,
       tmid_at_cldtop, pmid_at_cldtop, cldfrac_ice_at_cldtop,
       cldfrac_liq_at_cldtop, cldfrac_tot_at_cldtop, cdnc_at_cldtop,
-      eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop);
+      eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop, lwp_at_cldtop, iwp_at_cldtop);
 
   // Check the results
   REQUIRE(tmid_at_cldtop.createHostCopy()(1) == 0.0);
@@ -685,10 +687,10 @@ TEST_CASE("rrtmgp_aerocom_cloudtop") {
   // Case 2: if all clouds, everything goes to 1 * its value
   memset(cldfrac_tot, 1.0);
   scream::rrtmgp::compute_aerocom_cloudtop(
-      ncol, nlay, tmid, pmid, p_del, z_del, qc, qi, rel, rei, cldfrac_tot, nc,
+      ncol, nlay, tmid, pmid, p_del, z_del, qc, qi, rel, rei, cldfrac_tot, nc, lwp, iwp,
       tmid_at_cldtop, pmid_at_cldtop, cldfrac_ice_at_cldtop,
       cldfrac_liq_at_cldtop, cldfrac_tot_at_cldtop, cdnc_at_cldtop,
-      eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop);
+      eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop, lwp_at_cldtop, iwp_at_cldtop);
 
   REQUIRE(tmid_at_cldtop.createHostCopy()(1) == 300.0);
   REQUIRE(pmid_at_cldtop.createHostCopy()(1) == 100.0);
@@ -709,10 +711,10 @@ TEST_CASE("rrtmgp_aerocom_cloudtop") {
         cldfrac_tot(1, 5) = 0.2;
       });
   scream::rrtmgp::compute_aerocom_cloudtop(
-      ncol, nlay, tmid, pmid, p_del, z_del, qc, qi, rel, rei, cldfrac_tot, nc,
+      ncol, nlay, tmid, pmid, p_del, z_del, qc, qi, rel, rei, cldfrac_tot, nc, lwp, iwp,
       tmid_at_cldtop, pmid_at_cldtop, cldfrac_ice_at_cldtop,
       cldfrac_liq_at_cldtop, cldfrac_tot_at_cldtop, cdnc_at_cldtop,
-      eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop);
+      eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop, lwp_at_cldtop, iwp_at_cldtop);
 
   REQUIRE(cldfrac_tot_at_cldtop.createHostCopy()(1) == .7);
 
@@ -726,10 +728,10 @@ TEST_CASE("rrtmgp_aerocom_cloudtop") {
         cldfrac_tot(1, 7) = 0.2;
       });
   scream::rrtmgp::compute_aerocom_cloudtop(
-      ncol, nlay, tmid, pmid, p_del, z_del, qc, qi, rel, rei, cldfrac_tot, nc,
+      ncol, nlay, tmid, pmid, p_del, z_del, qc, qi, rel, rei, cldfrac_tot, nc, lwp, iwp,
       tmid_at_cldtop, pmid_at_cldtop, cldfrac_ice_at_cldtop,
       cldfrac_liq_at_cldtop, cldfrac_tot_at_cldtop, cdnc_at_cldtop,
-      eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop);
+      eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop, lwp_at_cldtop, iwp_at_cldtop);
 
   REQUIRE(cldfrac_tot_at_cldtop.createHostCopy()(1) > .7);
 
@@ -741,10 +743,10 @@ TEST_CASE("rrtmgp_aerocom_cloudtop") {
         cldfrac_tot(1, 6) = 0.1;
       });
   scream::rrtmgp::compute_aerocom_cloudtop(
-      ncol, nlay, tmid, pmid, p_del, z_del, qc, qi, rel, rei, cldfrac_tot, nc,
+      ncol, nlay, tmid, pmid, p_del, z_del, qc, qi, rel, rei, cldfrac_tot, nc, lwp, iwp,
       tmid_at_cldtop, pmid_at_cldtop, cldfrac_ice_at_cldtop,
       cldfrac_liq_at_cldtop, cldfrac_tot_at_cldtop, cdnc_at_cldtop,
-      eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop);
+      eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop, lwp_at_cldtop, iwp_at_cldtop);
 
   REQUIRE(cldfrac_tot_at_cldtop.createHostCopy()(1) >
           .7);  // larger than the max
@@ -759,10 +761,10 @@ TEST_CASE("rrtmgp_aerocom_cloudtop") {
   memset(qc, 1.0);
   memset(qi, 0.0);
   scream::rrtmgp::compute_aerocom_cloudtop(
-      ncol, nlay, tmid, pmid, p_del, z_del, qc, qi, rel, rei, cldfrac_tot, nc,
+      ncol, nlay, tmid, pmid, p_del, z_del, qc, qi, rel, rei, cldfrac_tot, nc, lwp, iwp,
       tmid_at_cldtop, pmid_at_cldtop, cldfrac_ice_at_cldtop,
       cldfrac_liq_at_cldtop, cldfrac_tot_at_cldtop, cdnc_at_cldtop,
-      eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop);
+      eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop, lwp_at_cldtop, iwp_at_cldtop);
 
   REQUIRE(cldfrac_tot_at_cldtop.createHostCopy()(1) == 1.0);
   REQUIRE(cldfrac_liq_at_cldtop.createHostCopy()(1) == 1.0);
@@ -778,10 +780,10 @@ TEST_CASE("rrtmgp_aerocom_cloudtop") {
   memset(qc, 0.0);
   memset(qi, 1.0);
   scream::rrtmgp::compute_aerocom_cloudtop(
-      ncol, nlay, tmid, pmid, p_del, z_del, qc, qi, rel, rei, cldfrac_tot, nc,
+      ncol, nlay, tmid, pmid, p_del, z_del, qc, qi, rel, rei, cldfrac_tot, nc, lwp, iwp,
       tmid_at_cldtop, pmid_at_cldtop, cldfrac_ice_at_cldtop,
       cldfrac_liq_at_cldtop, cldfrac_tot_at_cldtop, cdnc_at_cldtop,
-      eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop);
+      eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop, lwp_at_cldtop, iwp_at_cldtop);
 
   REQUIRE(cldfrac_tot_at_cldtop.createHostCopy()(1) == 1.0);
   REQUIRE(cldfrac_liq_at_cldtop.createHostCopy()(1) == 0.0);
@@ -815,10 +817,10 @@ TEST_CASE("rrtmgp_aerocom_cloudtop") {
         qc(1, 8) = 10;
       });
   scream::rrtmgp::compute_aerocom_cloudtop(
-      ncol, nlay, tmid, pmid, p_del, z_del, qc, qi, rel, rei, cldfrac_tot, nc,
+      ncol, nlay, tmid, pmid, p_del, z_del, qc, qi, rel, rei, cldfrac_tot, nc, lwp, iwp,
       tmid_at_cldtop, pmid_at_cldtop, cldfrac_ice_at_cldtop,
       cldfrac_liq_at_cldtop, cldfrac_tot_at_cldtop, cdnc_at_cldtop,
-      eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop);
+      eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop, lwp_at_cldtop, iwp_at_cldtop);
   REQUIRE(cldfrac_tot_at_cldtop.createHostCopy()(1) > 0.70);  // unaffected
   REQUIRE(cldfrac_liq_at_cldtop.createHostCopy()(1) < 0.50);  // not max
   REQUIRE(cldfrac_ice_at_cldtop.createHostCopy()(1) == 0.7);  // max
