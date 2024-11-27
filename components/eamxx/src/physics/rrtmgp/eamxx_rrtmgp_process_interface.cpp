@@ -333,7 +333,14 @@ void RRTMGPRadiation::set_grids(const std::shared_ptr<const GridsManager> grids_
   add_field<Computed>("cdnc_at_cldtop", scalar2d, 1 / (m * m * m), grid_name);
   add_field<Computed>("eff_radius_qc_at_cldtop", scalar2d, micron, grid_name);
   add_field<Computed>("eff_radius_qi_at_cldtop", scalar2d, micron, grid_name);
-
+  // perturbation diagnostics
+  add_field<Computed>("cldfrac_tot_at_cldtop_perturbed", scalar2d, nondim, grid_name);
+  add_field<Computed>("df_per_dcf", scalar2d, nondim, grid_name);
+  add_field<Computed>("df_per_drc", scalar2d, K, grid_name);
+  add_field<Computed>("df_per_dri", scalar2d, K, grid_name);
+  add_field<Computed>("df_per_dlw", scalar2d, K, grid_name);
+  add_field<Computed>("df_per_diw", scalar2d, K, grid_name);
+  
   // Translation of variables from EAM
   // --------------------------------------------------------------
   // EAM name | EAMXX name       | Description
@@ -1469,6 +1476,14 @@ void RRTMGPRadiation::run_impl (const double dt) {
       get_field_out("eff_radius_qc_at_cldtop").get_view<Real *>();
   auto d_eff_radius_qi_at_cldtop =
       get_field_out("eff_radius_qi_at_cldtop").get_view<Real *>();
+
+  auto d_cldfrac_tot_at_cldtop_perturbed =
+      get_field_out("cldfrac_tot_at_cldtop_perturbed").get_view<Real *>();
+  auto d_df_per_dcf = get_field_out("df_per_dcf").get_view<Real *>();
+  auto d_df_per_drc = get_field_out("df_per_drc").get_view<Real *>();
+  auto d_df_per_dri = get_field_out("df_per_dri").get_view<Real *>();
+  auto d_df_per_dlw = get_field_out("df_per_dlw").get_view<Real *>();
+  auto d_df_per_diw = get_field_out("df_per_diw").get_view<Real *>();
 
   constexpr auto stebol = PC::stebol;
   const auto nlay = m_nlay;
@@ -2753,10 +2768,16 @@ void RRTMGPRadiation::run_impl (const double dt) {
       real1d cldfrac_ice_at_cldtop ("cldfrac_ice_at_cldtop", d_cldfrac_ice_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
       real1d cldfrac_liq_at_cldtop ("cldfrac_liq_at_cldtop", d_cldfrac_liq_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
       real1d cldfrac_tot_at_cldtop ("cldfrac_tot_at_cldtop", d_cldfrac_tot_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
+      real1d cldfrac_tot_at_cldtop_perturbed ("cldfrac_tot_at_cldtop_pertubed", d_cldfrac_tot_at_cldtop_perturbed.data() + m_col_chunk_beg[ic], ncol);
       real1d cdnc_at_cldtop ("cdnc_at_cldtop", d_cdnc_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
       real1d eff_radius_qc_at_cldtop ("eff_radius_qc_at_cldtop", d_eff_radius_qc_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
       real1d eff_radius_qi_at_cldtop ("eff_radius_qi_at_cldtop", d_eff_radius_qi_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
 
+      rrtmgp::compute_aerocom_cloudtop(
+          ncol, nlay, t_lay, p_lay, p_del, z_del, qc, qi, rel, rei, cldfrac_tot_perturbed,
+          nc, T_mid_at_cldtop, p_mid_at_cldtop, cldfrac_ice_at_cldtop,
+          cldfrac_liq_at_cldtop, cldfrac_tot_at_cldtop_perturbed, cdnc_at_cldtop,
+          eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop);
       rrtmgp::compute_aerocom_cloudtop(
           ncol, nlay, t_lay, p_lay, p_del, z_del, qc, qi, rel, rei, cldfrac_tot,
           nc, T_mid_at_cldtop, p_mid_at_cldtop, cldfrac_ice_at_cldtop,
@@ -2774,10 +2795,16 @@ void RRTMGPRadiation::run_impl (const double dt) {
       real1dk cldfrac_ice_at_cldtop_k (d_cldfrac_ice_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
       real1dk cldfrac_liq_at_cldtop_k (d_cldfrac_liq_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
       real1dk cldfrac_tot_at_cldtop_k (d_cldfrac_tot_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
+      real1dk cldfrac_tot_at_cldtop_k_perturbed (d_cldfrac_tot_at_cldtop_perturbed.data() + m_col_chunk_beg[ic], ncol);
       real1dk cdnc_at_cldtop_k (d_cdnc_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
       real1dk eff_radius_qc_at_cldtop_k (d_eff_radius_qc_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
       real1dk eff_radius_qi_at_cldtop_k (d_eff_radius_qi_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
 
+      interface_t::compute_aerocom_cloudtop(
+          ncol, nlay, t_lay_k, p_lay_k, p_del_k, z_del_k, qc_k, qi_k, rel_k, rei_k, cldfrac_tot_k_perturbed,
+          nc_k, T_mid_at_cldtop_k, p_mid_at_cldtop_k, cldfrac_ice_at_cldtop_k,
+          cldfrac_liq_at_cldtop_k, cldfrac_tot_at_cldtop_k_perturbed, cdnc_at_cldtop_k,
+          eff_radius_qc_at_cldtop_k, eff_radius_qi_at_cldtop_k);
       interface_t::compute_aerocom_cloudtop(
           ncol, nlay, t_lay_k, p_lay_k, p_del_k, z_del_k, qc_k, qi_k, rel_k, rei_k, cldfrac_tot_k,
           nc_k, T_mid_at_cldtop_k, p_mid_at_cldtop_k, cldfrac_ice_at_cldtop_k,
@@ -2805,6 +2832,29 @@ void RRTMGPRadiation::run_impl (const double dt) {
         d_sfc_flux_dif_vis(icol) = sfc_flux_dif_vis(i+1);
         d_sfc_flux_sw_net(icol)  = sw_flux_dn(i+1,kbot) - sw_flux_up(i+1,kbot);
         d_sfc_flux_lw_dn(icol)   = lw_flux_dn(i+1,kbot);
+
+        const auto fsnt = sw_flux_dn(i+1, 1) - sw_flux_up(i+1, 1);
+        const auto flnt = lw_flux_up(i+1, 1) - lw_flux_dn(i+1, 1);
+        auto restom = fsnt - flnt;
+        Real denom;
+        denom = (cldfrac_tot_at_cldtop_perturbed(i+1)-cldfrac_tot_at_cldtop(i+1));
+        // set d_df_per_dct to zero if denom is 0, else restom/denom
+        d_df_per_dct(icol) = (denom == 0) ? 0 : restom / denom;
+        denom = (rel_perturbed(i+1) - rel(i+1));
+        d_df_per_drc(icol) = (denom == 0) ? 0 : restom / denom;
+        denom = (rei_perturbed(i+1) - rei(i+1));
+        d_df_per_dri(icol) = (denom == 0) ? 0 : restom / denom;
+        denom =  (lwp(i+1) - lwp_qc_perturbed(i+1));
+        d_df_per_dlw(icol) = (denom == 0) ? 0 : restom / denom;
+        denom = (iwp(i+1) - iwp_qi_perturbed(i+1));
+        d_df_per_diw(icol) = (denom == 0) ? 0 : restom / denom;
+        denom = (cldfrac_tot(i+1) - cldfrac_tot_at_cldtop(i+1));
+        d_df_per_lw(icol) = (denom == 0) ? 0 : restom / denom;
+        nomin = (lwp_cldfrac_tot_perturbed(i+1) - lwp(i+1));
+        d_lw_per_cf(icol) = (denom == 0) ? 0 : nomin / denom;
+        nomin = (iwp_cldfrac_tot_perturbed(i+1) - iwp(i+1));
+        d_iw_per_dcf(icol) = (denom == 0) ? 0 : nomin / denom;
+  
         Kokkos::parallel_for(Kokkos::TeamVectorRange(team, nlay+1), [&] (const int& k) {
           d_sw_flux_up(icol,k)            = sw_flux_up(i+1,k+1);
           d_sw_flux_dn(icol,k)            = sw_flux_dn(i+1,k+1);
