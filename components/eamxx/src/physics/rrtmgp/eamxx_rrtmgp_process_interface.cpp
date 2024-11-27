@@ -1970,6 +1970,26 @@ void RRTMGPRadiation::run_impl (const double dt) {
         }
         Kokkos::deep_copy(d_mu0,h_mu0);
 
+        // Set perturbed fields with random values
+        std::random_device rd;
+        Kokkos::Random_XorShift64_Pool<> rand_pool64(rd());
+
+        Kokkos::parallel_for(ncol,
+          generate_random(cldfrac_tot_perturbed, rand_pool64, m_nlay, 0)
+        );
+        Kokkos::parallel_for(ncol,
+          generate_random(qc_perturbed, rand_pool64, m_nlay, 0)
+        );
+        Kokkos::parallel_for(ncol,
+          generate_random(qi_perturbed, rand_pool64, m_nlay, 0)
+        );
+        Kokkos::parallel_for(ncol,
+          generate_random(rel_perturbed, rand_pool64, m_nlay, 0)
+        );
+        Kokkos::parallel_for(ncol,
+          generate_random(rei_perturbed, rand_pool64, m_nlay, 0)
+        );
+
         const auto policy = ekat::ExeSpaceUtils<ExeSpace>::get_default_team_policy(ncol, m_nlay);
         Kokkos::parallel_for(policy, KOKKOS_LAMBDA(const MemberType& team) {
           const int i = team.league_rank();
@@ -2018,17 +2038,17 @@ void RRTMGPRadiation::run_impl (const double dt) {
             p_del(i+1,k+1)       = d_pdel(icol,k);
             qc(i+1,k+1)          = d_qc(icol,k);
             // TODO calculate perturbation somewhere around here
-            qc_perturbed(i+1,k+1) = d_qc(icol,k);
+            qc_perturbed(i+1,k+1) *= d_qc(icol,k);
             nc(i+1,k+1)          = d_nc(icol,k);
             qi(i+1,k+1)          = d_qi(icol,k);
             // TODO calculate perturbation somewhere around here
-            qi_perturbed(i+1,k+1) = d_qi(icol,k);
+            qi_perturbed(i+1,k+1) *= d_qi(icol,k);
             rel(i+1,k+1)         = d_rel(icol,k);
             // TODO calculate perturbation somewhere around here
-            rel_perturbed(i+1,k+1) = d_rel(icol,k);
+            rel_perturbed(i+1,k+1) *= d_rel(icol,k);
             rei(i+1,k+1)         = d_rei(icol,k);
             // TODO calculate perturbation somewhere around here
-            rei_perturbed(i+1,k+1) = d_rei(icol,k);
+            rei_perturbed(i+1,k+1) *= d_rei(icol,k);
             p_lev(i+1,k+1)       = d_pint(icol,k);
             t_lev(i+1,k+1)       = d_tint(i,k);
           });
@@ -2075,17 +2095,17 @@ void RRTMGPRadiation::run_impl (const double dt) {
             p_del_k(i,k)       = d_pdel(icol,k);
             qc_k(i,k)          = d_qc(icol,k);
             // TODO calculate perturbation somewhere around here
-            qc_k_perturned(i,k) = d_qc(icol,k);
+            qc_k_perturned(i,k) *= d_qc(icol,k);
             nc_k(i,k)          = d_nc(icol,k);
             qi_k(i,k)          = d_qi(icol,k);
             // TODO calculate perturbation somewhere around here
-            qi_k_perturned(i,k) = d_qi(icol,k);
+            qi_k_perturned(i,k) *= d_qi(icol,k);
             rel_k(i,k)         = d_rel(icol,k);
             // TODO calculate perturbation somewhere around here
-            rel_k_perturbed(i,k) = d_rel(icol,k);
+            rel_k_perturbed(i,k) *= d_rel(icol,k);
             rei_k(i,k)         = d_rei(icol,k);
             // TODO calculate perturbation somewhere around here
-            rei_k_perturbed(i,k) = d_rei(icol,k);
+            rei_k_perturbed(i,k) *= d_rei(icol,k);
             p_lev_k(i,k)       = d_pint(icol,k);
             t_lev_k(i,k)       = d_tint(i,k);
           });
@@ -2239,12 +2259,16 @@ void RRTMGPRadiation::run_impl (const double dt) {
 #ifdef RRTMGP_ENABLE_YAKL
             cldfrac_tot(i+1,k+1) = d_cldfrac_tot(icol,k);
             // TODO calculate perturbation somewhere around here
-            cldfrac_tot_perturbed(i+1,k+1) = d_cldfrac_tot(icol,k);
+            cldfrac_tot_perturbed(i+1,k+1) *= d_cldfrac_tot(icol,k);
+            // ensure cldfrac_tot_perturbed is between 0 and 1
+            cldfrac_tot_perturbed(i+1,k+1) = std::max(0.0, std::min(1.0, cldfrac_tot_perturbed(i+1,k+1)));
 #endif
 #ifdef RRTMGP_ENABLE_KOKKOS
             cldfrac_tot_k(i,k) = d_cldfrac_tot(icol,k);
             // TODO calculate perturbation somewhere around here
-            cldfrac_tot_k_perturbed(i,k) = d_cldfrac_tot(icol,k);
+            cldfrac_tot_k_perturbed(i,k) *= d_cldfrac_tot(icol,k);
+            // ensure cldfrac_tot_k_perturbed is between 0 and 1
+            cldfrac_tot_k_perturbed(i,k) = std::max(0.0, std::min(1.0, cldfrac_tot_k_perturbed(i,k)));
 #endif
             d_cldfrac_rad(icol,k) = d_cldfrac_tot(icol,k);
           });

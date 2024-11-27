@@ -7,7 +7,8 @@
 #include "ekat/ekat_parameter_list.hpp"
 #include "ekat/util/ekat_string_utils.hpp"
 #include <string>
-
+#include <Kokkos_Random.hpp>
+#include <random>
 namespace scream {
 /*
  * Class responsible for atmosphere radiative transfer. The AD should store
@@ -136,6 +137,44 @@ public:
 
   // Whether or not to do subcolumn sampling of cloud state for MCICA
   bool m_do_subcol_sampling;
+
+  struct generate_random {
+#ifdef RRTMGP_ENABLE_KOKKOS   
+    ureal2dk vals;
+#endif
+#ifdef RRTMGP_ENABLE_YAKL
+    real2d vals;
+#endif
+
+    Kokkos::Random_XorShift64_Pool<> rand_pool;
+
+    int samples;
+    int beg;
+
+#ifdef RRTMGP_ENABLE_KOKKOS
+    generate_random(ureal2dk vals_, Kokkos::Random_XorShift64_Pool<> rand_pool_,
+                    int samples_, int beg_)
+#endif
+#ifdef RRTMGP_ENABLE_YAKL
+    generate_random(real2d vals_, Kokkos::Random_XorShift64_Pool<> rand_pool_,
+                    int samples_, int beg_)
+#endif
+        : vals(vals_), rand_pool(rand_pool_), samples(samples_), beg(beg_) {}
+
+    KOKKOS_INLINE_FUNCTION
+    void operator()(int i) const {
+        typename Kokkos::Random_XorShift64_Pool<>::generator_type rand_gen = rand_pool.get_state();
+        // hardcode to double for now
+
+#ifdef RRTMGP_ENABLE_KOKKOS
+        for (int k = 0; k < samples; k++) vals(beg+i, k) = rand_gen.drand(0.80, 1.20);
+#endif
+#ifdef RRTMGP_ENABLE_YAKL
+        for (int k = 0; k < samples; k++) vals(beg+i+1, k+1) = rand_gen.drand(0.80, 1.20);
+#endif
+        rand_pool.free_state(rand_gen);
+    }
+  };
 
   // Structure for storing local variables initialized using the ATMBufferManager
   struct Buffer {
