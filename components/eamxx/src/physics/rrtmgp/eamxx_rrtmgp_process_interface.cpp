@@ -1470,6 +1470,10 @@ void RRTMGPRadiation::run_impl (const double dt) {
       Kokkos::parallel_for(policy, KOKKOS_LAMBDA(const MemberType& team) {
         const int i = team.league_rank();
         const int icol = i + beg;
+        d_rad_lwp(icol) = 0;
+        d_rad_lwp_pert(icol) = 0;
+        d_rad_iwp(icol) = 0;
+        d_rad_iwp_pert(icol) = 0;
         Kokkos::parallel_for(Kokkos::TeamVectorRange(team, nlay), [&] (const int& k) {
           // Note that for YAKL arrays i and k start with index 1
 #ifdef RRTMGP_ENABLE_YAKL
