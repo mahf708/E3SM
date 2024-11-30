@@ -150,17 +150,17 @@ public:
     Kokkos::Random_XorShift64_Pool<> rand_pool;
 
     int samples;
-    int beg;
+    Real minval, maxval;
 
 #ifdef RRTMGP_ENABLE_KOKKOS
     generate_random(ureal2dk vals_, Kokkos::Random_XorShift64_Pool<> rand_pool_,
-                    int samples_, int beg_)
+                    int samples_, Real minval_, Real maxval_)
 #endif
 #ifdef RRTMGP_ENABLE_YAKL
     generate_random(real2d vals_, Kokkos::Random_XorShift64_Pool<> rand_pool_,
-                    int samples_, int beg_)
+                    int samples_, Real minval_, Real maxval_)
 #endif
-        : vals(vals_), rand_pool(rand_pool_), samples(samples_), beg(beg_) {}
+        : vals(vals_), rand_pool(rand_pool_), samples(samples_), minval(minval_), maxval(maxval_) {}
 
     KOKKOS_INLINE_FUNCTION
     void operator()(int i) const {
@@ -168,10 +168,10 @@ public:
         // hardcode to double for now
 
 #ifdef RRTMGP_ENABLE_KOKKOS
-        for (int k = 0; k < samples; k++) vals(beg+i, k) = rand_gen.drand(0.80, 1.20);
+        for (int k = 0; k < samples; k++) vals(i, k) = rand_gen.drand(minval, maxval);
 #endif
 #ifdef RRTMGP_ENABLE_YAKL
-        for (int k = 0; k < samples; k++) vals(beg+i+1, k+1) = rand_gen.drand(0.80, 1.20);
+        for (int k = 0; k < samples; k++) vals(i+1, k+1) = rand_gen.drand(minval, maxval);
 #endif
         rand_pool.free_state(rand_gen);
     }

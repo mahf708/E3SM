@@ -11,6 +11,12 @@ Fields:
     - df_per_dlwp
     - df_per_diwp
     - df_per_dcld
+    - rad_lwp
+    - rad_lwp_pert
+    - rad_iwp
+    - rad_iwp_pert
+    - cldfrac_tot_at_cldtop_pert
+    - cldfrac_tot_at_cldtop
     - T_mid
     - qv
     - RelativeHumidity

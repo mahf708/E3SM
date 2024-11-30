@@ -1027,12 +1027,10 @@ void compute_aerocom_cloudtop(
   const real2d &p_del, const real2d &z_del, const real2d &qc,
   const real2d &qi, const real2d &rel, const real2d &rei,
   const real2d &cldfrac_tot, const real2d &nc,
-  const real2d &lwp, const real2d &iwp,
   real1d &T_mid_at_cldtop, real1d &p_mid_at_cldtop,
   real1d &cldfrac_ice_at_cldtop, real1d &cldfrac_liq_at_cldtop,
   real1d &cldfrac_tot_at_cldtop, real1d &cdnc_at_cldtop,
-  real1d &eff_radius_qc_at_cldtop, real1d &eff_radius_qi_at_cldtop,
-  real1d &lwp_at_cldtop, real1d &iwp_at_cldtop
+  real1d &eff_radius_qc_at_cldtop, real1d &eff_radius_qi_at_cldtop
   ) {
   /* The goal of this routine is to calculate properties at cloud top
    * based on the AeroCom recommendation. See reference for routine
@@ -1049,8 +1047,7 @@ void compute_aerocom_cloudtop(
   memset(cdnc_at_cldtop, 0.0);
   memset(eff_radius_qc_at_cldtop, 0.0);
   memset(eff_radius_qi_at_cldtop, 0.0);
-  memset(lwp_at_cldtop, 0.0);
-  memset(iwp_at_cldtop, 0.0);
+
   // Initialize the 1D "clear fraction" as 1 (totally clear)
   auto aerocom_clr = real1d("aerocom_clr", ncol);
   memset(aerocom_clr, 1.0);
@@ -1112,10 +1109,6 @@ void compute_aerocom_cloudtop(
           // eff_radius_qi_at_cldtop
           eff_radius_qi_at_cldtop(icol) +=
             rei(icol, ilay) * (1.0 - aerocom_phi) * aerocom_wts;
-          // lwp_at_cldtop
-          lwp_at_cldtop(icol) += lwp(icol, ilay) * aerocom_phi * aerocom_wts;
-          // iwp_at_cldtop
-          iwp_at_cldtop(icol) += iwp(icol, ilay) * (1.0 - aerocom_phi) * aerocom_wts;
           // Reset aerocom_clr to aerocom_tmp to accumulate
           aerocom_clr(icol) = aerocom_tmp;
         }

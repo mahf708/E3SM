@@ -219,10 +219,10 @@ void RRTMGPRadiation::set_grids(const std::shared_ptr<const GridsManager> grids_
   add_field<Computed>("cldfrac_liq_at_cldtop", scalar2d, nondim, grid_name);
   add_field<Computed>("cldfrac_tot_at_cldtop", scalar2d, nondim, grid_name);
   add_field<Computed>("cldfrac_tot_at_cldtop_pert", scalar2d, nondim, grid_name);
-  add_field<Computed>("lwp_at_cldtop", scalar2d, kg/m2, grid_name);
-  add_field<Computed>("lwp_at_cldtop_pert", scalar2d, kg/m2, grid_name);
-  add_field<Computed>("iwp_at_cldtop", scalar2d, kg/m2, grid_name);
-  add_field<Computed>("iwp_at_cldtop_pert", scalar2d, kg/m2, grid_name);
+  add_field<Computed>("rad_lwp", scalar2d, g/m2, grid_name);
+  add_field<Computed>("rad_lwp_pert", scalar2d, g/m2, grid_name);
+  add_field<Computed>("rad_iwp", scalar2d, g/m2, grid_name);
+  add_field<Computed>("rad_iwp_pert", scalar2d, g/m2, grid_name);
   add_field<Computed>("cdnc_at_cldtop", scalar2d, 1 / (m * m * m), grid_name);
   add_field<Computed>("eff_radius_qc_at_cldtop", scalar2d, micron, grid_name);
   add_field<Computed>("eff_radius_qi_at_cldtop", scalar2d, micron, grid_name);
@@ -862,10 +862,10 @@ void RRTMGPRadiation::run_impl (const double dt) {
       get_field_out("cldfrac_tot_at_cldtop").get_view<Real *>();
   auto d_cldfrac_tot_at_cldtop_pert =
       get_field_out("cldfrac_tot_at_cldtop_pert").get_view<Real *>();
-  auto d_lwp_at_cldtop = get_field_out("lwp_at_cldtop").get_view<Real *>();
-  auto d_lwp_at_cldtop_pert = get_field_out("lwp_at_cldtop_pert").get_view<Real *>();
-  auto d_iwp_at_cldtop = get_field_out("iwp_at_cldtop").get_view<Real *>();
-  auto d_iwp_at_cldtop_pert = get_field_out("iwp_at_cldtop_pert").get_view<Real *>();
+  auto d_rad_lwp = get_field_out("rad_lwp").get_view<Real *>();
+  auto d_rad_lwp_pert = get_field_out("rad_lwp_pert").get_view<Real *>();
+  auto d_rad_iwp = get_field_out("rad_iwp").get_view<Real *>();
+  auto d_rad_iwp_pert = get_field_out("rad_iwp_pert").get_view<Real *>();
   auto d_cdnc_at_cldtop = get_field_out("cdnc_at_cldtop").get_view<Real *>();
   auto d_eff_radius_qc_at_cldtop =
       get_field_out("eff_radius_qc_at_cldtop").get_view<Real *>();
@@ -1439,10 +1439,10 @@ void RRTMGPRadiation::run_impl (const double dt) {
         Kokkos::Random_XorShift64_Pool<> rand_pool64_lwp(rd_lwp());
         Kokkos::Random_XorShift64_Pool<> rand_pool64_iwp(rd_iwp());
 #ifdef RRTMGP_ENABLE_YAKL
-        Kokkos::parallel_for(ncol,generate_random(cldfrac_tot_pert, rand_pool64_cldfrac_tot, m_nlay, 0));
+        Kokkos::parallel_for(ncol,generate_random(cldfrac_tot_pert, rand_pool64_cldfrac_tot, m_nlay, 0.0, 1.0));
 #endif
 #ifdef RRTMGP_ENABLE_KOKKOS
-        Kokkos::parallel_for(ncol,generate_random(cldfrac_tot_k_pert, rand_pool64_cldfrac_tot, m_nlay, 0));
+        Kokkos::parallel_for(ncol,generate_random(cldfrac_tot_k_pert, rand_pool64_cldfrac_tot, m_nlay, 0.0, 1.0));
 #endif
       Kokkos::fence();
 #ifdef RRTMGP_ENABLE_KOKKOS
@@ -1452,15 +1452,15 @@ void RRTMGPRadiation::run_impl (const double dt) {
       // Compute layer cloud mass (per unit area)
 #ifdef RRTMGP_ENABLE_YAKL
       rrtmgp::mixing_ratio_to_cloud_mass(qc, cldfrac_tot, p_del, lwp);
-      Kokkos::parallel_for(ncol,generate_random(lwp_pert, rand_pool64_lwp, m_nlay, 0));
+      Kokkos::parallel_for(ncol,generate_random(lwp_pert, rand_pool64_lwp, m_nlay, 0.50, 2.00));
       rrtmgp::mixing_ratio_to_cloud_mass(qi, cldfrac_tot, p_del, iwp);
-      Kokkos::parallel_for(ncol,generate_random(iwp_pert, rand_pool64_lwp, m_nlay, 0));
+      Kokkos::parallel_for(ncol,generate_random(iwp_pert, rand_pool64_lwp, m_nlay, 0.50, 2.00));
 #endif
 #ifdef RRTMGP_ENABLE_KOKKOS
       interface_t::mixing_ratio_to_cloud_mass(qc_k, cldfrac_tot_k, p_del_k, lwp_k);
-      Kokkos::parallel_for(ncol,generate_random(lwp_k_pert, rand_pool64_iwp, m_nlay, 0));
+      Kokkos::parallel_for(ncol,generate_random(lwp_k_pert, rand_pool64_iwp, m_nlay, 0.75, 1.25));
       interface_t::mixing_ratio_to_cloud_mass(qi_k, cldfrac_tot_k, p_del_k, iwp_k);
-      Kokkos::parallel_for(ncol,generate_random(iwp_k_pert, rand_pool64_iwp, m_nlay, 0));
+      Kokkos::parallel_for(ncol,generate_random(iwp_k_pert, rand_pool64_iwp, m_nlay, 0.75, 1.25));
       COMPARE_ALL_WRAP(std::vector<real2d>({lwp, iwp}),
                        std::vector<real2dk>({lwp_k, iwp_k}));
 #endif
@@ -1469,19 +1469,28 @@ void RRTMGPRadiation::run_impl (const double dt) {
       const auto policy = ekat::ExeSpaceUtils<ExeSpace>::get_default_team_policy(ncol, m_nlay);
       Kokkos::parallel_for(policy, KOKKOS_LAMBDA(const MemberType& team) {
         const int i = team.league_rank();
+        const int icol = i + beg;
         Kokkos::parallel_for(Kokkos::TeamVectorRange(team, nlay), [&] (const int& k) {
           // Note that for YAKL arrays i and k start with index 1
 #ifdef RRTMGP_ENABLE_YAKL
           lwp(i+1,k+1) *= 1e3;
+          d_rad_lwp(icol) += lwp(i+1,k+1);
           lwp_pert(i+1,k+1) *= 1e3;
+          d_rad_lwp_pert(icol) += lwp_pert(i+1,k+1);
           iwp(i+1,k+1) *= 1e3;
+          d_rad_iwp(icol) += iwp(i+1,k+1);
           iwp_pert(i+1,k+1) *= 1e3;
+          d_rad_iwp_pert(icol) += iwp_pert(i+1,k+1);
 #endif
 #ifdef RRTMGP_ENABLE_KOKKOS
           lwp_k(i,k) *= 1e3;
+          d_rad_lwp(icol) += lwp_k(i,k);
           lwp_k_pert(i,k) *= 1e3;
+          d_rad_lwp_pert(icol) += lwp_k_pert(i,k);
           iwp_k(i,k) *= 1e3;
+          d_rad_iwp(icol) += iwp_k(i,k);
           iwp_k_pert(i,k) *= 1e3;
+          d_rad_iwp_pert(icol) += iwp_k_pert(i,k);
 #endif
         });
       });
@@ -1844,10 +1853,6 @@ void RRTMGPRadiation::run_impl (const double dt) {
       real1d cldfrac_liq_at_cldtop ("cldfrac_liq_at_cldtop", d_cldfrac_liq_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
       real1d cldfrac_tot_at_cldtop ("cldfrac_tot_at_cldtop", d_cldfrac_tot_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
       real1d cldfrac_tot_at_cldtop_pert ("cldfrac_tot_at_cldtop_pert", d_cldfrac_tot_at_cldtop_pert.data() + m_col_chunk_beg[ic], ncol);
-      real1d lwp_at_cldtop ("lwp_at_cldtop", d_lwp_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
-      real1d lwp_at_cldtop_pert ("lwp_at_cldtop_pert", d_lwp_at_cldtop_pert.data() + m_col_chunk_beg[ic], ncol);
-      real1d iwp_at_cldtop ("iwp_at_cldtop", d_iwp_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
-      real1d iwp_at_cldtop_pert ("iwp_at_cldtop_pert", d_iwp_at_cldtop_pert.data() + m_col_chunk_beg[ic], ncol);
       real1d cdnc_at_cldtop ("cdnc_at_cldtop", d_cdnc_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
       real1d eff_radius_qc_at_cldtop ("eff_radius_qc_at_cldtop", d_eff_radius_qc_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
       real1d eff_radius_qi_at_cldtop ("eff_radius_qi_at_cldtop", d_eff_radius_qi_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
@@ -1855,27 +1860,15 @@ void RRTMGPRadiation::run_impl (const double dt) {
       // perturb cldfrac_tot
       rrtmgp::compute_aerocom_cloudtop(
           ncol, nlay, t_lay, p_lay, p_del, z_del, qc, qi, rel, rei, cldfrac_tot_pert,
-          nc, lwp, iwp, T_mid_at_cldtop, p_mid_at_cldtop, cldfrac_ice_at_cldtop,
+          nc, T_mid_at_cldtop, p_mid_at_cldtop, cldfrac_ice_at_cldtop,
           cldfrac_liq_at_cldtop, cldfrac_tot_at_cldtop_pert, cdnc_at_cldtop,
-          eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop, lwp_at_cldtop, iwp_at_cldtop);
-      // perturb lwp
-      rrtmgp::compute_aerocom_cloudtop(
-          ncol, nlay, t_lay, p_lay, p_del, z_del, qc, qi, rel, rei, cldfrac_tot,
-          nc, lwp_pert, iwp, T_mid_at_cldtop, p_mid_at_cldtop, cldfrac_ice_at_cldtop,
-          cldfrac_liq_at_cldtop, cldfrac_tot_at_cldtop_pert, cdnc_at_cldtop,
-          eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop, lwp_at_cldtop_pert, iwp_at_cldtop);
-      // perturb iwp
-      rrtmgp::compute_aerocom_cloudtop(
-          ncol, nlay, t_lay, p_lay, p_del, z_del, qc, qi, rel, rei, cldfrac_tot,
-          nc, lwp, iwp_pert, T_mid_at_cldtop, p_mid_at_cldtop, cldfrac_ice_at_cldtop,
-          cldfrac_liq_at_cldtop, cldfrac_tot_at_cldtop_pert, cdnc_at_cldtop,
-          eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop, lwp_at_cldtop, iwp_at_cldtop_pert);
+          eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop);
       // actual call
       rrtmgp::compute_aerocom_cloudtop(
           ncol, nlay, t_lay, p_lay, p_del, z_del, qc, qi, rel, rei, cldfrac_tot,
-          nc, lwp, iwp, T_mid_at_cldtop, p_mid_at_cldtop, cldfrac_ice_at_cldtop,
+          nc, T_mid_at_cldtop, p_mid_at_cldtop, cldfrac_ice_at_cldtop,
           cldfrac_liq_at_cldtop, cldfrac_tot_at_cldtop, cdnc_at_cldtop,
-          eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop, lwp_at_cldtop, iwp_at_cldtop);
+          eff_radius_qc_at_cldtop, eff_radius_qi_at_cldtop);
 #endif
 #ifdef RRTMGP_ENABLE_KOKKOS
       // Get visible 0.67 micron band for COSP
@@ -1889,10 +1882,6 @@ void RRTMGPRadiation::run_impl (const double dt) {
       real1dk cldfrac_liq_at_cldtop_k (d_cldfrac_liq_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
       real1dk cldfrac_tot_at_cldtop_k (d_cldfrac_tot_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
       real1dk cldfrac_tot_at_cldtop_k_pert (d_cldfrac_tot_at_cldtop_pert.data() + m_col_chunk_beg[ic], ncol);
-      real1dk lwp_at_cldtop_k (d_lwp_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
-      real1dk lwp_at_cldtop_k_pert (d_lwp_at_cldtop_pert.data() + m_col_chunk_beg[ic], ncol);
-      real1dk iwp_at_cldtop_k (d_iwp_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
-      real1dk iwp_at_cldtop_k_pert (d_iwp_at_cldtop_pert.data() + m_col_chunk_beg[ic], ncol);
       real1dk cdnc_at_cldtop_k (d_cdnc_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
       real1dk eff_radius_qc_at_cldtop_k (d_eff_radius_qc_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
       real1dk eff_radius_qi_at_cldtop_k (d_eff_radius_qi_at_cldtop.data() + m_col_chunk_beg[ic], ncol);
@@ -1900,27 +1889,15 @@ void RRTMGPRadiation::run_impl (const double dt) {
       // perturb cldfrac_tot
       interface_t::compute_aerocom_cloudtop(
           ncol, nlay, t_lay_k, p_lay_k, p_del_k, z_del_k, qc_k, qi_k, rel_k, rei_k, cldfrac_tot_k_pert,
-          nc_k, lwp_k, iwp_k, T_mid_at_cldtop_k, p_mid_at_cldtop_k, cldfrac_ice_at_cldtop_k,
+          nc_k, T_mid_at_cldtop_k, p_mid_at_cldtop_k, cldfrac_ice_at_cldtop_k,
           cldfrac_liq_at_cldtop_k, cldfrac_tot_at_cldtop_k_pert, cdnc_at_cldtop_k,
-          eff_radius_qc_at_cldtop_k, eff_radius_qi_at_cldtop_k, lwp_at_cldtop_k, iwp_at_cldtop_k);
-      // perturb lwp
-      interface_t::compute_aerocom_cloudtop(
-          ncol, nlay, t_lay_k, p_lay_k, p_del_k, z_del_k, qc_k, qi_k, rel_k, rei_k, cldfrac_tot_k,
-          nc_k, lwp_k_pert, iwp_k, T_mid_at_cldtop_k, p_mid_at_cldtop_k, cldfrac_ice_at_cldtop_k,
-          cldfrac_liq_at_cldtop_k, cldfrac_tot_at_cldtop_k, cdnc_at_cldtop_k,
-          eff_radius_qc_at_cldtop_k, eff_radius_qi_at_cldtop_k, lwp_at_cldtop_k_pert, iwp_at_cldtop_k);
-      // actual iwp
-      interface_t::compute_aerocom_cloudtop(
-          ncol, nlay, t_lay_k, p_lay_k, p_del_k, z_del_k, qc_k, qi_k, rel_k, rei_k, cldfrac_tot_k,
-          nc_k, lwp_k, iwp_k_pert, T_mid_at_cldtop_k, p_mid_at_cldtop_k, cldfrac_ice_at_cldtop_k,
-          cldfrac_liq_at_cldtop_k, cldfrac_tot_at_cldtop_k, cdnc_at_cldtop_k,
-          eff_radius_qc_at_cldtop_k, eff_radius_qi_at_cldtop_k, lwp_at_cldtop_k, iwp_at_cldtop_k_pert);
+          eff_radius_qc_at_cldtop_k, eff_radius_qi_at_cldtop_k);
       // actual call
       interface_t::compute_aerocom_cloudtop(
           ncol, nlay, t_lay_k, p_lay_k, p_del_k, z_del_k, qc_k, qi_k, rel_k, rei_k, cldfrac_tot_k,
-          nc_k, lwp_k, iwp_k, T_mid_at_cldtop_k, p_mid_at_cldtop_k, cldfrac_ice_at_cldtop_k,
+          nc_k, T_mid_at_cldtop_k, p_mid_at_cldtop_k, cldfrac_ice_at_cldtop_k,
           cldfrac_liq_at_cldtop_k, cldfrac_tot_at_cldtop_k, cdnc_at_cldtop_k,
-          eff_radius_qc_at_cldtop_k, eff_radius_qi_at_cldtop_k, lwp_at_cldtop_k, iwp_at_cldtop_k);
+          eff_radius_qc_at_cldtop_k, eff_radius_qi_at_cldtop_k);
       COMPARE_ALL_WRAP(std::vector<real1d>({
             T_mid_at_cldtop, p_mid_at_cldtop, cldfrac_ice_at_cldtop,
             cldfrac_liq_at_cldtop, cldfrac_tot_at_cldtop, cdnc_at_cldtop,
@@ -1959,9 +1936,9 @@ void RRTMGPRadiation::run_impl (const double dt) {
         auto restom_cld = fsnt_cld - flnt_cld;
   
         Real denom;
-        denom = lwp_at_cldtop(i+1) - lwp_at_cldtop_pert(i+1);
+        denom = d_rad_lwp(icol) - d_rad_lwp_pert(icol);
         d_df_per_dlwp(icol) = (denom == 0) ? 0 : (restom-restom_lwp) / denom;
-        denom = iwp_at_cldtop(i+1) - iwp_at_cldtop_pert(i+1);
+        denom = d_rad_iwp(icol) - d_rad_iwp_pert(icol);
         d_df_per_diwp(icol) = (denom == 0) ? 0 : (restom-restom_iwp) / denom;
         denom = cldfrac_tot_at_cldtop(i+1) - cldfrac_tot_at_cldtop_pert(i+1);
         d_df_per_dcld(icol) = (denom == 0) ? 0 : (restom-restom_cld) / denom;
@@ -2022,9 +1999,9 @@ void RRTMGPRadiation::run_impl (const double dt) {
         auto restom_cld = fsnt_cld - flnt_cld;
   
         Real denom;
-        denom = lwp_at_cldtop(i) - lwp_at_cldtop_pert(i);
+        denom = rad_lwp(i) - rad_lwp_pert(i);
         d_df_per_dlwp(icol) = (denom == 0) ? 0 : (restom-restom_lwp) / denom;
-        denom = iwp_at_cldtop(i) - iwp_at_cldtop_pert(i);
+        denom = rad_iwp(i) - rad_iwp_pert(i);
         d_df_per_diwp(icol) = (denom == 0) ? 0 : (restom-restom_iwp) / denom;
         denom = cldfrac_tot_at_cldtop(i) - cldfrac_tot_at_cldtop_pert(i);
         d_df_per_dcld(icol) = (denom == 0) ? 0 : (restom-restom_cld) / denom;
