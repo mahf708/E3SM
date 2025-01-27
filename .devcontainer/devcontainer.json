@@ -87,6 +87,8 @@
 	  }
 	},
 
-	"postCreateCommand": "git config --global safe.directory '*'"
+	"postCreateCommand": "git config --global safe.directory '*'",
 
-  }
+	"postStartCommand": "sed -i '/ghcioci/d' ~/.gitconfig"
+
+}
