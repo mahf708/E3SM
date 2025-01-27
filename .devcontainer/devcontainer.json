@@ -1,0 +1,10 @@
+{
+	"name": "E3SM",
+	"runArgs": ["--init"],
+	"build": {
+		"dockerfile": "Dockerfile",
+		"context": ".."
+	},
+
+	"remoteUser": "e3smuser"
+}
