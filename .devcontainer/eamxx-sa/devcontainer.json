@@ -2,6 +2,14 @@
 
 	"image": "ghcr.io/e3sm-project/containers-standalone-ghci",
 
+	"customizations": {
+	  "vscode": {
+		"extensions": [
+			"github.codespaces",
+		]
+	  }
+	},
+
 	"postCreateCommand": "git config --global safe.directory '*'",
 
 	"postStartCommand": "sed -i '/ghcioci/d' ~/.gitconfig"
