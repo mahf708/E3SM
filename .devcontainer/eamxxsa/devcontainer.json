@@ -2,14 +2,8 @@
 
 	"image": "ghcr.io/e3sm-project/containers-standalone-ghci:standalone-ghci-0.2.0",
 
-	"postCreateCommand": "git config --global safe.directory '*'",
+	"postCreateCommand": "git config --global safe.directory '*'; git submodule update --init --recursive",
 
-	"postStartCommand": [
-		"sed -i '/ghcioci/d' ~/.gitconfig",
-		"git submodule update --init --recursive cime",
-		"git submodule update --init --recursive externals/ekat",
-		"git submodule update --init --recursive externals/mam4xx",
-		"git submodule update --init --recursive externals/haero"
-	]
+	"postStartCommand": "sed -i '/ghcioci/d' ~/.gitconfig"
 
 }
