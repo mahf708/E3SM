@@ -1,6 +1,6 @@
 {
 
-	"image": "ghcr.io/e3sm-project/containers-standalone-ghci",
+	"image": "ghcr.io/e3sm-project/containers-standalone-ghci:standalone-ghci-0.2.0",
 
 	"customizations": {
 	  "vscode": {
