@@ -1,5 +1,6 @@
 {
 
+	"name": "devcontainer",
 	"image": "ghcr.io/e3sm-project/containers-standalone-ghci",
 
 	"customizations": {
