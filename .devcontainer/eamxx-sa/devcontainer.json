@@ -1,6 +1,5 @@
 {
 
-	"name": "eamxx-sa",
 	"image": "ghcr.io/e3sm-project/containers-standalone-ghci",
 
 	"postCreateCommand": "git config --global safe.directory '*'",
