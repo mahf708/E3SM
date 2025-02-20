@@ -31,7 +31,7 @@ void AeroComCld::set_grids(
   const auto &grid_name = grid->name();
 
   const auto nondim = Units::nondimensional();
-  const auto micron = m / 1000000;
+  const auto micron = m/1000000;
 
   // Set the index map and units map
   AeroComCldDiagUtil aercom_util;
