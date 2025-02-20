@@ -21,10 +21,12 @@ jobs:
       id: changed-files
       with:
         files: |
-          '**/*.*pp'
+          '**/*.cpp'
+          '**/*.hpp'
           '**/*.h'
           '**/*.cc'
-          '**/*.*xx'
+          '**/*.cxx'
+          '**/*.hxx'
     - name: clang-format
       env:
         ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
