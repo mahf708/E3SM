@@ -19,21 +19,15 @@ jobs:
         fetch-depth: 0
     - uses: tj-actions/changed-files@v45
       id: changed-files
-      with:
-        files: |
-          '**/*.cpp'
-          '**/*.hpp'
-          '**/*.h'
-          '**/*.cc'
-          '**/*.cxx'
-          '**/*.hxx'
     - name: clang-format
       env:
         ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
       run: |
         touch /tmp/changed_files.txt
         for file in ${ALL_CHANGED_FILES}; do
-          echo "$file" >> /tmp/changed_files.txt
+          if [[ ! "$file" =~ \.ya?ml$ ]]; then
+            echo "$file" >> /tmp/changed_files.txt
+          fi
         done
         clang-format --dry-run --Werror --verbose --files=/tmp/changed_files.txt
         if [ $? -ne 0 ]; then
