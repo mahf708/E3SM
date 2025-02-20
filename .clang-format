@@ -1,2 +1,3 @@
 ---
 BasedOnStyle: LLVM
+FileExtensions: ['cpp', 'hpp', 'cc', 'cxx', 'h', 'hxx']
