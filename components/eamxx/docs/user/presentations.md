@@ -1,3 +1,3 @@
 # presentations
 
-[part1](presentations/part1.html)
+[part1](_presentations_srcs/part1.html)
