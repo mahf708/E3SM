@@ -71,7 +71,7 @@ jobs:
           ./eamxx-params-docs-autogen
       - name: Generate presentations
         run: |
-          marp -I components/eamxx/docs/user/_presentations_srcs -o components/eamxx/docs/user/_presentations_srcs
+          marp -I components/eamxx/docs/user/_presentations_srcs -o components/eamxx/docs/user/_presentations_html
       - name: Build
         run: mkdocs build --strict --verbose
       # Only deploy to the main github page when there is a push to master
