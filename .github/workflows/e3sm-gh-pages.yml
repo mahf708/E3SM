@@ -34,6 +34,9 @@ concurrency:
 jobs:
   Build-and-Deploy-docs:
     if: ${{ github.repository == 'mahf708/E3SM' }}
+    defaults:
+      run:
+        shell: bash -leo pipefail {0}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,6 +54,7 @@ jobs:
       - name: Install Python deps
         uses: mamba-org/setup-micromamba@v2
         with:
+          init-shell: bash
           environment-name: test-env
           create-args: >-
             python=3.12
@@ -59,6 +63,7 @@ jobs:
             mkdocs-monorepo-plugin
             mdutils
             mkdocs-bibtex==2.18.0
+            marp-cli
       # build every time (PR or push to master)
       - name: Generate EAMxx params docs
         working-directory: components/eamxx/scripts
