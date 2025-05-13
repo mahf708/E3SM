@@ -9,6 +9,7 @@ set(SHARE_SRC
   atm_process/atmosphere_process_dag.cpp
   atm_process/atmosphere_diagnostic.cpp
   atm_process/IOPDataManager.cpp
+  diag_process/diags_redux.cpp
   field/field_alloc_prop.cpp
   field/field_identifier.cpp
   field/field_header.cpp
