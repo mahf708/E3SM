@@ -75,6 +75,6 @@ if (NOT SCREAM_ONLY_GENERATE_BASELINES)
   CreateUnitTest(atm_proc "atm_process_tests.cpp")
 
   # Test diag processes
-  CreateUnitTest(diags_redux_procs "diags_redux_procs_tests.cpp")
+  CreateUnitTest(diags_redux_procs "diags_redux_tests/diags_redux_procs_tests.cpp")
 
 endif()
