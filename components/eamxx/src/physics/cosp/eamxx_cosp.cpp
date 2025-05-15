@@ -92,6 +92,7 @@ void Cosp::set_grids(const std::shared_ptr<const GridsManager> grids_manager)
   // Set of fields used strictly as output
   // NOTE we set their corresponding masks in init impl
   add_field<Computed>("isccp_cldtot", scalar2d, percent, grid_name);
+  add_field<Computed>("isccp_meanptop", scalar2d, Pa, grid_name);
   add_field<Computed>("isccp_ctptau", scalar4d_ctptau, percent, grid_name, 1);
   add_field<Computed>("modis_ctptau", scalar4d_ctptau, percent, grid_name, 1);
   add_field<Computed>("misr_cthtau", scalar4d_cthtau, percent, grid_name, 1);
@@ -110,7 +111,7 @@ void Cosp::initialize_impl (const RunType /* run_type */)
   CospFunc::initialize(m_num_cols, m_num_subcols, m_num_levs);
 
   // Set the mask field for each of the cosp computed fields
-  std::list<std::string> vnames = {"isccp_cldtot", "isccp_ctptau", "modis_ctptau", "misr_cthtau"};
+  std::list<std::string> vnames = {"isccp_cldtot", "isccp_meanptop", "isccp_ctptau", "modis_ctptau", "misr_cthtau"};
   for (const auto& field_name : vnames) {
     // the mask here is just the sunlit mask, so set it
     get_field_out(field_name).get_header().set_extra_data("mask_field", get_field_in("sunlit_mask"));
@@ -221,6 +222,7 @@ void Cosp::run_impl (const double dt)
     const auto dtau105_h = get_field_in("dtau105").get_view<const Real**, Host>();
 
     auto isccp_cldtot_h = get_field_out("isccp_cldtot").get_view<Real*, Host>();
+    auto isccp_meanptop_h = get_field_out("isccp_meanptop").get_view<Real*, Host>();
     auto isccp_ctptau_h = get_field_out("isccp_ctptau").get_view<Real***, Host>();
     auto modis_ctptau_h = get_field_out("modis_ctptau").get_view<Real***, Host>();
     auto misr_cthtau_h  = get_field_out("misr_cthtau"). get_view<Real***, Host>();
@@ -230,7 +232,7 @@ void Cosp::run_impl (const double dt)
             m_num_cols, m_num_subcols, m_num_levs, m_num_tau, m_num_ctp, m_num_cth, emsfc_lw,
             sunlit_h, skt_h, T_mid_h, p_mid_h, p_int_h, z_mid_h, qv_h, qc_h, qi_h,
             cldfrac_h, reff_qc_h, reff_qi_h, dtau067_h, dtau105_h,
-            isccp_cldtot_h, isccp_ctptau_h, modis_ctptau_h, misr_cthtau_h
+            isccp_cldtot_h, isccp_meanptop_h, isccp_ctptau_h, modis_ctptau_h, misr_cthtau_h
     );
     // Mask night values
     constexpr auto fill_value = constants::fill_value<Real>;
@@ -238,6 +240,7 @@ void Cosp::run_impl (const double dt)
       if (sunlit_h(i) == 0) {
         // if night, set to fill val
         isccp_cldtot_h(i) = fill_value;
+        isccp_meanptop_h(i) = fill_value;
         for (int j = 0; j < m_num_tau; j++) {
           for (int k = 0; k < m_num_ctp; k++) {
             isccp_ctptau_h(i,j,k) = fill_value;
@@ -252,6 +255,7 @@ void Cosp::run_impl (const double dt)
 
     // Make sure dev data is up to date
     get_field_out("isccp_cldtot").sync_to_dev();
+    get_field_out("isccp_meanptop").sync_to_dev();
     get_field_out("isccp_ctptau").sync_to_dev();
     get_field_out("modis_ctptau").sync_to_dev();
     get_field_out("misr_cthtau").sync_to_dev();
