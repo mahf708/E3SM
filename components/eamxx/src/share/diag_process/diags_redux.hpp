@@ -22,7 +22,10 @@ namespace scream {
 class DiagsRedux : public std::enable_shared_from_this<DiagsRedux> {
 public:
   // Constructor
-  DiagsRedux(const ekat::Comm &comm, const ekat::ParameterList &params);
+  DiagsRedux(const ekat::Comm &comm, const ekat::ParameterList &params)
+      : m_comm(comm), m_params(params) {
+    // Constructor implementation
+  }
 
   // Destructor
   virtual ~DiagsRedux() = default;
@@ -87,12 +90,15 @@ public:
   // Second, set fields if not set
   void set_required_field(const Field &f) {
     // Check if the field is in the list of required field requests
-    EKAT_REQUIRE_MSG(
-        has_required_field(f.get_header().get_identifier()),
-        "Error! Input field is not required by this diagnostics process.\n"
-        "    field id: " + f.get_header().get_identifier().get_id_string() + "\n"
-        "    diag process: " + this->name() + "\n"
-        "Something is wrong up the call stack. Please, contact developers.\n");
+    EKAT_REQUIRE_MSG(has_required_field(f.get_header().get_identifier()),
+                     "Error! Input field is not required by this diagnostics process.\n"
+                     "    field id: " +
+                         f.get_header().get_identifier().get_id_string() +
+                         "\n"
+                         "    diag process: " +
+                         this->name() +
+                         "\n"
+                         "Something is wrong up the call stack. Please, contact developers.\n");
     // If the field is not already in the list of fields_in, add it
     if (std::find(m_fields_in.begin(), m_fields_in.end(), f) == m_fields_in.end()) {
       m_fields_in.push_back(f);
@@ -100,12 +106,15 @@ public:
   }
   void set_computed_field(const Field &f) {
     // Check if the field is in the list of computed field requests
-    EKAT_REQUIRE_MSG(
-        has_computed_field(f.get_header().get_identifier()),
-        "Error! Input field is not computed by this diagnostics process.\n"
-        "    field id: " + f.get_header().get_identifier().get_id_string() + "\n"
-        "    diag process: " + this->name() + "\n"
-        "Something is wrong up the call stack. Please, contact developers.\n");
+    EKAT_REQUIRE_MSG(has_computed_field(f.get_header().get_identifier()),
+                     "Error! Input field is not computed by this diagnostics process.\n"
+                     "    field id: " +
+                         f.get_header().get_identifier().get_id_string() +
+                         "\n"
+                         "    diag process: " +
+                         this->name() +
+                         "\n"
+                         "Something is wrong up the call stack. Please, contact developers.\n");
     // If the field is not already in the list of fields_out, add it
     if (std::find(m_fields_out.begin(), m_fields_out.end(), f) == m_fields_out.end()) {
       m_fields_out.push_back(f);

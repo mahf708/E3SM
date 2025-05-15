@@ -63,12 +63,25 @@ TEST_CASE("diags_redux_set_fields") {
   diags_redux->add_field<Required>(field_name, layout, units, grid_name);
   FieldIdentifier fid(field_name, layout, units, grid_name);
   Field field(fid);
+  // required 
   diags_redux->set_required_field(field);
   // Verify that the field was set correctly
   REQUIRE(diags_redux->get_fields_in().front().get_header().get_identifier().name() == field_name);
   REQUIRE(diags_redux->get_fields_in().front().get_header().get_identifier().get_units() == units);
   REQUIRE(diags_redux->get_fields_in().front().get_header().get_identifier().get_layout() == layout);
   REQUIRE(diags_redux->get_fields_in().front().get_header().get_identifier().get_grid_name() == grid_name);
+
+  // computed
+  std::string field_name2 = "T_int";
+  diags_redux->add_field<Computed>(field_name2, layout, units, grid_name);
+  FieldIdentifier fid2(field_name2, layout, units, grid_name);
+  Field field2(fid2);
+  diags_redux->set_computed_field(field2);
+  // Verify that the field was set correctly
+  REQUIRE(diags_redux->get_fields_out().front().get_header().get_identifier().name() == field_name2);
+  REQUIRE(diags_redux->get_fields_out().front().get_header().get_identifier().get_units() == units);
+  REQUIRE(diags_redux->get_fields_out().front().get_header().get_identifier().get_layout() == layout);
+  REQUIRE(diags_redux->get_fields_out().front().get_header().get_identifier().get_grid_name() == grid_name);
 }
 
 } // namespace scream
