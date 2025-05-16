@@ -1,0 +1,81 @@
+name: gh-ci-tools
+
+on:
+  pull_request:
+    branches: 
+      - master
+      - maint-3.0
+    paths:
+      # first, yes to these
+      - '.github/workflows/e3sm-gh-ci-cime-tests.yml'
+      - 'cime_config/**'
+      - 'components/eam/**'
+      - 'components/eamxx/**'
+      - 'components/elm/**'
+      - 'driver-moab/**'
+      - 'driver-mct/**'
+      # second, no to these
+      - '!components/eam/docs/**'
+      - '!components/eam/mkdocs.yml'
+      - '!components/eamxx/docs/**'
+      - '!components/eamxx/mkdocs.yml'
+      - '!components/elm/docs/**'
+      - '!components/elm/mkdocs.yml'
+
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+
+  homme_tool_to_scrip:
+    if: ${{ github.repository == 'E3SM-Project/E3SM' }}
+    runs-on: ubuntu-latest
+    container: 
+      image: ghcr.io/e3sm-project/containers-ghci:ghci-0.2.1
+
+    steps:
+      - 
+        name: Checkout
+        uses: actions/checkout@v4
+        with:
+          show-progress: false
+          submodules: recursive
+      - 
+        name: run
+        run: |
+          
+          eval $(cime/CIME/Tools/get_case_env)
+          mkdir cmake_homme && cmake_homme
+          cmake \
+          -DBUILD_HOMME_WITHOUT_PIOLIBRARY=OFF \
+          -DPREQX_PLEV=26  \
+          components/homme
+          make -j4 homme_tool
+          cd ..
+          homme_tool_root=cmake_homme
+          cd ${homme_tool_root}
+          rm -f ${homme_tool_root}/input.nl
+          cat > ${homme_tool_root}/input.nl <<EOF
+          &ctl_nl
+          ne = 32
+          mesh_file = "none"
+          /
+          &vert_nl    
+          /
+          &analysis_nl
+          tool = 'grid_template_tool'
+          output_dir = "./"
+          output_timeunits=1
+          output_frequency=1
+          output_varnames1='area','corners','cv_lat','cv_lon'
+          output_type='netcdf'    
+          io_stride = 16
+          /
+          EOF
+          # run homme_tool to generate np4 scrip file
+          srun -n 2 cmake_homme/src/tool/homme_tool < ${homme_tool_root}/input.nl
+
+          
