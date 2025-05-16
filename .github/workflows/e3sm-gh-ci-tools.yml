@@ -15,6 +15,9 @@ jobs:
 
   homme_tool_to_scrip:
     if: ${{ github.repository == 'mahf708/E3SM' }}
+    defaults:
+      run:
+        shell: bash -leo pipefail {0}
     runs-on: ubuntu-latest
     container: 
       image: ghcr.io/e3sm-project/containers-ghci:ghci-0.2.1
@@ -27,7 +30,7 @@ jobs:
           show-progress: false
           submodules: recursive
       - 
-        name: run
+        name: run homme_tool
         run: |
           
           eval $(cime/CIME/Tools/get_case_env)
@@ -61,3 +64,18 @@ jobs:
           # run homme_tool to generate np4 scrip file
           srun -n 2 cmake_homme/src/tool/homme_tool < ${homme_tool_root}/input.nl
 
+      - 
+        name: Install Python deps
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          init-shell: bash
+          environment-name: docs
+          create-args: >-
+            python=3.12
+            xarray
+            numpy
+            netcdf4
+
+      # -
+      #   name: homme2scrip
+      #   run: |
