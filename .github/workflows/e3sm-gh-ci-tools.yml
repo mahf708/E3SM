@@ -4,23 +4,6 @@ on:
   pull_request:
     branches: 
       - master
-      - maint-3.0
-    paths:
-      # first, yes to these
-      - '.github/workflows/e3sm-gh-ci-cime-tests.yml'
-      - 'cime_config/**'
-      - 'components/eam/**'
-      - 'components/eamxx/**'
-      - 'components/elm/**'
-      - 'driver-moab/**'
-      - 'driver-mct/**'
-      # second, no to these
-      - '!components/eam/docs/**'
-      - '!components/eam/mkdocs.yml'
-      - '!components/eamxx/docs/**'
-      - '!components/eamxx/mkdocs.yml'
-      - '!components/elm/docs/**'
-      - '!components/elm/mkdocs.yml'
 
   workflow_dispatch:
 
@@ -31,7 +14,7 @@ concurrency:
 jobs:
 
   homme_tool_to_scrip:
-    if: ${{ github.repository == 'E3SM-Project/E3SM' }}
+    if: ${{ github.repository == 'mahf708/E3SM' }}
     runs-on: ubuntu-latest
     container: 
       image: ghcr.io/e3sm-project/containers-ghci:ghci-0.2.1
@@ -78,4 +61,3 @@ jobs:
           # run homme_tool to generate np4 scrip file
           srun -n 2 cmake_homme/src/tool/homme_tool < ${homme_tool_root}/input.nl
 
-          
