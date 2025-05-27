@@ -69,6 +69,11 @@ protected:
   Int m_num_ctp = 7;
   Int m_num_cth = 16;
 
+  Int m_num_lwp = 7;
+  Int m_num_iwp = 7;
+  Int m_num_rel = 6;
+  Int m_num_rei = 7;
+
   std::shared_ptr<const AbstractGrid> m_grid;
 
   // TODO: use atm buffer instead

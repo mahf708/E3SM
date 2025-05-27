@@ -13,6 +13,7 @@ module cosp_c2f
                                  WR_NREGIME,                                              &
                                  numMODISTauBins,numMODISPresBins,                        &
                                  numMODISReffIceBins,numMODISReffLiqBins,                 &
+                                 numMODISLWPBins,numMODISIWPBins,                         & ! YQIN
                                  numISCCPTauBins,numISCCPPresBins,numMISRTauBins,         &
                                  ntau,modis_histTau,tau_binBounds,                        &
                                  modis_histTauEdges,tau_binEdges,                         &
@@ -65,23 +66,23 @@ module cosp_c2f
          Lmeantbclrisccp     = .false., & ! ISCCP mean clear-sky 10.5micron brightness temperature
          Lalbisccp           = .false., & ! ISCCP mean cloud albedo         
          LclMISR             = .true. , & ! MISR cloud fraction
-         Lcltmodis           = .false., & ! MODIS total cloud fraction
-         Lclwmodis           = .false., & ! MODIS liquid cloud fraction
-         Lclimodis           = .false., & ! MODIS ice cloud fraction
+         Lcltmodis           = .true., & ! MODIS total cloud fraction
+         Lclwmodis           = .true., & ! MODIS liquid cloud fraction
+         Lclimodis           = .true., & ! MODIS ice cloud fraction
          Lclhmodis           = .false., & ! MODIS high-level cloud fraction
          Lclmmodis           = .false., & ! MODIS mid-level cloud fraction
          Lcllmodis           = .false., & ! MODIS low-level cloud fraction
-         Ltautmodis          = .false., & ! MODIS total cloud optical thicknes
-         Ltauwmodis          = .false., & ! MODIS liquid optical thickness
-         Ltauimodis          = .false., & ! MODIS ice optical thickness
+         Ltautmodis          = .true., & ! MODIS total cloud optical thicknes
+         Ltauwmodis          = .true., & ! MODIS liquid optical thickness
+         Ltauimodis          = .true., & ! MODIS ice optical thickness
          Ltautlogmodis       = .false., & ! MODIS total cloud optical thickness (log10 mean)
          Ltauwlogmodis       = .false., & ! MODIS liquid optical thickness (log10 mean)
          Ltauilogmodis       = .false., & ! MODIS ice optical thickness (log10 mean)
-         Lreffclwmodis       = .false., & ! MODIS liquid cloud particle size
-         Lreffclimodis       = .false., & ! MODIS ice particle size
+         Lreffclwmodis       = .true., & ! MODIS liquid cloud particle size
+         Lreffclimodis       = .true., & ! MODIS ice particle size
          Lpctmodis           = .false., & ! MODIS cloud top pressure
-         Llwpmodis           = .false., & ! MODIS cloud liquid water path
-         Liwpmodis           = .false., & ! MODIS cloud ice water path
+         Llwpmodis           = .true., & ! MODIS cloud liquid water path
+         Liwpmodis           = .true., & ! MODIS cloud ice water path
          Lclmodis            = .true. , & ! MODIS cloud area fraction
          Latb532             = .false., & ! CALIPSO attenuated total backscatter (532nm)
          Latb532gr           = .false., & ! GROUND LIDAR @ 532NM attenuated total backscatter (532nm)
@@ -271,16 +272,49 @@ contains
   end subroutine cosp_c2f_init 
 
   subroutine cosp_c2f_run(npoints, ncolumns, nlevels, ntau, nctp, ncth, &
+       nLWP, nIWP, nReffLiq, nReffIce, &  ! YQIN
        emsfc_lw, sunlit, skt, T_mid, p_mid, p_int, z_mid, qv, qc, qi, &
-       cldfrac, reff_qc, reff_qi, dtau067, dtau105, isccp_cldtot, isccp_ctptau, modis_ctptau, misr_cthtau &
+       cldfrac, reff_qc, reff_qi, dtau067, dtau105, isccp_cldtot, isccp_ctptau, modis_ctptau, misr_cthtau, &
+       modis_ctptau_liq, modis_ctptau_ice, modis_lwpre, modis_iwpre, & ! YQIN 11/30/24
+       modis_cldtot, modis_clwtot, modis_clitot, modis_taut, modis_tauw, modis_taui, modis_reffw, modis_reffi, modis_lwp, modis_iwp, & ! YQIN 03/11/25
+       modis_cld_Q06, modis_nd_Q06, modis_lwp_Q06, modis_tau_Q06, modis_reff_Q06, &
+       modis_cld_ALL, modis_nd_ALL, modis_lwp_ALL, modis_tau_ALL, modis_reff_ALL &
        ) bind(C, name='cosp_c2f_run')
-    integer(kind=c_int), value, intent(in) :: npoints, ncolumns, nlevels, ntau, nctp, ncth
+    integer(kind=c_int), value, intent(in) :: npoints, ncolumns, nlevels, ntau, nctp, ncth, nLWP, nIWP, nReffLiq, nReffIce
     real(kind=c_double), value, intent(in) :: emsfc_lw
     real(kind=c_double), intent(in), dimension(npoints) :: sunlit, skt
     real(kind=c_double), intent(in), dimension(npoints,nlevels) :: T_mid, p_mid, z_mid, qv, qc, qi, cldfrac, reff_qc, reff_qi, dtau067, dtau105
     real(kind=c_double), intent(in), dimension(npoints,nlevels+1) :: p_int
     real(kind=c_double), intent(inout), dimension(npoints) :: isccp_cldtot
+    ! YQIN 03/11/25 >>> 
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_cldtot
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_clwtot
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_clitot
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_taut
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_tauw
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_taui
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_reffw
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_reffi
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_lwp
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_iwp
+
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_cld_Q06
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_nd_Q06
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_lwp_Q06
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_tau_Q06
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_reff_Q06
+
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_cld_ALL
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_nd_ALL
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_lwp_ALL
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_tau_ALL
+    real(kind=c_double), intent(inout), dimension(npoints) :: modis_reff_ALL
+    ! YQIN <<<
+
     real(kind=c_double), intent(inout), dimension(npoints,ntau,nctp) :: isccp_ctptau, modis_ctptau
+    real(kind=c_double), intent(inout), dimension(npoints,ntau,nctp) :: modis_ctptau_liq, modis_ctptau_ice ! YQIN
+    real(kind=c_double), intent(inout), dimension(npoints,nLWP,nReffLiq) :: modis_lwpre ! YQIN
+    real(kind=c_double), intent(inout), dimension(npoints,nIWP,nReffIce) :: modis_iwpre ! YQIN
     real(kind=c_double), intent(inout), dimension(npoints,ntau,ncth) :: misr_cthtau
     ! Takes normal arrays as input and populates COSP derived types
     character(len=256),dimension(100) :: cosp_status
@@ -360,6 +394,37 @@ contains
 
     ! Modis
     modis_ctptau(:npoints,:,:) = cospOUT%modis_Optical_Thickness_vs_Cloud_Top_Pressure(:npoints,:,:)
+    ! YQIN 03/11/25 >>>
+    modis_cldtot(:npoints) = cospOUT%modis_Cloud_Fraction_Total_Mean(:npoints)
+    modis_clwtot(:npoints) = cospOUT%modis_Cloud_Fraction_Water_Mean(:npoints)
+    modis_clitot(:npoints) = cospOUT%modis_Cloud_Fraction_Ice_Mean(:npoints)
+    modis_taut(:npoints)   = cospOUT%modis_Optical_Thickness_Total_Mean(:npoints) * modis_cldtot(:npoints)
+    modis_tauw(:npoints)   = cospOUT%modis_Optical_Thickness_Water_Mean(:npoints) * modis_clwtot(:npoints)
+    modis_taui(:npoints)   = cospOUT%modis_Optical_Thickness_Ice_Mean(:npoints) * modis_clitot(:npoints)
+    modis_reffw(:npoints)  = cospOUT%modis_Cloud_Particle_Size_Water_Mean(:npoints) * modis_clwtot(:npoints)
+    modis_reffi(:npoints)  = cospOUT%modis_Cloud_Particle_Size_Ice_Mean(:npoints) * modis_clitot(:npoints)
+    modis_lwp(:npoints)    = cospOUT%modis_Liquid_Water_Path_Mean(:npoints) * modis_clwtot(:npoints)
+    modis_iwp(:npoints)    = cospOUT%modis_Ice_Water_Path_Mean(:npoints) * modis_clitot(:npoints)
+
+    modis_cld_Q06(:npoints)   = cospOUT%modis_Cloud_Fraction_Nd_Q06_Mean(:npoints)
+    modis_nd_Q06(:npoints)    = cospOUT%modis_Cloud_Top_Nd_Q06_Total_Mean(:npoints) * modis_cld_Q06(:npoints)
+    modis_lwp_Q06(:npoints)   = cospOUT%modis_Cloud_Top_LWP_Q06_Total_Mean(:npoints) * modis_cld_Q06(:npoints)
+    modis_tau_Q06(:npoints)   = cospOUT%modis_Cloud_Top_Tau_Q06_Total_Mean(:npoints) * modis_cld_Q06(:npoints)
+    modis_reff_Q06(:npoints)  = cospOUT%modis_Cloud_Top_Size_Q06_Total_Mean(:npoints) * modis_cld_Q06(:npoints)
+
+    modis_cld_ALL(:npoints)   = cospOUT%modis_Cloud_Fraction_Nd_ALL_Mean(:npoints)
+    modis_nd_ALL(:npoints)    = cospOUT%modis_Cloud_Top_Nd_ALL_Total_Mean(:npoints) * modis_cld_ALL(:npoints)
+    modis_lwp_ALL(:npoints)   = cospOUT%modis_Cloud_Top_LWP_ALL_Total_Mean(:npoints) * modis_cld_ALL(:npoints)
+    modis_tau_ALL(:npoints)   = cospOUT%modis_Cloud_Top_Tau_ALL_Total_Mean(:npoints) * modis_cld_ALL(:npoints)
+    modis_reff_ALL(:npoints)  = cospOUT%modis_Cloud_Top_Size_ALL_Total_Mean(:npoints) * modis_cld_ALL(:npoints)
+    ! YQIN <<< 
+
+    ! YQIN
+    modis_ctptau_liq(:npoints,:,:) = cospOUT%modis_Optical_Thickness_vs_Cloud_Top_Pressure_Liq(:npoints,:,:)
+    modis_ctptau_ice(:npoints,:,:) = cospOUT%modis_Optical_Thickness_vs_Cloud_Top_Pressure_Ice(:npoints,:,:)
+    modis_lwpre(:npoints,:,:) = cospOUT%modis_LWP_vs_ReffLIQ(:npoints,:,:)
+    modis_iwpre(:npoints,:,:) = cospOUT%modis_IWP_vs_ReffICE(:npoints,:,:)
+
 
     ! MISR
     misr_cthtau(:npoints,:,:) = cospOUT%misr_fq(:npoints,:,:)
@@ -524,6 +589,24 @@ contains
         allocate(x%modis_Optical_Thickness_vs_Cloud_Top_Pressure(nPoints,numModisTauBins,numMODISPresBins))
         allocate(x%modis_Optical_thickness_vs_ReffLIQ(nPoints,numMODISTauBins,numMODISReffLiqBins))   
         allocate(x%modis_Optical_Thickness_vs_ReffICE(nPoints,numMODISTauBins,numMODISReffIceBins))
+        ! YQIN
+        allocate(x%modis_Optical_Thickness_vs_Cloud_Top_Pressure_Liq(nPoints,numModisTauBins,numMODISPresBins))
+        allocate(x%modis_Optical_Thickness_vs_Cloud_Top_Pressure_Ice(nPoints,numModisTauBins,numMODISPresBins))
+        allocate(x%modis_LWP_vs_ReffLIQ(nPoints,numModisLWPBins,numMODISReffLiqBins))
+        allocate(x%modis_IWP_vs_ReffICE(nPoints,numModisIWPBins,numMODISReffIceBins))
+
+        allocate(x%modis_Cloud_Fraction_Nd_Q06_Mean(Npoints))
+        allocate(x%modis_Cloud_Top_Nd_Q06_Total_Mean(Npoints))
+        allocate(x%modis_Cloud_Top_LWP_Q06_Total_Mean(Npoints))
+        allocate(x%modis_Cloud_Top_Tau_Q06_Total_Mean(Npoints))
+        allocate(x%modis_Cloud_Top_Size_Q06_Total_Mean(Npoints))
+
+        allocate(x%modis_Cloud_Fraction_Nd_ALL_Mean(Npoints))
+        allocate(x%modis_Cloud_Top_Nd_ALL_Total_Mean(Npoints))
+        allocate(x%modis_Cloud_Top_LWP_ALL_Total_Mean(Npoints))
+        allocate(x%modis_Cloud_Top_Tau_ALL_Total_Mean(Npoints))
+        allocate(x%modis_Cloud_Top_Size_ALL_Total_Mean(Npoints))
+
     endif
     
     ! LIDAR simulator
@@ -1013,6 +1096,66 @@ contains
         deallocate(y%modis_Optical_thickness_vs_ReffICE)
         nullify(y%modis_Optical_thickness_vs_ReffICE)
      endif
+     ! YQIN
+     if (associated(y%modis_Optical_Thickness_vs_Cloud_Top_Pressure_Liq))        then
+        deallocate(y%modis_Optical_Thickness_vs_Cloud_Top_Pressure_Liq)     
+        nullify(y%modis_Optical_Thickness_vs_Cloud_Top_Pressure_Liq)     
+     endif
+     if (associated(y%modis_Optical_Thickness_vs_Cloud_Top_Pressure_Ice))        then
+        deallocate(y%modis_Optical_Thickness_vs_Cloud_Top_Pressure_Ice)     
+        nullify(y%modis_Optical_Thickness_vs_Cloud_Top_Pressure_Ice)     
+     endif
+     if (associated(y%modis_LWP_vs_ReffLIQ))        then
+        deallocate(y%modis_LWP_vs_ReffLIQ)     
+        nullify(y%modis_LWP_vs_ReffLIQ)     
+     endif
+     if (associated(y%modis_IWP_vs_ReffICE))        then
+        deallocate(y%modis_IWP_vs_ReffICE)     
+        nullify(y%modis_IWP_vs_ReffICE)     
+     endif
+
+    ! YQIN 03/14/25
+     if (associated(y%modis_Cloud_Fraction_Nd_Q06_Mean)) then
+        deallocate(y%modis_Cloud_Fraction_Nd_Q06_Mean)
+        nullify(y%modis_Cloud_Fraction_Nd_Q06_Mean)
+     endif
+     if (associated(y%modis_Cloud_Top_Nd_Q06_Total_Mean)) then
+        deallocate(y%modis_Cloud_Top_Nd_Q06_Total_Mean)
+        nullify(y%modis_Cloud_Top_Nd_Q06_Total_Mean)
+     endif
+     if (associated(y%modis_Cloud_Top_LWP_Q06_Total_Mean)) then
+        deallocate(y%modis_Cloud_Top_LWP_Q06_Total_Mean)
+        nullify(y%modis_Cloud_Top_LWP_Q06_Total_Mean)
+     endif
+     if (associated(y%modis_Cloud_Top_Tau_Q06_Total_Mean)) then
+        deallocate(y%modis_Cloud_Top_Tau_Q06_Total_Mean)
+        nullify(y%modis_Cloud_Top_Tau_Q06_Total_Mean)
+     endif
+     if (associated(y%modis_Cloud_Top_Size_Q06_Total_Mean)) then
+        deallocate(y%modis_Cloud_Top_Size_Q06_Total_Mean)
+        nullify(y%modis_Cloud_Top_Size_Q06_Total_Mean)
+     endif
+     if (associated(y%modis_Cloud_Fraction_Nd_ALL_Mean)) then
+        deallocate(y%modis_Cloud_Fraction_Nd_ALL_Mean)
+        nullify(y%modis_Cloud_Fraction_Nd_ALL_Mean)
+     endif
+     if (associated(y%modis_Cloud_Top_Nd_ALL_Total_Mean)) then
+        deallocate(y%modis_Cloud_Top_Nd_ALL_Total_Mean)
+        nullify(y%modis_Cloud_Top_Nd_ALL_Total_Mean)
+     endif
+     if (associated(y%modis_Cloud_Top_LWP_ALL_Total_Mean)) then
+        deallocate(y%modis_Cloud_Top_LWP_ALL_Total_Mean)
+        nullify(y%modis_Cloud_Top_LWP_ALL_Total_Mean)
+     endif
+     if (associated(y%modis_Cloud_Top_Tau_ALL_Total_Mean)) then
+        deallocate(y%modis_Cloud_Top_Tau_ALL_Total_Mean)
+        nullify(y%modis_Cloud_Top_Tau_ALL_Total_Mean)
+     endif
+     if (associated(y%modis_Cloud_Top_Size_ALL_Total_Mean)) then
+        deallocate(y%modis_Cloud_Top_Size_ALL_Total_Mean)
+        nullify(y%modis_Cloud_Top_Size_ALL_Total_Mean)
+     endif
+
      !if (associated(y%cfodd_ntotal)) then
      !   deallocate(y%cfodd_ntotal)
      !   nullify(y%cfodd_ntotal)

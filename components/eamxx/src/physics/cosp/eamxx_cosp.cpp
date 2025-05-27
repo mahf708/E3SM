@@ -42,6 +42,9 @@ void Cosp::set_grids(const std::shared_ptr<const GridsManager> grids_manager)
   auto micron = micro*m;
   auto m2 = pow(m, 2);
   auto s2 = pow(s, 2);
+  // YQIN
+  auto cm_tmp = m/100;
+  auto cm3 = pow(cm_tmp,3);
 
   m_grid = grids_manager->get_grid("physics");
   const auto& grid_name = m_grid->name();
@@ -57,6 +60,15 @@ void Cosp::set_grids(const std::shared_ptr<const GridsManager> grids_manager)
   FieldLayout scalar4d_ctptau ( {COL,CMP,CMP},
                                 {m_num_cols,m_num_tau,m_num_ctp},
                                 {e2str(COL), "cosp_tau", "cosp_prs"});
+
+  FieldLayout scalar4d_lwprel ( {COL,CMP,CMP},
+                                {m_num_cols,m_num_lwp,m_num_rel},
+                                {e2str(COL), "cosp_lwp", "cosp_reffliq"});
+  FieldLayout scalar4d_iwprei ( {COL,CMP,CMP},
+                                {m_num_cols,m_num_iwp,m_num_rei},
+                                {e2str(COL), "cosp_iwp", "cosp_reffice"});
+
+
   FieldLayout scalar4d_cthtau ( {COL,CMP,CMP},
                                 {m_num_cols,m_num_tau,m_num_cth},
                                 {e2str(COL), "cosp_tau", "cosp_cth"});
@@ -92,6 +104,36 @@ void Cosp::set_grids(const std::shared_ptr<const GridsManager> grids_manager)
   add_field<Computed>("isccp_cldtot", scalar2d, percent, grid_name);
   add_field<Computed>("isccp_ctptau", scalar4d_ctptau, percent, grid_name, 1);
   add_field<Computed>("modis_ctptau", scalar4d_ctptau, percent, grid_name, 1);
+
+  // MODIS
+  add_field<Computed>("modis_cldtot", scalar2d, percent, grid_name);
+  add_field<Computed>("modis_clwtot", scalar2d, percent, grid_name);
+  add_field<Computed>("modis_clitot", scalar2d, percent, grid_name);
+  add_field<Computed>("modis_taut", scalar2d, nondim, grid_name);
+  add_field<Computed>("modis_tauw", scalar2d, nondim, grid_name);
+  add_field<Computed>("modis_taui", scalar2d, nondim, grid_name);
+  add_field<Computed>("modis_reffw", scalar2d, m, grid_name);
+  add_field<Computed>("modis_reffi", scalar2d, m, grid_name);
+  add_field<Computed>("modis_lwp", scalar2d, kg/m2, grid_name);
+  add_field<Computed>("modis_iwp", scalar2d, kg/m2, grid_name);
+
+  add_field<Computed>("modis_cld_Q06", scalar2d, nondim, grid_name);
+  add_field<Computed>("modis_nd_Q06", scalar2d, 1/cm3, grid_name);
+  add_field<Computed>("modis_lwp_Q06", scalar2d, kg/m2, grid_name);
+  add_field<Computed>("modis_tau_Q06", scalar2d, nondim, grid_name);
+  add_field<Computed>("modis_reff_Q06", scalar2d, m, grid_name);
+
+  add_field<Computed>("modis_cld_ALL", scalar2d, nondim, grid_name);
+  add_field<Computed>("modis_nd_ALL", scalar2d, 1/cm3, grid_name);
+  add_field<Computed>("modis_lwp_ALL", scalar2d, kg/m2, grid_name);
+  add_field<Computed>("modis_tau_ALL", scalar2d, nondim, grid_name);
+  add_field<Computed>("modis_reff_ALL", scalar2d, m, grid_name);
+
+  add_field<Computed>("modis_ctptau_liq", scalar4d_ctptau, percent, grid_name, 1);
+  add_field<Computed>("modis_ctptau_ice", scalar4d_ctptau, percent, grid_name, 1);
+  add_field<Computed>("modis_lwpre", scalar4d_lwprel, percent, grid_name, 1);
+  add_field<Computed>("modis_iwpre", scalar4d_iwprei, percent, grid_name, 1);
+
   add_field<Computed>("misr_cthtau", scalar4d_cthtau, percent, grid_name, 1);
   add_field<Computed>("cosp_sunlit", scalar2d, nondim, grid_name);
 
@@ -112,8 +154,14 @@ void Cosp::initialize_impl (const RunType /* run_type */)
   // Add note to output files about processing ISCCP fields that are only valid during
   // daytime. This can go away once I/O can handle masked time averages.
   using stratts_t = std::map<std::string,std::string>;
-  std::list<std::string> vnames = {"isccp_cldtot", "isccp_ctptau", "modis_ctptau", "misr_cthtau"};
-  for (const auto field_name : {"isccp_cldtot", "isccp_ctptau", "modis_ctptau", "misr_cthtau"}) {
+  std::list<std::string> vnames = {"isccp_cldtot", "isccp_ctptau", "modis_ctptau", "misr_cthtau", "modis_ctptau_liq", "modis_ctptau_ice", "modis_lwpre", "modis_iwpre",
+                                   "modis_cldtot", "modis_clwtot", "modis_clitot", "modis_taut", "modis_tauw", "modis_taui", "modis_reffw", "modis_reffi", "modis_lwp", "modis_iwp",
+                                   "modis_cld_Q06", "modis_nd_Q06", "modis_lwp_Q06", "modis_tau_Q06", "modis_reff_Q06",
+                                   "modis_cld_ALL", "modis_nd_ALL", "modis_lwp_ALL", "modis_tau_ALL", "modis_reff_ALL"};
+  for (const auto field_name : {"isccp_cldtot", "isccp_ctptau", "modis_ctptau", "misr_cthtau", "modis_ctptau_liq", "modis_ctptau_ice", "modis_lwpre", "modis_iwpre",
+                                "modis_cldtot", "modis_clwtot", "modis_clitot", "modis_taut", "modis_tauw", "modis_taui", "modis_reffw", "modis_reffi", "modis_lwp", "modis_iwp",
+                                   "modis_cld_Q06", "modis_nd_Q06", "modis_lwp_Q06", "modis_tau_Q06", "modis_reff_Q06",
+                                   "modis_cld_ALL", "modis_nd_ALL", "modis_lwp_ALL", "modis_tau_ALL", "modis_reff_ALL"}) {
       auto& f = get_field_out(field_name);
       auto& atts = f.get_header().get_extra_data<stratts_t>("io: string attributes");
       atts["note"] = "Night values are zero; divide by cosp_sunlit to get daytime mean";
@@ -227,28 +275,100 @@ void Cosp::run_impl (const double dt)
     auto misr_cthtau_h  = get_field_out("misr_cthtau").get_view<Real***, Host>();
     auto cosp_sunlit_h  = get_field_out("cosp_sunlit").get_view<Real*, Host>();  // Copy of sunlit flag with COSP frequency for proper averaging
 
+    auto modis_cldtot_h = get_field_out("modis_cldtot").get_view<Real*, Host>();
+    auto modis_clwtot_h = get_field_out("modis_clwtot").get_view<Real*, Host>();
+    auto modis_clitot_h = get_field_out("modis_clitot").get_view<Real*, Host>();
+    auto modis_taut_h = get_field_out("modis_taut").get_view<Real*, Host>();
+    auto modis_tauw_h = get_field_out("modis_tauw").get_view<Real*, Host>();
+    auto modis_taui_h = get_field_out("modis_taui").get_view<Real*, Host>();
+    auto modis_reffw_h = get_field_out("modis_reffw").get_view<Real*, Host>();
+    auto modis_reffi_h = get_field_out("modis_reffi").get_view<Real*, Host>();
+    auto modis_lwp_h = get_field_out("modis_lwp").get_view<Real*, Host>();
+    auto modis_iwp_h = get_field_out("modis_iwp").get_view<Real*, Host>();
+
+    auto modis_cld_Q06_h = get_field_out("modis_cld_Q06").get_view<Real*, Host>();
+    auto modis_nd_Q06_h = get_field_out("modis_nd_Q06").get_view<Real*, Host>();
+    auto modis_lwp_Q06_h = get_field_out("modis_lwp_Q06").get_view<Real*, Host>();
+    auto modis_tau_Q06_h = get_field_out("modis_tau_Q06").get_view<Real*, Host>();
+    auto modis_reff_Q06_h = get_field_out("modis_reff_Q06").get_view<Real*, Host>();
+
+    auto modis_cld_ALL_h = get_field_out("modis_cld_ALL").get_view<Real*, Host>();
+    auto modis_nd_ALL_h = get_field_out("modis_nd_ALL").get_view<Real*, Host>();
+    auto modis_lwp_ALL_h = get_field_out("modis_lwp_ALL").get_view<Real*, Host>();
+    auto modis_tau_ALL_h = get_field_out("modis_tau_ALL").get_view<Real*, Host>();
+    auto modis_reff_ALL_h = get_field_out("modis_reff_ALL").get_view<Real*, Host>();
+
+    auto modis_ctptau_liq_h = get_field_out("modis_ctptau_liq").get_view<Real***, Host>();
+    auto modis_ctptau_ice_h = get_field_out("modis_ctptau_ice").get_view<Real***, Host>();
+    auto modis_lwpre_h = get_field_out("modis_lwpre").get_view<Real***, Host>();
+    auto modis_iwpre_h = get_field_out("modis_iwpre").get_view<Real***, Host>();
+
+
     Real emsfc_lw = 0.99;
     Kokkos::deep_copy(cosp_sunlit_h, sunlit_h);
     CospFunc::main(
-            m_num_cols, m_num_subcols, m_num_levs, m_num_tau, m_num_ctp, m_num_cth, emsfc_lw,
-            sunlit_h, skt_h, T_mid_h, p_mid_h, p_int_h, z_mid_h, qv_h, qc_h, qi_h,
+            m_num_cols, m_num_subcols, m_num_levs, m_num_tau, m_num_ctp, m_num_cth,
+            m_num_lwp, m_num_iwp, m_num_rel, m_num_rei,
+            emsfc_lw, sunlit_h, skt_h, T_mid_h, p_mid_h, p_int_h, z_mid_h, qv_h, qc_h, qi_h,
             cldfrac_h, reff_qc_h, reff_qi_h, dtau067_h, dtau105_h,
-            isccp_cldtot_h, isccp_ctptau_h, modis_ctptau_h, misr_cthtau_h
+            isccp_cldtot_h, isccp_ctptau_h, modis_ctptau_h, misr_cthtau_h,
+            modis_ctptau_liq_h, modis_ctptau_ice_h, modis_lwpre_h, modis_iwpre_h,
+            modis_cldtot_h, modis_clwtot_h, modis_clitot_h,
+            modis_taut_h, modis_tauw_h, modis_taui_h,
+            modis_reffw_h, modis_reffi_h, modis_lwp_h, modis_iwp_h,
+            modis_cld_Q06_h, modis_nd_Q06_h, modis_lwp_Q06_h, modis_tau_Q06_h, modis_reff_Q06_h,
+            modis_cld_ALL_h, modis_nd_ALL_h, modis_lwp_ALL_h, modis_tau_ALL_h, modis_reff_ALL_h
     );
     // Remask night values to ZERO since our I/O does not know how to handle masked/missing values
     // in temporal averages; this is all host data, so we can just use host loops like its the 1980s
     for (int i = 0; i < m_num_cols; i++) {
       if (sunlit_h(i) == 0) {
         isccp_cldtot_h(i) = 0;
+        modis_cldtot_h(i) = 0;
+        modis_clwtot_h(i) = 0; 
+        modis_clitot_h(i) = 0; 
+        modis_taut_h(i) = 0;
+        modis_tauw_h(i) = 0;
+        modis_taui_h(i) = 0; 
+        modis_reffw_h(i) = 0;
+        modis_reffi_h(i) = 0; 
+        modis_lwp_h(i) = 0; 
+        modis_iwp_h(i) = 0; 
+
+        modis_cld_Q06_h(i) = 0;
+        modis_nd_Q06_h(i) = 0;
+        modis_lwp_Q06_h(i) = 0;
+        modis_tau_Q06_h(i) = 0;
+        modis_reff_Q06_h(i) = 0;
+
+        modis_cld_ALL_h(i) = 0;
+        modis_nd_ALL_h(i) = 0;
+        modis_lwp_ALL_h(i) = 0;
+        modis_tau_ALL_h(i) = 0;
+        modis_reff_ALL_h(i) = 0;
+
         for (int j = 0; j < m_num_tau; j++) {
           for (int k = 0; k < m_num_ctp; k++) {
             isccp_ctptau_h(i,j,k) = 0;
             modis_ctptau_h(i,j,k) = 0;
+            modis_ctptau_liq_h(i,j,k) = 0;
+            modis_ctptau_ice_h(i,j,k) = 0; 
           }
           for (int k = 0; k < m_num_cth; k++) {
             misr_cthtau_h (i,j,k) = 0;
           }
         }
+        for (int j = 0; j < m_num_lwp; j++) {
+            for (int k = 0; k < m_num_rel; k++) {
+                modis_lwpre_h(i,j,k) = 0;
+            }
+        }
+        for (int j = 0; j < m_num_iwp; j++) {
+            for (int k = 0; k < m_num_rei; k++) {
+                modis_iwpre_h(i,j,k) = 0;
+            }
+        }
+
       }
     }
 
@@ -258,6 +378,36 @@ void Cosp::run_impl (const double dt)
     get_field_out("modis_ctptau").sync_to_dev();
     get_field_out("misr_cthtau").sync_to_dev();
     get_field_out("cosp_sunlit").sync_to_dev();
+
+    get_field_out("modis_cldtot").sync_to_dev();
+    get_field_out("modis_clwtot").sync_to_dev();
+    get_field_out("modis_clitot").sync_to_dev();
+    get_field_out("modis_taut").sync_to_dev();
+    get_field_out("modis_tauw").sync_to_dev();
+    get_field_out("modis_taui").sync_to_dev();
+    get_field_out("modis_reffw").sync_to_dev();
+    get_field_out("modis_reffi").sync_to_dev();
+    get_field_out("modis_lwp").sync_to_dev();
+    get_field_out("modis_iwp").sync_to_dev();
+
+    get_field_out("modis_cld_Q06").sync_to_dev();
+    get_field_out("modis_nd_Q06").sync_to_dev();
+    get_field_out("modis_lwp_Q06").sync_to_dev();
+    get_field_out("modis_tau_Q06").sync_to_dev();
+    get_field_out("modis_reff_Q06").sync_to_dev();
+
+    get_field_out("modis_cld_ALL").sync_to_dev();
+    get_field_out("modis_nd_ALL").sync_to_dev();
+    get_field_out("modis_lwp_ALL").sync_to_dev();
+    get_field_out("modis_tau_ALL").sync_to_dev();
+    get_field_out("modis_reff_ALL").sync_to_dev();
+
+    get_field_out("modis_ctptau_liq").sync_to_dev();
+    get_field_out("modis_ctptau_ice").sync_to_dev();
+    get_field_out("modis_lwpre").sync_to_dev();
+    get_field_out("modis_iwpre").sync_to_dev();
+
+
   } else {
     // If not updating COSP statistics, set these to ZERO; this essentially weights
     // the ISCCP cloud properties by the sunlit mask. What will be output for time-averages
@@ -273,6 +423,35 @@ void Cosp::run_impl (const double dt)
     get_field_out("modis_ctptau").deep_copy(0);
     get_field_out("misr_cthtau").deep_copy(0);
     get_field_out("cosp_sunlit").deep_copy(0);
+
+    get_field_out("modis_cldtot").deep_copy(0);
+    get_field_out("modis_clwtot").deep_copy(0);
+    get_field_out("modis_clitot").deep_copy(0);
+    get_field_out("modis_taut").deep_copy(0);
+    get_field_out("modis_tauw").deep_copy(0);
+    get_field_out("modis_taui").deep_copy(0);
+    get_field_out("modis_reffw").deep_copy(0);
+    get_field_out("modis_reffi").deep_copy(0);
+    get_field_out("modis_lwp").deep_copy(0);
+    get_field_out("modis_iwp").deep_copy(0);
+
+    get_field_out("modis_cld_Q06").deep_copy(0);
+    get_field_out("modis_nd_Q06").deep_copy(0);
+    get_field_out("modis_lwp_Q06").deep_copy(0);
+    get_field_out("modis_tau_Q06").deep_copy(0);
+    get_field_out("modis_reff_Q06").deep_copy(0);
+
+    get_field_out("modis_cld_ALL").deep_copy(0);
+    get_field_out("modis_nd_ALL").deep_copy(0);
+    get_field_out("modis_lwp_ALL").deep_copy(0);
+    get_field_out("modis_tau_ALL").deep_copy(0);
+    get_field_out("modis_reff_ALL").deep_copy(0);
+
+    get_field_out("modis_ctptau_liq").deep_copy(0);
+    get_field_out("modis_ctptau_ice").deep_copy(0);
+    get_field_out("modis_lwpre").deep_copy(0);
+    get_field_out("modis_iwpre").deep_copy(0);
+
   }
 }
 
