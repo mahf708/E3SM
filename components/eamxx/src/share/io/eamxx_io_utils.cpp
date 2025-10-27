@@ -152,6 +152,8 @@ create_diagnostic (const std::string& diag_field_name,
   std::regex vert_derivative (generic_field + "_(p|z)vert_derivative$");
   std::regex below_above_int (generic_field + "_(below|above)$");
   std::regex unary_ops ("(log|exp|sqrt|abs|square|inverse)_" + generic_field + "$");
+  // regex of the form PBLEntrainmentBudget, PBLEntrainmentBudget_tt, PBLEntrainmentBudget_tl, PBLEntrainmentBudget_qt
+  std::regex pble ("PBLEntrainmentBudget(_tt|_tl|_qt)?$");
 
   std::string diag_name;
   std::smatch matches;
@@ -271,6 +273,13 @@ create_diagnostic (const std::string& diag_field_name,
     params.set("grid_name", grid->name());
     params.set<std::string>("field_name", matches[2].str());
     params.set<std::string>("unary_op", matches[1].str());
+  }
+  else if (std::regex_search(diag_field_name,matches,pble)) {
+    diag_name = "PBLEntrainmentBudget";
+    params.set("grid_name", grid->name());
+    if (matches[1].matched) {
+      params.set<std::string>("inversion_kind", matches[1].str());
+    }
   }
   else
   {

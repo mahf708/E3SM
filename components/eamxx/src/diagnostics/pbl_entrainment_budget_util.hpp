@@ -61,7 +61,7 @@ public:
     index_map["eqt"] = size++;
     units_map["eqt"] = "nondim";
     // pblinvalg
-    pblinvalg = "temperature-inversion";
+    pblinvalg = "unsure";
   }
 };
 } // namespace scream

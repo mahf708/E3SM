@@ -10,7 +10,25 @@ namespace scream {
 PBLEntrainmentBudget::PBLEntrainmentBudget(const ekat::Comm &comm,
                                            const ekat::ParameterList &params)
     : AtmosphereDiagnostic(comm, params) {
-  // Nothing to do here
+  // get inversion_kind and set m_pblinvalg accordingly
+  if (params.isParameter("inversion_kind")) {
+    std::string inversion_kind = params.get<std::string>("inversion_kind");
+    if(inversion_kind == "_tt") {
+      m_pblinvalg = 1;
+    } else if(inversion_kind == "_tl") {
+      m_pblinvalg = 2;
+    } else if(inversion_kind == "_qt") {
+      m_pblinvalg = 3;
+    } else {
+      EKAT_ERROR_MSG(
+          "Error! Invalid inversion_kind parameter in PBLEntrainmentBudget: "
+          "Only _tt, _tl, and _qt are currently supported. I got: " + inversion_kind +
+          "\n");
+    }
+  } else {
+    // default
+    m_pblinvalg = 0;
+  }
 }
 
 void PBLEntrainmentBudget::set_grids(
@@ -29,18 +47,10 @@ void PBLEntrainmentBudget::set_grids(
   m_units_map = eadu.units_map;
   m_ndiag     = eadu.size;
 
-  if(eadu.pblinvalg == "temperature-inversion") {
-    m_pblinvalg = 1;
-  } else if(eadu.pblinvalg == "thetal-only") {
-    m_pblinvalg = 2;
-  } else if(eadu.pblinvalg == "qt_only") {
-    m_pblinvalg = 3;
-  } else {
-    EKAT_ERROR_MSG(
-        "Error! Invalid pblinvalg. Only temperature-inversion, thetal-only, "
-        "and "
-        "qt_only are currently supported.\n");
-  }
+  // set eadu.pblinvalg according to above
+  eadu.pblinvalg = (m_pblinvalg == 0 || m_pblinvalg == 1) ? "tt" :
+                     (m_pblinvalg == 2) ? "tl" :
+                     (m_pblinvalg == 3) ? "qt" : "unsure";
 
   // Ensure m_index_map and m_units_map match
   EKAT_REQUIRE_MSG(
@@ -87,7 +97,8 @@ void PBLEntrainmentBudget::set_grids(
   add_field<Required>("surf_sens_flux", scalar1d_layout, W / m * m, grid_name);
 
   // Construct and allocate the output field
-  FieldIdentifier fid("PBLEntrainmentBudget", vector1d_layout, nondim,
+  auto diag_name =  (m_pblinvalg == 0) ? "PBLEntrainmentBudget" : "PBLEntrainmentBudget_" + eadu.pblinvalg;
+  FieldIdentifier fid(diag_name, vector1d_layout, nondim,
                       grid_name);
   m_diagnostic_output = Field(fid);
   m_diagnostic_output.allocate_view();
@@ -101,6 +112,10 @@ void PBLEntrainmentBudget::set_grids(
     metadata[it.first] =
         std::to_string(it.second) + " (" + m_units_map[it.first] + ")";
   }
+  // add inversion algorithm as well
+  metadata["inversion_algorithm"] = (m_pblinvalg == 0 || m_pblinvalg == 1) ? "temperature-only" :
+                     (m_pblinvalg == 2) ? "theta_l-only" :
+                     (m_pblinvalg == 3) ? "q_t-only" : "unsure";
 }
 
 void PBLEntrainmentBudget::initialize_impl(const RunType /*run_type*/) {
