@@ -28,6 +28,7 @@ set(DIAGNOSTIC_SRCS
   vert_derivative.cpp
   zonal_avg.cpp
   conditional_sampling.cpp
+  pbl_entrainment_budget.cpp
   below_or_above_interface.cpp
   unary_ops.cpp
 )
