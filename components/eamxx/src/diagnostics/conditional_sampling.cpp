@@ -40,15 +40,15 @@ void apply_conditional_sampling_1d(
   // if fill_value is 0, we are counting
   const auto is_counting = (fill_value == 0);
   const auto output_v    = output_field.get_view<Real *>();
-  const auto mask_v = !is_counting ? output_field.get_header().get_extra_data<Field>("mask_data").get_view<Real *>() : output_v;
+  const auto mask_v = !is_counting ? output_field.get_header().get_extra_data<Field>("mask_field").get_view<Real *>() : output_v;
   const auto input_v     = input_field.get_view<const Real *>();
   const auto condition_v = condition_field.get_view<const Real *>();
 
   // Try to get input and condition masks, if present
-  bool has_input_mask = input_field.get_header().has_extra_data("mask_data");
-  bool has_condition_mask = condition_field.get_header().has_extra_data("mask_data");
-  auto input_mask_v = has_input_mask ? input_field.get_header().get_extra_data<Field>("mask_data").get_view<const Real *>() : input_v;
-  auto condition_mask_v = has_condition_mask ? condition_field.get_header().get_extra_data<Field>("mask_data").get_view<const Real *>() : condition_v;
+  bool has_input_mask = input_field.get_header().has_extra_data("mask_field");
+  bool has_condition_mask = condition_field.get_header().has_extra_data("mask_field");
+  auto input_mask_v = has_input_mask ? input_field.get_header().get_extra_data<Field>("mask_field").get_view<const Real *>() : input_v;
+  auto condition_mask_v = has_condition_mask ? condition_field.get_header().get_extra_data<Field>("mask_field").get_view<const Real *>() : condition_v;
 
   const int n_elements = output_field.get_header().get_identifier().get_layout().dims()[0];
 
@@ -82,15 +82,15 @@ void apply_conditional_sampling_2d(
   const auto is_counting = (fill_value == 0);
 
   const auto output_v    = output_field.get_view<Real **>();
-  const auto mask_v = !is_counting ? output_field.get_header().get_extra_data<Field>("mask_data").get_view<Real **>() : output_v;
+  const auto mask_v = !is_counting ? output_field.get_header().get_extra_data<Field>("mask_field").get_view<Real **>() : output_v;
   const auto input_v     = input_field.get_view<const Real **>();
   const auto condition_v = condition_field.get_view<const Real **>();
 
   // Try to get input and condition masks, if present
-  bool has_input_mask = input_field.get_header().has_extra_data("mask_data");
-  bool has_condition_mask = condition_field.get_header().has_extra_data("mask_data");
-  auto input_mask_v = has_input_mask ? input_field.get_header().get_extra_data<Field>("mask_data").get_view<const Real **>() : input_v;
-  auto condition_mask_v = has_condition_mask ? condition_field.get_header().get_extra_data<Field>("mask_data").get_view<const Real **>() : condition_v;
+  bool has_input_mask = input_field.get_header().has_extra_data("mask_field");
+  bool has_condition_mask = condition_field.get_header().has_extra_data("mask_field");
+  auto input_mask_v = has_input_mask ? input_field.get_header().get_extra_data<Field>("mask_field").get_view<const Real **>() : input_v;
+  auto condition_mask_v = has_condition_mask ? condition_field.get_header().get_extra_data<Field>("mask_field").get_view<const Real **>() : condition_v;
 
   const int ncols = output_field.get_header().get_identifier().get_layout().dims()[0];
   const int nlevs = output_field.get_header().get_identifier().get_layout().dims()[1];
@@ -128,12 +128,12 @@ void apply_conditional_sampling_1d_lev(
   const auto is_counting = (fill_value == 0);
 
   const auto output_v = output_field.get_view<Real *>();
-  const auto mask_v = !is_counting ? output_field.get_header().get_extra_data<Field>("mask_data").get_view<Real *>() : output_v;
+  const auto mask_v = !is_counting ? output_field.get_header().get_extra_data<Field>("mask_field").get_view<Real *>() : output_v;
   const auto input_v  = input_field.get_view<const Real *>();
 
   // Try to get input mask, if present
-  bool has_input_mask = input_field.get_header().has_extra_data("mask_data");
-  auto input_mask_v = has_input_mask ? input_field.get_header().get_extra_data<Field>("mask_data").get_view<const Real *>() : input_v;
+  bool has_input_mask = input_field.get_header().has_extra_data("mask_field");
+  auto input_mask_v = has_input_mask ? input_field.get_header().get_extra_data<Field>("mask_field").get_view<const Real *>() : input_v;
 
   const int n_elements = output_field.get_header().get_identifier().get_layout().dims()[0];
 
@@ -169,12 +169,12 @@ void apply_conditional_sampling_2d_lev(
   const auto is_counting = (fill_value == 0);
 
   const auto output_v = output_field.get_view<Real **>();
-  const auto mask_v = !is_counting ? output_field.get_header().get_extra_data<Field>("mask_data").get_view<Real **>() : output_v;
+  const auto mask_v = !is_counting ? output_field.get_header().get_extra_data<Field>("mask_field").get_view<Real **>() : output_v;
   const auto input_v  = input_field.get_view<const Real **>();
 
   // Try to get input mask, if present
-  bool has_input_mask = input_field.get_header().has_extra_data("mask_data");
-  auto input_mask_v = has_input_mask ? input_field.get_header().get_extra_data<Field>("mask_data").get_view<const Real **>() : input_v;
+  bool has_input_mask = input_field.get_header().has_extra_data("mask_field");
+  auto input_mask_v = has_input_mask ? input_field.get_header().get_extra_data<Field>("mask_field").get_view<const Real **>() : input_v;
 
   const int ncols = output_field.get_header().get_identifier().get_layout().dims()[0];
   const int nlevs = output_field.get_header().get_identifier().get_layout().dims()[1];
@@ -271,8 +271,9 @@ void ConditionalSampling::initialize_impl(const RunType /*run_type*/) {
   const auto var_fill_value = constants::fill_value<Real>;
   m_mask_val = m_params.get<double>("mask_value", var_fill_value);
   if (m_input_f != "count") {
-    m_diagnostic_output.get_header().set_extra_data("mask_data", diag_mask);
+    m_diagnostic_output.get_header().set_extra_data("mask_field", diag_mask);
     m_diagnostic_output.get_header().set_extra_data("mask_value", m_mask_val);
+    m_diagnostic_output.get_header().set_may_be_filled(true);
   }
   // Special case: if the input field is "count", let's create a field of 1s
   if (m_input_f == "count") {

@@ -330,8 +330,8 @@ void horiz_contraction(const Field &f_out, const Field &f_in,
 
   const int ncols = l_in.dim(0);
 
-  bool is_masked = f_in.get_header().has_extra_data("mask_data");
-  bool is_avg_masked = AVG && is_masked && f_out.get_header().has_extra_data("mask_data");
+  bool is_masked = f_in.get_header().has_extra_data("mask_field");
+  bool is_avg_masked = AVG && is_masked && f_out.get_header().has_extra_data("mask_field");
   bool is_comm_avg_masked = comm && is_avg_masked;
 
   const auto fill_value = is_masked ? f_in.get_header().get_extra_data<Real>("mask_value") : 0;
@@ -349,9 +349,9 @@ void horiz_contraction(const Field &f_out, const Field &f_in,
   switch(l_in.rank()) {
     case 1: {
       auto v_in  = f_in.get_view<const ST *>();
-      auto v_m   = is_masked ? f_in.get_header().get_extra_data<Field>("mask_data").get_view<const ST *>() : v_in;
+      auto v_m   = is_masked ? f_in.get_header().get_extra_data<Field>("mask_field").get_view<const ST *>() : v_in;
       auto v_out = f_out.get_view<ST>();
-      auto v_m_out = is_avg_masked ? f_out.get_header().get_extra_data<Field>("mask_data").get_view<ST>() : v_out;
+      auto v_m_out = is_avg_masked ? f_out.get_header().get_extra_data<Field>("mask_field").get_view<ST>() : v_out;
       auto v_tmp = is_comm_avg_masked ? f_tmp.get_view<ST>() : v_out; 
       ST n = 0, d = 0;
       Kokkos::parallel_reduce(
@@ -374,9 +374,9 @@ void horiz_contraction(const Field &f_out, const Field &f_in,
     } break;
     case 2: {
       auto v_in    = f_in.get_view<const ST **>();
-      auto v_m     = is_masked ? f_in.get_header().get_extra_data<Field>("mask_data").get_view<const ST **>() : v_in;
+      auto v_m     = is_masked ? f_in.get_header().get_extra_data<Field>("mask_field").get_view<const ST **>() : v_in;
       auto v_out   = f_out.get_view<ST *>();
-      auto v_m_out = is_avg_masked ? f_out.get_header().get_extra_data<Field>("mask_data").get_view<ST *>() : v_out;
+      auto v_m_out = is_avg_masked ? f_out.get_header().get_extra_data<Field>("mask_field").get_view<ST *>() : v_out;
       auto v_tmp   = is_comm_avg_masked ? f_tmp.get_view<ST *>() : v_out;
       const int d1 = l_in.dim(1);
       auto p       = TPF::get_default_team_policy(d1, ncols);
@@ -403,9 +403,9 @@ void horiz_contraction(const Field &f_out, const Field &f_in,
     } break;
     case 3: {
       auto v_in    = f_in.get_view<const ST ***>();
-      auto v_m     = is_masked ? f_in.get_header().get_extra_data<Field>("mask_data").get_view<const ST ***>() : v_in;
+      auto v_m     = is_masked ? f_in.get_header().get_extra_data<Field>("mask_field").get_view<const ST ***>() : v_in;
       auto v_out   = f_out.get_view<ST **>();
-      auto v_m_out = is_avg_masked ? f_out.get_header().get_extra_data<Field>("mask_data").get_view<ST **>() : v_out;
+      auto v_m_out = is_avg_masked ? f_out.get_header().get_extra_data<Field>("mask_field").get_view<ST **>() : v_out;
       auto v_tmp   = is_comm_avg_masked ? f_tmp.get_view<ST **>() : v_out;
       const int d1 = l_in.dim(1);
       const int d2 = l_in.dim(2);

@@ -66,6 +66,8 @@ void UnaryOpsDiag::initialize_impl(const RunType /*run_type*/) {
   if (m_op == "sqrt" || m_op == "log") {
     auto mask = m_diagnostic_output.clone("mask_" + m_op + "_" + m_fn);
     m_diagnostic_output.get_header().set_extra_data("mask_field", mask);
+    m_diagnostic_output.get_header().set_extra_data("mask_value", constants::fill_value<Real>);
+    m_diagnostic_output.get_header().set_may_be_filled(true);
   }
 }
 
