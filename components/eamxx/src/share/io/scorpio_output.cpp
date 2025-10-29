@@ -986,12 +986,12 @@ process_requested_fields()
   // Helper lambda to check if this fm_model field should trigger avg count
   auto check_for_avg_cnt = [&](const Field& f) {
     // We need avg-count tracking for any averaged (non-instant) field that:
-    //  - supplies explicit mask info (mask_data or mask_field), OR
+    //  - supplies explicit mask info (mask_field), OR
     //  - is marked as potentially containing fill values (may_be_filled()).
     // Without this, fill-aware updates skip fill_value during accumulation (good)
     // but we would still divide by the raw nsteps, biasing the result low.
     if (m_avg_type!=OutputAvgType::Instant) {
-      const bool has_mask = f.get_header().has_extra_data("mask_data") || f.get_header().has_extra_data("mask_field");
+      const bool has_mask = f.get_header().has_extra_data("mask_field");
       const bool may_be_filled = f.get_header().may_be_filled();
       if (has_mask || may_be_filled) {
         m_track_avg_cnt = true;
@@ -1043,7 +1043,7 @@ process_requested_fields()
       m_track_avg_cnt = m_track_avg_cnt || m_avg_type!=OutputAvgType::Instant;
       diag_avg_cnt_name = "_" + diag->name();
     }
-    else if (diag_field.get_header().has_extra_data("mask_data")) {
+    else if (diag_field.get_header().has_extra_data("mask_field")) {
       m_track_avg_cnt = m_track_avg_cnt || m_avg_type!=OutputAvgType::Instant;
       diag_avg_cnt_name = "_" + diag_field.name();
     }

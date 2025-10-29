@@ -219,11 +219,11 @@ TEST_CASE("field_utils") {
     auto mask = mask_of_field00.get_view<Real *, Host>();
     mask(dim0 - 1) = sp(0.0);
     mask_of_field00.sync_to_dev();
-    field00_masked.get_header().set_extra_data("mask_data", mask_of_field00);
+    field00_masked.get_header().set_extra_data("mask_field", mask_of_field00);
     field00_masked.get_header().set_extra_data("mask_value", constants::fill_value<Real>);
     field00_masked.sync_to_dev();
     auto result_mask = result.clone();
-    result.get_header().set_extra_data("mask_data", result_mask);
+    result.get_header().set_extra_data("mask_field", result_mask);
     result.get_header().set_extra_data("mask_value", constants::fill_value<Real>);
     horiz_contraction<Real>(result, field00_masked, field00);
     result.sync_to_host();
@@ -249,12 +249,12 @@ TEST_CASE("field_utils") {
       mask(i) = sp(0.0);
     }
     mask_of_field00.sync_to_dev();
-    field00_masked.get_header().set_extra_data("mask_data", mask_of_field00);
+    field00_masked.get_header().set_extra_data("mask_field", mask_of_field00);
     Real mask_v = constants::fill_value<Real>;
     field00_masked.get_header().set_extra_data("mask_value", mask_v);
     field00_masked.sync_to_dev();
     result_mask = result.clone();
-    result.get_header().set_extra_data("mask_data", result_mask);
+    result.get_header().set_extra_data("mask_field", result_mask);
     result.get_header().set_extra_data("mask_value", constants::fill_value<Real>);
     horiz_contraction<Real>(result, field00_masked, field00);
     result.sync_to_host();
@@ -410,11 +410,11 @@ TEST_CASE("field_utils") {
       auto mask = mask_of_field00.get_view<Real *, Host>();
       mask(dim0 - 1) = sp(0.0);
       mask_of_field00.sync_to_dev();
-      field00_masked.get_header().set_extra_data("mask_data", mask_of_field00);
+      field00_masked.get_header().set_extra_data("mask_field", mask_of_field00);
       field00_masked.get_header().set_extra_data("mask_value", constants::fill_value<Real>);
       field00_masked.sync_to_dev();
       auto result_mask = result.clone();
-      result.get_header().set_extra_data("mask_data", result_mask);
+      result.get_header().set_extra_data("mask_field", result_mask);
       result.get_header().set_extra_data("mask_value", constants::fill_value<Real>);
       vert_contraction<Real,1>(result, field00_masked, field00);
       result.sync_to_host();
@@ -440,12 +440,12 @@ TEST_CASE("field_utils") {
         mask(i) = sp(0.0);
       }
       mask_of_field00.sync_to_dev();
-      field00_masked.get_header().set_extra_data("mask_data", mask_of_field00);
+      field00_masked.get_header().set_extra_data("mask_field", mask_of_field00);
       Real mask_v = constants::fill_value<Real>;
       field00_masked.get_header().set_extra_data("mask_value", mask_v);
       field00_masked.sync_to_dev();
       result_mask = result.clone();
-      result.get_header().set_extra_data("mask_data", result_mask);
+      result.get_header().set_extra_data("mask_field", result_mask);
       result.get_header().set_extra_data("mask_value", constants::fill_value<Real>);
       vert_contraction<Real,1>(result, field00_masked, field00);
       result.sync_to_host();

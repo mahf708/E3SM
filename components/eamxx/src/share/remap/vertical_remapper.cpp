@@ -208,6 +208,7 @@ registration_ends_impl ()
             " - tgt field name: " + tgt.name() + "\n");
 
         tgt.get_header().set_extra_data("mask_field",mask);
+        tgt.get_header().set_extra_data("mask_value",constants::fill_value<Real>);
 
         // Since we do mask (at top and/or bot), the tgt field MAY be contain fill_value entries
         tgt.get_header().set_may_be_filled(true);
@@ -222,6 +223,11 @@ registration_ends_impl ()
             " - tgt field name: " + tgt.name() + "\n");
         auto src_mask = src.get_header().get_extra_data<Field>("mask_field");
         tgt.get_header().set_extra_data("mask_field",src_mask);
+        // Also copy mask_value if present
+        if (src.get_header().has_extra_data("mask_value")) {
+          auto src_mask_value = src.get_header().get_extra_data<Real>("mask_value");
+          tgt.get_header().set_extra_data("mask_value",src_mask_value);
+        }
       }
       if (src.get_header().may_be_filled()) {
         tgt.get_header().set_may_be_filled(true);
@@ -411,14 +417,10 @@ void VerticalRemapper::remap_fwd_impl ()
       }
     } else {
       // There is nothing to do, this field does not need vertical interpolation,
-      // so just copy it over.  Note, if this field has its own mask data make
-      // sure that is copied too.
+      // so just copy it over.  Note, if this field has its own mask data, we
+      // don't need to copy it since mask fields are shared between src and tgt
+      // when they don't require interpolation (see registration_ends_impl).
       f_tgt.deep_copy(f_src);
-      if (f_tgt.get_header().has_extra_data("mask_field")) {
-        auto f_tgt_mask = f_tgt.get_header().get_extra_data<Field>("mask_field");
-        auto f_src_mask = f_src.get_header().get_extra_data<Field>("mask_field");
-        f_tgt_mask.deep_copy(f_src_mask);
-      }
     }
   }
 
