@@ -147,6 +147,19 @@ void PBLEntrainmentBudget::initialize_impl(const RunType /*run_type*/) {
   FieldIdentifier p_mid_prev("p_mid_prev", tmlo.clone(), tmid.get_units(), tmgn);
   m_prev_p_mid = Field(p_mid_prev);
   m_prev_p_mid.allocate_view();
+
+  // Set up proper fill-value treatment for the diagnostic output
+  // Create mask field with same layout as diagnostic output
+  const auto &diag_id = m_diagnostic_output.get_header().get_identifier();
+  FieldIdentifier mask_fid(diag_id.name() + "_mask", diag_id.get_layout().clone(), 
+                          ekat::units::Units::nondimensional(), diag_id.get_grid_name());
+  Field diag_mask(mask_fid);
+  diag_mask.allocate_view();
+  
+  // Set mask and fill value metadata
+  m_diagnostic_output.get_header().set_extra_data("mask_field", diag_mask);
+  m_diagnostic_output.get_header().set_extra_data("mask_value", constants::fill_value<Real>);
+  m_diagnostic_output.get_header().set_may_be_filled(true);
 }
 
 void PBLEntrainmentBudget::calc_tl_qt(const view_2d &tm_v, const view_2d &pm_v,
@@ -195,10 +208,11 @@ void PBLEntrainmentBudget::compute_diagnostic_impl() {
   constexpr Real cpair = PC::Cpair;
   constexpr Real latvap = PC::LatVap;
   constexpr Real rhoh2o = PC::RHO_H2O;
-  Real fill_value  = constants::fill_value<Real>;
+  constexpr Real fill_value = constants::fill_value<Real>;
 
   // Before doing anything, subview the out field for each variable
   auto out = m_diagnostic_output.get_view<Real **>();
+  auto mask = m_diagnostic_output.get_header().get_extra_data<Field>("mask_field").get_view<Real **>();
 
   auto o_pm_hplus = ekat::subview_1(out, m_index_map["p+"]);
   auto o_tl_hplus = ekat::subview_1(out, m_index_map["tl+"]);
@@ -293,6 +307,7 @@ void PBLEntrainmentBudget::compute_diagnostic_impl() {
   using WSMgr        = ekat::WorkspaceManager<Real, DefaultDevice>;
   WSMgr wsm(num_levs, wsms, policy);
 
+  const auto ndiag = m_ndiag;
   Kokkos::parallel_for(
       "Compute " + name(), policy, KOKKOS_LAMBDA(const MT &team) {
         const int icol = team.league_rank();
@@ -389,6 +404,11 @@ void PBLEntrainmentBudget::compute_diagnostic_impl() {
           eq4(icol) = fill_value;
           etl(icol) = fill_value;
           eqt(icol) = fill_value;
+          
+          // Set mask to 0 for all components to indicate invalid data
+          for(int j = 0; j < ndiag; ++j) {
+            mask(icol, j) = 0;
+          }
         } else {
           // Save some outputs just above the "mixed" PBL
           o_pm_hplus(icol) = pm_icol(opt_tm_grad_lev - 1);
@@ -433,10 +453,15 @@ void PBLEntrainmentBudget::compute_diagnostic_impl() {
           o_tl_homme_tend(icol) = tl_homme_tend_result;
 
           // eq3 and eq4
-          eq3(icol) = o_tl_ttend(icol) + o_tl_homme_tend(icol) + o_df_inpbl(icol) / cpair - latvap*pp_icol*rhoh2o/cpair - ss_icol/cpair;
-          eq4(icol) = o_qt_ttend(icol) + o_qt_homme_tend(icol) + pp_icol*rhoh2o - ll_icol/latvap;
+          eq3(icol) = o_tl_ttend(icol) - o_tl_homme_tend(icol) + o_df_inpbl(icol) / cpair - latvap*pp_icol*rhoh2o/cpair - ss_icol/cpair;
+          eq4(icol) = o_qt_ttend(icol) - o_qt_homme_tend(icol) + pp_icol*rhoh2o - ll_icol/latvap;
           etl(icol) = eq3(icol) / (o_tl_hplus(icol) - o_tl_caret(icol));
           eqt(icol) = eq4(icol) / (o_qt_hplus(icol) - o_qt_caret(icol));
+          
+          // Set mask to 1 for all components to indicate valid data
+          for(int j = 0; j < ndiag; ++j) {
+            mask(icol, j) = 1;
+          }
         }
         // release stuff from wsm
         ws.release_many_contiguous<wsms>({&tm_grad});
