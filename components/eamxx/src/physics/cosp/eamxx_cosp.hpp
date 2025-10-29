@@ -74,6 +74,9 @@ protected:
   // TODO: use atm buffer instead
   Field m_z_mid;
   Field m_z_int;
+
+  // Mask fields for COSP outputs (to handle both nighttime and COSP R_UNDEF)
+  Field m_cosp_mask_2d;
 }; // class Cosp
 
 } // namespace scream
