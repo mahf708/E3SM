@@ -999,8 +999,7 @@ void AtmosphereDriver::apply_perturbations ()
   // Compute perturbations of GLL fields (if requested)
   using vos = std::vector<std::string>;
   const auto perturbed_fields = ic_pl.get<vos>("perturbed_fields", {});
-  const auto num_perturb_fields = perturbed_fields.size();
-  if (num_perturb_fields > 0) {
+  if (not perturbed_fields.empty()) {
     // Determine if this is being called during initial conditions or restart
     const bool is_restart = (m_run_type == RunType::Restart);
     const std::string context = is_restart ? "restart" : "ICs";
