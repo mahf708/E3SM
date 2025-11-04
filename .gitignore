@@ -55,3 +55,4 @@ components/eamxx/docs/_presentations_html/
 components/eamxx/src/python/build
 components/eamxx/src/python/build_src
 components/eamxx/src/python/dist
+_codeql_detected_source_root

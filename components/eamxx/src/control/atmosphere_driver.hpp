@@ -184,6 +184,7 @@ protected:
   void create_logger ();
   void set_initial_conditions ();
   void restart_model ();
+  void apply_perturbations ();
 
   // Read fields from a file
   void read_fields_from_file (const std::vector<Field>& fields,
