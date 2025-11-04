@@ -1001,7 +1001,10 @@ void AtmosphereDriver::apply_perturbations ()
   const auto perturbed_fields = ic_pl.get<vos>("perturbed_fields", {});
   const auto num_perturb_fields = perturbed_fields.size();
   if (num_perturb_fields > 0) {
-    m_atm_logger->info("    [EAMxx] Adding random perturbation ...");
+    // Determine if this is being called during initial conditions or restart
+    const bool is_restart = (m_run_type == RunType::Restart);
+    const std::string context = is_restart ? "restart" : "ICs";
+    m_atm_logger->info("    [EAMxx] Adding random perturbation to " + context + " ...");
 
     EKAT_REQUIRE_MSG(m_field_mgr->get_grids_manager()->get_grid_names().count("physics_gll") > 0,
                      "Error! Random perturbation can only be applied to fields on "
@@ -1026,7 +1029,7 @@ void AtmosphereDriver::apply_perturbations ()
     } else {
       seed = ic_pl.get<int>("perturbation_random_seed", 0);
     }
-    m_atm_logger->info("      For perturbation, random seed: "+std::to_string(seed));
+    m_atm_logger->info("      For " + context + " perturbation, random seed: "+std::to_string(seed));
     std::mt19937_64 engine(seed);
 
     // Get perturbation limit. Defines a range [1-perturbation_limit, 1+perturbation_limit]
@@ -1058,11 +1061,20 @@ void AtmosphereDriver::apply_perturbations ()
                        "  - Field: "+fname+"\n"
                        "  - Grid:  "+gll_grid_name+"\n");
 
+      // For initial conditions, also verify field was in the IC list
+      // For restart, we trust the user specified the correct fields
+      if (not is_restart) {
+        EKAT_REQUIRE_MSG(ekat::contains(m_fields_inited[gll_grid_name], fname),
+                         "Error! Attempting to apply perturbation to field not in initial_conditions.\n"
+                         "  - Field: "+fname+"\n"
+                         "  - Grid:  "+gll_grid_name+"\n");
+      }
+
       auto field = m_field_mgr->get_field(fname, gll_grid_name);
       perturb(field, engine, pdf, seed, pressure_mask, gll_grid->get_dofs_gids());
     }
 
-    m_atm_logger->info("    [EAMxx] Adding random perturbation ... done!");
+    m_atm_logger->info("    [EAMxx] Adding random perturbation to " + context + " ... done!");
   }
 }
 
