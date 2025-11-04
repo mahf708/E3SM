@@ -1043,7 +1043,7 @@ void AtmosphereDriver::apply_perturbations ()
     const auto hyam_h = gll_grid->get_geometry_data("hyam").get_view<const Real*, Host>();
     const auto hybm_h = gll_grid->get_geometry_data("hybm").get_view<const Real*, Host>();
     constexpr auto ps0 = physics::Constants<Real>::P0;
-    const auto min_pressure = ic_pl.get<Real>("perturbation_minimum_pressure", 1050.0);
+    const auto min_pressure = ic_pl.get<Real>("perturbation_minimum_pressure", 900.0);
     auto pressure_mask = [&] (const int ilev) {
       const auto pref = (hyam_h(ilev)*ps0 + hybm_h(ilev)*ps0)/100; // Reference pressure ps0 is in Pa, convert to millibar
       return pref > min_pressure;
