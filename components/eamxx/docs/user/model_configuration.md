@@ -633,9 +633,10 @@ The perturbation functionality is controlled by parameters under the `initial_co
     - Example: with limit=0.001, each grid point is multiplied by a random value between 0.999 and 1.001.
 
 - `perturbation_minimum_pressure` (`initial_conditions`, `real`):
-    - Minimum pressure (in millibars) below which perturbation is applied, relative to a reference level pressure profile.
+    - Minimum pressure (in millibars) above which perturbation is applied, relative to a reference level pressure profile.
     - Default: 900.0 mb
-    - This allows perturbations to be limited to certain levels (e.g., only upper atmosphere).
+    - Perturbations are applied only at levels where the reference pressure exceeds this threshold (i.e., lower atmosphere/near surface).
+    - For example, with default 900 mb, perturbations affect the lower troposphere but not the upper atmosphere.
 
 - `perturbation_random_seed` (`initial_conditions`, `integer`):
     - Random seed used for perturbation generation.
