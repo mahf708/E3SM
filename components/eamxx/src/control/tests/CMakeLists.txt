@@ -10,5 +10,9 @@ if (NOT ${SCREAM_ONLY_GENERATE_BASELINES})
   # Copy yaml input file to run directory
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/ad_tests.yaml
                  ${CMAKE_CURRENT_BINARY_DIR}/ad_tests.yaml COPYONLY)
+  
+  # Copy yaml input file for perturbation test
+  configure_file(${CMAKE_CURRENT_SOURCE_DIR}/ad_perturbation_tests.yaml
+                 ${CMAKE_CURRENT_BINARY_DIR}/ad_perturbation_tests.yaml COPYONLY)
 
 endif()
