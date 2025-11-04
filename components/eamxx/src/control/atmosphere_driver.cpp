@@ -982,7 +982,88 @@ void AtmosphereDriver::restart_model ()
     }
   }
 
+  // Apply perturbations to restart fields if requested
+  auto& ic_pl = m_atm_params.sublist("initial_conditions");
+  if (ic_pl.get<bool>("perturb_on_restart", false)) {
+    m_atm_logger->info("    [EAMxx] Perturbation on restart is enabled ...");
+    apply_perturbations();
+  }
+
   m_atm_logger->info("  [EAMxx] restart_model ... done!");
+}
+
+void AtmosphereDriver::apply_perturbations ()
+{
+  auto& ic_pl = m_atm_params.sublist("initial_conditions");
+
+  // Compute perturbations of GLL fields (if requested)
+  using vos = std::vector<std::string>;
+  const auto perturbed_fields = ic_pl.get<vos>("perturbed_fields", {});
+  const auto num_perturb_fields = perturbed_fields.size();
+  if (num_perturb_fields > 0) {
+    m_atm_logger->info("    [EAMxx] Adding random perturbation ...");
+
+    EKAT_REQUIRE_MSG(m_field_mgr->get_grids_manager()->get_grid_names().count("physics_gll") > 0,
+                     "Error! Random perturbation can only be applied to fields on "
+                     "the GLL grid, but no physics GLL grid was defined in FieldManager.\n");
+
+    // Setup RNG. There are two relevant params: generate_perturbation_random_seed and
+    // perturbation_random_seed. We have 3 cases:
+    //   1. Parameter generate_perturbation_random_seed is set true, assert perturbation_random_seed
+    //      is not given and generate a random seed using std::rand() to get an integer random value.
+    //   2. Parameter perturbation_random_seed is given, use this value for the seed.
+    //   3. Parameter perturbation_random_seed is not given and generate_perturbation_random_seed is
+    //      not given, use 0 as the random seed.
+    // Case 3 is considered the default (using seed=0).
+    int seed;
+    if (ic_pl.get<bool>("generate_perturbation_random_seed", false)) {
+      EKAT_REQUIRE_MSG(not ic_pl.isParameter("perturbation_random_seed"),
+                       "Error! Param generate_perturbation_random_seed=true, and "
+                       "a perturbation_random_seed is given. Only one of these can "
+                       "be defined for a simulation.\n");
+      std::srand(std::time(nullptr));
+      seed = std::rand();
+    } else {
+      seed = ic_pl.get<int>("perturbation_random_seed", 0);
+    }
+    m_atm_logger->info("      For perturbation, random seed: "+std::to_string(seed));
+    std::mt19937_64 engine(seed);
+
+    // Get perturbation limit. Defines a range [1-perturbation_limit, 1+perturbation_limit]
+    // for which the perturbation value will be randomly generated from. Create a uniform
+    // distribution for this range.
+    const auto perturbation_limit = ic_pl.get<Real>("perturbation_limit", 0.001);
+    std::uniform_real_distribution<Real> pdf(1-perturbation_limit, 1+perturbation_limit);
+
+    // Define a level mask using reference pressure and the perturbation_minimum_pressure parameter.
+    // This mask dictates which levels we apply a perturbation.
+    const auto gll_grid = m_grids_manager->get_grid("physics_gll");
+    const auto hyam_h = gll_grid->get_geometry_data("hyam").get_view<const Real*, Host>();
+    const auto hybm_h = gll_grid->get_geometry_data("hybm").get_view<const Real*, Host>();
+    constexpr auto ps0 = physics::Constants<Real>::P0;
+    const auto min_pressure = ic_pl.get<Real>("perturbation_minimum_pressure", 1050.0);
+    auto pressure_mask = [&] (const int ilev) {
+      const auto pref = (hyam_h(ilev)*ps0 + hybm_h(ilev)*ps0)/100; // Reference pressure ps0 is in Pa, convert to millibar
+      return pref > min_pressure;
+    };
+
+    // Loop through fields and apply perturbation.
+    const std::string gll_grid_name = gll_grid->name();
+    for (size_t f=0; f<perturbed_fields.size(); ++f) {
+      const auto fname = perturbed_fields[f];
+      
+      // Check if field is available in field manager
+      EKAT_REQUIRE_MSG(m_field_mgr->has_field(fname, gll_grid_name),
+                       "Error! Attempting to apply perturbation to field not available.\n"
+                       "  - Field: "+fname+"\n"
+                       "  - Grid:  "+gll_grid_name+"\n");
+
+      auto field = m_field_mgr->get_field(fname, gll_grid_name);
+      perturb(field, engine, pdf, seed, pressure_mask, gll_grid->get_dofs_gids());
+    }
+
+    m_atm_logger->info("    [EAMxx] Adding random perturbation ... done!");
+  }
 }
 
 void AtmosphereDriver::create_logger () {
@@ -1366,72 +1447,8 @@ void AtmosphereDriver::set_initial_conditions ()
     }
   }
 
-  // Compute IC perturbations of GLL fields (if requested)
-  using vos = std::vector<std::string>;
-  const auto perturbed_fields = ic_pl.get<vos>("perturbed_fields", {});
-  const auto num_perturb_fields = perturbed_fields.size();
-  if (num_perturb_fields > 0) {
-    m_atm_logger->info("    [EAMxx] Adding random perturbation to ICs ...");
-
-    EKAT_REQUIRE_MSG(m_field_mgr->get_grids_manager()->get_grid_names().count("physics_gll") > 0,
-                     "Error! Random perturbation can only be applied to fields on "
-                     "the GLL grid, but no physics GLL grid was defined in FieldManager.\n");
-
-    // Setup RNG. There are two relevant params: generate_perturbation_random_seed and
-    // perturbation_random_seed. We have 3 cases:
-    //   1. Parameter generate_perturbation_random_seed is set true, assert perturbation_random_seed
-    //      is not given and generate a random seed using std::rand() to get an integer random value.
-    //   2. Parameter perturbation_random_seed is given, use this value for the seed.
-    //   3. Parameter perturbation_random_seed is not given and generate_perturbation_random_seed is
-    //      not given, use 0 as the random seed.
-    // Case 3 is considered the default (using seed=0).
-    int seed;
-    if (ic_pl.get<bool>("generate_perturbation_random_seed", false)) {
-      EKAT_REQUIRE_MSG(not ic_pl.isParameter("perturbation_random_seed"),
-                       "Error! Param generate_perturbation_random_seed=true, and "
-                       "a perturbation_random_seed is given. Only one of these can "
-                       "be defined for a simulation.\n");
-      std::srand(std::time(nullptr));
-      seed = std::rand();
-    } else {
-      seed = ic_pl.get<int>("perturbation_random_seed", 0);
-    }
-    m_atm_logger->info("      For IC perturbation, random seed: "+std::to_string(seed));
-    std::mt19937_64 engine(seed);
-
-    // Get perturbation limit. Defines a range [1-perturbation_limit, 1+perturbation_limit]
-    // for which the perturbation value will be randomly generated from. Create a uniform
-    // distribution for this range.
-    const auto perturbation_limit = ic_pl.get<Real>("perturbation_limit", 0.001);
-    std::uniform_real_distribution<Real> pdf(1-perturbation_limit, 1+perturbation_limit);
-
-    // Define a level mask using reference pressure and the perturbation_minimum_pressure parameter.
-    // This mask dictates which levels we apply a perturbation.
-    const auto gll_grid = m_grids_manager->get_grid("physics_gll");
-    const auto hyam_h = gll_grid->get_geometry_data("hyam").get_view<const Real*, Host>();
-    const auto hybm_h = gll_grid->get_geometry_data("hybm").get_view<const Real*, Host>();
-    constexpr auto ps0 = physics::Constants<Real>::P0;
-    const auto min_pressure = ic_pl.get<Real>("perturbation_minimum_pressure", 1050.0);
-    auto pressure_mask = [&] (const int ilev) {
-      const auto pref = (hyam_h(ilev)*ps0 + hybm_h(ilev)*ps0)/100; // Reference pressure ps0 is in Pa, convert to millibar
-      return pref > min_pressure;
-    };
-
-    // Loop through fields and apply perturbation.
-    const std::string gll_grid_name = gll_grid->name();
-    for (size_t f=0; f<perturbed_fields.size(); ++f) {
-      const auto fname = perturbed_fields[f];
-      EKAT_REQUIRE_MSG(ekat::contains(m_fields_inited[gll_grid_name], fname),
-                       "Error! Attempting to apply perturbation to field not in initial_conditions.\n"
-                       "  - Field: "+fname+"\n"
-                       "  - Grid:  "+gll_grid_name+"\n");
-
-      auto field = m_field_mgr->get_field(fname, gll_grid_name);
-      perturb(field, engine, pdf, seed, pressure_mask, gll_grid->get_dofs_gids());
-    }
-
-    m_atm_logger->info("    [EAMxx] Adding random perturbation to ICs ... done!");
-  }
+  // Apply perturbations to IC fields (if requested)
+  apply_perturbations();
 
   m_atm_logger->info("  [EAMxx] set_initial_conditions ... done!");
   m_atm_logger->flush(); // During init, flush often (to help debug crashes)

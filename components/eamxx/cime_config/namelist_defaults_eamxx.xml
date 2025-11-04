@@ -737,6 +737,7 @@ be lost if SCREAM_HACK_XML is not enabled.
     <perturbation_random_seed type="integer" doc="Random seed used for perturbation. Will be overridded by generate_perturbation_random_seed=true.">0</perturbation_random_seed>
     <perturbation_limit type="real" doc="Defines a range [1-x, 1+x] which perturbation will be taken from.">0.001</perturbation_limit>
     <perturbation_minimum_pressure type="real" doc="Minimum pressure (relative to a reference level pressure profile) for which perturbation will be applied.">900.0</perturbation_minimum_pressure>
+    <perturb_on_restart type="logical" doc="Whether to apply perturbation when restarting from a restart file. This allows perturbation to be applied at every restart, enabling navigation of tricky instabilities.">false</perturb_on_restart>
   </initial_conditions>
 
   <!-- List of yaml files containing I/O output specs -->
