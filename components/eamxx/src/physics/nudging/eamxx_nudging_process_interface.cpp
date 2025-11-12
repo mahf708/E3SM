@@ -1,6 +1,8 @@
 #include "eamxx_nudging_process_interface.hpp"
 
 #include "share/util/eamxx_universal_constants.hpp"
+#include "share/physics/physics_constants.hpp"
+#include "share/physics/eamxx_common_physics_functions.hpp"
 #include "share/remap/refining_remapper_p2p.hpp"
 #include "share/util/eamxx_utils.hpp"
 #include "share/scorpio_interface/eamxx_scorpio_interface.hpp"
@@ -27,6 +29,7 @@ Nudging::Nudging (const ekat::Comm& comm, const ekat::ParameterList& params)
       "nudging_refine_remap_mapfile", "no-file-given");
   m_refine_remap_vert_cutoff = m_params.get<Real>(
       "nudging_refine_remap_vert_cutoff", 0.0);
+  m_pbl_height_cutoff = m_params.get<bool>("nudging_pbl_height_cutoff", false);
   auto src_pres_type = m_params.get<std::string>("source_pressure_type","TIME_DEPENDENT_3D_PROFILE");
   if (src_pres_type=="TIME_DEPENDENT_3D_PROFILE") {
     m_src_pres_type = TIME_DEPENDENT_3D_PROFILE;
@@ -88,8 +91,21 @@ void Nudging::set_grids(const std::shared_ptr<const GridsManager> grids_manager)
   if (ekat::contains(m_fields_nudge,"U") or ekat::contains(m_fields_nudge,"V")) {
     add_field<Updated>("horiz_winds",   horiz_wind_layout,   m/s,     grid_name, ps);
   }
+  if (ekat::contains(m_fields_nudge,"o3_volume_mix_ratio")) {
+    add_field<Required>("o3_volume_mix_ratio", scalar3d_layout_mid, mol/mol, grid_name, ps);
+  }
 
   /* ----------------------- WARNING --------------------------------*/
+
+  // get pbl_height from shoc if requested
+  if (m_pbl_height_cutoff) {
+    add_field<Required>("pbl_height", m_grid->get_2d_scalar_layout(), m, grid_name);
+    // We need T, qv, p and pseudo_density to compute z_mid (AGL)
+    add_field<Required>("T_mid", scalar3d_layout_mid, K, grid_name, ps);
+    add_field<Required>("qv", scalar3d_layout_mid, kg/kg, grid_name, ps);
+    add_field<Required>("p_mid", scalar3d_layout_mid, Pa, grid_name, ps);
+    add_field<Required>("pseudo_density", scalar3d_layout_mid, Pa, grid_name, ps);
+  }
 
   //Now need to read in the file
   if (m_src_pres_type == TIME_DEPENDENT_3D_PROFILE) {
@@ -168,11 +184,13 @@ void Nudging::apply_tendency(Field& state, const Field& nudge, const Real dt) co
   // Calculate the weight to apply the tendency
   const Real dtend = dt / m_timescale;
 
+  using cview_1d = decltype(state.get_view<const Real*>());
   using cview_2d = decltype(state.get_view<const Real**>());
 
   auto state_view = state.get_view<Real**>();
   auto nudge_view = nudge.get_view<Real**>();
-  cview_2d w_view, pmid_view;
+  cview_1d pbl_height_view;
+  cview_2d w_view, pmid_view, z_mid_view;
 
   if (m_use_weights) {
     auto weights = get_helper_field("nudging_weights");
@@ -184,9 +202,61 @@ void Nudging::apply_tendency(Field& state, const Field& nudge, const Real dt) co
 
   auto use_weights = m_use_weights;
   auto cutoff = m_refine_remap_vert_cutoff;
+  auto pblh_cutoff = m_pbl_height_cutoff; 
   auto policy = Kokkos::MDRangePolicy<Kokkos::Rank<2>>({0, 0}, {m_num_cols, m_num_levs});
+
+  if (pblh_cutoff) {
+    // Compute z_mid
+    const auto T_mid_d = get_field_in("T_mid").get_view<const Real**>();
+    const auto qv_d  = get_field_in("qv").get_view<const Real**>();
+    const auto p_mid_d = get_field_in("p_mid").get_view<const Real**>();
+    const auto pseudo_density_d = get_field_in("pseudo_density").get_view<const Real**>();
+    const auto z_mid_d = m_z_mid.get_view<Real**>();
+    const auto z_int_d = m_z_int.get_view<Real**>();
+    const auto ncol = m_num_cols;
+    const auto nlev = m_num_levs;
+
+    using KT       = KokkosTypes<DefaultDevice>;
+    using ExeSpace = typename KT::ExeSpace;
+    using TPF      = ekat::TeamPolicyFactory<ExeSpace>;
+    using PF       = scream::PhysicsFunctions<DefaultDevice>;
+
+    const auto scan_policy = TPF::get_thread_range_parallel_scan_team_policy(ncol, nlev);
+    Kokkos::parallel_for(scan_policy, KOKKOS_LAMBDA (const KT::MemberType& team) {
+        const int i = team.league_rank();
+        const auto p_mid_s = ekat::subview(p_mid_d, i);
+        const auto T_mid_s = ekat::subview(T_mid_d, i);
+        const auto qv_s = ekat::subview(qv_d, i);
+        const auto z_int_s = ekat::subview(z_int_d, i);
+        const auto z_mid_s = ekat::subview(z_mid_d, i);
+        // We want z_mid to be AGL, so we set z_surf to 0.
+        const Real z_surf  = 0.0;
+        const auto pseudo_density_s = ekat::subview(pseudo_density_d, i);
+
+        // 1. Compute dz (recycle z_mid_s as a temporary)
+        const auto dz_s = z_mid_s; // 
+        PF::calculate_dz(team, pseudo_density_s, p_mid_s, T_mid_s, qv_s, dz_s);
+        team.team_barrier();
+
+        // 2. Compute z_int (vertical scan)
+        PF::calculate_z_int(team,nlev,dz_s,z_surf,z_int_s);
+        team.team_barrier();
+
+        // 3. Compute z_mid (int->mid interpolation)
+        PF::calculate_z_mid(team,nlev,z_int_s,z_mid_s);
+        team.team_barrier();
+    });
+    Kokkos::fence();
+  }
+  if (m_pbl_height_cutoff) {
+    pbl_height_view = get_field_in("pbl_height").get_view<const Real*>();
+    z_mid_view = m_z_mid.get_view<const Real**>();
+  }
   auto update = KOKKOS_LAMBDA(const int& i, const int& j) {
     if (cutoff>0 and pmid_view(i,j)>=cutoff) {
+      return;
+    }
+    if (pblh_cutoff and z_mid_view(i,j) < pbl_height_view(i)) {
       return;
     }
 
@@ -313,6 +383,12 @@ void Nudging::initialize_impl (const RunType /* run_type */)
     auto nudging_weights = create_helper_field("nudging_weights", layout_atm, m_grid->name());
     AtmosphereInput src_weights_input(m_weights_file, m_grid, {nudging_weights},true);
     src_weights_input.read_variables();
+  }
+
+  if (m_pbl_height_cutoff) {
+    // create z_mid and z_int fields
+    m_z_mid = create_helper_field("z_mid", layout_atm, m_grid->name());
+    m_z_int = create_helper_field("z_int", layout_atm, m_grid->name());
   }
 }
 

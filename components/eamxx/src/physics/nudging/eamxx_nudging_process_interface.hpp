@@ -74,6 +74,8 @@ protected:
   int m_timescale;
   bool m_use_weights;
   bool m_skip_vert_interpolation;
+  bool m_pbl_height_cutoff;
+  Field m_z_mid, m_z_int;
   std::vector<std::string> m_datafiles;
   std::string              m_static_vertical_pressure_file;
   // add nudging weights for regional nudging update
