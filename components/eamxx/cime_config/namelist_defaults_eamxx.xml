@@ -436,6 +436,12 @@ be lost if SCREAM_HACK_XML is not enabled.
       >
         0.0
       </nudging_refine_remap_vert_cutoff>
+      <nudging_pbl_height_cutoff
+        type="logical"
+        doc="Whether to use PBL height from SHOC as cutoff for nudging. If true, nudging will be turned off in the PBL (Z .le. PBLH)."
+      >
+      false
+      </nudging_pbl_height_cutoff>
     </nudging>
 
     <!-- ML correction -->
