@@ -245,6 +245,7 @@ static void rrtmgp_main(
   const creal2dk &p_lay, const creal2dk &t_lay, const creal2dk &p_lev, const creal2dk &t_lev,
   gas_concs_t &gas_concs,
   const creal2dk &sfc_alb_dir, const creal2dk &sfc_alb_dif, const real1dk &mu0,
+  const real2dk &rwp, const creal2dk &rer,
   const real2dk &lwp, const real2dk &iwp, const creal2dk &rel, const creal2dk &rei, const real2dk &cldfrac,
   const real3dk &aer_tau_sw, const real3dk &aer_ssa_sw, const real3dk &aer_asm_sw, const real3dk &aer_tau_lw,
   const real3dk &cld_tau_sw_bnd, const real3dk &cld_tau_lw_bnd,
@@ -281,6 +282,8 @@ static void rrtmgp_main(
   check_range_k(iwp        ,                         0, std::numeric_limits<RealT>::max(), "rrtmgp_main::iwp");
   check_range_k(rel        ,                         0, std::numeric_limits<RealT>::max(), "rrtmgp_main::rel");
   check_range_k(rei        ,                         0, std::numeric_limits<RealT>::max(), "rrtmgp_main::rei");
+  check_range_k(rwp        ,                         0, std::numeric_limits<RealT>::max(), "rrtmgp_main::rwp");
+  check_range_k(rer        ,                         0, std::numeric_limits<RealT>::max(), "rrtmgp_main::rer");
 #endif
 
   auto sw_band2gpt_mem = pool_t::template alloc<int>(2, sw_nband);
@@ -388,6 +391,32 @@ static void rrtmgp_main(
   // Convert cloud physical properties to optical properties for input to RRTMGP
   optical_props2_t clouds_sw = get_cloud_optics_sw(ncol, nlay, *cloud_optics_sw_k, *k_dist_sw_k, lwp, iwp, rel, rei, sw_cloud_band2gpt_mem, sw_cloud_gpt2band_mem, sw_cloud_tau_mem, sw_cloud_ssa_mem, sw_cloud_g_mem);
   optical_props1_t clouds_lw = get_cloud_optics_lw(ncol, nlay, *cloud_optics_lw_k, *k_dist_lw_k, lwp, iwp, rel, rei, lw_cloud_band2gpt_mem, lw_cloud_gpt2band_mem, lw_cloud_tau_mem);
+
+  // Now compute rain optical properties to add to clouds
+  // ... this is a pretty simplistic approach, and should be tested
+  // NOTE: rain is treated as liquid water (zero ice path and radius), but could change
+  auto sw_rain_band2gpt_mem = pool_t::template alloc<int>(2, sw_nband);
+  auto sw_rain_gpt2band_mem = pool_t::template alloc<int>(   sw_nband);
+  auto sw_rain_tau_mem = pool_t::template alloc<RealT>(ncol, nlay, sw_nband);
+  auto sw_rain_ssa_mem = pool_t::template alloc<RealT>(ncol, nlay, sw_nband);
+  auto sw_rain_g_mem   = pool_t::template alloc<RealT>(ncol, nlay, sw_nband);
+  auto lw_rain_band2gpt_mem = pool_t::template alloc<int>(2, lw_nband);
+  auto lw_rain_gpt2band_mem = pool_t::template alloc<int>(   lw_nband);
+  auto lw_rain_tau_mem = pool_t::template alloc<RealT>(ncol, nlay, lw_nband);
+  
+  auto iwp_zero = pool_t::template alloc<RealT>(ncol, nlay);
+  auto rei_zero = pool_t::template alloc<RealT>(ncol, nlay);
+  Kokkos::deep_copy(iwp_zero, 0.0);
+  Kokkos::deep_copy(rei_zero, 0.0);
+  
+  auto rain_sw = get_cloud_optics_sw(ncol, nlay, *cloud_optics_sw_k, *k_dist_sw_k, rwp, iwp_zero, rer, rei_zero, sw_rain_band2gpt_mem, sw_rain_gpt2band_mem, sw_rain_tau_mem, sw_rain_ssa_mem, sw_rain_g_mem);
+  auto rain_lw = get_cloud_optics_lw(ncol, nlay, *cloud_optics_lw_k, *k_dist_lw_k, rwp, iwp_zero, rer, rei_zero, lw_rain_band2gpt_mem, lw_rain_gpt2band_mem, lw_rain_tau_mem);
+  
+  // Merge rain into cloud optical properties
+  // NOTE: this simple approach ignores overlaps, etc.
+  rain_sw.increment(clouds_sw);
+  rain_lw.increment(clouds_lw);
+
   Kokkos::deep_copy(cld_tau_sw_bnd, clouds_sw.tau);
   Kokkos::deep_copy(cld_tau_lw_bnd, clouds_lw.tau);
 
@@ -471,6 +500,18 @@ static void rrtmgp_main(
   pool_t::dealloc(sw_subcloud_ssa_mem);
   pool_t::dealloc(sw_subcloud_g_mem);
   pool_t::dealloc(lw_subcloud_tau_mem);
+
+  // Clean up rain-specific memory
+  pool_t::dealloc(sw_rain_band2gpt_mem);
+  pool_t::dealloc(sw_rain_gpt2band_mem);
+  pool_t::dealloc(sw_rain_tau_mem);
+  pool_t::dealloc(sw_rain_ssa_mem);
+  pool_t::dealloc(sw_rain_g_mem);
+  pool_t::dealloc(lw_rain_band2gpt_mem);
+  pool_t::dealloc(lw_rain_gpt2band_mem);
+  pool_t::dealloc(lw_rain_tau_mem);
+  pool_t::dealloc(iwp_zero);
+  pool_t::dealloc(rei_zero);
 }
 
 /*
