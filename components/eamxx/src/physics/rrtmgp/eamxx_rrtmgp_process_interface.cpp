@@ -145,9 +145,11 @@ void RRTMGPRadiation::set_grids(const std::shared_ptr<const GridsManager> grids_
   add_field<Required>("sfc_alb_dif_nir", scalar2d, nondim, grid_name);
   add_field<Required>("qc", scalar3d_mid, kg/kg, grid_name);
   add_field<Required>("nc", scalar3d_mid, 1/kg, grid_name);
+  add_field<Required>("qr", scalar3d_mid, kg/kg, grid_name);
   add_field<Required>("qi", scalar3d_mid, kg/kg, grid_name);
   add_field<Required>("cldfrac_tot", scalar3d_mid, nondim, grid_name);
   add_field<Required>("eff_radius_qc", scalar3d_mid, micron, grid_name);
+  add_field<Required>("eff_radius_qr", scalar3d_mid, micron, grid_name);
   add_field<Required>("eff_radius_qi", scalar3d_mid, micron, grid_name);
   add_field<Required>("qv",scalar3d_mid,kg/kg,grid_name);
   add_field<Required>("surf_lw_flux_up",scalar2d,W/(m*m),grid_name);
@@ -346,18 +348,24 @@ void RRTMGPRadiation::init_buffers(const ATMBufferManager &buffer_manager)
   mem += m_buffer.nc_k.size();
   m_buffer.qi_k = decltype(m_buffer.qi_k)(mem, m_col_chunk_size, m_nlay);
   mem += m_buffer.qi_k.size();
+  m_buffer.qr_k = decltype(m_buffer.qr_k)(mem, m_col_chunk_size, m_nlay);
+  mem += m_buffer.qr_k.size();
   m_buffer.cldfrac_tot_k = decltype(m_buffer.cldfrac_tot_k)(mem, m_col_chunk_size, m_nlay);
   mem += m_buffer.cldfrac_tot_k.size();
   m_buffer.eff_radius_qc_k = decltype(m_buffer.eff_radius_qc_k)(mem, m_col_chunk_size, m_nlay);
   mem += m_buffer.eff_radius_qc_k.size();
   m_buffer.eff_radius_qi_k = decltype(m_buffer.eff_radius_qi_k)(mem, m_col_chunk_size, m_nlay);
   mem += m_buffer.eff_radius_qi_k.size();
+  m_buffer.eff_radius_qr_k = decltype(m_buffer.eff_radius_qr_k)(mem, m_col_chunk_size, m_nlay);
+  mem += m_buffer.eff_radius_qr_k.size();
   m_buffer.tmp2d_k = decltype(m_buffer.tmp2d_k)(mem, m_col_chunk_size, m_nlay);
   mem += m_buffer.tmp2d_k.size();
   m_buffer.lwp_k = decltype(m_buffer.lwp_k)(mem, m_col_chunk_size, m_nlay);
   mem += m_buffer.lwp_k.size();
   m_buffer.iwp_k = decltype(m_buffer.iwp_k)(mem, m_col_chunk_size, m_nlay);
   mem += m_buffer.iwp_k.size();
+  m_buffer.rwp_k = decltype(m_buffer.rwp_k)(mem, m_col_chunk_size, m_nlay);
+  mem += m_buffer.rwp_k.size();
   m_buffer.sw_heating_k = decltype(m_buffer.sw_heating_k)(mem, m_col_chunk_size, m_nlay);
   mem += m_buffer.sw_heating_k.size();
   m_buffer.lw_heating_k = decltype(m_buffer.lw_heating_k)(mem, m_col_chunk_size, m_nlay);
@@ -557,9 +565,11 @@ void RRTMGPRadiation::run_impl (const double dt) {
   auto d_qc = get_field_in("qc").get_view<const Real**>();
   auto d_nc = get_field_in("nc").get_view<const Real**>();
   auto d_qi = get_field_in("qi").get_view<const Real**>();
+  auto d_qr = get_field_in("qr").get_view<const Real**>();
   auto d_cldfrac_tot = get_field_in("cldfrac_tot").get_view<const Real**>();
   auto d_rel = get_field_in("eff_radius_qc").get_view<const Real**>();
   auto d_rei = get_field_in("eff_radius_qi").get_view<const Real**>();
+  auto d_rer = get_field_in("eff_radius_qr").get_view<const Real**>();
   auto d_surf_lw_flux_up = get_field_in("surf_lw_flux_up").get_view<const Real*>();
   // Output fields
   auto d_tmid = get_field_out("T_mid").get_view<Real**>();
@@ -756,9 +766,11 @@ void RRTMGPRadiation::run_impl (const double dt) {
       auto qc_k              = conv.subview2d(d_qc, m_buffer.qc_k, m_nlay);
       auto nc_k              = conv.subview2d(d_nc, m_buffer.nc_k, m_nlay);
       auto qi_k              = conv.subview2d(d_qi, m_buffer.qi_k, m_nlay);
+      auto qr_k              = conv.subview2d(d_qr, m_buffer.qr_k, m_nlay);
       auto cldfrac_tot_k     = m_buffer.cldfrac_tot_k;
       auto rel_k             = conv.subview2d(d_rel, m_buffer.eff_radius_qc_k, m_nlay);
       auto rei_k             = conv.subview2d(d_rei, m_buffer.eff_radius_qi_k, m_nlay);
+      auto rer_k             = conv.subview2d(d_rer, m_buffer.eff_radius_qr_k, m_nlay);
       auto sw_flux_up_k      = conv.subview2d(d_sw_flux_up, m_buffer.sw_flux_up_k, m_nlay+1);
       auto sw_flux_dn_k      = conv.subview2d(d_sw_flux_dn, m_buffer.sw_flux_dn_k, m_nlay+1);
       auto sw_flux_dn_dir_k  = conv.subview2d(d_sw_flux_dn_dir, m_buffer.sw_flux_dn_dir_k, m_nlay+1);
@@ -868,8 +880,10 @@ void RRTMGPRadiation::run_impl (const double dt) {
             qc_k(i,k)          = d_qc(icol,k);
             nc_k(i,k)          = d_nc(icol,k);
             qi_k(i,k)          = d_qi(icol,k);
+            qr_k(i,k)          = d_qr(icol,k);
             rel_k(i,k)         = d_rel(icol,k);
             rei_k(i,k)         = d_rei(icol,k);
+            rer_k(i,k)         = d_rer(icol,k);
             p_lev_k(i,k)       = d_pint(icol,k);
             t_lev_k(i,k)       = d_tint(i,k);
           });
@@ -948,6 +962,7 @@ void RRTMGPRadiation::run_impl (const double dt) {
       auto do_subcol_sampling = m_do_subcol_sampling;
       auto lwp_k = m_buffer.lwp_k;
       auto iwp_k = m_buffer.iwp_k;
+      auto rwp_k = m_buffer.rwp_k;
       if (not do_subcol_sampling) {
         const auto policy = ekat::ExeSpaceUtils<ExeSpace>::get_default_team_policy(ncol, m_nlay);
         Kokkos::parallel_for(policy, KOKKOS_LAMBDA(const MemberType& team) {
@@ -976,8 +991,11 @@ void RRTMGPRadiation::run_impl (const double dt) {
       Kokkos::fence();
 
       // Compute layer cloud mass (per unit area)
+      // NOTE: decision here is to use cldfrac_tot for all hydrometeors
+      // NOTE: but p3 assumes specialized cldfrac for liq, ice, and rain
       interface_t::mixing_ratio_to_cloud_mass(qc_k, cldfrac_tot_k, p_del_k, lwp_k);
       interface_t::mixing_ratio_to_cloud_mass(qi_k, cldfrac_tot_k, p_del_k, iwp_k);
+      interface_t::mixing_ratio_to_cloud_mass(qr_k, cldfrac_tot_k, p_del_k, rwp_k);
       // Convert to g/m2 (needed by RRTMGP)
       {
       const auto policy = ekat::ExeSpaceUtils<ExeSpace>::get_default_team_policy(ncol, m_nlay);
@@ -986,6 +1004,7 @@ void RRTMGPRadiation::run_impl (const double dt) {
         Kokkos::parallel_for(Kokkos::TeamVectorRange(team, nlay), [&] (const int& k) {
           lwp_k(i,k) *= 1e3;
           iwp_k(i,k) *= 1e3;
+          rwp_k(i,k) *= 1e3;
         });
       });
       }
@@ -1009,6 +1028,7 @@ void RRTMGPRadiation::run_impl (const double dt) {
         p_lay_k, t_lay_k, p_lev_k, t_lev_k,
         m_gas_concs_k,
         sfc_alb_dir_k, sfc_alb_dif_k, d_mu0,
+        rwp_k, rer_k,
         lwp_k, iwp_k, rel_k, rei_k, cldfrac_tot_k,
         aero_tau_sw_k, aero_ssa_sw_k, aero_g_sw_k, aero_tau_lw_k,
         cld_tau_sw_bnd_k, cld_tau_lw_bnd_k,

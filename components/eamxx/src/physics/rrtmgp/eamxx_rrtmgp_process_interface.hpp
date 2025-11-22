@@ -133,7 +133,7 @@ public:
   // Structure for storing local variables initialized using the ATMBufferManager
   struct Buffer {
     static constexpr int num_1d_ncol        = 10;
-    static constexpr int num_2d_nlay        = 16;
+    static constexpr int num_2d_nlay        = 19;
     static constexpr int num_2d_nlay_p1     = 23;
     static constexpr int num_2d_nswbands    = 2;
     static constexpr int num_3d_nlev_nswbands = 4;
@@ -164,12 +164,15 @@ public:
     ureal2dk qc_k;
     ureal2dk nc_k;
     ureal2dk qi_k;
+    ureal2dk qr_k;
     ureal2dk cldfrac_tot_k;
     ureal2dk eff_radius_qc_k;
     ureal2dk eff_radius_qi_k;
+    ureal2dk eff_radius_qr_k;
     ureal2dk tmp2d_k;
     ureal2dk lwp_k;
     ureal2dk iwp_k;
+    ureal2dk rwp_k;
     ureal2dk sw_heating_k;
     ureal2dk lw_heating_k;
 
