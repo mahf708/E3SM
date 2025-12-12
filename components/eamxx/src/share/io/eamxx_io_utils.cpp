@@ -253,8 +253,14 @@ create_diagnostic (const std::string& diag_field_name,
     diag_name = "BinaryOpsDiag";
     params.set("grid_name", grid->name());
     params.set<std::string>("field_1", matches[1].str());
-    params.set<std::string>("field_2", matches[3].str());
-    params.set<std::string>("binary_op", matches[2].str());
+    auto field_2 = matches[3].str();
+    if (field_2 == "rho_h2o" || field_2 == "gravit") {
+      params.set<std::string>("binary_op", matches[2].str() + "_" + field_2);
+      params.set<std::string>("field_2", "");
+    } else {
+      params.set<std::string>("field_2", field_2);
+      params.set<std::string>("binary_op", matches[2].str());
+    }
   }
   else if (std::regex_search(diag_field_name,matches,histogram)) {
     diag_name = "HistogramDiag";
