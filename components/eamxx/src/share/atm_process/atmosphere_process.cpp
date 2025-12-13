@@ -318,7 +318,7 @@ void AtmosphereProcess::setup_tendencies_requests () {
     // HACK-MAHF708-250929: fixing this will require deep surgery in the code, so for now, let's just
     // pretend we trust the user to request the right things...
     if (this->name() == "homme") {
-      if (fn == "qc" || fn == "qi") {
+      if (fn == "qc" || fn == "qi" || fn == "qr") {
         fn = "qv";
       }
     }
