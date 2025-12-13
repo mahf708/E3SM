@@ -23,15 +23,12 @@ struct PhysicalConstant {
   ekat::units::Units unit;
 
   // Implicit conversion to Scalar for backward compatibility
-  KOKKOS_INLINE_FUNCTION
   operator Scalar() const { return value; }
 
   // Default constructor
-  KOKKOS_INLINE_FUNCTION
   PhysicalConstant() : value(0), unit(ekat::units::Units::invalid()) {}
 
   // Constructor with value and units
-  KOKKOS_INLINE_FUNCTION
   PhysicalConstant(Scalar v, const ekat::units::Units& u) 
     : value(v), unit(u) {}
 };
@@ -50,11 +47,11 @@ struct Constants
 
   // Initialize PhysicalConstant objects with values and units
   static inline const PhysicalConstant<Scalar> Cpair = 
-    PhysicalConstant<Scalar>(1004.64, ekat::units::J / (ekat::units::kg * ekat::units::K));
+    PhysicalConstant<Scalar>(1004.64, ekat::units::pow(ekat::units::m, 2) / (ekat::units::pow(ekat::units::s, 2) * ekat::units::K));
   static inline const PhysicalConstant<Scalar> Rair = 
-    PhysicalConstant<Scalar>(287.042, ekat::units::J / (ekat::units::kg * ekat::units::K));
+    PhysicalConstant<Scalar>(287.042, ekat::units::pow(ekat::units::m, 2) / (ekat::units::pow(ekat::units::s, 2) * ekat::units::K));
   static inline const PhysicalConstant<Scalar> RH2O = 
-    PhysicalConstant<Scalar>(461.505, ekat::units::J / (ekat::units::kg * ekat::units::K));
+    PhysicalConstant<Scalar>(461.505, ekat::units::pow(ekat::units::m, 2) / (ekat::units::pow(ekat::units::s, 2) * ekat::units::K));
   static inline const PhysicalConstant<Scalar> RV = RH2O;  // Water vapor gas constant ~ J/K/kg     !461.51
   static inline const PhysicalConstant<Scalar> RHO_H2O = 
     PhysicalConstant<Scalar>(1000.0, ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
@@ -63,9 +60,9 @@ struct Constants
   static inline const PhysicalConstant<Scalar> RhoIce = 
     PhysicalConstant<Scalar>(917.0, ekat::units::kg / ekat::units::pow(ekat::units::m, 3));  // Ice density at 0 C from Wallace+Hobbes 1977
   static inline const PhysicalConstant<Scalar> MWH2O = 
-    PhysicalConstant<Scalar>(18.016, ekat::units::g / ekat::units::mol);
+    PhysicalConstant<Scalar>(18.016, ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> MWdry = 
-    PhysicalConstant<Scalar>(28.966, ekat::units::g / ekat::units::mol);
+    PhysicalConstant<Scalar>(28.966, ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> o2mmr = 
     PhysicalConstant<Scalar>(0.23143, ekat::units::Units::nondimensional());  // o2 mass mixing ratio
   static inline const PhysicalConstant<Scalar> ep_2 = 
@@ -73,11 +70,11 @@ struct Constants
   static inline const PhysicalConstant<Scalar> gravit = 
     PhysicalConstant<Scalar>(9.80616, ekat::units::m / ekat::units::pow(ekat::units::s, 2));
   static inline const PhysicalConstant<Scalar> LatVap = 
-    PhysicalConstant<Scalar>(2501000.0, ekat::units::J / ekat::units::kg);
+    PhysicalConstant<Scalar>(2501000.0, ekat::units::pow(ekat::units::m, 2) / ekat::units::pow(ekat::units::s, 2));
   static inline const PhysicalConstant<Scalar> LatIce = 
-    PhysicalConstant<Scalar>(333700.0, ekat::units::J / ekat::units::kg);
+    PhysicalConstant<Scalar>(333700.0, ekat::units::pow(ekat::units::m, 2) / ekat::units::pow(ekat::units::s, 2));
   static inline const PhysicalConstant<Scalar> CpLiq = 
-    PhysicalConstant<Scalar>(4188.0, ekat::units::J / (ekat::units::kg * ekat::units::K));
+    PhysicalConstant<Scalar>(4188.0, ekat::units::pow(ekat::units::m, 2) / (ekat::units::pow(ekat::units::s, 2) * ekat::units::K));
   static inline const PhysicalConstant<Scalar> Tmelt = 
     PhysicalConstant<Scalar>(273.15, ekat::units::K);
   static inline const PhysicalConstant<Scalar> T_zerodegc = Tmelt;
@@ -142,7 +139,7 @@ struct Constants
     PhysicalConstant<Scalar>(60000/(287.042*253.15), ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
   static inline const PhysicalConstant<Scalar> CP = Cpair;  // heat constant of air at constant pressure, J/kg
   static inline const PhysicalConstant<Scalar> INV_CP = 
-    PhysicalConstant<Scalar>(1.0/1004.64, ekat::units::kg * ekat::units::K / ekat::units::J);
+    PhysicalConstant<Scalar>(1.0/1004.64, ekat::units::pow(ekat::units::s, 2) * ekat::units::K / ekat::units::pow(ekat::units::m, 2));
   //  static constexpr Scalar Tol           = ekat::is_single_precision<Real>::value ? 2e-5 : 1e-14;
   static inline const PhysicalConstant<Scalar> macheps = 
     PhysicalConstant<Scalar>(std::numeric_limits<Real>::epsilon(), ekat::units::Units::nondimensional());
@@ -161,14 +158,14 @@ struct Constants
   static inline const PhysicalConstant<Scalar> Karman = 
     PhysicalConstant<Scalar>(0.4, ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> Avogad = 
-    PhysicalConstant<Scalar>(6.02214e26, ekat::units::Units::nondimensional() / ekat::units::kmol);
+    PhysicalConstant<Scalar>(6.02214e26, ekat::units::Units::nondimensional() / ekat::units::mol);
   static inline const PhysicalConstant<Scalar> Boltz = 
-    PhysicalConstant<Scalar>(1.38065e-23, ekat::units::J / ekat::units::K);
+    PhysicalConstant<Scalar>(1.38065e-23, ekat::units::kg * ekat::units::pow(ekat::units::m, 2) / (ekat::units::pow(ekat::units::s, 2) * ekat::units::K));
   static inline const PhysicalConstant<Scalar> Rgas = 
-    PhysicalConstant<Scalar>(6.02214e26 * 1.38065e-23, ekat::units::J / (ekat::units::kmol * ekat::units::K));
+    PhysicalConstant<Scalar>(6.02214e26 * 1.38065e-23, ekat::units::kg * ekat::units::pow(ekat::units::m, 2) / (ekat::units::pow(ekat::units::s, 2) * ekat::units::mol * ekat::units::K));
   static inline const PhysicalConstant<Scalar> MWWV = MWH2O;
   static inline const PhysicalConstant<Scalar> RWV = 
-    PhysicalConstant<Scalar>((6.02214e26 * 1.38065e-23) / 18.016, ekat::units::J / (ekat::units::kg * ekat::units::K));
+    PhysicalConstant<Scalar>((6.02214e26 * 1.38065e-23) / 18.016, ekat::units::pow(ekat::units::m, 2) / (ekat::units::pow(ekat::units::s, 2) * ekat::units::K));
   static inline const PhysicalConstant<Scalar> ZVIR = 
     PhysicalConstant<Scalar>(((6.02214e26 * 1.38065e-23) / 18.016) / 287.042 - 1.0, ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> f1r = 
@@ -182,9 +179,9 @@ struct Constants
   static inline const PhysicalConstant<Scalar> r_earth = 
     PhysicalConstant<Scalar>(6.376e6, ekat::units::m); // Radius of the earth in m
   static inline const PhysicalConstant<Scalar> stebol = 
-    PhysicalConstant<Scalar>(5.670374419e-8, ekat::units::W / (ekat::units::pow(ekat::units::m, 2) * ekat::units::pow(ekat::units::K, 4))); // Stefan-Boltzmann's constant (W/m^2/K^4)
+    PhysicalConstant<Scalar>(5.670374419e-8, ekat::units::kg / (ekat::units::pow(ekat::units::s, 3) * ekat::units::pow(ekat::units::K, 4))); // Stefan-Boltzmann's constant (W/m^2/K^4)
   static inline const PhysicalConstant<Scalar> omega = 
-    PhysicalConstant<Scalar>(7.292e-5, ekat::units::rad / ekat::units::s); // Earth's rotation (rad/sec)
+    PhysicalConstant<Scalar>(7.292e-5, ekat::units::Units::nondimensional() / ekat::units::s); // Earth's rotation (rad/sec)
 
   // Table dimension constants
   static constexpr int VTABLE_DIM0    = 300;
@@ -209,11 +206,11 @@ struct Constants
   // For use in converting area to length for a column cell
   // World Geodetic System 1984 (WGS84)
   static inline const PhysicalConstant<Scalar> earth_ellipsoid1 = 
-    PhysicalConstant<Scalar>(111132.92, ekat::units::m / ekat::units::deg); // first coefficient, meters per degree longitude at equator
+    PhysicalConstant<Scalar>(111132.92, ekat::units::m); // first coefficient, meters per degree longitude at equator
   static inline const PhysicalConstant<Scalar> earth_ellipsoid2 = 
-    PhysicalConstant<Scalar>(559.82, ekat::units::m / ekat::units::deg);    // second expansion coefficient for WGS84 ellipsoid
+    PhysicalConstant<Scalar>(559.82, ekat::units::m);    // second expansion coefficient for WGS84 ellipsoid
   static inline const PhysicalConstant<Scalar> earth_ellipsoid3 = 
-    PhysicalConstant<Scalar>(1.175, ekat::units::m / ekat::units::deg);     // third expansion coefficient for WGS84 ellipsoid
+    PhysicalConstant<Scalar>(1.175, ekat::units::m);     // third expansion coefficient for WGS84 ellipsoid
 };
 
 // Gases

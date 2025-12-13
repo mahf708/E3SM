@@ -39,8 +39,8 @@ TEST_CASE("physics_constants", "[physics]")
   SECTION("unit_member") {
     // Test that constants have .unit member
     REQUIRE(PC::RHO_H2O.unit == kg / pow(m, 3));
-    REQUIRE(PC::Cpair.unit == J / (kg * K));
-    REQUIRE(PC::Rair.unit == J / (kg * K));
+    REQUIRE(PC::Cpair.unit == pow(m, 2) / (pow(s, 2) * K));
+    REQUIRE(PC::Rair.unit == pow(m, 2) / (pow(s, 2) * K));
     REQUIRE(PC::gravit.unit == m / pow(s, 2));
     REQUIRE(PC::Tmelt.unit == K);
     REQUIRE(PC::Pi.unit == Units::nondimensional());
