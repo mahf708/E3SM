@@ -36,6 +36,15 @@ struct PhysicalConstant {
 /*
  * Mathematical constants used by atmosphere processes.
  *
+ * Constants are stored as PhysicalConstant objects that contain both
+ * a value and units. They support three access patterns:
+ *   - PC::RHO_H2O         : Implicit conversion to scalar (backward compatible)
+ *   - PC::RHO_H2O.value   : Explicit access to the numeric value
+ *   - PC::RHO_H2O.unit    : Access to the ekat::units::Units object
+ *
+ * This enables constants to be used in diagnostics, binary operations,
+ * conditional sampling, and other contexts where units are needed.
+ *
  * Note that a potential optimization could be to change the type of
  * Scalar constants that have integer values to int.
  */
