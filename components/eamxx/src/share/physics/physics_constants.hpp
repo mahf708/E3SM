@@ -151,7 +151,7 @@ struct Constants
     PhysicalConstant<Scalar>(1.0/CP.value, ekat::units::pow(ekat::units::s, 2) * ekat::units::K / ekat::units::pow(ekat::units::m, 2));
   //  static constexpr Scalar Tol           = ekat::is_single_precision<Real>::value ? 2e-5 : 1e-14;
   static inline const PhysicalConstant<Scalar> macheps = 
-    PhysicalConstant<Scalar>(std::numeric_limits<Real>::epsilon(), ekat::units::Units::nondimensional());
+    PhysicalConstant<Scalar>(std::numeric_limits<Scalar>::epsilon(), ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> dt_left_tol = 
     PhysicalConstant<Scalar>(1.e-4, ekat::units::s);
   static inline const PhysicalConstant<Scalar> bcn = 
@@ -159,7 +159,7 @@ struct Constants
   static inline const PhysicalConstant<Scalar> dropmass = 
     PhysicalConstant<Scalar>(5.2e-7, ekat::units::kg);
   static inline const PhysicalConstant<Scalar> NCCNST = 
-    PhysicalConstant<Scalar>(200.0e+6, ekat::units::Units::nondimensional() / ekat::units::pow(ekat::units::m, 3));
+    PhysicalConstant<Scalar>(200.0e+6, ekat::units::pow(ekat::units::m, -3));
   static inline const PhysicalConstant<Scalar> incloud_limit = 
     PhysicalConstant<Scalar>(5.1e-3, ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> precip_limit = 
@@ -167,7 +167,7 @@ struct Constants
   static inline const PhysicalConstant<Scalar> Karman = 
     PhysicalConstant<Scalar>(0.4, ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> Avogad = 
-    PhysicalConstant<Scalar>(6.02214e26, ekat::units::Units::nondimensional() / ekat::units::mol);
+    PhysicalConstant<Scalar>(6.02214e26, ekat::units::pow(ekat::units::mol, -1));
   static inline const PhysicalConstant<Scalar> Boltz = 
     PhysicalConstant<Scalar>(1.38065e-23, ekat::units::kg * ekat::units::pow(ekat::units::m, 2) / (ekat::units::pow(ekat::units::s, 2) * ekat::units::K));
   static inline const PhysicalConstant<Scalar> Rgas = 
@@ -190,7 +190,7 @@ struct Constants
   static inline const PhysicalConstant<Scalar> stebol = 
     PhysicalConstant<Scalar>(5.670374419e-8, ekat::units::kg / (ekat::units::pow(ekat::units::s, 3) * ekat::units::pow(ekat::units::K, 4))); // Stefan-Boltzmann's constant (W/m^2/K^4)
   static inline const PhysicalConstant<Scalar> omega = 
-    PhysicalConstant<Scalar>(7.292e-5, ekat::units::Units::nondimensional() / ekat::units::s); // Earth's rotation (rad/sec)
+    PhysicalConstant<Scalar>(7.292e-5, ekat::units::pow(ekat::units::s, -1)); // Earth's rotation (rad/sec)
 
   // Table dimension constants
   static constexpr int VTABLE_DIM0    = 300;
