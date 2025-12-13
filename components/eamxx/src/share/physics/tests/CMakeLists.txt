@@ -8,6 +8,9 @@ if (NOT SCREAM_ONLY_GENERATE_BASELINES)
 
   # Test common physics functions
   CreateUnitTest(common_physics "common_physics_functions_tests.cpp" LIBS eamxx_physics_share)
+
+  # Test physics constants
+  CreateUnitTest(physics_constants "physics_constants_tests.cpp" LIBS eamxx_physics_share)
 endif()
 
 if (SCREAM_ENABLE_BASELINE_TESTS)
