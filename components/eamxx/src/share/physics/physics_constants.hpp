@@ -88,9 +88,9 @@ struct Constants
     PhysicalConstant<Scalar>(273.15, ekat::units::K);
   static inline const PhysicalConstant<Scalar> T_zerodegc = Tmelt;
   static inline const PhysicalConstant<Scalar> T_homogfrz = 
-    PhysicalConstant<Scalar>(273.15 - 40, ekat::units::K);
+    PhysicalConstant<Scalar>(Tmelt.value - 40, ekat::units::K);
   static inline const PhysicalConstant<Scalar> T_rainfrz = 
-    PhysicalConstant<Scalar>(273.15 - 4, ekat::units::K);
+    PhysicalConstant<Scalar>(Tmelt.value - 4, ekat::units::K);
   static inline const PhysicalConstant<Scalar> Pi = 
     PhysicalConstant<Scalar>(3.14159265358979323, ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> RHOW = RHO_H2O;
@@ -100,29 +100,29 @@ struct Constants
   static inline const PhysicalConstant<Scalar> RHO_RIMEMAX = 
     PhysicalConstant<Scalar>(900.0, ekat::units::kg / ekat::units::pow(ekat::units::m, 3));  //Max limit for rime density [kg m-3]
   static inline const PhysicalConstant<Scalar> INV_RHO_RIMEMAX = 
-    PhysicalConstant<Scalar>(1.0/900.0, ekat::units::pow(ekat::units::m, 3) / ekat::units::kg); // Inverse for limits for rime density [kg m-3]
+    PhysicalConstant<Scalar>(1.0/RHO_RIMEMAX.value, ekat::units::pow(ekat::units::m, 3) / ekat::units::kg); // Inverse for limits for rime density [kg m-3]
   static inline const PhysicalConstant<Scalar> THIRD = 
     PhysicalConstant<Scalar>(1.0/3.0, ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> SXTH = 
     PhysicalConstant<Scalar>(1.0/6.0, ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> PIOV3 = 
-    PhysicalConstant<Scalar>(3.14159265358979323/3.0, ekat::units::Units::nondimensional());
+    PhysicalConstant<Scalar>(Pi.value*THIRD.value, ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> PIOV6 = 
-    PhysicalConstant<Scalar>(3.14159265358979323/6.0, ekat::units::Units::nondimensional());
+    PhysicalConstant<Scalar>(Pi.value*SXTH.value, ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> BIMM = 
     PhysicalConstant<Scalar>(2.0, ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> CONS1 = 
-    PhysicalConstant<Scalar>(3.14159265358979323/6.0*1000.0, ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
+    PhysicalConstant<Scalar>(PIOV6.value*RHOW.value, ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
   static inline const PhysicalConstant<Scalar> CONS2 = 
-    PhysicalConstant<Scalar>(4.*3.14159265358979323/3.0*1000.0, ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
+    PhysicalConstant<Scalar>(4.*PIOV3.value*RHOW.value, ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
   static inline const PhysicalConstant<Scalar> CONS3 = 
-    PhysicalConstant<Scalar>(1.0/(4.*3.14159265358979323/3.0*1000.0*1.562500000000000e-14), ekat::units::pow(ekat::units::m, 3) / ekat::units::kg); // 1./(CONS2*pow(25.e-6,3.0));
+    PhysicalConstant<Scalar>(1.0/(CONS2.value*1.562500000000000e-14), ekat::units::pow(ekat::units::m, 3) / ekat::units::kg); // 1./(CONS2*pow(25.e-6,3.0));
   static inline const PhysicalConstant<Scalar> CONS5 = 
-    PhysicalConstant<Scalar>(3.14159265358979323/6.0*2.0, ekat::units::Units::nondimensional());
+    PhysicalConstant<Scalar>(PIOV6.value*BIMM.value, ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> CONS6 = 
-    PhysicalConstant<Scalar>(3.14159265358979323/6.0*3.14159265358979323/6.0*1000.0*2.0, ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
+    PhysicalConstant<Scalar>(PIOV6.value*PIOV6.value*RHOW.value*BIMM.value, ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
   static inline const PhysicalConstant<Scalar> CONS7 = 
-    PhysicalConstant<Scalar>(4.*3.14159265358979323/3.0*1000.0*1.e-18, ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
+    PhysicalConstant<Scalar>(4.*PIOV3.value*RHOW.value*1.e-18, ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
   static inline const PhysicalConstant<Scalar> QSMALL = 
     PhysicalConstant<Scalar>(1.e-14, ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> QTENDSMALL = 
@@ -139,16 +139,16 @@ struct Constants
     PhysicalConstant<Scalar>(100000.0, ekat::units::Pa);  // reference pressure, Pa
   static inline const PhysicalConstant<Scalar> RD = Rair;  // gas constant for dry air, J/kg/K
   static inline const PhysicalConstant<Scalar> RHOSUR = 
-    PhysicalConstant<Scalar>(100000.0/(287.042*273.15), ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
+    PhysicalConstant<Scalar>(P0.value/(RD.value*Tmelt.value), ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
   static inline const PhysicalConstant<Scalar> rhosui = 
-    PhysicalConstant<Scalar>(60000/(287.042*253.15), ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
+    PhysicalConstant<Scalar>(60000/(RD.value*253.15), ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
   static inline const PhysicalConstant<Scalar> RHO_1000MB = 
-    PhysicalConstant<Scalar>(100000.0/(287.042*273.15), ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
+    PhysicalConstant<Scalar>(P0.value/(RD.value*Tmelt.value), ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
   static inline const PhysicalConstant<Scalar> RHO_600MB = 
-    PhysicalConstant<Scalar>(60000/(287.042*253.15), ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
+    PhysicalConstant<Scalar>(60000/(RD.value*253.15), ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
   static inline const PhysicalConstant<Scalar> CP = Cpair;  // heat constant of air at constant pressure, J/kg
   static inline const PhysicalConstant<Scalar> INV_CP = 
-    PhysicalConstant<Scalar>(1.0/1004.64, ekat::units::pow(ekat::units::s, 2) * ekat::units::K / ekat::units::pow(ekat::units::m, 2));
+    PhysicalConstant<Scalar>(1.0/CP.value, ekat::units::pow(ekat::units::s, 2) * ekat::units::K / ekat::units::pow(ekat::units::m, 2));
   //  static constexpr Scalar Tol           = ekat::is_single_precision<Real>::value ? 2e-5 : 1e-14;
   static inline const PhysicalConstant<Scalar> macheps = 
     PhysicalConstant<Scalar>(std::numeric_limits<Real>::epsilon(), ekat::units::Units::nondimensional());
@@ -171,12 +171,12 @@ struct Constants
   static inline const PhysicalConstant<Scalar> Boltz = 
     PhysicalConstant<Scalar>(1.38065e-23, ekat::units::kg * ekat::units::pow(ekat::units::m, 2) / (ekat::units::pow(ekat::units::s, 2) * ekat::units::K));
   static inline const PhysicalConstant<Scalar> Rgas = 
-    PhysicalConstant<Scalar>(6.02214e26 * 1.38065e-23, ekat::units::kg * ekat::units::pow(ekat::units::m, 2) / (ekat::units::pow(ekat::units::s, 2) * ekat::units::mol * ekat::units::K));
+    PhysicalConstant<Scalar>(Avogad.value * Boltz.value, ekat::units::kg * ekat::units::pow(ekat::units::m, 2) / (ekat::units::pow(ekat::units::s, 2) * ekat::units::mol * ekat::units::K));
   static inline const PhysicalConstant<Scalar> MWWV = MWH2O;
   static inline const PhysicalConstant<Scalar> RWV = 
-    PhysicalConstant<Scalar>((6.02214e26 * 1.38065e-23) / 18.016, ekat::units::pow(ekat::units::m, 2) / (ekat::units::pow(ekat::units::s, 2) * ekat::units::K));
+    PhysicalConstant<Scalar>(Rgas.value / MWWV.value, ekat::units::pow(ekat::units::m, 2) / (ekat::units::pow(ekat::units::s, 2) * ekat::units::K));
   static inline const PhysicalConstant<Scalar> ZVIR = 
-    PhysicalConstant<Scalar>(((6.02214e26 * 1.38065e-23) / 18.016) / 287.042 - 1.0, ekat::units::Units::nondimensional());
+    PhysicalConstant<Scalar>(RWV.value / Rair.value - 1.0, ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> f1r = 
     PhysicalConstant<Scalar>(0.78, ekat::units::Units::nondimensional());
   static inline const PhysicalConstant<Scalar> f2r = 
