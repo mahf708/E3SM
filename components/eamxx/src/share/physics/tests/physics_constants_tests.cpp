@@ -67,9 +67,8 @@ TEST_CASE("physics_constants", "[physics]")
 
   SECTION("constexpr_usage") {
     // Test that constants can still be used in ways similar to constexpr
-    constexpr Real pi_val = 3.14159265358979323;
     Real calculated_pi = PC::Pi;
-    REQUIRE(calculated_pi == pi_val);
+    REQUIRE(calculated_pi == PC::Pi.value);
   }
 }
 

@@ -65,7 +65,7 @@ struct Constants
   static inline const PhysicalConstant<Scalar> RHO_H2O = 
     PhysicalConstant<Scalar>(1000.0, ekat::units::kg / ekat::units::pow(ekat::units::m, 3));
   static inline const PhysicalConstant<Scalar> INV_RHO_H2O = 
-    PhysicalConstant<Scalar>(1.0/1000.0, ekat::units::pow(ekat::units::m, 3) / ekat::units::kg);
+    PhysicalConstant<Scalar>(1.0/RHO_H2O.value, ekat::units::pow(ekat::units::m, 3) / ekat::units::kg);
   static inline const PhysicalConstant<Scalar> RhoIce = 
     PhysicalConstant<Scalar>(917.0, ekat::units::kg / ekat::units::pow(ekat::units::m, 3));  // Ice density at 0 C from Wallace+Hobbes 1977
   static inline const PhysicalConstant<Scalar> MWH2O = 
@@ -75,7 +75,7 @@ struct Constants
   static inline const PhysicalConstant<Scalar> o2mmr = 
     PhysicalConstant<Scalar>(0.23143, ekat::units::Units::nondimensional());  // o2 mass mixing ratio
   static inline const PhysicalConstant<Scalar> ep_2 = 
-    PhysicalConstant<Scalar>(18.016/28.966, ekat::units::Units::nondimensional());  // ratio of molecular mass of water to the molecular mass of dry air !0.622
+    PhysicalConstant<Scalar>(MWH2O.value/MWdry.value, ekat::units::Units::nondimensional());  // ratio of molecular mass of water to the molecular mass of dry air !0.622
   static inline const PhysicalConstant<Scalar> gravit = 
     PhysicalConstant<Scalar>(9.80616, ekat::units::m / ekat::units::pow(ekat::units::s, 2));
   static inline const PhysicalConstant<Scalar> LatVap = 
