@@ -78,4 +78,46 @@ TEST_CASE ("ad_tests","[!throws]")
   dummy_atm_cleanup();
 }
 
+TEST_CASE ("ad_perturbation_test","[!throws]")
+{
+  // Test that perturbation parameters can be configured without errors
+  // This is a simple smoke test since full perturbation testing requires
+  // a physics_gll grid with geometry data which is not available in the
+  // dummy test setup
+  
+  // Load ad parameter list for perturbation test
+  std::string fname = "ad_perturbation_tests.yaml";
+  ekat::ParameterList ad_params("Atmosphere Driver");
+  parse_yaml_file(fname,ad_params);
+
+  // Create a comm
+  ekat::Comm atm_comm (MPI_COMM_WORLD);
+
+  // Setup the atm factories and grid manager
+  dummy_atm_init();
+
+  // Create the driver
+  control::AtmosphereDriver ad;
+
+  // Init - should not throw even with perturbation parameters set
+  util::TimeStamp t0(2000,1,1,0,0,0);
+  ad.initialize(atm_comm,ad_params,t0);
+
+  // Verify that the initial_conditions sublist has the expected perturbation params
+  const auto& ic_pl = ad_params.sublist("initial_conditions");
+  REQUIRE(ic_pl.isParameter("perturb_on_restart"));
+  REQUIRE(ic_pl.get<bool>("perturb_on_restart") == false);  // default is false
+  REQUIRE(ic_pl.isParameter("perturbation_limit"));
+  REQUIRE(ic_pl.get<double>("perturbation_limit") == 0.001);
+  REQUIRE(ic_pl.isParameter("perturbation_random_seed"));
+  REQUIRE(ic_pl.get<int>("perturbation_random_seed") == 42);
+
+  // Run ad
+  ad.run(10);
+
+  // Cleanup
+  ad.finalize();
+  dummy_atm_cleanup();
+}
+
 } // namespace scream
