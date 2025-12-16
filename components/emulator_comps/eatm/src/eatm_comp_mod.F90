@@ -230,6 +230,7 @@ CONTAINS
 
     call t_barrierf('eatm_BARRIER',mpicom_atm)
     call t_startf('eatm')
+    call t_startf('eatm_datamode')
 
     !JW real work goes here
 
