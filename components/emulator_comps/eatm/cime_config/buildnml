@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+
+"""YAML configuration generator for CIME's emulator atmosphere component.
+
+This script generates eatm_in by merging:
+1. yaml_eatm_defaults - shipped default configuration
+2. user_yaml_eatm - user overrides from case directory
+
+The output file (eatm_in) is YAML format but uses traditional E3SM naming.
+"""
+
+# pylint: disable=invalid-name,wrong-import-position
+
+import os
+import sys
+import copy
+
+_CIMEROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "cime")
+
+sys.path.append(os.path.join(_CIMEROOT, "scripts", "Tools"))
+sys.path.append(os.path.join(os.path.dirname(_CIMEROOT), "components", "eamxx", "scripts"))
+
+from standard_script_setup import *
+from CIME.case import Case
+from CIME.utils import expect, safe_copy
+from CIME.buildnml import parse_input
+
+logger = logging.getLogger(__name__)
+
+# yaml-cpp is mandatory for emulator_comps, so PyYAML must be available
+from utils import ensure_yaml
+ensure_yaml()
+import yaml
+
+
+def _deep_merge(base, override):
+    """Recursively merge override dict into base dict."""
+    result = copy.deepcopy(base)
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+def _parse_yaml_file(filepath):
+    """Parse a YAML file and return dict."""
+    if not os.path.isfile(filepath):
+        return {}
+    
+    with open(filepath, 'r') as f:
+        return yaml.safe_load(f) or {}
+
+
+def _write_yaml_file(filepath, data):
+    """Write dict to YAML file with YAML 1.2 header."""
+    with open(filepath, 'w') as f:
+        f.write("%YAML 1.2\n---\n")
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+
+def _get_build_config(case):
+    """Get build-time configuration from EATM_CMAKE_OPTIONS."""
+    eatm_opts = case.get_value("EATM_CMAKE_OPTIONS") or ""
+    
+    # Default values
+    build_config = {
+        "inference_backend": "stub"
+    }
+    
+    # Parse EATM_CMAKE_OPTIONS (format: "NAME1 VALUE1 NAME2 VALUE2 ...")
+    if eatm_opts:
+        tokens = eatm_opts.split()
+        it = iter(tokens)
+        for item in it:
+            try:
+                value = next(it)
+                if item == "EATM_INFERENCE_BACKEND":
+                    build_config["inference_backend"] = value
+            except StopIteration:
+                break
+    
+    return build_config
+
+
+def _get_grid_defaults(case):
+    """Get grid-specific default values based on case configuration."""
+    atm_grid = case.get_value("ATM_GRID")
+    din_loc_root = case.get_value("DIN_LOC_ROOT")
+    
+    grid_file = "UNSET"
+    
+    # Map ATM_GRID to default grid files
+    grid_mapping = {
+        "gauss180x360": f"{din_loc_root}/share/meshes/gaussian_180x360_latlon.scrip.nc",
+    }
+    
+    if atm_grid in grid_mapping:
+        grid_file = grid_mapping[atm_grid]
+    
+    return {
+        "grid_name": atm_grid,
+        "grid_file": grid_file
+    }
+
+
+def _create_yaml_config(case, confdir, inst_string):
+    """Create the merged YAML configuration file."""
+    
+    # Paths to configuration files
+    cime_config_dir = os.path.dirname(os.path.abspath(__file__))
+    caseroot = case.get_case_root()
+    
+    defaults_file = os.path.join(cime_config_dir, "defaults_yaml_eatm")
+    user_file = os.path.join(caseroot, "user_yaml_eatm" + inst_string)
+    
+    # If no instance-specific user file, try without suffix
+    if not os.path.isfile(user_file):
+        user_file = os.path.join(caseroot, "user_yaml_eatm")
+    
+    # Load defaults
+    config = _parse_yaml_file(defaults_file)
+    
+    # Apply grid-specific defaults
+    grid_defaults = _get_grid_defaults(case)
+    build_config = _get_build_config(case)
+    
+    if 'eatm' in config:
+        # Set build section from case environment
+        if 'build' not in config['eatm']:
+            config['eatm']['build'] = {}
+        
+        # grid_name from ATM_GRID
+        if not config['eatm']['build'].get('grid_name'):
+            config['eatm']['build']['grid_name'] = grid_defaults['grid_name']
+        
+        # inference_backend from EATM_CMAKE_OPTIONS
+        config['eatm']['build']['inference_backend'] = build_config['inference_backend']
+        
+        # Legacy: grid_file at top level
+        if config['eatm'].get('grid_file') == 'UNSET':
+            config['eatm']['grid_file'] = grid_defaults['grid_file']
+    
+    # Merge user overrides
+    if os.path.isfile(user_file):
+        user_config = _parse_yaml_file(user_file)
+        config = _deep_merge(config, user_config)
+    
+    # Write merged configuration (eatm_in - YAML format with traditional naming)
+    output_file = os.path.join(confdir, "eatm_in")
+    _write_yaml_file(output_file, config)
+    
+    logger.info(f"Generated EATM configuration: {output_file}")
+    
+    return output_file
+
+
+def buildnml(case, caseroot, compname):
+    """Build the YAML configuration for EATM."""
+    
+    if compname != "eatm":
+        raise AttributeError(f"Expected compname 'eatm', got '{compname}'")
+
+    rundir = case.get_value("RUNDIR")
+    ninst = case.get_value("NINST_ATM")
+    if ninst is None:
+        ninst = case.get_value("NINST")
+
+    # Determine configuration directory
+    confdir = os.path.join(caseroot, "Buildconf", compname + "conf")
+    if not os.path.isdir(confdir):
+        os.makedirs(confdir)
+
+    # Clear out old data
+    data_list_path = os.path.join(caseroot, "Buildconf", "eatm.input_data_list")
+    if os.path.exists(data_list_path):
+        os.remove(data_list_path)
+
+    # Loop over instances
+    for inst_counter in range(1, ninst + 1):
+        # Determine instance string
+        inst_string = ""
+        if ninst > 1:
+            inst_string = '_{:04d}'.format(inst_counter)
+
+        # Handle restart pointers
+        rpointer = "rpointer." + compname
+        if (os.path.isfile(os.path.join(rundir, rpointer)) and
+            (not os.path.isfile(os.path.join(rundir, rpointer + inst_string)))):
+            safe_copy(os.path.join(rundir, rpointer),
+                      os.path.join(rundir, rpointer + inst_string))
+
+        # Create YAML configuration
+        yaml_file = _create_yaml_config(case, confdir, inst_string)
+
+        # Copy to rundir
+        if os.path.isdir(rundir):
+            filename = "eatm_in"
+            file_dest = os.path.join(rundir, filename)
+            if inst_string:
+                file_dest = os.path.join(rundir, f"eatm_in{inst_string}")
+            safe_copy(yaml_file, file_dest)
+
+
+def _main_func():
+    caseroot = parse_input(sys.argv)
+    with Case(caseroot) as case:
+        buildnml(case, caseroot, "eatm")
+
+
+if __name__ == "__main__":
+    _main_func()
