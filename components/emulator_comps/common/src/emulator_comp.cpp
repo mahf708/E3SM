@@ -33,8 +33,15 @@ void EmulatorComp::create_instance(MPI_Comm comm, int comp_id,
   m_comp_id = comp_id;
   m_run_type = run_type;
 
-  MPI_Comm_rank(m_comm, &m_rank);
-  MPI_Comm_size(m_comm, &m_nprocs);
+  // Check if MPI communicator is valid (not null pointer or MPI_COMM_NULL)
+  if (comm != MPI_COMM_NULL && comm != 0) {
+    MPI_Comm_rank(m_comm, &m_rank);
+    MPI_Comm_size(m_comm, &m_nprocs);
+  } else {
+    // Fallback for non-MPI runs or invalid comm
+    m_rank = 0;
+    m_nprocs = 1;
+  }
 
   if (input_file) {
     m_input_file = input_file;
@@ -42,7 +49,7 @@ void EmulatorComp::create_instance(MPI_Comm comm, int comp_id,
 
   if (is_root()) {
     std::string msg = "[EmulatorComp] Creating component " +
-                      get_comp_name(m_type) + " based on " + m_input_file; 
+                      get_comp_name(m_type) + " based on " + m_input_file;
     m_logger.info(msg);
   }
 

@@ -12,6 +12,10 @@ set(EMULATOR_COMMON_SOURCES
   src/coupling_fields.cpp
   src/emulator_io.cpp
   src/emulator_logger.cpp
+  src/emulator_diagnostics.cpp
+  src/emulator_output_stream.cpp
+  src/emulator_output_manager.cpp
+  src/emulator_derived_diag.cpp
   src/inference/inference_factory.cpp
   src/inference/stub_backend.cpp
 )

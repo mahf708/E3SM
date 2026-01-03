@@ -123,13 +123,28 @@ void EmulatorAtm::init_impl() {
     m_logger.info("[EmulatorAtm] Inference backend initialized.");
   }
 
+  // Create field data provider for output manager
+  m_field_provider =
+      std::make_unique<impl::AtmFieldDataProvider>(m_fields, m_num_local_cols);
+
+  // Initialize diagnostic output manager
+  std::string case_name = "emulator"; // TODO: Get from runtime config
+  m_output_manager.initialize(m_config.diagnostics, m_comm, m_col_gids, m_ny,
+                              m_nx, case_name, ".", m_logger);
+  m_output_manager.setup(*m_field_provider);
+
+  if (is_root()) {
+    m_logger.info("[EmulatorAtm] Diagnostic output manager initialized "
+                  "(" +
+                  std::to_string(m_config.diagnostics.history_streams.size()) +
+                  " history stream(s))");
+  }
+
   // Export initial values to coupler
   export_coupling_fields();
 }
 
 void EmulatorAtm::run_impl(int dt) {
-  (void)dt; // Unused for now
-
   // 1. Import fields from coupler
   import_coupling_fields();
 
@@ -142,7 +157,15 @@ void EmulatorAtm::run_impl(int dt) {
   // 4. Process AI outputs (with optional spatial reshape)
   process_outputs();
 
-  // 5. Export fields to coupler
+  // 5. Diagnostic output step
+  // Detect any new stacked fields from AI output (e.g., wind_0, wind_1)
+  m_field_provider->detect_stacked_fields();
+
+  // Run output manager with current field state
+  m_output_manager.init_timestep(m_step_count, dt);
+  m_output_manager.run(m_step_count, *m_field_provider);
+
+  // 6. Export fields to coupler
   export_coupling_fields();
 }
 
@@ -182,12 +205,13 @@ void EmulatorAtm::export_coupling_fields() {
  *   Output: [1, C, H, W] flattened as [C*H*W] in memory
  *   The backend receives this directly as [1, C, H, W]
  *
- *   CRITICAL: The spatial ordering of columns must match the expected (H,W) layout.
- *   E3SM's domain decomposition provides columns in a specific order determined by
- *   the grid file. For global uniform grids (ne4, ne30, etc.), columns are typically
- *   ordered as (lat, lon) pairs. The user must ensure:
- *   1. m_ny, m_nx match the grid dimensions (e.g., 180x360 for ne4)  
- *   2. Column ordering in the grid file matches PyTorch's [H, W] row-major convention
+ *   CRITICAL: The spatial ordering of columns must match the expected (H,W)
+ * layout. E3SM's domain decomposition provides columns in a specific order
+ * determined by the grid file. For global uniform grids (ne4, ne30, etc.),
+ * columns are typically ordered as (lat, lon) pairs. The user must ensure:
+ *   1. m_ny, m_nx match the grid dimensions (e.g., 180x360 for ne4)
+ *   2. Column ordering in the grid file matches PyTorch's [H, W] row-major
+ * convention
  *   3. For non-structured grids, spatial_mode should NOT be used
  *
  *   Memory layout after packing (C++ row-major, PyTorch NCHW):
@@ -272,15 +296,15 @@ void EmulatorAtm::prepare_inputs() {
  *
  * - For spatial_mode=true (CNN models):
  *   Input: [1, C, H, W] flattened (directly from backend)
- *   Memory layout: net_outputs[c*H*W + h*W + w] 
+ *   Memory layout: net_outputs[c*H*W + h*W + w]
  *   Output: separate fields [ncols] each
- *   
+ *
  *   The unpacking preserves the spatial structure: each output channel is
  *   extracted as a contiguous block of H*W values, which should match the
  *   original column ordering from the grid decomposition.
  *
  * - For spatial_mode=false (pointwise MLP models):
- *   Input: [H*W, C] in row-major order  
+ *   Input: [H*W, C] in row-major order
  *   Output: separate fields [ncols] each
  */
 void EmulatorAtm::process_outputs() {
@@ -381,7 +405,8 @@ void EmulatorAtm::run_inference(const std::vector<double> &inputs,
     // SPATIAL MODE for CNN models:
     // We pass batch_size=1 and input_channels = C*H*W
     // The data is in [C, H, W] flattened format
-    // The backend (LibTorchBackend) will reshape to [1, C, H, W] before inference
+    // The backend (LibTorchBackend) will reshape to [1, C, H, W] before
+    // inference
     success = m_inference->infer(inputs.data(), outputs.data(), 1);
   } else {
     // POINTWISE MODE for MLP models:
@@ -411,6 +436,9 @@ void EmulatorAtm::final_impl() {
   if (is_root()) {
     m_logger.info("[EmulatorAtm] Finalizing...");
   }
+
+  // Finalize output manager
+  m_output_manager.finalize();
 
   if (m_inference) {
     m_inference->finalize();

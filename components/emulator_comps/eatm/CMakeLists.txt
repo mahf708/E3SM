@@ -16,6 +16,7 @@ set(EATM_CXX_SOURCES
   src/impl/atm_field_manager.cpp
   src/impl/atm_coupling.cpp
   src/impl/atm_io.cpp
+  src/impl/atm_field_data_provider.cpp
 )
 
 set(EATM_CXX_HEADERS
@@ -23,6 +24,7 @@ set(EATM_CXX_HEADERS
   src/impl/atm_field_manager.hpp
   src/impl/atm_coupling.hpp
   src/impl/atm_io.hpp
+  src/impl/atm_field_data_provider.hpp
 )
 
 #------------------------------------------------------------------------------

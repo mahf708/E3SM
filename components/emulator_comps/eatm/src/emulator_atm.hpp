@@ -13,8 +13,10 @@
 #include "../../common/src/coupling_fields.hpp"
 #include "../../common/src/emulator_comp.hpp"
 #include "../../common/src/emulator_config.hpp"
+#include "../../common/src/emulator_output_manager.hpp"
 #include "../../common/src/inference/inference_backend.hpp"
 #include "impl/atm_coupling.hpp"
+#include "impl/atm_field_data_provider.hpp"
 #include "impl/atm_field_manager.hpp"
 #include <fstream>
 #include <memory>
@@ -27,18 +29,18 @@ namespace emulator {
  * @brief Atmosphere emulator component.
  *
  * Derived from EmulatorComp, provides atmosphere-specific functionality:
- * 
+ *
  * - Coupling field mappings (x2a → atm inputs, a2x → atm outputs)
  * - AI model integration via configurable inference backends
  * - Tensor reshaping for CNN vs MLP models (spatial_mode)
  *
  * ## Supported Backends
- * 
+ *
  * - **STUB**: No-op for testing (returns zeros)
  * - **LIBTORCH**: Native C++ TorchScript inference
  *
  * ## Lifecycle
- * 
+ *
  * 1. Constructor creates EmulatorAtm with CompType::ATM
  * 2. `create_instance()` initializes MPI and reads grid
  * 3. `init_coupling_indices()` parses MCT field lists
@@ -49,13 +51,13 @@ namespace emulator {
  *
  * ## Spatial Mode
  * When `config.model_io.spatial_mode = true` (for CNN models like ACE2):
- * 
+ *
  * - Input data is packed as [C, H, W] (channel-first)
  * - Inference runs with batch_size=1
  * - Output is unpacked from [C, H, W] format
  *
  * When `spatial_mode = false` (for pointwise MLP models):
- * 
+ *
  * - Data is packed as [H*W, C] (sample-first)
  * - Inference runs with batch_size=H*W
  *
@@ -135,7 +137,10 @@ private:
   EmulatorConfig m_config;                       ///< Component config
   inference::InferenceConfig m_inference_config; ///< Backend config
   std::unique_ptr<inference::InferenceBackend>
-      m_inference; ///< Backend instance
+      m_inference;                        ///< Backend instance
+  EmulatorOutputManager m_output_manager; ///< Diagnostic output manager
+  std::unique_ptr<impl::AtmFieldDataProvider>
+      m_field_provider; ///< Field data adapter for output
 
   // =========================================================================
   // Helper Methods

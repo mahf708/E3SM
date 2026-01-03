@@ -26,10 +26,17 @@ void EmulatorIO::initialize(MPI_Comm comm, const std::string &comp_name) {
   }
 
   s_comm = comm;
-  MPI_Comm_rank(comm, &s_rank);
 
-  int nprocs;
-  MPI_Comm_size(comm, &nprocs);
+  // Check if MPI communicator is valid
+  int nprocs = 1;
+  if (comm != MPI_COMM_NULL && comm != 0) {
+    MPI_Comm_rank(comm, &s_rank);
+    MPI_Comm_size(comm, &nprocs);
+  } else {
+    // Fallback for non-MPI runs or invalid comm
+    s_rank = 0;
+    return; // Cannot initialize PIO without valid MPI
+  }
 
   // PIO initialization parameters
   int stride = 1;

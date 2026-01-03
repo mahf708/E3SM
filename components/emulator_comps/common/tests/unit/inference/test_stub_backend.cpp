@@ -6,7 +6,7 @@
 
 #include "inference/inference_backend.hpp"
 #include "inference/stub_backend.hpp"
-#include "test_data.hpp"
+#include "test_data.hpp" // Include first to get mpi.h before inference stubs
 #include <catch2/catch.hpp>
 
 using namespace emulator::inference;

@@ -18,5 +18,19 @@ EmulatorUnitTest(test_coupling_fields
   LABELS coupling
 )
 
+# Diagnostics tests
+EmulatorUnitTest(test_diagnostics
+  SOURCES test_diagnostics.cpp
+  LIBS emulator_common
+  LABELS diagnostics
+)
+
+# Output averaging tests
+EmulatorUnitTest(test_output_averaging
+  SOURCES test_output_averaging.cpp
+  LIBS emulator_common
+  LABELS diagnostics
+)
+
 # Inference backend tests
 add_subdirectory(inference)

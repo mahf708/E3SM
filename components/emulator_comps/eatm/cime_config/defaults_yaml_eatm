@@ -141,5 +141,42 @@ eatm:
     # Debug mode for coupling (print field statistics)
     debug: false
 
+  # Diagnostic output configuration
+  diagnostics:
+    # History output streams (.h. files)
+    history:
+      - stream_name: h0
+        filename_prefix: "eatm.h0"
+        frequency: 1
+        frequency_unit: ndays
+        averaging: instant
+        precision: float32
+        max_snapshots_per_file: 1
+        fields:
+          - PRESsfc
+          - surface_temperature
+          - air_temperature
+          - specific_total_water
+          - eastward_wind
+          - northward_wind
+          - LHTFLsfc
+          - SHTFLsfc
+          - PRATEsfc
+          - DLWRFsfc
+          - DSWRFsfc
+
+    # Model restart configuration (.r. files)
+    restart:
+      enabled: true
+      frequency: 1
+      frequency_unit: ndays
+      filename_prefix: "eatm.r"
+
+    # History restart configuration (.rh. files)
+    # Required for non-instant averaging to preserve state across restarts
+    history_restart:
+      enabled: true
+      filename_prefix: "eatm.rh"
+
   # Legacy field (TODO: deprecate, use domain info instead)
   grid_file: "UNSET"

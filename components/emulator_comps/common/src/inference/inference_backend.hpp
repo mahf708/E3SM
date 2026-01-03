@@ -12,12 +12,16 @@
 #include <memory>
 #include <string>
 
-// MPI forward declaration to avoid requiring mpi.h everywhere
-#ifdef EMULATOR_HAS_MPI
+// MPI type handling:
+// Try to include mpi.h if available to get real definitions.
+// If mpi.h is not available, provide stub definitions for non-MPI builds.
+#if defined(__has_include) && __has_include(<mpi.h>)
 #include <mpi.h>
 #else
+// No mpi.h available - provide stub definitions for non-MPI builds
 typedef int MPI_Comm;
 #define MPI_COMM_WORLD 0
+#define MPI_COMM_NULL 0
 #endif
 
 namespace emulator {
@@ -92,7 +96,7 @@ struct InferenceConfig {
  *
  * Provides a unified API for running neural network inference
  * regardless of the underlying ML framework. All backends:
- * 
+ *
  * - Accept input as a flat double array [batch_size * input_channels]
  * - Produce output as a flat double array [batch_size * output_channels]
  * - Handle device placement and precision conversion internally
