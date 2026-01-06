@@ -1,8 +1,8 @@
 #include "eamxx_nudging_process_interface.hpp"
 
 #include "share/util/eamxx_universal_constants.hpp"
-#include "share/physics/physics_constants.hpp"
-#include "share/physics/eamxx_common_physics_functions.hpp"
+#include "physics/share/physics_constants.hpp"
+#include "share/util/eamxx_common_physics_functions.hpp"
 #include "share/grid/remap/refining_remapper_p2p.hpp"
 #include "share/util/eamxx_utils.hpp"
 #include "share/io/eamxx_scorpio_interface.hpp"
@@ -216,12 +216,11 @@ void Nudging::apply_tendency(Field& state, const Field& nudge, const Real dt) co
     const auto ncol = m_num_cols;
     const auto nlev = m_num_levs;
 
-    using KT       = KokkosTypes<DefaultDevice>;
-    using ExeSpace = typename KT::ExeSpace;
-    using TPF      = ekat::TeamPolicyFactory<ExeSpace>;
-    using PF       = scream::PhysicsFunctions<DefaultDevice>;
+    using PF  = scream::PhysicsFunctions<DefaultDevice>;
+    using KT  = KokkosTypes<DefaultDevice>;
+    using ESU = ekat::ExeSpaceUtils<typename KT::ExeSpace>;
 
-    const auto scan_policy = TPF::get_thread_range_parallel_scan_team_policy(ncol, nlev);
+    const auto scan_policy = ESU::get_default_team_policy(ncol, nlev);
     Kokkos::parallel_for(scan_policy, KOKKOS_LAMBDA (const KT::MemberType& team) {
         const int i = team.league_rank();
         const auto p_mid_s = ekat::subview(p_mid_d, i);
