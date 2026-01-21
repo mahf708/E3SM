@@ -92,7 +92,7 @@ void Nudging::set_grids(const std::shared_ptr<const GridsManager> grids_manager)
     add_field<Updated>("horiz_winds",   horiz_wind_layout,   m/s,     grid_name, ps);
   }
   if (ekat::contains(m_fields_nudge,"o3_volume_mix_ratio")) {
-    add_field<Required>("o3_volume_mix_ratio", scalar3d_layout_mid, mol/mol, grid_name, ps);
+    add_field<Updated>("o3_volume_mix_ratio", scalar3d_layout_mid, mol/mol, grid_name, ps);
   }
 
   /* ----------------------- WARNING --------------------------------*/
