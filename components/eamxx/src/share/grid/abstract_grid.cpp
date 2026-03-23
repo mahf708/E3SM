@@ -760,6 +760,7 @@ void AbstractGrid::copy_data (const AbstractGrid& src, const bool shallow)
   m_global_min_dof_gid = src.m_global_min_dof_gid;
   m_is_unique = src.m_is_unique;
   m_is_unique_computed = src.m_is_unique_computed;
+  m_special_tag_names = src.m_special_tag_names;
 }
 
 } // namespace scream

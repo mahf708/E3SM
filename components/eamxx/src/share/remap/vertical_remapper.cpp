@@ -422,7 +422,8 @@ void VerticalRemapper::remap_fwd_impl ()
       // so just copy it over.  Note, if this field has its own mask data make
       // sure that is copied too.
       f_tgt.deep_copy(f_src);
-      if (f_tgt.get_header().has_extra_data("mask_field")) {
+      if (f_tgt.get_header().has_extra_data("mask_field") and
+          f_src.get_header().has_extra_data("mask_field")) {
         auto f_tgt_mask = f_tgt.get_header().get_extra_data<Field>("mask_field");
         auto f_src_mask = f_src.get_header().get_extra_data<Field>("mask_field");
         f_tgt_mask.deep_copy(f_src_mask);
