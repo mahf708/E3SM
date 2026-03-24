@@ -792,6 +792,7 @@ subroutine phys_init( phys_state, phys_tend, pbuf2d, cam_out )
     use misc_diagnostics,   only: dcape_diags_init
     use conditional_diag_output_utils, only: cnd_diag_output_init
     use phys_grid_ctem,     only: phys_grid_ctem_init
+    use cam_history_derived, only: derived_fields_register
 
     ! Input/output arguments
     type(physics_state), pointer       :: phys_state(:)
@@ -1023,7 +1024,9 @@ subroutine phys_init( phys_state, phys_tend, pbuf2d, cam_out )
     ! Initialize Transformed Eularian Mean (TEM) diagnostics
     call phys_grid_ctem_init()
 
-    
+    ! Register derived/coarsened output fields (must be after all other addfld calls)
+    call derived_fields_register()
+
    !BSINGH -  addfld and adddefault calls for perturb growth testing    
     if(pergro_test_active)call add_fld_default_calls()
 
@@ -2237,6 +2240,7 @@ subroutine tphysbc (ztodt,               &
          physics_ptend_init, physics_ptend_sum, physics_state_check, physics_ptend_scale
     use cam_diagnostics, only: diag_conv_tend_ini, diag_phys_writeout, diag_conv, diag_export, diag_state_b4_phys_write
     use cam_history,     only: outfld, fieldname_len
+    use cam_history_derived, only: derived_fields_writeout
     use physconst,       only: cpair, latvap, gravit, rga
     use constituents,    only: pcnst, qmin, cnst_get_ind
     use convect_deep,    only: convect_deep_tend, convect_deep_tend_2, deep_scheme_does_scav_trans
@@ -3075,6 +3079,7 @@ end if
 
     call t_startf('bc_history_write')
     call diag_phys_writeout(state, cam_out%psl)
+    call derived_fields_writeout(state)
     call diag_conv(state, ztodt, pbuf)
 
     call t_stopf('bc_history_write')
