@@ -550,7 +550,7 @@ which are now handled online and which still require post-processing.
 | Offline operation | Why not online | Workaround |
 |-------------------|---------------|------------|
 | `compute_tendencies` (time derivatives) | Requires data from adjacent timesteps — cannot compute within a single physics step | Compute offline from output time series: `tendency = diff(field) / diff(time)` |
-| `compute_rad_fluxes` (e.g., `FLNS+FLDS`) | These are sums/differences of **2D surface fields**, not 3D state variables. The derived field system only accesses `physics_state` 3D fields. | Output the component fluxes (`FLNS`, `FLDS`, `FSDS`, `FSNS`, `FSNTOA`, `SOLIN`) directly and compute sums offline. These are cheap 2D operations. |
+| `compute_rad_fluxes` (e.g., `FLNS+FLDS`) | **Now available directly**: `FLUS` (upwelling LW at surface), `FSUS` (upwelling SW at surface), and `FSUTOA` (upwelling SW at TOA) are output fields from RRTMG. | Request `FLUS`, `FSUS`, `FSUTOA` in `fincl`. No offline computation needed. |
 | `compute_surface_precipitation_rate` | Simple unit conversion of existing output fields (`PRECT * 1000 kg/m3`) | Trivial offline: `precip_mass_flux = PRECT * 1000` |
 | `compute_column_moisture_integral` | Column integral `sum(q * dp) / g` — could be added to derived system but currently not implemented | Output `Q` and `PS`; compute offline using hybrid coefficients |
 | `compute_coarse_ak_bk` | Coordinate metadata, not a field transformation | Extract from output file's `hyai`/`hybi` variables at the model-level indices corresponding to the pressure bounds |
@@ -558,42 +558,89 @@ which are now handled online and which still require post-processing.
 | `roundtrip_filter` (spherical harmonic filtering) | Spectral transform library not available in EAM Fortran runtime | Apply offline using `xtorch_harmonics` |
 | Field renaming | Cosmetic, no computational benefit to doing online | Apply offline with `ncrename` or in xarray |
 
-### Example: Reproducing the full ACE/aigroup pipeline
+### Complete ACE training configuration for E3SMv3
 
-Given the v3 8-layer AMIP configuration, the online settings would be:
+The following `user_nl_eam` produces a single output tape with all variables
+needed for ACE training, on a Gaussian lat-lon grid, at 6-hourly instantaneous
+frequency. This replaces the entire offline `compute_dataset_e3smv2.py`
+pipeline except for spherical harmonic filtering and field renaming.
 
 ```fortran
-! Derived fields: specific total water (all water species)
+! === Clear defaults, 6-hourly instantaneous output ===
+empty_htapes = .true.
+nhtfrq = -6
+avgflag_pertape = 'I'
+
+! === Derived fields ===
+! Specific total water (sum of all water species)
 derived_fld_defs = 'SPECIFIC_TOTAL_WATER=Q+CLDLIQ+CLDICE+RAINQM'
 
-! 8-layer vertical coarsening matching the ACE v3 configuration
-! See "ACE vertical coarsening reference" section below for derivation
+! === 8-layer vertical coarsening (SPEEDY-like, see ACE reference below) ===
+! Pressure bounds (Pa) at reference PS=100000 Pa matching ACE1 SPEEDY levels:
+!   0.1, 48, 139, 267, 436, 590, 759, 896, 1000 hPa
 vcoarsen_pbounds = 10, 4804, 13913, 26719, 43587, 58999, 75919, 89556, 100000
 vcoarsen_flds = 'T', 'U', 'V', 'SPECIFIC_TOTAL_WATER'
 
-! Tape 1: 6-hourly instantaneous on Gaussian grid (replaces offline ncremap)
-nhtfrq = -6
-avgflag_pertape = 'I'
-empty_htapes = .true.
+! === Tape 1: all ACE training variables on Gaussian grid ===
+fincl1 =
+  ! --- 2D surface/TOA fields (direct output, no processing) ---
+  'PS', 'TS', 'PHIS',
+  'OCNFRAC', 'LANDFRAC', 'ICEFRAC',
+  'LHFLX', 'SHFLX',
+  'PRECT', 'PRECSC', 'PRECSL',
+  'TMQ', 'TGCLDLWP', 'TGCLDIWP',
+  'QREFHT', 'TREFHT', 'U10',
+  ! --- Radiation fluxes (all available directly from RRTMG) ---
+  'SOLIN',                  ! downwelling SW at TOA
+  'FSUTOA',                 ! upwelling SW at TOA (= SOLIN - FSNTOA)
+  'FLUT',                   ! upwelling LW at TOA
+  'FSDS',                   ! downwelling SW at surface
+  'FSUS',                   ! upwelling SW at surface (= FSDS - FSNS) [NEW]
+  'FLDS',                   ! downwelling LW at surface
+  'FLUS',                   ! upwelling LW at surface (= FLNS + FLDS) [NEW]
+  ! --- Vertically coarsened 3D fields (8 layers each) ---
+  'T_1','T_2','T_3','T_4','T_5','T_6','T_7','T_8',
+  'U_1','U_2','U_3','U_4','U_5','U_6','U_7','U_8',
+  'V_1','V_2','V_3','V_4','V_5','V_6','V_7','V_8',
+  'SPECIFIC_TOTAL_WATER_1','SPECIFIC_TOTAL_WATER_2',
+  'SPECIFIC_TOTAL_WATER_3','SPECIFIC_TOTAL_WATER_4',
+  'SPECIFIC_TOTAL_WATER_5','SPECIFIC_TOTAL_WATER_6',
+  'SPECIFIC_TOTAL_WATER_7','SPECIFIC_TOTAL_WATER_8'
 
-fincl1 = 'PS', 'TS', 'PHIS', 'OCNFRAC', 'LANDFRAC', 'ICEFRAC',
-         'LHFLX', 'SHFLX', 'FLNS', 'FLDS', 'FSNS', 'FSDS',
-         'FSNTOA', 'SOLIN', 'FLUT', 'PRECT', 'TMQ', 'TGCLDLWP', 'TGCLDIWP',
-         'T_1','T_2','T_3','T_4','T_5','T_6','T_7','T_8',
-         'U_1','U_2','U_3','U_4','U_5','U_6','U_7','U_8',
-         'V_1','V_2','V_3','V_4','V_5','V_6','V_7','V_8',
-         'SPECIFIC_TOTAL_WATER_1','SPECIFIC_TOTAL_WATER_2',
-         'SPECIFIC_TOTAL_WATER_3','SPECIFIC_TOTAL_WATER_4',
-         'SPECIFIC_TOTAL_WATER_5','SPECIFIC_TOTAL_WATER_6',
-         'SPECIFIC_TOTAL_WATER_7','SPECIFIC_TOTAL_WATER_8'
+! === Horizontal remapping to Gaussian grid ===
 horiz_remap_file(1) = '/path/to/map_ne30pg2_to_gaussian_180x360.nc'
 ```
 
-The remaining offline steps (radiation flux sums, precipitation unit
-conversion, time tendencies, spherical harmonic filtering, renaming) are
-lightweight 2D operations that take seconds compared to the minutes/hours
-saved by eliminating the horizontal remapping and vertical coarsening from
-post-processing.
+**What this replaces from the offline pipeline:**
+
+| Offline step | Online equivalent |
+|---|---|
+| `ncremap` horizontal regridding | `horiz_remap_file` |
+| `compute_vertical_coarsening` | `vcoarsen_pbounds` + `vcoarsen_flds` |
+| `compute_specific_total_water` | `derived_fld_defs` |
+| `compute_rad_fluxes` (FLNS+FLDS, FSDS-FSNS, SOLIN-FSNTOA) | `FLUS`, `FSUS`, `FSUTOA` — now direct RRTMG output |
+| `compute_surface_precipitation_rate` (PRECT*1000) | Output `PRECT` directly; scale offline |
+| `sfc_phis_to_hgt` (PHIS/g) | Output `PHIS` directly; divide offline |
+
+**What still requires offline post-processing:**
+
+| Operation | Why | Effort |
+|---|---|---|
+| `roundtrip_filter` (spherical harmonic filtering) | Needs `xtorch_harmonics` library | Apply offline |
+| `PRECT * 1000` (unit conversion to kg/m2/s) | Scalar constant multiplication | 1 line of xarray |
+| `PHIS / 9.80665` (geopotential to height) | Scalar constant division | 1 line of xarray |
+| `compute_tendencies` (time derivatives) | Needs adjacent timesteps | `diff()/dt` in xarray |
+| Field renaming (to FV3-style names) | Cosmetic | `ds.rename()` in xarray |
+
+**Note on tendencies:** EAM already computes process-split tendencies
+internally. For the ACE `tendency_of_total_water_path`, the field `DTENDTQ`
+(dynamic tendency of column-integrated specific humidity, W/m2) provides
+the equivalent quantity without needing cross-timestep differencing. The
+field `PTTEND` gives the total physics temperature tendency (K/s). These
+are standard `addfld` fields that can be requested on any tape including
+remapped tapes. However, they are computed from `tend%dtdt` (not from
+`physics_state`) so they cannot currently be vertically coarsened — but
+as column-integrated 2D quantities, they don't need vertical coarsening.
 
 ### Converting offline vertical coarsening indices to pressure bounds
 
