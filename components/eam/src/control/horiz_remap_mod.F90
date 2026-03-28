@@ -45,10 +45,10 @@ module horiz_remap_mod
     integer,  allocatable :: src_gid(:)    ! global source column ID (1-indexed)
     real(r8), allocatable :: wgt(:)        ! interpolation weight
 
-    ! Source data gathering
+    ! Source data gathering: src_need_gids is sorted for binary search
     integer  :: n_src_need = 0
-    integer,  allocatable :: src_need_gids(:)    ! unique global IDs of needed src columns
-    integer,  allocatable :: src_gid_to_local(:) ! maps global src ID -> index in gathered array (size n_a)
+    integer,  allocatable :: src_need_gids(:)    ! sorted unique global IDs of needed src columns
+    integer,  allocatable :: src_need_recvidx(:) ! recv buffer index for each src_need_gids entry
 
     ! MPI communication pattern for Alltoallv
     integer,  allocatable :: send_counts(:)  ! npes
@@ -63,11 +63,48 @@ module horiz_remap_mod
     ! Target grid coordinates
     real(r8), allocatable :: lat(:)   ! nlat
     real(r8), allocatable :: lon(:)   ! nlon
+
+    ! Cached PIO decompositions (avoid repeated init/free per field)
+    logical  :: iodesc_2d_valid = .false.
+    logical  :: iodesc_3d_valid = .false.
+    integer  :: iodesc_3d_nlev = 0
   end type horiz_remap_t
 
   type(horiz_remap_t), target :: remap_data(ptapes)
 
 CONTAINS
+
+  !-------------------------------------------------------------------------------------------
+  pure integer function bsearch(arr, n, val)
+    ! Binary search for val in sorted array arr(1:n). Returns index or 0.
+    integer, intent(in) :: n, val
+    integer, intent(in) :: arr(n)
+    integer :: lo, hi, mid
+    lo = 1; hi = n
+    bsearch = 0
+    do while (lo <= hi)
+      mid = (lo + hi) / 2
+      if (arr(mid) == val) then
+        bsearch = mid
+        return
+      else if (arr(mid) < val) then
+        lo = mid + 1
+      else
+        hi = mid - 1
+      end if
+    end do
+  end function bsearch
+
+  !-------------------------------------------------------------------------------------------
+  pure integer function src_gid_to_recvidx(rd, gid)
+    ! Map a global source column ID to its position in the recv buffer,
+    ! using binary search on the sorted src_need_gids array.
+    type(horiz_remap_t), intent(in) :: rd
+    integer, intent(in) :: gid
+    integer :: idx
+    idx = bsearch(rd%src_need_gids, rd%n_src_need, gid)
+    src_gid_to_recvidx = rd%src_need_recvidx(idx)
+  end function src_gid_to_recvidx
 
   !-------------------------------------------------------------------------------------------
   logical function horiz_remap_is_active(t)
@@ -174,7 +211,14 @@ CONTAINS
       write(iulog,*) trim(subname), ': target grid nlat=', nlat, ' nlon=', nlon
     end if
 
-    ! Read the full sparse matrix (all ranks read all — simple approach)
+    ! Read the full sparse matrix (all ranks read all — simple approach).
+    ! NOTE: At very high resolution (ne1024pg2), n_s can be 300M+ entries,
+    ! requiring 6+ GB per rank. A distributed read would be needed for such cases.
+    if (masterproc .and. n_s > 10000000) then
+      write(iulog,*) 'WARNING: ', trim(subname), ': Large sparse matrix n_s=', n_s
+      write(iulog,*) '  All ranks read full matrix. Memory per rank: ~', &
+           n_s * 20 / 1000000, ' MB'
+    end if
     allocate(row_all(n_s), col_all(n_s), S_all(n_s))
     ierr = pio_inq_varid(pioid, 'row', vid)
     ierr = pio_get_var(pioid, vid, row_all)
@@ -207,7 +251,7 @@ CONTAINS
     ! Partition target grid rows across MPI ranks (contiguous blocks)
     row_start = iam * n_b / npes + 1
     row_end   = (iam + 1) * n_b / npes
-    remap_data(t)%n_b_local = row_end - row_start + 1
+    remap_data(t)%n_b_local = max(0, row_end - row_start + 1)
     remap_data(t)%row_start = row_start
 
     ! Extract local sparse matrix entries (rows belonging to this rank)
@@ -235,33 +279,37 @@ CONTAINS
 
     deallocate(row_all, col_all, S_all)
 
-    ! Find unique source columns needed by this rank
-    allocate(remap_data(t)%src_gid_to_local(n_a))
-    remap_data(t)%src_gid_to_local(:) = 0
+    ! Find unique source columns needed by this rank.
+    ! Use a temporary O(n_a) array during init, then discard it.
+    ! At runtime, we use binary search on the sorted src_need_gids array.
+    allocate(gcol_to_myidx(n_a))  ! temporary, deallocated below
+    gcol_to_myidx(:) = 0
 
     ! Mark which source columns are needed
     do i = 1, remap_data(t)%nnz_local
-      remap_data(t)%src_gid_to_local(remap_data(t)%src_gid(i)) = 1
+      gcol_to_myidx(remap_data(t)%src_gid(i)) = 1
     end do
 
-    ! Count unique and assign local indices
+    ! Count unique
     n_unique = 0
     do i = 1, n_a
-      if (remap_data(t)%src_gid_to_local(i) > 0) then
+      if (gcol_to_myidx(i) > 0) then
         n_unique = n_unique + 1
-        remap_data(t)%src_gid_to_local(i) = n_unique
       end if
     end do
     remap_data(t)%n_src_need = n_unique
 
+    ! Build sorted list of unique source column IDs
     allocate(remap_data(t)%src_need_gids(n_unique))
+    allocate(remap_data(t)%src_need_recvidx(n_unique))
     cnt = 0
     do i = 1, n_a
-      if (remap_data(t)%src_gid_to_local(i) > 0) then
+      if (gcol_to_myidx(i) > 0) then
         cnt = cnt + 1
         remap_data(t)%src_need_gids(cnt) = i
       end if
     end do
+    deallocate(gcol_to_myidx)
 
     ! Build the communication pattern
     ! Step 1: Build list of all global columns owned by this rank
@@ -324,10 +372,17 @@ CONTAINS
       recv_gcols(need_from_rank(owner_rank)) = gcol
     end do
 
-    ! Update src_gid_to_local to map gcol -> position in recv buffer
-    ! The recv buffer is ordered by rank, so we need to build the mapping
-    do i = 1, remap_data(t)%n_recv_total
-      remap_data(t)%src_gid_to_local(recv_gcols(i)) = i
+    ! Build src_need_recvidx: for each entry in src_need_gids, store its
+    ! position in the recv buffer. Binary search recv_gcols since src_need_gids is sorted.
+    do i = 1, n_unique
+      gcol = remap_data(t)%src_need_gids(i)
+      ! Linear search in recv_gcols (small, done once at init)
+      do cnt = 1, remap_data(t)%n_recv_total
+        if (recv_gcols(cnt) == gcol) then
+          remap_data(t)%src_need_recvidx(i) = cnt
+          exit
+        end if
+      end do
     end do
     deallocate(need_from_rank)
 
@@ -471,7 +526,7 @@ CONTAINS
     ! Apply sparse matrix-vector multiply
     do i = 1, rd%nnz_local
       dst_local = rd%dst_local(i)
-      src_local = rd%src_gid_to_local(rd%src_gid(i))
+      src_local = src_gid_to_recvidx(rd, rd%src_gid(i))
       do k = 1, numlev
         fld_out(dst_local, k) = fld_out(dst_local, k) + &
              rd%wgt(i) * recv_buf((src_local-1)*numlev + k)
@@ -501,7 +556,8 @@ CONTAINS
 
     ! Local variables
     type(horiz_remap_t), pointer :: rd
-    type(io_desc_t)    :: iodesc
+    type(io_desc_t), save :: iodesc_2d_cache(ptapes)
+    type(io_desc_t), save :: iodesc_3d_cache(ptapes)
     type(iosystem_desc_t), pointer :: pio_subsystem
     integer(PIO_OFFSET_KIND), allocatable :: idof(:)
     integer :: i, k, global_row, ilat, ilon, ierr
@@ -514,33 +570,43 @@ CONTAINS
 
     pio_subsystem => shr_pio_getiosys(atm_id)
 
-    ! Build DOF array for PIO decomposition
     if (numlev <= 1) then
-      allocate(idof(rd%n_b_local))
-      do i = 1, rd%n_b_local
-        global_row = rd%row_start + i - 1
-        ilon = mod(global_row - 1, nlon) + 1
-        ilat = (global_row - 1) / nlon + 1
-        idof(i) = int(ilon + nlon * (ilat - 1), PIO_OFFSET_KIND)
-      end do
-      call pio_initdecomp(pio_subsystem, data_type, (/nlon, nlat/), idof, iodesc)
-      call pio_write_darray(File, varid, iodesc, fld_out(:,1), ierr)
-    else
-      allocate(idof(rd%n_b_local * numlev))
-      do i = 1, rd%n_b_local
-        global_row = rd%row_start + i - 1
-        ilon = mod(global_row - 1, nlon) + 1
-        ilat = (global_row - 1) / nlon + 1
-        do k = 1, numlev
-          idof((k-1)*rd%n_b_local + i) = int(ilon + nlon*(ilat-1) + nlon*nlat*(k-1), PIO_OFFSET_KIND)
+      ! 2D field: use cached decomposition
+      if (.not. rd%iodesc_2d_valid) then
+        allocate(idof(rd%n_b_local))
+        do i = 1, rd%n_b_local
+          global_row = rd%row_start + i - 1
+          ilon = mod(global_row - 1, nlon) + 1
+          ilat = (global_row - 1) / nlon + 1
+          idof(i) = int(ilon + nlon * (ilat - 1), PIO_OFFSET_KIND)
         end do
-      end do
-      call pio_initdecomp(pio_subsystem, data_type, (/nlon, nlat, numlev/), idof, iodesc)
-      call pio_write_darray(File, varid, iodesc, fld_out, ierr)
+        call pio_initdecomp(pio_subsystem, data_type, (/nlon, nlat/), idof, iodesc_2d_cache(t))
+        deallocate(idof)
+        rd%iodesc_2d_valid = .true.
+      end if
+      call pio_write_darray(File, varid, iodesc_2d_cache(t), fld_out(:,1), ierr)
+    else
+      ! 3D field: cache decomposition, rebuild if numlev changes
+      if (.not. rd%iodesc_3d_valid .or. rd%iodesc_3d_nlev /= numlev) then
+        if (rd%iodesc_3d_valid) then
+          call pio_freedecomp(File, iodesc_3d_cache(t))
+        end if
+        allocate(idof(rd%n_b_local * numlev))
+        do i = 1, rd%n_b_local
+          global_row = rd%row_start + i - 1
+          ilon = mod(global_row - 1, nlon) + 1
+          ilat = (global_row - 1) / nlon + 1
+          do k = 1, numlev
+            idof((k-1)*rd%n_b_local + i) = int(ilon + nlon*(ilat-1) + nlon*nlat*(k-1), PIO_OFFSET_KIND)
+          end do
+        end do
+        call pio_initdecomp(pio_subsystem, data_type, (/nlon, nlat, numlev/), idof, iodesc_3d_cache(t))
+        deallocate(idof)
+        rd%iodesc_3d_valid = .true.
+        rd%iodesc_3d_nlev = numlev
+      end if
+      call pio_write_darray(File, varid, iodesc_3d_cache(t), fld_out, ierr)
     end if
-
-    deallocate(idof)
-    call pio_freedecomp(File, iodesc)
 
   end subroutine horiz_remap_write
 

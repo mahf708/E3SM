@@ -122,6 +122,18 @@ contains
     end do
     has_vcoarsen = (n_vcoarsen_levs > 0)
 
+    ! Validate pressure bounds are non-negative and strictly increasing
+    if (has_vcoarsen) then
+      if (vcoarsen_pbounds(1) < 0.0_r8) then
+        call endrun('derived_fields_readnl: vcoarsen_pbounds(1) must be non-negative')
+      end if
+      do i = 1, n_vcoarsen_levs
+        if (vcoarsen_pbounds(i+1) <= vcoarsen_pbounds(i)) then
+          call endrun('derived_fields_readnl: vcoarsen_pbounds must be strictly increasing')
+        end if
+      end do
+    end if
+
     ! Count fields to coarsen
     n_vcoarsen_flds = 0
     do i = 1, max_vcoarsen_flds
@@ -237,12 +249,61 @@ contains
     ! Must be called during phys_init, after other addfld calls but before intht.
     !--------------------------------------------------------------------------
     use cam_history, only: addfld, horiz_only
+    use constituents, only: cnst_get_ind
 
-    integer :: i, k
+    integer :: i, k, n, idx
     character(len=max_name_len) :: fname
     character(len=max_def_len)  :: lname
+    character(len=max_name_len) :: uname
+    character(len=6), parameter :: known_state_vars(6) = &
+         (/ 'T     ', 'U     ', 'V     ', 'OMEGA ', 'Z3    ', 'Q     ' /)
+    logical :: found
 
     if (.not. has_derived .and. .not. has_vcoarsen) return
+
+    ! Validate all input field names before registering
+    ! Check derived field inputs
+    do i = 1, n_derived_flds
+      do n = 1, derived_flds(i)%n_inputs
+        uname = adjustl(derived_flds(i)%input_names(n))
+        found = .false.
+        do k = 1, size(known_state_vars)
+          if (trim(uname) == trim(known_state_vars(k))) then
+            found = .true.
+            exit
+          end if
+        end do
+        if (.not. found) then
+          call cnst_get_ind(trim(uname), idx, abrtf=.false.)
+          found = (idx > 0)
+        end if
+        if (.not. found) then
+          call endrun('derived_fields_register: unknown input field "'//trim(uname)// &
+               '" in derived definition "'//trim(derived_flds(i)%output_name)// &
+               '". Must be T, U, V, OMEGA, Z3, Q, or a registered constituent.')
+        end if
+      end do
+    end do
+    ! Check vcoarsen field names (skip blanked and derived-field names)
+    do i = 1, n_vcoarsen_flds
+      if (len_trim(vcoarsen_flds(i)) == 0) cycle
+      uname = adjustl(vcoarsen_flds(i))
+      found = .false.
+      do k = 1, size(known_state_vars)
+        if (trim(uname) == trim(known_state_vars(k))) then
+          found = .true.
+          exit
+        end if
+      end do
+      if (.not. found) then
+        call cnst_get_ind(trim(uname), idx, abrtf=.false.)
+        found = (idx > 0)
+      end if
+      if (.not. found) then
+        call endrun('derived_fields_register: unknown vcoarsen field "'//trim(uname)// &
+             '". Must be T, U, V, OMEGA, Z3, Q, or a registered constituent.')
+      end if
+    end do
 
     ! Register derived (combined) fields as 3D fields on 'lev'
     do i = 1, n_derived_flds
@@ -352,6 +413,7 @@ contains
     ! where overlap(k) is the pressure thickness overlap between model level k
     ! and the target pressure range [pb(k_out), pb(k_out+1)].
     !--------------------------------------------------------------------------
+    use cam_history_support, only: fillvalue
     real(r8), intent(in)  :: field(pcols, pver)      ! input 3D field
     real(r8), intent(in)  :: pint(pcols, pverp)      ! interface pressures
     integer,  intent(in)  :: ncol                    ! number of active columns
@@ -361,7 +423,6 @@ contains
     real(r8) :: pb_top, pb_bot           ! target layer pressure bounds
     real(r8) :: p_top, p_bot, overlap    ! model level overlap computation
     real(r8) :: numerator, denominator
-    real(r8), parameter :: fillvalue = 1.e36_r8
     integer  :: i, k
 
     pb_top = vcoarsen_pbounds(k_out)
