@@ -1605,11 +1605,7 @@ CONTAINS
     end do
     ierr = pio_put_var(File, interpolate_nlon_desc, interp_output)
     ! Horizontal remapping file paths
-    do t = 1, ptapes
-      startc(1) = 1
-      startc(2) = t
-      ierr = pio_put_var(File, horiz_remap_file_desc, startc(1:2), horiz_remap_file(t))
-    end do
+    ierr = pio_put_var(File, horiz_remap_file_desc, horiz_remap_file)
     ! Registered history coordinates
     start(1) = 1
     do f = 1, registeredmdims
@@ -1830,9 +1826,12 @@ CONTAINS
     ierr = pio_inq_varid(File, 'horiz_remap_file', vdesc)
     call pio_seterrorhandling(File, PIO_INTERNAL_ERROR)
     if (ierr == pio_noerr) then
-      do t = 1, min(mtapes, ptapes)
-        ierr = pio_get_var(File, vdesc, (/1, t/), (/max_string_len, 1/), horiz_remap_file(t))
-      end do
+      block
+        character(len=max_string_len) :: tmp_remap_files(ptapes)
+        tmp_remap_files(:) = ' '
+        ierr = pio_get_var(File, vdesc, tmp_remap_files(1:mtapes))
+        horiz_remap_file(1:min(mtapes,ptapes)) = tmp_remap_files(1:min(mtapes,ptapes))
+      end block
     end if
 
     !! mdim indices
