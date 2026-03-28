@@ -98,6 +98,9 @@ module histFileMod
   character(len=max_namlen+2), public :: &
        hist_fincl6(max_flds) = ' '       ! namelist: list of fields to add
 
+  character(len=256), public :: &
+       hist_horiz_remap_file(max_tapes) = ' '  ! namelist: horiz remap mapping file per tape
+
   character(len=max_namlen+2), public :: &
        fexcl(max_flds,max_tapes)         ! namelist-equivalence list of fields to remove
 

@@ -1,0 +1,54 @@
+	<nml_record name="AM_aceDerivedFields" mode="forward;analysis">
+		<nml_option name="config_AM_aceDerivedFields_enable" type="logical" default_value=".false."
+			description="If true, ocean analysis member aceDerivedFields is called."
+			possible_values=".true. or .false."
+		/>
+		<nml_option name="config_AM_aceDerivedFields_compute_interval" type="character" default_value="output_interval"
+			description="Timestamp determining how often analysis member computation should be performed."
+			possible_values="Any valid time stamp, 'dt', or 'output_interval'"
+		/>
+		<nml_option name="config_AM_aceDerivedFields_output_stream" type="character" default_value="aceDerivedFieldsOutput"
+			description="Name of the stream that the aceDerivedFields analysis member should be tied to."
+			possible_values="Any existing stream name or 'none'"
+		/>
+		<nml_option name="config_AM_aceDerivedFields_compute_on_startup" type="logical" default_value=".true."
+			description="Logical flag determining if an analysis member computation occurs on start-up."
+			possible_values=".true. or .false."
+		/>
+		<nml_option name="config_AM_aceDerivedFields_write_on_startup" type="logical" default_value=".true."
+			description="Logical flag determining if an analysis member write occurs on start-up."
+			possible_values=".true. or .false."
+		/>
+		<nml_option name="config_AM_aceDerivedFields_horiz_remap_file" type="character" default_value="none"
+			description="Path to horizontal remapping file for ACE derived fields."
+			possible_values="Any valid file path or 'none'"
+		/>
+	</nml_record>
+	<packages>
+		<package name="aceDerivedFieldsAMPKG" description="This package includes variables required for the aceDerivedFields analysis member."/>
+	</packages>
+	<var_struct name="aceDerivedFieldsAM" time_levs="1" packages="aceDerivedFieldsAMPKG">
+		<var name="sst" type="real" dimensions="nCells Time" units="degC"
+			description="Sea surface temperature extracted from top-level temperature tracer"
+		/>
+		<var name="sss" type="real" dimensions="nCells Time" units="PSU"
+			description="Sea surface salinity extracted from top-level salinity tracer"
+		/>
+	</var_struct>
+	<streams>
+		<stream name="aceDerivedFieldsOutput" type="output"
+				mode="forward;analysis"
+				precision="single"
+				filename_template="analysis_members/aceDerivedFields.$Y-$M-$D.nc"
+				filename_interval="01-00-00_00:00:00"
+				output_interval="00-00-01_00:00:00"
+				reference_time="0001-01-01_00:00:00"
+				packages="aceDerivedFieldsAMPKG"
+				clobber_mode="truncate"
+				runtime_format="single_file">
+			<var name="xtime"/>
+			<var name="sst"/>
+			<var name="sss"/>
+			<var name="ssh"/>
+		</stream>
+	</streams>

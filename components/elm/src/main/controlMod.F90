@@ -22,6 +22,7 @@ module controlMod
   use histFileMod             , only: hist_empty_htapes, hist_dov2xy, hist_avgflag_pertape, hist_type1d_pertape
   use histFileMod             , only: hist_nhtfrq, hist_ndens, hist_mfilt, hist_fincl1, hist_fincl2, hist_fincl3
   use histFileMod             , only: hist_fincl4, hist_fincl5, hist_fincl6, hist_fexcl1, hist_fexcl2, hist_fexcl3
+  use histFileMod             , only: hist_horiz_remap_file
   use histFileMod             , only: hist_fexcl4, hist_fexcl5, hist_fexcl6
   use LakeCon                 , only: deepmixing_depthcrit, deepmixing_mixfact
   use AllocationMod           , only: suplnitro
@@ -208,7 +209,8 @@ contains
          hist_fincl1,  hist_fincl2, hist_fincl3, &
          hist_fincl4,  hist_fincl5, hist_fincl6, &
          hist_fexcl1,  hist_fexcl2, hist_fexcl3, &
-         hist_fexcl4,  hist_fexcl5, hist_fexcl6
+         hist_fexcl4,  hist_fexcl5, hist_fexcl6, &
+         hist_horiz_remap_file
     namelist /elm_inparm/ hist_wrtch4diag
 
     ! BGC info
@@ -1004,6 +1006,7 @@ contains
     call mpi_bcast (hist_fincl4, (max_namlen+2)*size(hist_fincl4), MPI_CHARACTER, 0, mpicom, ier)
     call mpi_bcast (hist_fincl5, (max_namlen+2)*size(hist_fincl5), MPI_CHARACTER, 0, mpicom, ier)
     call mpi_bcast (hist_fincl6, (max_namlen+2)*size(hist_fincl6), MPI_CHARACTER, 0, mpicom, ier)
+    call mpi_bcast (hist_horiz_remap_file, 256*size(hist_horiz_remap_file), MPI_CHARACTER, 0, mpicom, ier)
 
     ! restart file variables
 

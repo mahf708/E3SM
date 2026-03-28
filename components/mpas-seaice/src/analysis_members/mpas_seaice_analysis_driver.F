@@ -36,6 +36,7 @@ module seaice_analysis_driver
    use seaice_pointwise_stats
    use seaice_unit_conversion
    use seaice_ice_shelves
+   use seaice_ace_derived_fields
 !   use seaice_TEM_PLATE
 
    implicit none
@@ -1115,6 +1116,8 @@ contains
       else if ( analysisMemberName(1:nameLength) == 'timeSeriesStatsCustom' ) then
          call seaice_bootstrap_time_series_stats(domain, timeSeriesCustomTAG, err_tmp)
 !     else if ( analysisMemberName(1:nameLength) == 'surfaceAreaWeightedAverages' ) then
+      else if ( analysisMemberName(1:nameLength) == 'aceSeaiceDerivedFields' ) then
+         call seaice_bootstrap_ace_derived_fields(domain, '', err_tmp)
 !        call seaice_bootstrap_surface_area_weighted_averages(domain, '', err_tmp)
 !     else if ( analysisMemberName(1:nameLength) == 'TEMPLATE' ) then
 !        call seaice_bootstrap_TEMP_LATE(domain, '', err_tmp)
@@ -1186,6 +1189,8 @@ contains
          call seaice_init_time_series_stats(domain, timeSeriesClimatologyTAG, err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'timeSeriesStatsCustom' ) then
          call seaice_init_time_series_stats(domain, timeSeriesCustomTAG, err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'aceSeaiceDerivedFields' ) then
+         call seaice_init_ace_derived_fields(domain, '', err_tmp)
 !     else if ( analysisMemberName(1:nameLength) == 'surfaceAreaWeightedAverages' ) then
 !        call seaice_init_surface_area_weighted_averages(domain, '', err_tmp)
 !     else if ( analysisMemberName(1:nameLength) == 'TEMPLATE' ) then
@@ -1261,6 +1266,8 @@ contains
       !   call seaice_precompute_time_series_stats(domain, timeSeriesClimatologyTAG, timeLevel, err_tmp)
       !else if ( analysisMemberName(1:nameLength) == 'timeSeriesStatsCustom' ) then
       !   call seaice_precompute_time_series_stats(domain, timeSeriesCustomTAG, timeLevel, err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'aceSeaiceDerivedFields' ) then
+         call seaice_precompute_ace_derived_fields(domain, '', timeLevel, err_tmp)
 !     else if ( analysisMemberName(1:nameLength) == 'surfaceAreaWeightedAverages' ) then
 !        call seaice_precompute_surface_area_weighted_averages(domain, '', timeLevel, err_tmp)
 !     else if ( analysisMemberName(1:nameLength) == 'TEMPLATE' ) then
@@ -1334,6 +1341,8 @@ contains
          call seaice_compute_time_series_stats(domain, timeLevel, timeSeriesClimatologyTAG, err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'timeSeriesStatsCustom' ) then
          call seaice_compute_time_series_stats(domain, timeLevel, timeSeriesCustomTAG, err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'aceSeaiceDerivedFields' ) then
+         call seaice_compute_ace_derived_fields(domain, '', timeLevel, err_tmp)
 !     else if ( analysisMemberName(1:nameLength) == 'surfaceAreaWeightedAverages' ) then
 !        call seaice_compute_surface_area_weighted_averages(domain, '', timeLevel, err_tmp)
 !     else if ( analysisMemberName(1:nameLength) == 'TEMPLATE' ) then
@@ -1408,6 +1417,8 @@ contains
          call seaice_restart_time_series_stats(domain, timeSeriesCustomTAG, err_tmp)
 !     else if ( analysisMemberName(1:nameLength) == 'surfaceAreaWeightedAverages' ) then
 !        call seaice_restart_surface_area_weighted_averages(domain, '', err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'aceSeaiceDerivedFields' ) then
+         call seaice_restart_ace_derived_fields(domain, '', err_tmp)
 !     else if ( analysisMemberName(1:nameLength) == 'TEMPLATE' ) then
 !        call seaice_restart_TEMP_LATE(domain, '', err_tmp)
       end if
@@ -1478,6 +1489,8 @@ contains
          call seaice_finalize_time_series_stats(domain, timeSeriesClimatologyTAG, err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'timeSeriesStatsCustom' ) then
          call seaice_finalize_time_series_stats(domain, timeSeriesCustomTAG, err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'aceSeaiceDerivedFields' ) then
+         call seaice_finalize_ace_derived_fields(domain, '', err_tmp)
 !     else if ( analysisMemberName(1:nameLength) == 'surfaceAreaWeightedAverages' ) then
 !        call seaice_finalize_surface_area_weighted_averages(domain, '', err_tmp)
 !     else if ( analysisMemberName(1:nameLength) == 'TEMPLATE' ) then
