@@ -599,10 +599,34 @@ post-processing.
 
 ### ACE vertical coarsening reference
 
-The ACE offline pipeline specifies coarsening layers as model-level index
-pairs (e.g., `[0, 25]` means levels 0 through 24). These indices were chosen
-to give **approximately equal mass (pressure thickness) per layer**, not to
-match canonical pressure levels. The rationale is documented in:
+The ACE model (Watt-Meyer et al. 2023, [arXiv:2310.02074](https://arxiv.org/abs/2310.02074))
+reduces the vertical coordinate from 63 layers (FV3GFS) or 72/80 layers
+(E3SMv2/v3) to 8 coarsened layers using pressure-thickness-weighted
+averaging. The coarsened layers use a hybrid sigma-pressure coordinate
+with `ak` and `bk` coefficients subselected from the reference model.
+
+The original ACE1 paper states: *"The nine interfaces were chosen to have
+a vertical coordinate that corresponds closely to the one in the SPEEDY
+model [Molteni, 2003]."* The top two layers correspond to the stratosphere
+while the lowest layer is roughly a boundary layer average.
+
+The ACE1 (FV3GFS) vertical coordinate from Table 2 of the paper:
+
+| k | ak (Pa) | bk | Ik (63-lev) | p_ref (hPa) |
+|---|---------|-----|-------------|-------------|
+| 0 | 64.2 | 0.0 | 0 | 0.6 |
+| 1 | 5167.1 | 0.0 | 18 | 51.7 |
+| 2 | 12905.4 | 0.018 | 26 | 147.0 |
+| 3 | 13982.5 | 0.117 | 31 | 257.0 |
+| 4 | 12165.3 | 0.290 | 36 | 411.0 |
+| 5 | 8910.1 | 0.498 | 41 | 587.0 |
+| 6 | 4955.7 | 0.726 | 47 | 776.0 |
+| 7 | 2155.8 | 0.882 | 53 | 903.0 |
+| 8 | 0.0 | 1.0 | 63 | 1000.0 |
+
+For the E3SM adaptation, level indices were recomputed to match similar
+pressure ranges on the E3SM vertical grid. This is documented in a
+private notebook:
 `https://github.com/ai2cm/explore/blob/master/jamesd/2023-06-09-e3smv2-vertical-interface-indices.ipynb`
 
 The online `vcoarsen_pbounds` approach uses fixed pressure boundaries instead
