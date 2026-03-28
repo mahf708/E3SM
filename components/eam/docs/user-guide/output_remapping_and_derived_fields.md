@@ -225,10 +225,38 @@ levels may not fully span the bottom target layer.
 
 ### Supported Input Fields
 
-The vertical coarsening operates on 3D fields accessible from `physics_state`:
-- State variables: `T`, `U`, `V`, `OMEGA`, `Z3`, `Q`
-- Registered constituents: `CLDLIQ`, `CLDICE`, `NUMLIQ`, `NUMICE`, etc.
-- Derived field names (see Section 3): e.g., `TOTAL_CLD_WATER`
+The vertical coarsening and derived field system operates on 3D fields
+accessible from `physics_state` at runtime. This is a strict requirement —
+only fields that exist in the `physics_state` type or as registered
+constituents can be used. Arbitrary history fields (e.g., `CLOUD`, `RELHUM`,
+`FREQL`) and physics buffer (`pbuf`) fields are **not** supported.
+
+**Hardcoded state variables** (accessed directly from `state%t`, `state%u`, etc.):
+- `T` — air temperature
+- `U` — eastward wind
+- `V` — northward wind
+- `Q` — specific humidity (water vapor, constituent index 1)
+- `OMEGA` — vertical pressure velocity
+- `Z3` — geopotential height at midpoints
+
+**Registered constituents** (accessed via `cnst_get_ind` from `state%q(:,:,idx)`):
+- `CLDLIQ` — cloud liquid water mixing ratio
+- `CLDICE` — cloud ice mixing ratio
+- `NUMLIQ`, `NUMICE` — cloud droplet/ice number concentrations
+- `RAINQM`, `SNOWQM` — rain/snow mixing ratios
+- Any other species registered with the constituent system
+
+**Derived field names** (from `derived_fld_defs`, see Section 3):
+- e.g., `TOTAL_CLD_WATER`, `SPECIFIC_TOTAL_WATER`
+
+**Not supported:**
+- 2D surface fields (`PS`, `TS`, `FLUT`, `LHFLX`, etc.) — these have no
+  vertical dimension and don't need coarsening
+- Diagnostic fields computed in parameterizations (`CLOUD`, `RELHUM`, etc.)
+- Physics buffer fields
+
+If a field name is misspelled or unsupported, the model will error at
+initialization with a clear message identifying the invalid name.
 
 ### Output Field Naming
 
@@ -488,7 +516,104 @@ path between runs, the new path will be picked up from the namelist.
 
 ---
 
-## 6. Source Files
+## 6. Relationship to Offline Data Processing Pipeline
+
+These online features were motivated by the offline data processing pipeline
+used by the AI Group for preparing ML training datasets (see
+`scripts/data_process/compute_dataset_e3smv2.py` in the ACE repository).
+The offline pipeline performs the following steps, and this section documents
+which are now handled online and which still require post-processing.
+
+### Operations now handled online
+
+| Offline operation | Online equivalent | Notes |
+|-------------------|-------------------|-------|
+| `ncremap` (horizontal regridding) | `horiz_remap_file` | Sparse matrix remap, identical approach |
+| `compute_vertical_coarsening` (pdel-weighted averaging) | `vcoarsen_pbounds` + `vcoarsen_flds` | Same algorithm: pdel-weighted mean within pressure layers |
+| `compute_specific_total_water` (sum of water species) | `derived_fld_defs` | e.g., `SPECIFIC_TOTAL_WATER=Q+CLDLIQ+CLDICE+RAINQM+SNOWQM` |
+| Vertical coarsening index specification | `vcoarsen_pbounds` | Offline uses model-level index pairs `[start, end]`; online uses pressure bounds in Pa. Pressure bounds are more portable across resolutions. |
+
+### Operations still requiring offline post-processing
+
+| Offline operation | Why not online | Workaround |
+|-------------------|---------------|------------|
+| `compute_tendencies` (time derivatives) | Requires data from adjacent timesteps — cannot compute within a single physics step | Compute offline from output time series: `tendency = diff(field) / diff(time)` |
+| `compute_rad_fluxes` (e.g., `FLNS+FLDS`) | These are sums/differences of **2D surface fields**, not 3D state variables. The derived field system only accesses `physics_state` 3D fields. | Output the component fluxes (`FLNS`, `FLDS`, `FSDS`, `FSNS`, `FSNTOA`, `SOLIN`) directly and compute sums offline. These are cheap 2D operations. |
+| `compute_surface_precipitation_rate` | Simple unit conversion of existing output fields (`PRECT * 1000 kg/m3`) | Trivial offline: `precip_mass_flux = PRECT * 1000` |
+| `compute_column_moisture_integral` | Column integral `sum(q * dp) / g` — could be added to derived system but currently not implemented | Output `Q` and `PS`; compute offline using hybrid coefficients |
+| `compute_coarse_ak_bk` | Coordinate metadata, not a field transformation | Extract from output file's `hyai`/`hybi` variables at the model-level indices corresponding to the pressure bounds |
+| `sfc_phis_to_hgt` | Simple division `PHIS / 9.80665` | Output `PHIS` directly; convert offline |
+| `roundtrip_filter` (spherical harmonic filtering) | Spectral transform library not available in EAM Fortran runtime | Apply offline using `xtorch_harmonics` |
+| Field renaming | Cosmetic, no computational benefit to doing online | Apply offline with `ncrename` or in xarray |
+
+### Example: Reproducing the full ACE/aigroup pipeline
+
+Given the v3 8-layer AMIP configuration, the online settings would be:
+
+```fortran
+! Derived fields: specific total water (all water species)
+derived_fld_defs = 'SPECIFIC_TOTAL_WATER=Q+CLDLIQ+CLDICE+RAINQM'
+
+! 8-layer vertical coarsening matching the ACE index-based layers
+! These pressure bounds approximate the v3 [0,25,38,46,52,56,61,69,80] level indices
+vcoarsen_pbounds = 0, 300, 3000, 10000, 22000, 35000, 51000, 74000, 110000
+vcoarsen_flds = 'T', 'U', 'V', 'SPECIFIC_TOTAL_WATER'
+
+! Tape 1: 6-hourly instantaneous on Gaussian grid (replaces offline ncremap)
+nhtfrq = -6
+avgflag_pertape = 'I'
+empty_htapes = .true.
+
+fincl1 = 'PS', 'TS', 'PHIS', 'OCNFRAC', 'LANDFRAC', 'ICEFRAC',
+         'LHFLX', 'SHFLX', 'FLNS', 'FLDS', 'FSNS', 'FSDS',
+         'FSNTOA', 'SOLIN', 'FLUT', 'PRECT', 'TMQ', 'TGCLDLWP', 'TGCLDIWP',
+         'T_1','T_2','T_3','T_4','T_5','T_6','T_7','T_8',
+         'U_1','U_2','U_3','U_4','U_5','U_6','U_7','U_8',
+         'V_1','V_2','V_3','V_4','V_5','V_6','V_7','V_8',
+         'SPECIFIC_TOTAL_WATER_1','SPECIFIC_TOTAL_WATER_2',
+         'SPECIFIC_TOTAL_WATER_3','SPECIFIC_TOTAL_WATER_4',
+         'SPECIFIC_TOTAL_WATER_5','SPECIFIC_TOTAL_WATER_6',
+         'SPECIFIC_TOTAL_WATER_7','SPECIFIC_TOTAL_WATER_8'
+horiz_remap_file(1) = '/path/to/map_ne30pg2_to_gaussian_180x360.nc'
+```
+
+The remaining offline steps (radiation flux sums, precipitation unit
+conversion, time tendencies, spherical harmonic filtering, renaming) are
+lightweight 2D operations that take seconds compared to the minutes/hours
+saved by eliminating the horizontal remapping and vertical coarsening from
+post-processing.
+
+### Converting offline vertical coarsening indices to pressure bounds
+
+The offline pipeline specifies coarsening layers as model-level index pairs
+(e.g., `[0, 25]` means levels 0 through 24). To convert to pressure bounds
+for the online `vcoarsen_pbounds`, look up the interface pressure at each
+boundary index using the model's hybrid coefficients:
+
+```python
+import xarray as xr
+# Read from any EAM output file
+ds = xr.open_dataset("eam_output.nc")
+hyai = ds["hyai"].values  # hybrid A coefficient at interfaces
+P0 = ds["P0"].values      # reference pressure (typically 100000 Pa)
+
+# Offline indices (from YAML config)
+indices = [0, 25, 38, 46, 52, 56, 61, 69, 80]
+
+# Convert to approximate pressure bounds (using hyai*P0, ignoring hybi*PS)
+pbounds_pa = [hyai[i] * P0 for i in indices]
+print("vcoarsen_pbounds =", ", ".join(f"{p:.0f}" for p in pbounds_pa))
+```
+
+Note: The online approach uses fixed pressure bounds, while the offline
+approach uses model-level indices. The pressure-based approach is more
+portable across resolutions but may not exactly replicate the level-based
+coarsening. For exact equivalence, choose pressure bounds that align with
+the interface pressures at the desired level indices.
+
+---
+
+## 7. Source Files
 
 | File | Description |
 |------|-------------|
@@ -499,7 +624,7 @@ path between runs, the new path will be picked up from the namelist.
 | `components/eam/bld/namelist_files/namelist_definition.xml` | Namelist parameter definitions |
 | `components/eam/docs/user-guide/output_remapping_and_derived_fields.md` | This documentation |
 
-### Related EAMxx Implementation
+### Related EAMxx implementation
 
 The EAMxx (SCREAM) atmosphere model has a similar horizontal remapping
 capability configured via `horiz_remap_file` in YAML output specifications.
