@@ -300,27 +300,39 @@ When verifying vertical coarsening offline, note that:
 
 ### Overview
 
-Define new output fields that are the sum of existing 3D state variables or
-constituents. This avoids the need to add custom `outfld` calls in the physics
-code for common combined quantities.
+Define new output fields by combining existing 3D state variables or
+constituents using arithmetic operators. This avoids the need to add custom
+`outfld` calls in the physics code for common combined quantities.
+
+Supported operators: `+` (add), `-` (subtract), `*` (multiply), `/` (divide).
+Operations are evaluated left-to-right with no precedence (i.e., `A+B*C`
+means `(A+B)*C`, not `A+(B*C)`). Division by zero produces 0.
 
 ### Namelist Parameters (derived_fields_nl)
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `derived_fld_defs` | `char*256(50)` | Definitions in the form `OUTPUT_NAME=INPUT1+INPUT2+...` |
+| `derived_fld_defs` | `char*256(50)` | Definitions in the form `OUTPUT_NAME=INPUT1{op}INPUT2{op}...` where `{op}` is `+`, `-`, `*`, or `/` |
 
-### Example
+### Examples
 
 ```fortran
-derived_fld_defs = 'TOTAL_CLD_WATER=CLDLIQ+CLDICE'
+! Sum of water species
+derived_fld_defs(1) = 'TOTAL_CLD_WATER=CLDLIQ+CLDICE'
+
+! Difference (net condensate change)
+derived_fld_defs(2) = 'LIQ_MINUS_ICE=CLDLIQ-CLDICE'
 
 ! Request on any tape
-fincl1 = 'TOTAL_CLD_WATER'
+fincl1 = 'TOTAL_CLD_WATER', 'LIQ_MINUS_ICE'
 ```
 
-The derived field `TOTAL_CLD_WATER` is registered as a 3D field on `lev` and
-can be requested on any tape, including remapped tapes.
+Each derived field is registered as a 3D field on `lev` and can be requested
+on any tape, including remapped tapes.
+
+**Note:** All operands must be field names accessible from `physics_state`
+(see Supported Input Fields above). Numeric constants are not supported —
+use offline post-processing for unit conversions like `PRECT * 1000`.
 
 ### Composing with Vertical Coarsening
 

@@ -61,6 +61,7 @@ module cam_history_derived
     character(len=max_name_len) :: output_name            ! output field name
     integer                     :: n_inputs                ! number of input fields
     character(len=max_name_len) :: input_names(max_derived_inputs) ! input field names
+    character(len=1)            :: operators(max_derived_inputs)   ! '+', '-', '*', '/' per input
     character(len=max_def_len)  :: units                   ! units string
     character(len=max_def_len)  :: long_name               ! long name for NetCDF
     logical                     :: do_vcoarsen             ! also vertically coarsen this field?
@@ -171,17 +172,23 @@ contains
   subroutine parse_derived_def(defstr, dfld)
     !--------------------------------------------------------------------------
     ! Parse a derived field definition string of the form:
-    !   "OUTPUT_NAME=INPUT1+INPUT2+..."
+    !   "OUTPUT_NAME=INPUT1+INPUT2-INPUT3*INPUT4/INPUT5"
+    ! Supported operators between fields: +, -, *, /
+    ! The first input is always added (implicit +).
+    ! Numeric constants (e.g., "PRECT*1000.0") are NOT supported;
+    ! all operands must be field names.
     !--------------------------------------------------------------------------
     character(len=*), intent(in)       :: defstr
     type(derived_field_t), intent(out) :: dfld
 
-    integer :: eq_pos, plus_pos, start_pos, n
+    integer :: eq_pos, op_pos, start_pos, n, i
     character(len=max_def_len) :: rhs
+    character(len=1) :: ch
 
     dfld%n_inputs = 0
     dfld%do_vcoarsen = .false.
     dfld%units = 'mixed'
+    dfld%operators(:) = '+'
 
     ! Find '=' separator
     eq_pos = index(defstr, '=')
@@ -192,18 +199,37 @@ contains
     dfld%output_name = adjustl(defstr(1:eq_pos-1))
     rhs = adjustl(defstr(eq_pos+1:))
 
-    ! Parse '+' separated input names
+    ! Parse operator-separated input names
+    ! First input always has implicit '+' operator
     n = 0
     start_pos = 1
     do
-      plus_pos = index(rhs(start_pos:), '+')
+      ! Find next operator (+, -, *, /)
+      op_pos = 0
+      do i = start_pos, len_trim(rhs)
+        ch = rhs(i:i)
+        if (ch == '+' .or. ch == '-' .or. ch == '*' .or. ch == '/') then
+          op_pos = i
+          exit
+        end if
+      end do
+
       n = n + 1
       if (n > max_derived_inputs) then
         call endrun('parse_derived_def: too many inputs in definition: '//trim(defstr))
       end if
-      if (plus_pos > 0) then
-        dfld%input_names(n) = adjustl(rhs(start_pos:start_pos+plus_pos-2))
-        start_pos = start_pos + plus_pos
+
+      if (n == 1) then
+        dfld%operators(n) = '+'  ! first input is always added
+      end if
+
+      if (op_pos > 0) then
+        dfld%input_names(n) = adjustl(rhs(start_pos:op_pos-1))
+        ! The operator belongs to the NEXT input
+        if (n < max_derived_inputs) then
+          dfld%operators(n+1) = rhs(op_pos:op_pos)
+        end if
+        start_pos = op_pos + 1
       else
         dfld%input_names(n) = adjustl(rhs(start_pos:))
         exit
@@ -211,11 +237,11 @@ contains
     end do
     dfld%n_inputs = n
 
-    ! Build long name
-    dfld%long_name = 'Sum of'
-    do n = 1, dfld%n_inputs
-      if (n > 1) dfld%long_name = trim(dfld%long_name) // ' +'
-      dfld%long_name = trim(dfld%long_name) // ' ' // trim(dfld%input_names(n))
+    ! Build long name describing the expression
+    dfld%long_name = trim(dfld%input_names(1))
+    do n = 2, dfld%n_inputs
+      dfld%long_name = trim(dfld%long_name) // ' ' // dfld%operators(n) // ' ' // &
+           trim(dfld%input_names(n))
     end do
 
   end subroutine parse_derived_def
@@ -366,13 +392,36 @@ contains
     ncol  = state%ncol
     lchnk = state%lchnk
 
-    ! --- Step 1: Compute and output derived (combined) fields ---
+    ! --- Step 1: Compute and output derived fields ---
     do i = 1, n_derived_flds
       tmp_field(:,:) = 0.0_r8
 
       do n = 1, derived_flds(i)%n_inputs
         call get_state_field(state, derived_flds(i)%input_names(n), src_field, ncol)
-        tmp_field(1:ncol, 1:pver) = tmp_field(1:ncol, 1:pver) + src_field(1:ncol, 1:pver)
+        select case (derived_flds(i)%operators(n))
+        case ('+')
+          tmp_field(1:ncol, 1:pver) = tmp_field(1:ncol, 1:pver) + src_field(1:ncol, 1:pver)
+        case ('-')
+          tmp_field(1:ncol, 1:pver) = tmp_field(1:ncol, 1:pver) - src_field(1:ncol, 1:pver)
+        case ('*')
+          ! For multiply, first input initializes, subsequent inputs multiply
+          if (n == 1) then
+            tmp_field(1:ncol, 1:pver) = src_field(1:ncol, 1:pver)
+          else
+            tmp_field(1:ncol, 1:pver) = tmp_field(1:ncol, 1:pver) * src_field(1:ncol, 1:pver)
+          end if
+        case ('/')
+          ! For divide, first input initializes, subsequent inputs divide
+          if (n == 1) then
+            tmp_field(1:ncol, 1:pver) = src_field(1:ncol, 1:pver)
+          else
+            where (src_field(1:ncol, 1:pver) /= 0.0_r8)
+              tmp_field(1:ncol, 1:pver) = tmp_field(1:ncol, 1:pver) / src_field(1:ncol, 1:pver)
+            elsewhere
+              tmp_field(1:ncol, 1:pver) = 0.0_r8
+            end where
+          end if
+        end select
       end do
 
       ! Output the full-level combined field
