@@ -566,9 +566,9 @@ Given the v3 8-layer AMIP configuration, the online settings would be:
 ! Derived fields: specific total water (all water species)
 derived_fld_defs = 'SPECIFIC_TOTAL_WATER=Q+CLDLIQ+CLDICE+RAINQM'
 
-! 8-layer vertical coarsening matching the ACE index-based layers
-! These pressure bounds approximate the v3 [0,25,38,46,52,56,61,69,80] level indices
-vcoarsen_pbounds = 0, 300, 3000, 10000, 22000, 35000, 51000, 74000, 110000
+! 8-layer vertical coarsening matching the ACE v3 configuration
+! See "ACE vertical coarsening reference" section below for derivation
+vcoarsen_pbounds = 10, 4804, 13913, 26719, 43587, 58999, 75919, 89556, 100000
 vcoarsen_flds = 'T', 'U', 'V', 'SPECIFIC_TOTAL_WATER'
 
 ! Tape 1: 6-hourly instantaneous on Gaussian grid (replaces offline ncremap)
@@ -597,31 +597,75 @@ post-processing.
 
 ### Converting offline vertical coarsening indices to pressure bounds
 
-The offline pipeline specifies coarsening layers as model-level index pairs
-(e.g., `[0, 25]` means levels 0 through 24). To convert to pressure bounds
-for the online `vcoarsen_pbounds`, look up the interface pressure at each
-boundary index using the model's hybrid coefficients:
+### ACE vertical coarsening reference
+
+The ACE offline pipeline specifies coarsening layers as model-level index
+pairs (e.g., `[0, 25]` means levels 0 through 24). These indices were chosen
+to give **approximately equal mass (pressure thickness) per layer**, not to
+match canonical pressure levels. The rationale is documented in:
+`https://github.com/ai2cm/explore/blob/master/jamesd/2023-06-09-e3smv2-vertical-interface-indices.ipynb`
+
+The online `vcoarsen_pbounds` approach uses fixed pressure boundaries instead
+of model-level indices. This is more portable across resolutions (the same
+pressure bounds work for any vertical grid), but produces slightly different
+layer boundaries since the actual interface pressure varies with surface
+pressure via the hybrid coordinate: `p(k) = hyai(k)*P0 + hybi(k)*PS`.
+
+For the E3SMv3 80-level grid, the ACE indices and their corresponding
+reference pressures (evaluated at PS=100000 Pa) are:
+
+**E3SMv3 8-layer configuration:**
+
+| Layer | Level indices | Pressure range (hPa) | dp (Pa) | Online `vcoarsen_pbounds` (Pa) |
+|-------|-------------|---------------------|---------|-------------------------------|
+| 1 | 0-24 | 0.1 - 48.0 | 4794 | 10 |
+| 2 | 25-37 | 48.0 - 139.1 | 9109 | 4804 |
+| 3 | 38-45 | 139.1 - 267.2 | 12806 | 13913 |
+| 4 | 46-51 | 267.2 - 435.9 | 16869 | 26719 |
+| 5 | 52-55 | 435.9 - 590.0 | 15412 | 43587 |
+| 6 | 56-60 | 590.0 - 759.2 | 16920 | 58999 |
+| 7 | 61-68 | 759.2 - 895.6 | 13637 | 75919 |
+| 8 | 69-79 | 895.6 - 1000.0 | 10444 | 89556 |
+| (surface) | | | | 100000 |
+
+The full `vcoarsen_pbounds` for this configuration:
+```fortran
+vcoarsen_pbounds = 10, 4804, 13913, 26719, 43587, 58999, 75919, 89556, 100000
+```
+
+**Key differences between index-based and pressure-based coarsening:**
+
+- **Index-based** (offline): Layer boundaries are fixed to specific model
+  levels. The actual pressure at each boundary varies with surface pressure.
+  Two columns with different PS have different pressure ranges per layer.
+
+- **Pressure-based** (online): Layer boundaries are fixed in pressure space.
+  Each layer always spans the same pressure range regardless of PS. Overlap
+  with model levels is computed dynamically using the actual `pint` values,
+  so partial model levels are handled correctly.
+
+The pressure-based approach is more physically consistent — a "500-600 hPa
+layer" always means the same physical extent. For ML training where the ACE
+model learns pressure-level-aware representations, this is arguably better
+than the index-based approach which aliases different pressure ranges
+depending on topography.
+
+### Computing pressure bounds from model output
+
+To find the reference pressure bounds for any set of level indices:
 
 ```python
 import xarray as xr
-# Read from any EAM output file
 ds = xr.open_dataset("eam_output.nc")
-hyai = ds["hyai"].values  # hybrid A coefficient at interfaces
-P0 = ds["P0"].values      # reference pressure (typically 100000 Pa)
+hyai = ds["hyai"].values
+hybi = ds["hybi"].values
+P0 = float(ds["P0"].values)
+PS_ref = 100000.0  # reference surface pressure
 
-# Offline indices (from YAML config)
-indices = [0, 25, 38, 46, 52, 56, 61, 69, 80]
-
-# Convert to approximate pressure bounds (using hyai*P0, ignoring hybi*PS)
-pbounds_pa = [hyai[i] * P0 for i in indices]
-print("vcoarsen_pbounds =", ", ".join(f"{p:.0f}" for p in pbounds_pa))
+indices = [0, 25, 38, 46, 52, 56, 61, 69, 80]  # v3 ACE indices
+pbounds = [hyai[i] * P0 + hybi[i] * PS_ref for i in indices]
+print("vcoarsen_pbounds =", ", ".join(f"{p:.0f}" for p in pbounds))
 ```
-
-Note: The online approach uses fixed pressure bounds, while the offline
-approach uses model-level indices. The pressure-based approach is more
-portable across resolutions but may not exactly replicate the level-based
-coarsening. For exact equivalence, choose pressure bounds that align with
-the interface pressures at the desired level indices.
 
 ---
 
