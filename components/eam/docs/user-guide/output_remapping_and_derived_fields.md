@@ -565,47 +565,44 @@ needed for ACE training, on a Gaussian lat-lon grid, at 6-hourly instantaneous
 frequency. This replaces the entire offline `compute_dataset_e3smv2.py`
 pipeline except for spherical harmonic filtering and field renaming.
 
+Per-field averaging flags (`:I` for instantaneous, `:A` for time-averaged)
+allow mixing snapshot state variables with time-averaged fluxes on the same
+tape, matching the ACE convention where state is instantaneous but fluxes
+and precipitation are interval averages.
+
 ```fortran
-! === Clear defaults, 6-hourly instantaneous output ===
+! === Clear defaults, 6-hourly output ===
 empty_htapes = .true.
 nhtfrq = -6
-avgflag_pertape = 'I'
+avgflag_pertape = 'I'   ! default instant; override per-field with :A
 
 ! === Derived fields ===
-! Specific total water (sum of all water species)
 derived_fld_defs = 'SPECIFIC_TOTAL_WATER=Q+CLDLIQ+CLDICE+RAINQM'
 
 ! === 8-layer vertical coarsening (SPEEDY-like, see ACE reference below) ===
-! Pressure bounds (Pa) at reference PS=100000 Pa matching ACE1 SPEEDY levels:
-!   0.1, 48, 139, 267, 436, 590, 759, 896, 1000 hPa
 vcoarsen_pbounds = 10, 4804, 13913, 26719, 43587, 58999, 75919, 89556, 100000
 vcoarsen_flds = 'T', 'U', 'V', 'SPECIFIC_TOTAL_WATER'
 
 ! === Tape 1: all ACE training variables on Gaussian grid ===
 fincl1 =
-  ! --- 2D surface/TOA fields (direct output, no processing) ---
-  'PS', 'TS', 'PHIS',
-  'OCNFRAC', 'LANDFRAC', 'ICEFRAC',
-  'LHFLX', 'SHFLX',
-  'PRECT', 'PRECSC', 'PRECSL',
-  'TMQ', 'TGCLDLWP', 'TGCLDIWP',
-  'QREFHT', 'TREFHT', 'U10',
-  ! --- Radiation fluxes (all available directly from RRTMG) ---
-  'SOLIN',                  ! downwelling SW at TOA
-  'FSUTOA',                 ! upwelling SW at TOA (= SOLIN - FSNTOA)
-  'FLUT',                   ! upwelling LW at TOA
-  'FSDS',                   ! downwelling SW at surface
-  'FSUS',                   ! upwelling SW at surface (= FSDS - FSNS) [NEW]
-  'FLDS',                   ! downwelling LW at surface
-  'FLUS',                   ! upwelling LW at surface (= FLNS + FLDS) [NEW]
-  ! --- Vertically coarsened 3D fields (8 layers each) ---
-  'T_1','T_2','T_3','T_4','T_5','T_6','T_7','T_8',
-  'U_1','U_2','U_3','U_4','U_5','U_6','U_7','U_8',
-  'V_1','V_2','V_3','V_4','V_5','V_6','V_7','V_8',
-  'SPECIFIC_TOTAL_WATER_1','SPECIFIC_TOTAL_WATER_2',
-  'SPECIFIC_TOTAL_WATER_3','SPECIFIC_TOTAL_WATER_4',
-  'SPECIFIC_TOTAL_WATER_5','SPECIFIC_TOTAL_WATER_6',
-  'SPECIFIC_TOTAL_WATER_7','SPECIFIC_TOTAL_WATER_8'
+  ! --- Instantaneous state variables ---
+  'PS:I', 'TS:I', 'PHIS:I',
+  'OCNFRAC:I', 'LANDFRAC:I', 'ICEFRAC:I',
+  'TMQ:I', 'TGCLDLWP:I', 'TGCLDIWP:I',
+  'QREFHT:I', 'TREFHT:I', 'U10:I',
+  ! --- Averaged fluxes and precipitation ---
+  'LHFLX:A', 'SHFLX:A',
+  'PRECT:A', 'PRECSC:A', 'PRECSL:A',
+  'SOLIN:A', 'FSUTOA:A', 'FLUT:A',
+  'FSDS:A', 'FSUS:A', 'FLDS:A', 'FLUS:A',
+  ! --- Vertically coarsened 3D fields (8 layers, instantaneous) ---
+  'T_1:I','T_2:I','T_3:I','T_4:I','T_5:I','T_6:I','T_7:I','T_8:I',
+  'U_1:I','U_2:I','U_3:I','U_4:I','U_5:I','U_6:I','U_7:I','U_8:I',
+  'V_1:I','V_2:I','V_3:I','V_4:I','V_5:I','V_6:I','V_7:I','V_8:I',
+  'SPECIFIC_TOTAL_WATER_1:I','SPECIFIC_TOTAL_WATER_2:I',
+  'SPECIFIC_TOTAL_WATER_3:I','SPECIFIC_TOTAL_WATER_4:I',
+  'SPECIFIC_TOTAL_WATER_5:I','SPECIFIC_TOTAL_WATER_6:I',
+  'SPECIFIC_TOTAL_WATER_7:I','SPECIFIC_TOTAL_WATER_8:I'
 
 ! === Horizontal remapping to Gaussian grid ===
 horiz_remap_file(1) = '/path/to/map_ne30pg2_to_gaussian_180x360.nc'
