@@ -602,7 +602,9 @@ fincl1 =
   'SPECIFIC_TOTAL_WATER_1:I','SPECIFIC_TOTAL_WATER_2:I',
   'SPECIFIC_TOTAL_WATER_3:I','SPECIFIC_TOTAL_WATER_4:I',
   'SPECIFIC_TOTAL_WATER_5:I','SPECIFIC_TOTAL_WATER_6:I',
-  'SPECIFIC_TOTAL_WATER_7:I','SPECIFIC_TOTAL_WATER_8:I'
+  'SPECIFIC_TOTAL_WATER_7:I','SPECIFIC_TOTAL_WATER_8:I',
+  ! --- Total water path tendency (dynamics only) ---
+  'DTENDTTW:A'
 
 ! === Horizontal remapping to Gaussian grid ===
 horiz_remap_file(1) = '/path/to/map_ne30pg2_to_gaussian_180x360.nc'
@@ -616,6 +618,7 @@ horiz_remap_file(1) = '/path/to/map_ne30pg2_to_gaussian_180x360.nc'
 | `compute_vertical_coarsening` | `vcoarsen_pbounds` + `vcoarsen_flds` |
 | `compute_specific_total_water` | `derived_fld_defs` |
 | `compute_rad_fluxes` (FLNS+FLDS, FSDS-FSNS, SOLIN-FSNTOA) | `FLUS`, `FSUS`, `FSUTOA` — now direct RRTMG output |
+| `compute_tendencies` + `compute_column_advective_moisture_tendency` | `DTENDTTW` — online dynamical tendency of total water path (see below) |
 | `compute_surface_precipitation_rate` (PRECT*1000) | Output `PRECT` directly; scale offline |
 | `sfc_phis_to_hgt` (PHIS/g) | Output `PHIS` directly; divide offline |
 
@@ -626,18 +629,30 @@ horiz_remap_file(1) = '/path/to/map_ne30pg2_to_gaussian_180x360.nc'
 | `roundtrip_filter` (spherical harmonic filtering) | Needs `xtorch_harmonics` library | Apply offline |
 | `PRECT * 1000` (unit conversion to kg/m2/s) | Scalar constant multiplication | 1 line of xarray |
 | `PHIS / 9.80665` (geopotential to height) | Scalar constant division | 1 line of xarray |
-| `compute_tendencies` (time derivatives) | Needs adjacent timesteps | `diff()/dt` in xarray |
 | Field renaming (to FV3-style names) | Cosmetic | `ds.rename()` in xarray |
 
-**Note on tendencies:** EAM already computes process-split tendencies
-internally. For the ACE `tendency_of_total_water_path`, the field `DTENDTQ`
-(dynamic tendency of column-integrated specific humidity, W/m2) provides
-the equivalent quantity without needing cross-timestep differencing. The
-field `PTTEND` gives the total physics temperature tendency (K/s). These
-are standard `addfld` fields that can be requested on any tape including
-remapped tapes. However, they are computed from `tend%dtdt` (not from
-`physics_state`) so they cannot currently be vertically coarsened — but
-as column-integrated 2D quantities, they don't need vertical coarsening.
+**Note on tendencies:** `DTENDTTW` (kg/m2/s) is the online dynamical
+tendency of column-integrated total water (Q+CLDLIQ+CLDICE+RAINQM). It
+directly replaces the ACE offline `tendency_of_total_water_path_due_to_advection`.
+
+The ACE offline pipeline computed this in two steps:
+1. `tendency_of_total_water_path = diff(TWP) / dt` (full tendency from snapshot differencing)
+2. `advective = full_tendency - evaporation + precipitation` (subtract surface sources/sinks)
+
+`DTENDTTW` is cleaner: it is computed within the model as the difference
+in the total water column integral between the end of `tphysac` (after
+dynamics) and the start of `tphysbc` (before physics). This naturally
+captures only the dynamical tendency (advection, diffusion in the
+dynamical core) without physics contributions, so no evaporation/precipitation
+subtraction is needed.
+
+Additionally, `DTENDTTW` is computed at every model timestep (~30 min)
+and time-averaged, capturing sub-output-interval variability that the
+offline 6-hourly snapshot differencing misses.
+
+Other available tendency fields: `DTENDTQ` (water vapor only), `DTENDTH`
+(moist static energy), `PTTEND` (total physics T tendency). These are all
+2D (`horiz_only`) fields and can be output on any tape including remapped.
 
 ### Converting offline vertical coarsening indices to pressure bounds
 
