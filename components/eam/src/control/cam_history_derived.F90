@@ -337,17 +337,20 @@ contains
            trim(derived_flds(i)%units), trim(derived_flds(i)%long_name))
 
       ! If this derived field also gets coarsened, register the scalar fields
+      ! flag_xyfill=.true. so fillvalue is written as _FillValue in NetCDF
+      ! (columns where surface pressure is below the layer get fillvalue)
       if (derived_flds(i)%do_vcoarsen) then
         do k = 1, n_vcoarsen_levs
           call make_vcoarsen_name(derived_flds(i)%output_name, k, fname)
           call make_vcoarsen_longname(derived_flds(i)%long_name, k, lname)
           call addfld(trim(fname), horiz_only, 'A', &
-               trim(derived_flds(i)%units), trim(lname))
+               trim(derived_flds(i)%units), trim(lname), flag_xyfill=.true.)
         end do
       end if
     end do
 
     ! Register vertically coarsened fields for state variables
+    ! flag_xyfill=.true. ensures fillvalue is marked as _FillValue in output
     do i = 1, n_vcoarsen_flds
       if (len_trim(vcoarsen_flds(i)) == 0) cycle  ! skip blanked entries
       do k = 1, n_vcoarsen_levs
@@ -356,7 +359,8 @@ contains
              trim(vcoarsen_flds(i)), ' vcoarsen layer ', k, &
              ' (', vcoarsen_pbounds(k)/100.0_r8, '-', &
              vcoarsen_pbounds(k+1)/100.0_r8, ' hPa)'
-        call addfld(trim(fname), horiz_only, 'A', 'varies', trim(lname))
+        call addfld(trim(fname), horiz_only, 'A', 'varies', trim(lname), &
+             flag_xyfill=.true.)
       end do
     end do
 
