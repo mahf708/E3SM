@@ -51,6 +51,10 @@ with the desired new value.
 This [Table of Namelist Parameters](namelist_parameters.md) includes many of the paramaters that control
 physics schemes described in the [tech-guide](../tech-guide/index.md)
 
+#### [Online Output Remapping, Vertical Coarsening, and Derived Fields](output_remapping_and_derived_fields.md)
+
+Advanced output processing features for remapping to lat-lon grids, vertically coarsening fields into pressure layers, and defining combined output fields — all performed online during the simulation. (Out-of-cycle aigroup development.)
+
 #### History File Namelist Parameters
 
 By default, EAM will output a set of monthly-averaged variables. Additional output files can be specified using the following flags in the `user_nl_eam` file:
