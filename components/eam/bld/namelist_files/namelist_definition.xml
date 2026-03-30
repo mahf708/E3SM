@@ -2124,6 +2124,36 @@ interpolate_output on the same tape.
 Default: ' '
 </entry>
 
+<!-- Derived Fields and Vertical Coarsening -->
+
+<entry id="vcoarsen_pbounds" type="real(51)" category="history"
+       group="derived_fields_nl" valid_values="" >
+Pressure boundaries (Pa) defining coarsened vertical layers, ordered from
+model top to surface. N boundaries define N-1 layers. Values must be
+non-negative and increasing. Unused entries should be left at default (-1).
+Example for 4 layers: 0, 25000, 50000, 75000, 101325
+Default: -1 (disabled)
+</entry>
+
+<entry id="vcoarsen_flds" type="char*34(100)" category="history"
+       group="derived_fields_nl" valid_values="" >
+List of field names to vertically coarsen using pdel-weighted averaging.
+Fields must be 3D state variables (T, U, V, OMEGA, Z3, Q) or registered
+constituent names (e.g., CLDLIQ, CLDICE, NUMLIQ, NUMICE). Derived field
+names from derived_fld_defs may also be included for composability.
+Output fields are named FIELDNAME_1, FIELDNAME_2, etc. for each layer.
+Default: none
+</entry>
+
+<entry id="derived_fld_defs" type="char*256(50)" category="history"
+       group="derived_fields_nl" valid_values="" >
+Definitions for derived (combined) output fields. Each entry has the form
+OUTPUT_NAME=INPUT1+INPUT2+... where inputs are summed together. Input field
+names must be 3D state variables or registered constituent names.
+Example: TOTAL_N=NUMLIQ+NUMICE
+Default: none
+</entry>
+
 <!-- Initial Conditions -->
 
 <entry id="ncdata" type="char*256" input_pathname="abs" category="initial_conditions"

@@ -274,6 +274,7 @@ contains
    use vertical_diffusion,  only: vd_readnl
    use cam_history_support, only: fieldname_len, fieldname_lenp2
    use cam_diagnostics,     only: diag_readnl
+   use cam_history_derived, only: derived_fields_readnl
    use nudging,             only: nudging_readnl
    use radheat,             only: radheat_readnl
    use phys_grid_ctem,      only: phys_grid_ctem_readnl
@@ -496,6 +497,7 @@ contains
 
    call spmd_utils_readnl(nlfilename)
    call history_readnl(nlfilename, dtime)
+   call derived_fields_readnl(nlfilename)
    call physconst_readnl(nlfilename)
    call chem_surfvals_readnl(nlfilename)
    call phys_ctl_readnl(nlfilename)
