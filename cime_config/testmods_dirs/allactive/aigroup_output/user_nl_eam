@@ -1,0 +1,24 @@
+! EAM settings for allactive aigroup_output testmod
+! Exercises vertical coarsening, derived fields, and new diagnostics
+
+empty_htapes = .true.
+nhtfrq = -6
+mfilt = 1
+
+! Derived fields
+derived_fld_defs = 'SPECIFIC_TOTAL_WATER=Q+CLDLIQ+CLDICE'
+
+! 4-layer vertical coarsening
+vcoarsen_pbounds = 0, 25000, 50000, 75000, 101325
+vcoarsen_flds = 'T', 'U', 'Q', 'SPECIFIC_TOTAL_WATER'
+
+fincl1 =
+  'PS', 'TS',
+  'LHFLX', 'SHFLX',
+  'FSDS', 'FSUS', 'FLDS', 'FLUS',
+  'T_1','T_2','T_3','T_4',
+  'U_1','U_2','U_3','U_4',
+  'Q_1','Q_2','Q_3','Q_4',
+  'SPECIFIC_TOTAL_WATER_1','SPECIFIC_TOTAL_WATER_2',
+  'SPECIFIC_TOTAL_WATER_3','SPECIFIC_TOTAL_WATER_4',
+  'DTENDTTW', 'DTENDTQ'

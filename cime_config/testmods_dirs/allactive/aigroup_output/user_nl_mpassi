@@ -1,0 +1,7 @@
+! MPAS-Sea Ice settings for allactive aigroup_output testmod
+! Enable ACE sea ice derived fields analysis member
+config_AM_aceSeaiceDerivedFields_enable = .true.
+config_AM_aceSeaiceDerivedFields_compute_interval = 'output_interval'
+config_AM_aceSeaiceDerivedFields_output_stream = 'aceSeaiceDerivedFieldsOutput'
+config_AM_aceSeaiceDerivedFields_compute_on_startup = .true.
+config_AM_aceSeaiceDerivedFields_write_on_startup = .true.

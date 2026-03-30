@@ -1,0 +1,19 @@
+! ELM settings for allactive aigroup_output testmod
+! Exercises vertical coarsening and derived fields for soil variables
+
+hist_empty_htapes = .true.
+hist_nhtfrq = -6
+hist_mfilt = 1
+
+! Derived fields
+elm_derived_fld_defs = 'TOTAL_SOIL_WATER=H2OSOI+SOILICE'
+
+! 3-layer soil depth coarsening
+elm_vcoarsen_zbounds = 0.0, 0.5, 2.0, 10.0
+elm_vcoarsen_flds = 'TSOI', 'H2OSOI', 'TOTAL_SOIL_WATER'
+
+hist_fincl1 =
+  'TSOI_1','TSOI_2','TSOI_3',
+  'H2OSOI_1','H2OSOI_2','H2OSOI_3',
+  'TOTAL_SOIL_WATER_1','TOTAL_SOIL_WATER_2','TOTAL_SOIL_WATER_3',
+  'TG', 'TSA'

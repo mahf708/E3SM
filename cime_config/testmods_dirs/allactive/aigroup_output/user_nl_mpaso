@@ -1,0 +1,12 @@
+! MPAS-Ocean settings for allactive aigroup_output testmod
+! Enable ACE depth coarsening and derived fields analysis members
+config_AM_aceDepthCoarsening_enable = .true.
+config_AM_aceDepthCoarsening_compute_interval = 'output_interval'
+config_AM_aceDepthCoarsening_output_stream = 'aceDepthCoarseningOutput'
+config_AM_aceDepthCoarsening_compute_on_startup = .true.
+config_AM_aceDepthCoarsening_write_on_startup = .true.
+config_AM_aceDerivedFields_enable = .true.
+config_AM_aceDerivedFields_compute_interval = 'output_interval'
+config_AM_aceDerivedFields_output_stream = 'aceDerivedFieldsOutput'
+config_AM_aceDerivedFields_compute_on_startup = .true.
+config_AM_aceDerivedFields_write_on_startup = .true.

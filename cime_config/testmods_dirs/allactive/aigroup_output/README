@@ -1,0 +1,16 @@
+AI Group Online Output Processing Testmod
+==========================================
+
+This testmod exercises the online output processing capabilities added
+for AI/ML training data generation (ACE, Samudra) across all active
+E3SM components:
+
+EAM:  Vertical coarsening (pressure layers), derived fields, FLUS/FSUS/DTENDTTW
+ELM:  Vertical coarsening (soil depth layers), derived soil water fields
+MPAS-O: ACE depth coarsening and derived fields (SST/SSS) analysis members
+MPAS-SI: ACE sea ice derived fields analysis member
+
+Horizontal remapping is not exercised here (requires map files).
+Set horiz_remap_file / hist_horiz_remap_file in user_nl_* to test.
+
+Test: SMS_D_Ln5.ne4pg2_r05_oQU480.WCYCL1850NS.allactive-aigroup_output
