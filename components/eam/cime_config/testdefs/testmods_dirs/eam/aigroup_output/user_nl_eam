@@ -1,0 +1,34 @@
+! EAM testmod for AI group online output processing
+! Tests vertical coarsening, derived fields, and new diagnostics
+! Horizontal remapping is disabled here (requires map file);
+! set horiz_remap_file(2) to a valid map file path to test remapping.
+
+empty_htapes = .true.
+nhtfrq = -6
+mfilt = 1
+
+! Derived fields: combine constituents into total water
+derived_fld_defs = 'SPECIFIC_TOTAL_WATER=Q+CLDLIQ+CLDICE'
+
+! 4-layer vertical coarsening (simplified for testing)
+vcoarsen_pbounds = 0, 25000, 50000, 75000, 101325
+vcoarsen_flds = 'T', 'U', 'Q', 'SPECIFIC_TOTAL_WATER'
+
+! Tape 1: vertically coarsened fields + new diagnostics
+fincl1 =
+  'PS', 'TS',
+  'LHFLX', 'SHFLX',
+  'FSDS', 'FSUS', 'FLDS', 'FLUS',
+  'T_1','T_2','T_3','T_4',
+  'U_1','U_2','U_3','U_4',
+  'Q_1','Q_2','Q_3','Q_4',
+  'SPECIFIC_TOTAL_WATER_1','SPECIFIC_TOTAL_WATER_2',
+  'SPECIFIC_TOTAL_WATER_3','SPECIFIC_TOTAL_WATER_4',
+  'DTENDTTW', 'DTENDTQ'
+
+! Tape 2: placeholder for horizontal remapping test
+! Uncomment and set map file path to test remapping:
+! fincl2 = 'T', 'Q', 'U', 'V', 'PS'
+! horiz_remap_file(2) = '/path/to/map_ne4pg2_to_latlon.nc'
+! nhtfrq(2) = -6
+! mfilt(2) = 1
