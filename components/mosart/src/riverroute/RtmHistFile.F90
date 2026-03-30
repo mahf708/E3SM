@@ -55,9 +55,12 @@ module RtmHistFile
   character(len=max_namlen+2), public :: rtmhist_fincl3(max_flds) = ' '
 
   ! list of fields to remove
-  character(len=max_namlen+2), public :: rtmhist_fexcl1(max_flds) = ' ' 
-  character(len=max_namlen+2), public :: rtmhist_fexcl2(max_flds) = ' ' 
-  character(len=max_namlen+2), public :: rtmhist_fexcl3(max_flds) = ' ' 
+  character(len=max_namlen+2), public :: rtmhist_fexcl1(max_flds) = ' '
+  character(len=max_namlen+2), public :: rtmhist_fexcl2(max_flds) = ' '
+  character(len=max_namlen+2), public :: rtmhist_fexcl3(max_flds) = ' '
+
+  ! horizontal remapping file per tape
+  character(len=256), public :: rtmhist_horiz_remap_file(max_tapes) = ' '
 
   ! equivalence list of fields to add/remove
   character(len=max_namlen+2), public :: fexcl(max_flds,max_tapes)         

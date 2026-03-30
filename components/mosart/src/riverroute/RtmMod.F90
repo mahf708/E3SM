@@ -29,9 +29,10 @@ module RtmMod
   use RtmHistFlds     , only : RtmHistFldsInit, RtmHistFldsSet 
   use RtmHistFile     , only : RtmHistUpdateHbuf, RtmHistHtapesWrapup, RtmHistHtapesBuild, &
                                rtmhist_ndens, rtmhist_mfilt, rtmhist_nhtfrq,     &
-                               rtmhist_avgflag_pertape, rtmhist_avgflag_pertape, & 
+                               rtmhist_avgflag_pertape, rtmhist_avgflag_pertape, &
                                rtmhist_fincl1, rtmhist_fincl2, rtmhist_fincl3,   &
                                rtmhist_fexcl1, rtmhist_fexcl2, rtmhist_fexcl3,   &
+                               rtmhist_horiz_remap_file,                          &
                                max_tapes, max_namlen
   use RtmRestFile     , only : RtmRestTimeManager, RtmRestGetFile, RtmRestFileRead, &
                                RtmRestFileWrite, RtmRestFileName
@@ -281,7 +282,8 @@ contains
          rtmhist_ndens, rtmhist_mfilt, rtmhist_nhtfrq, &
          rtmhist_fincl1,  rtmhist_fincl2, rtmhist_fincl3, &
          rtmhist_fexcl1,  rtmhist_fexcl2, rtmhist_fexcl3, &
-         rtmhist_avgflag_pertape, decomp_option, wrmflag,rstraflag,ngeom,nlayers,rinittemp, &
+         rtmhist_avgflag_pertape, rtmhist_horiz_remap_file, &
+         decomp_option, wrmflag,rstraflag,ngeom,nlayers,rinittemp, &
          inundflag, smat_option, delt_mosart, barrier_timers, do_budget, &
          RoutingMethod, DLevelH2R, DLevelR, sediflag, heatflag, data_bgc_fluxes_to_ocean_flag,redirect_negative_qgwl
 
@@ -419,6 +421,8 @@ contains
     call mpi_bcast (rtmhist_fincl1, (max_namlen+2)*size(rtmhist_fincl1), MPI_CHARACTER, 0, mpicom_rof, ier)
     call mpi_bcast (rtmhist_fincl2, (max_namlen+2)*size(rtmhist_fincl2), MPI_CHARACTER, 0, mpicom_rof, ier)
     call mpi_bcast (rtmhist_fincl3, (max_namlen+2)*size(rtmhist_fincl3), MPI_CHARACTER, 0, mpicom_rof, ier)
+
+    call mpi_bcast (rtmhist_horiz_remap_file, 256*size(rtmhist_horiz_remap_file), MPI_CHARACTER, 0, mpicom_rof, ier)
 
     call mpi_bcast (rtmhist_avgflag_pertape, size(rtmhist_avgflag_pertape), MPI_CHARACTER, 0, mpicom_rof, ier)
     call mpi_bcast (redirect_negative_qgwl_flag, 1, MPI_LOGICAL, 0, mpicom_rof, ier) 
