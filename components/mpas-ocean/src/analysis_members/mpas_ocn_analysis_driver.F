@@ -55,6 +55,8 @@ module ocn_analysis_driver
    use ocn_sediment_transport
    use ocn_harmonic_analysis
    use ocn_conservation_check
+   use ocn_ace_derived_fields
+   use ocn_ace_depth_coarsening
 !   use ocn_TEM_PLATE
 
    implicit none
@@ -1244,6 +1246,10 @@ contains
         call ocn_init_harmonic_analysis(domain, err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'conservationCheck' ) then
          call ocn_init_conservation_check(domain, err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'aceDerivedFields' ) then
+         call ocn_init_ace_derived_fields(domain, err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'aceDepthCoarsening' ) then
+         call ocn_init_ace_depth_coarsening(domain, err_tmp)
 !     else if ( analysisMemberName(1:nameLength) == 'temPlate' ) then
 !        call ocn_init_TEM_PLATE(domain, err_tmp)
       ! rpn is third to last
@@ -1379,6 +1385,10 @@ contains
          call ocn_compute_harmonic_analysis(domain, timeLevel, err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'conservationCheck' ) then
          call ocn_compute_conservation_check(domain, timeLevel, err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'aceDerivedFields' ) then
+         call ocn_compute_ace_derived_fields(domain, timeLevel, err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'aceDepthCoarsening' ) then
+         call ocn_compute_ace_depth_coarsening(domain, timeLevel, err_tmp)
 !     else if ( analysisMemberName(1:nameLength) == 'temPlate' ) then
 !        call ocn_compute_TEM_PLATE(domain, timeLevel, err_tmp)
       ! rpn is third to last
@@ -1488,6 +1498,10 @@ contains
         call ocn_restart_harmonic_analysis(domain, err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'conservationCheck' ) then
          call ocn_restart_conservation_check(domain, err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'aceDerivedFields' ) then
+         call ocn_restart_ace_derived_fields(domain, err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'aceDepthCoarsening' ) then
+         call ocn_restart_ace_depth_coarsening(domain, err_tmp)
 !     else if ( analysisMemberName(1:nameLength) == 'temPlate' ) then
 !        call ocn_restart_TEM_PLATE(domain, err_tmp)
       ! rpn is third to last
@@ -1591,6 +1605,10 @@ contains
          call ocn_finalize_harmonic_analysis(domain, err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'conservationCheck' ) then
          call ocn_finalize_conservation_check(domain, err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'aceDerivedFields' ) then
+         call ocn_finalize_ace_derived_fields(domain, err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'aceDepthCoarsening' ) then
+         call ocn_finalize_ace_depth_coarsening(domain, err_tmp)
 !     else if ( analysisMemberName(1:nameLength) == 'temPlate' ) then
 !        call ocn_finalize_TEM_PLATE(domain, err_tmp)
       ! rpn is third to last
