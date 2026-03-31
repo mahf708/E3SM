@@ -1020,7 +1020,7 @@ subroutine phys_init( phys_state, phys_tend, pbuf2d, cam_out )
     ! Initialize Transformed Eularian Mean (TEM) diagnostics
     call phys_grid_ctem_init()
 
-    
+
    !BSINGH -  addfld and adddefault calls for perturb growth testing    
     if(pergro_test_active)call add_fld_default_calls()
 
