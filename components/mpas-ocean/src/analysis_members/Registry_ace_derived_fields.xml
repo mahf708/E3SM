@@ -50,5 +50,13 @@
 			<var name="sst"/>
 			<var name="sss"/>
 			<var name="ssh"/>
+			<var name="windStressZonal"/>
+			<var name="windStressMeridional"/>
+			<var name="latentHeatFlux"/>
+			<var name="sensibleHeatFlux"/>
+			<var name="shortWaveHeatFlux"/>
+			<var name="longWaveHeatFluxUp"/>
+			<var name="longWaveHeatFluxDown"/>
+			<var name="surfaceThicknessFlux"/>
 		</stream>
 	</streams>

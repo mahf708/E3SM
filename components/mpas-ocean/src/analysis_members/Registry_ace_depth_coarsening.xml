@@ -1,6 +1,6 @@
 	<dims>
-		<dim name="nAceDepthLevels" definition="10"
-			 description="Fixed maximum number of coarsened depth levels for ACE depth coarsening analysis member."
+		<dim name="nAceDepthLevels" definition="25"
+			 description="Fixed maximum number of coarsened depth levels for ACE/Samudra depth coarsening. Samudra uses 19 levels; set to 25 to allow headroom."
 		/>
 	</dims>
 	<nml_record name="AM_aceDepthCoarsening" mode="forward;analysis">
