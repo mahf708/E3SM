@@ -2331,4 +2331,48 @@ Use polygonal tundra parameterizations for ice wedge polygon microtopography and
 <default>Default: .false.</default>
 </entry>
 
+<!-- Vertical coarsening configuration -->
+
+<entry id="elm_vcoarsen_zbounds" type="real(51)" category="elm_physics"
+       group="elm_vcoarsen_nl" valid_values="" >
+Depth boundaries (m) for soil vertical coarsening layers, from surface to bottom.
+Defines n-1 coarsened layers from n boundary values. Unused entries should be -1.
+Default: -1.0 (inactive)
+</entry>
+
+<entry id="elm_vcoarsen_avg_flds" type="char*64(100)" category="elm_physics"
+       group="elm_vcoarsen_nl" valid_values="" >
+Soil field names to average onto coarsened depth layers.
+Use 'all' to apply to TSOI, H2OSOI, SOILICE.
+Default: none
+</entry>
+
+<entry id="elm_vcoarsen_select_levs" type="integer(50)" category="elm_physics"
+       group="elm_vcoarsen_nl" valid_values="" >
+Soil level indices for level-index selection.
+Output fields named BASE_at_L{index}. Unused entries should be -1.
+Default: -1 (inactive)
+</entry>
+
+<entry id="elm_vcoarsen_select_lev_flds" type="char*64(100)" category="elm_physics"
+       group="elm_vcoarsen_nl" valid_values="" >
+Soil field names for level-index selection.
+Use 'all' to apply to TSOI, H2OSOI, SOILICE.
+Default: none
+</entry>
+
+<entry id="elm_vcoarsen_select_depths" type="real(50)" category="elm_physics"
+       group="elm_vcoarsen_nl" valid_values="" >
+Depth values (m) for nearest-soil-level selection.
+Output fields named BASE_at_D{value}. Unused entries should be -1.
+Default: -1.0 (inactive)
+</entry>
+
+<entry id="elm_vcoarsen_select_depth_flds" type="char*64(100)" category="elm_physics"
+       group="elm_vcoarsen_nl" valid_values="" >
+Soil field names for nearest-depth selection.
+Use 'all' to apply to TSOI, H2OSOI, SOILICE.
+Default: none
+</entry>
+
 </namelist_definition>

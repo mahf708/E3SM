@@ -36,6 +36,7 @@ module seaice_analysis_driver
    use seaice_pointwise_stats
    use seaice_unit_conversion
    use seaice_ice_shelves
+   use seaice_vcoarsen
 !   use seaice_TEM_PLATE
 
    implicit none
@@ -1104,6 +1105,8 @@ contains
          call seaice_bootstrap_unit_conversion(domain, '', err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'iceShelves' ) then
          call seaice_bootstrap_ice_shelves(domain, '', err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'seaiceVcoarsen' ) then
+         call seaice_bootstrap_vcoarsen(domain, '', err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'icePresent' ) then
          call seaice_bootstrap_ice_present(domain, '', err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'timeSeriesStatsDaily' ) then
@@ -1176,6 +1179,8 @@ contains
          call seaice_init_unit_conversion(domain, '', err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'iceShelves' ) then
          call seaice_init_ice_shelves(domain, '', err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'seaiceVcoarsen' ) then
+         call seaice_init_vcoarsen(domain, '', err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'icePresent' ) then
          call seaice_init_ice_present(domain, '', err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'timeSeriesStatsDaily' ) then
@@ -1251,6 +1256,8 @@ contains
          call seaice_precompute_unit_conversion(domain, '', timeLevel, err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'iceShelves' ) then
          call seaice_precompute_ice_shelves(domain, '', timeLevel, err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'seaiceVcoarsen' ) then
+         call seaice_precompute_vcoarsen(domain, '', timeLevel, err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'icePresent' ) then
          call seaice_precompute_ice_present(domain, '', timeLevel, err_tmp)
       !else if ( analysisMemberName(1:nameLength) == 'timeSeriesStatsDaily' ) then
@@ -1324,6 +1331,8 @@ contains
          call seaice_compute_unit_conversion(domain, '', timeLevel, err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'iceShelves' ) then
          call seaice_compute_ice_shelves(domain, '', timeLevel, err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'seaiceVcoarsen' ) then
+         call seaice_compute_vcoarsen(domain, '', timeLevel, err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'icePresent' ) then
          call seaice_compute_ice_present(domain, '', timeLevel, err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'timeSeriesStatsDaily' ) then
@@ -1396,6 +1405,8 @@ contains
          call seaice_restart_unit_conversion(domain, '', err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'iceShelves' ) then
          call seaice_restart_ice_shelves(domain, '', err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'seaiceVcoarsen' ) then
+         call seaice_restart_vcoarsen(domain, '', err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'icePresent' ) then
          call seaice_restart_ice_present(domain, '', err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'timeSeriesStatsDaily' ) then
@@ -1468,6 +1479,8 @@ contains
          call seaice_finalize_unit_conversion(domain, '', err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'iceShelves' ) then
          call seaice_finalize_ice_shelves(domain, '', err_tmp)
+      else if ( analysisMemberName(1:nameLength) == 'seaiceVcoarsen' ) then
+         call seaice_finalize_vcoarsen(domain, '', err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'icePresent' ) then
          call seaice_finalize_ice_present(domain, '', err_tmp)
       else if ( analysisMemberName(1:nameLength) == 'timeSeriesStatsDaily' ) then

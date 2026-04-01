@@ -1,0 +1,57 @@
+	<nml_record name="AM_seaiceVcoarsen">
+		<nml_option name="config_AM_seaiceVcoarsen_enable" type="logical" default_value=".false."
+			description="If true, sea ice analysis member seaiceVcoarsen is called."
+			possible_values="true or false"
+		/>
+		<nml_option name="config_AM_seaiceVcoarsen_compute_interval" type="character" default_value="output_interval"
+			description="Timestamp determining how often analysis member computation should be performed."
+			possible_values="Any valid time stamp, 'dt', or 'output_interval'"
+		/>
+		<nml_option name="config_AM_seaiceVcoarsen_output_stream" type="character" default_value="seaiceVcoarsenOutput"
+			description="Name of the stream that the seaiceVcoarsen analysis member should be tied to."
+			possible_values="Any existing stream name or 'none'"
+		/>
+		<nml_option name="config_AM_seaiceVcoarsen_compute_on_startup" type="logical" default_value=".true."
+			description="Logical flag determining if an analysis member computation occurs on start-up."
+			possible_values="true or false"
+		/>
+		<nml_option name="config_AM_seaiceVcoarsen_write_on_startup" type="logical" default_value=".true."
+			description="Logical flag determining if an analysis member write occurs on start-up."
+			possible_values="true or false"
+		/>
+	</nml_record>
+	<packages>
+		<package name="seaiceVcoarsenAMPKG" description="This package includes variables required for the seaiceVcoarsen analysis member."/>
+	</packages>
+	<var_struct name="seaiceVcoarsenAM" time_levs="1" packages="seaiceVcoarsenAMPKG">
+		<var name="iceAreaTotal" type="real" dimensions="nCells Time" units="unitless"
+			description="Total ice area fraction (sum over categories)"
+		/>
+		<var name="iceVolumeTotal" type="real" dimensions="nCells Time" units="m"
+			description="Total ice volume per unit area (sum over categories)"
+		/>
+		<var name="snowVolumeTotal" type="real" dimensions="nCells Time" units="m"
+			description="Total snow volume per unit area (sum over categories)"
+		/>
+		<var name="iceThicknessMean" type="real" dimensions="nCells Time" units="m"
+			description="Mean ice thickness (total volume / total area)"
+		/>
+		<var name="surfaceTemperatureMean" type="real" dimensions="nCells Time" units="K"
+			description="Area-weighted mean surface temperature across categories"
+		/>
+	</var_struct>
+	<streams>
+		<stream name="seaiceVcoarsenOutput" type="output"
+			filename_template="analysis_members/seaiceVcoarsen.$Y-$M-$D_$h.$m.$s.nc"
+			output_interval="0000-00-00_01:00:00"
+			filename_interval="01-00-00_00:00:00"
+			packages="seaiceVcoarsenAMPKG"
+			clobber_mode="truncate"
+			runtime_format="single_file">
+			<var name="iceAreaTotal"/>
+			<var name="iceVolumeTotal"/>
+			<var name="snowVolumeTotal"/>
+			<var name="iceThicknessMean"/>
+			<var name="surfaceTemperatureMean"/>
+		</stream>
+	</streams>

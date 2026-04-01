@@ -1,0 +1,78 @@
+	<dims>
+		<dim name="nVcoarsenLevels" definition="25"
+			description="Maximum number of vertically coarsened depth levels"
+		/>
+	</dims>
+	<nml_record name="AM_vcoarsen">
+		<nml_option name="config_AM_vcoarsen_enable" type="logical" default_value=".false."
+			description="If true, ocean analysis member vcoarsen is called."
+			possible_values="true or false"
+		/>
+		<nml_option name="config_AM_vcoarsen_compute_interval" type="character" default_value="output_interval"
+			description="Timestamp determining how often analysis member computation should be performed."
+			possible_values="Any valid time stamp, 'dt', or 'output_interval'"
+		/>
+		<nml_option name="config_AM_vcoarsen_output_stream" type="character" default_value="vcoarsenOutput"
+			description="Name of the stream that the vcoarsen analysis member should be tied to."
+			possible_values="Any existing stream name or 'none'"
+		/>
+		<nml_option name="config_AM_vcoarsen_compute_on_startup" type="logical" default_value=".true."
+			description="Logical flag determining if an analysis member computation occurs on start-up."
+			possible_values="true or false"
+		/>
+		<nml_option name="config_AM_vcoarsen_write_on_startup" type="logical" default_value=".true."
+			description="Logical flag determining if an analysis member write occurs on start-up."
+			possible_values="true or false"
+		/>
+		<nml_option name="config_AM_vcoarsen_depth_bounds" type="character" default_value="none"
+			description="Comma-separated depth boundaries (m) defining coarsened layers."
+			possible_values="Comma-separated real values or 'none'"
+		/>
+		<nml_option name="config_AM_vcoarsen_fields" type="character" default_value="none"
+			description="Comma-separated field names to vertically coarsen."
+			possible_values="Comma-separated field names or 'none'"
+		/>
+		<nml_option name="config_AM_vcoarsen_select_levels" type="character" default_value="none"
+			description="Comma-separated level indices for level selection."
+			possible_values="Comma-separated integers or 'none'"
+		/>
+		<nml_option name="config_AM_vcoarsen_select_depths" type="character" default_value="none"
+			description="Comma-separated depth values (m) for nearest-depth selection."
+			possible_values="Comma-separated real values or 'none'"
+		/>
+	</nml_record>
+	<packages>
+		<package name="vcoarsenAMPKG" description="This package includes variables required for the vcoarsen analysis member."/>
+	</packages>
+	<var_struct name="vcoarsenAM" time_levs="1" packages="vcoarsenAMPKG">
+		<var name="temperatureCoarsened" type="real" dimensions="nVcoarsenLevels nCells Time" units="deg C"
+			description="Vertically coarsened potential temperature"
+		/>
+		<var name="salinityCoarsened" type="real" dimensions="nVcoarsenLevels nCells Time" units="PSU"
+			description="Vertically coarsened salinity"
+		/>
+		<var name="velocityZonalCoarsened" type="real" dimensions="nVcoarsenLevels nCells Time" units="m s^{-1}"
+			description="Vertically coarsened zonal velocity"
+		/>
+		<var name="velocityMeridionalCoarsened" type="real" dimensions="nVcoarsenLevels nCells Time" units="m s^{-1}"
+			description="Vertically coarsened meridional velocity"
+		/>
+		<var name="layerThicknessCoarsened" type="real" dimensions="nVcoarsenLevels nCells Time" units="m"
+			description="Vertically coarsened layer thickness (sum of overlap)"
+		/>
+	</var_struct>
+	<streams>
+		<stream name="vcoarsenOutput" type="output"
+			filename_template="analysis_members/vcoarsen.$Y-$M-$D_$h.$m.$s.nc"
+			output_interval="0000-00-00_01:00:00"
+			filename_interval="01-00-00_00:00:00"
+			packages="vcoarsenAMPKG"
+			clobber_mode="truncate"
+			runtime_format="single_file">
+			<var name="temperatureCoarsened"/>
+			<var name="salinityCoarsened"/>
+			<var name="velocityZonalCoarsened"/>
+			<var name="velocityMeridionalCoarsened"/>
+			<var name="layerThicknessCoarsened"/>
+		</stream>
+	</streams>

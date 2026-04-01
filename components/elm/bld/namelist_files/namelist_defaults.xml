@@ -2294,4 +2294,12 @@ this mask will have smb calculated over the entire global land surface
 <use_polygonal_tundra>.false.</use_polygonal_tundra>;
 <use_arctic_init>.false.</use_arctic_init>;
 
+<!-- Vertical coarsening defaults (inactive by default) -->
+<elm_vcoarsen_zbounds>-1.0</elm_vcoarsen_zbounds>
+<elm_vcoarsen_avg_flds></elm_vcoarsen_avg_flds>
+<elm_vcoarsen_select_levs>-1</elm_vcoarsen_select_levs>
+<elm_vcoarsen_select_lev_flds></elm_vcoarsen_select_lev_flds>
+<elm_vcoarsen_select_depths>-1.0</elm_vcoarsen_select_depths>
+<elm_vcoarsen_select_depth_flds></elm_vcoarsen_select_depth_flds>
+
 </namelist_defaults>

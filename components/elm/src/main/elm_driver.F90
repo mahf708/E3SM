@@ -36,6 +36,7 @@ module elm_driver
   !
   use CanopyTemperatureMod   , only : CanopyTemperature ! (formerly Biogeophysics1Mod)
   use SoilTemperatureMod     , only : SoilTemperature
+  use elm_vcoarsen           , only : elm_vcoarsen_update
   use LakeTemperatureMod     , only : LakeTemperature
   !
   use BareGroundFluxesMod    , only : BareGroundFluxes
@@ -875,6 +876,7 @@ contains
             solarabs_vars, soilstate_vars, energyflux_vars )
        call t_stopf('soiltemperature')
 
+       call elm_vcoarsen_update(bounds_clump, col_es, col_ws)
 
        if(use_betr)then
          call ep_betr%BeTRSetBiophysForcing(bounds_clump, col_pp, veg_pp, 1, nlevsoi, waterstate_vars=col_ws)

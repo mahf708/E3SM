@@ -35,6 +35,7 @@ module controlMod
   use SharedParamsMod         , only: anoxia_wtsat
   use CanopyStateType         , only: perchroot, perchroot_alt
   use CanopyHydrologyMod      , only: CanopyHydrology_readnl
+  use elm_vcoarsen            , only: elm_vcoarsen_readnl
   use SurfaceAlbedoType       , only: albice, lake_melt_icealb
   use UrbanParamsType         , only: urban_hac, urban_traffic
   use FrictionVelocityMod     , only: implicit_stress, atm_gustiness, force_land_gustiness
@@ -654,6 +655,8 @@ contains
     if (use_betr) then
        call betr_readNL( NLFilename, use_c13, use_c14, nsoilorder)
     endif
+
+    call elm_vcoarsen_readnl(NLFilename)
 
     ! ----------------------------------------------------------------------
     ! consistency checks
