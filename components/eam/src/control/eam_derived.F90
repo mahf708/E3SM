@@ -10,6 +10,9 @@ module eam_derived
   ! Provides two capabilities:
   !   1. Derived fields: user-defined expressions combining state variables,
   !      constituents, physics buffer fields, and numeric constants.
+  !      Supports both 2D (horizontal-only) and 3D (horizontal+vertical) fields.
+  !      If all field operands are 2D, the result is 2D. If any operand is 3D,
+  !      the result is 3D (2D operands are broadcast across all levels).
   !   2. Automatic tendencies: cache previous timestep values and output
   !      time derivatives for any field (state, constituent, pbuf, or derived).
   !
@@ -22,9 +25,9 @@ module eam_derived
   !   where op is +, -, *, / and each operand is a field name or numeric constant.
   !   Evaluation is strict left-to-right (no operator precedence).
   !   Examples:
-  !     TOTAL_WATER=Q+CLDICE+CLDLIQ+QRAIN
-  !     HGTsfc=PHIS/9.80616
-  !     TOTAL_WATER_g=TOTAL_WATER*1000.0  (chaining: uses earlier derived field)
+  !     TOTAL_WATER=Q+CLDICE+CLDLIQ+QRAIN   (3D: sum of constituents)
+  !     HGTsfc=PHIS/9.80616                   (2D: surface geopotential / constant)
+  !     TOTAL_WATER_g=TOTAL_WATER*1000.0       (chaining: uses earlier derived field)
   !
   ! Chaining: definitions are processed in order; earlier derived fields are
   ! cached and available as inputs to later definitions.
@@ -33,8 +36,8 @@ module eam_derived
   ! each physics timestep. The first timestep stores the initial value and outputs zero.
   !
   ! Usage from physpkg.F90:
-  !   call eam_derived_readnl(nlfile)     ! during namelist reading
-  !   call eam_derived_register()         ! during phys_init / phys_register
+  !   call eam_derived_readnl(nlfile)        ! during namelist reading
+  !   call eam_derived_register()            ! during phys_init / phys_register
   !   call eam_derived_write(state, pbuf2d)  ! during physics timestep
   !
   !-------------------------------------------------------------------------------------------
@@ -42,7 +45,7 @@ module eam_derived
   use shr_kind_mod,    only: r8 => shr_kind_r8
   use shr_derived_mod, only: shr_derived_expr_t, shr_derived_operand_t, &
                               shr_derived_parse, shr_derived_eval, &
-                              shr_derived_is_number, &
+                              shr_derived_tend, shr_derived_is_number, &
                               shr_derived_max_operands, shr_derived_max_namelen, &
                               shr_derived_max_deflen
   use ppgrid,          only: pcols, pver, pverp, begchunk, endchunk
@@ -65,9 +68,14 @@ module eam_derived
   integer, parameter :: max_def_len      = shr_derived_max_deflen
 
   ! Known 3D state variable names
-  integer, parameter :: n_known_state = 6
-  character(len=max_name_len), parameter :: known_state_vars(n_known_state) = &
+  integer, parameter :: n_known_3d_state = 6
+  character(len=max_name_len), parameter :: known_3d_state_vars(n_known_3d_state) = &
        (/ 'T     ', 'U     ', 'V     ', 'OMEGA ', 'Z3    ', 'Q     ' /)
+
+  ! Known 2D state variable names
+  integer, parameter :: n_known_2d_state = 2
+  character(len=max_name_len), parameter :: known_2d_state_vars(n_known_2d_state) = &
+       (/ 'PS   ', 'PHIS ' /)
 
   ! Namelist variables
   character(len=max_def_len)  :: derived_fld_defs(max_derived_flds)
@@ -76,11 +84,14 @@ module eam_derived
   ! Parsed state
   integer :: n_derived = 0
   type(shr_derived_expr_t) :: expressions(max_derived_flds)
+  logical :: expr_is_2d(max_derived_flds) = .false.  ! true if result is 2D (horiz_only)
 
   integer :: n_tend = 0
   character(len=max_name_len) :: tend_names(max_tend_flds)
+  logical :: tend_is_2d(max_tend_flds) = .false.     ! true if tendency source is 2D
 
   ! Derived field cache for chaining (allocated during register)
+  ! For 2D fields, only level 1 is used.
   real(r8), allocatable :: derived_cache(:,:,:,:)   ! (pcols, pver, n_derived, begchunk:endchunk)
 
   ! Tendency tracking (allocated during register)
@@ -178,40 +189,59 @@ contains
     !--------------------------------------------------------------------------
     ! Register derived output fields and tendency fields with the history
     ! system. Must be called during phys_register, after other addfld calls.
+    !
+    ! Determines 2D vs 3D dimensionality for each expression:
+    !   - If ALL field operands are 2D -> result is 2D (horiz_only)
+    !   - If ANY field operand is 3D  -> result is 3D (on 'lev')
     !--------------------------------------------------------------------------
-    use cam_history, only: addfld
+    use cam_history, only: addfld, horiz_only
 
-    integer :: i, n
+    integer :: i, n, ndims
     character(len=max_name_len) :: fname
     character(len=max_def_len)  :: lname
+    logical :: all_2d
 
     if (.not. has_derived .and. .not. has_tend) return
 
-    ! Validate and register derived fields
+    ! Validate and register derived fields, determine dimensionality
     do i = 1, n_derived
-      ! Validate each operand
+      all_2d = .true.
+
       do n = 1, expressions(i)%n_operands
         if (.not. expressions(i)%operands(n)%is_constant) then
           call validate_field_name(expressions(i)%operands(n)%field_name, i)
+          ndims = get_field_ndims(expressions(i)%operands(n)%field_name, i)
+          if (ndims > 1) all_2d = .false.
         end if
       end do
 
-      ! Register as 3D field on 'lev'
-      call addfld(trim(expressions(i)%output_name), (/ 'lev' /), 'A', &
-           'derived', trim(expressions(i)%long_name))
+      expr_is_2d(i) = all_2d
+
+      if (all_2d) then
+        call addfld(trim(expressions(i)%output_name), horiz_only, 'A', &
+             'derived', trim(expressions(i)%long_name))
+      else
+        call addfld(trim(expressions(i)%output_name), (/ 'lev' /), 'A', &
+             'derived', trim(expressions(i)%long_name))
+      end if
     end do
 
     ! Validate and register tendency fields
     do i = 1, n_tend
       call validate_tend_field(tend_names(i))
+      tend_is_2d(i) = is_field_2d(tend_names(i))
 
-      ! Register tendency as 3D field: d{NAME}_dt
       fname = 'd' // trim(tend_names(i)) // '_dt'
       lname = 'd(' // trim(tend_names(i)) // ')/dt'
-      call addfld(trim(fname), (/ 'lev' /), 'A', '/s', trim(lname))
+      if (tend_is_2d(i)) then
+        call addfld(trim(fname), horiz_only, 'A', '/s', trim(lname))
+      else
+        call addfld(trim(fname), (/ 'lev' /), 'A', '/s', trim(lname))
+      end if
     end do
 
     ! Allocate derived field cache for chaining
+    ! For 2D fields, only (:,1,:,:) is used, but allocating uniform shape is simpler
     if (has_derived) then
       allocate(derived_cache(pcols, pver, n_derived, begchunk:endchunk))
       derived_cache(:,:,:,:) = 0.0_r8
@@ -228,6 +258,13 @@ contains
 
     if (masterproc) then
       write(iulog,*) 'eam_derived_register: registration complete'
+      do i = 1, n_derived
+        if (expr_is_2d(i)) then
+          write(iulog,*) '  ', trim(expressions(i)%output_name), ' (2D)'
+        else
+          write(iulog,*) '  ', trim(expressions(i)%output_name), ' (3D)'
+        end if
+      end do
     end if
 
   end subroutine eam_derived_register
@@ -250,31 +287,38 @@ contains
     real(r8) :: result(pcols, pver)
     real(r8) :: curr_field(pcols, pver)
     real(r8) :: tend_field(pcols, pver)
-    integer  :: i, n, ncol, lchnk, dt
+    integer  :: i, n, ncol, lchnk, nlev
+    real(r8) :: dt
     character(len=max_name_len) :: fname
 
     if (.not. has_derived .and. .not. has_tend) return
 
     ncol  = state%ncol
     lchnk = state%lchnk
-    dt    = get_step_size()
+    dt    = real(get_step_size(), r8)
 
     ! --- Step 1: Compute derived fields in definition order (enables chaining) ---
     do i = 1, n_derived
+      if (expr_is_2d(i)) then
+        nlev = 1
+      else
+        nlev = pver
+      end if
+
       ! Load field data for each operand
       do n = 1, expressions(i)%n_operands
         if (.not. expressions(i)%operands(n)%is_constant) then
           call get_field_or_derived(state, pbuf2d, &
                expressions(i)%operands(n)%field_name, &
-               tmp_fields(:,:,n), ncol, lchnk)
+               tmp_fields(:,:,n), ncol, lchnk, nlev)
         end if
       end do
 
       ! Evaluate expression
-      call shr_derived_eval(expressions(i), tmp_fields, ncol, pver, pcols, result)
+      call shr_derived_eval(expressions(i), tmp_fields, ncol, nlev, pcols, result)
 
       ! Cache result for chaining and tendencies
-      derived_cache(1:ncol, :, i, lchnk) = result(1:ncol, :)
+      derived_cache(1:ncol, 1:nlev, i, lchnk) = result(1:ncol, 1:nlev)
 
       ! Output to history
       call outfld(trim(expressions(i)%output_name), result, pcols, lchnk)
@@ -283,21 +327,21 @@ contains
     ! --- Step 2: Compute tendencies ---
     if (has_tend) then
       do i = 1, n_tend
+        if (tend_is_2d(i)) then
+          nlev = 1
+        else
+          nlev = pver
+        end if
+
         ! Load current field value
         call get_field_or_derived(state, pbuf2d, tend_names(i), &
-             curr_field, ncol, lchnk)
+             curr_field, ncol, lchnk, nlev)
 
         if (tend_initialized) then
-          ! Compute tendency: (curr - prev) / dt
-          if (dt > 0) then
-            tend_field(1:ncol, :) = (curr_field(1:ncol, :) - &
-                 tend_prev(1:ncol, :, i, lchnk)) / real(dt, r8)
-          else
-            tend_field(1:ncol, :) = 0.0_r8
-          end if
+          call shr_derived_tend(curr_field, tend_prev(:,:,i,lchnk), &
+               ncol, nlev, pcols, dt, tend_field)
         else
-          ! First timestep: output zero
-          tend_field(1:ncol, :) = 0.0_r8
+          tend_field(1:ncol, 1:nlev) = 0.0_r8
         end if
 
         ! Output tendency
@@ -305,12 +349,9 @@ contains
         call outfld(trim(fname), tend_field, pcols, lchnk)
 
         ! Store current value for next timestep
-        tend_prev(1:ncol, :, i, lchnk) = curr_field(1:ncol, :)
+        tend_prev(1:ncol, 1:nlev, i, lchnk) = curr_field(1:ncol, 1:nlev)
       end do
 
-      ! Mark as initialized after all chunks have been processed at least once.
-      ! Since this is called per-chunk, we set the flag after the first call.
-      ! All chunks will output zero on the first timestep, then real tendencies after.
       if (.not. tend_initialized) tend_initialized = .true.
     end if
 
@@ -320,10 +361,14 @@ contains
   ! Private helper routines
   !============================================================================
 
-  subroutine get_field_or_derived(state, pbuf2d, fname, field_out, ncol, lchnk)
+  subroutine get_field_or_derived(state, pbuf2d, fname, field_out, ncol, lchnk, nlev)
     !--------------------------------------------------------------------------
     ! Look up a field by name. Checks derived field cache first (for chaining),
     ! then falls back to state variables, constituents, and physics buffer.
+    !
+    ! For 3D expressions (nlev=pver): if the source field is 2D, broadcasts
+    ! it across all vertical levels.
+    ! For 2D expressions (nlev=1): returns the 2D field in field_out(:,1).
     !--------------------------------------------------------------------------
     use physics_types,  only: physics_state
     use physics_buffer, only: physics_buffer_desc
@@ -334,31 +379,44 @@ contains
     real(r8),                  intent(out) :: field_out(pcols, pver)
     integer,                   intent(in)  :: ncol
     integer,                   intent(in)  :: lchnk
+    integer,                   intent(in)  :: nlev  ! target: 1 for 2D, pver for 3D
 
-    integer :: i
+    integer :: i, k
 
-    ! Check derived field cache (earlier definitions only)
+    field_out(:,:) = 0.0_r8
+
+    ! Check derived field cache first (for chaining)
     do i = 1, n_derived
       if (trim(fname) == trim(expressions(i)%output_name)) then
-        field_out(1:ncol, :) = derived_cache(1:ncol, :, i, lchnk)
+        if (expr_is_2d(i) .and. nlev > 1) then
+          ! Source is 2D, target is 3D: broadcast across levels
+          do k = 1, nlev
+            field_out(1:ncol, k) = derived_cache(1:ncol, 1, i, lchnk)
+          end do
+        else
+          field_out(1:ncol, 1:nlev) = derived_cache(1:ncol, 1:nlev, i, lchnk)
+        end if
         return
       end if
     end do
 
     ! Fall back to state/constituent/pbuf lookup
-    call get_field(state, pbuf2d, fname, field_out, ncol)
+    call get_field(state, pbuf2d, fname, field_out, ncol, nlev)
 
   end subroutine get_field_or_derived
 
   !============================================================================
-  subroutine get_field(state, pbuf2d, fname, field_out, ncol)
+  subroutine get_field(state, pbuf2d, fname, field_out, ncol, nlev)
     !--------------------------------------------------------------------------
-    ! Look up a field name and extract the corresponding 2D slice.
-    ! Supports state variables, constituents, and physics buffer fields.
+    ! Look up a field name and extract field data.
+    ! Supports 2D and 3D state variables, constituents, and physics buffer fields.
+    !
+    ! For 3D target (nlev=pver): if source is 2D, broadcasts across levels.
+    ! For 2D target (nlev=1): returns the 2D value in field_out(:,1).
     !--------------------------------------------------------------------------
     use physics_types,  only: physics_state
     use physics_buffer, only: physics_buffer_desc, pbuf_get_index, pbuf_get_field, &
-                              pbuf_get_chunk
+                              pbuf_get_chunk, pbuf_get_field_ndims
     use constituents,   only: cnst_get_ind
 
     type(physics_state),       intent(in)  :: state
@@ -366,58 +424,222 @@ contains
     character(len=*),          intent(in)  :: fname
     real(r8),                  intent(out) :: field_out(pcols, pver)
     integer,                   intent(in)  :: ncol
+    integer,                   intent(in)  :: nlev  ! target: 1 for 2D, pver for 3D
 
-    integer :: idx, pbuf_idx, errcode
+    integer :: idx, pbuf_idx, errcode, k, pbuf_ndims
     character(len=max_name_len) :: uname
-    real(r8), pointer :: pbuf_fld(:,:)
+    real(r8), pointer :: pbuf_fld_3d(:,:)
+    real(r8), pointer :: pbuf_fld_2d(:)
     type(physics_buffer_desc), pointer :: pbuf_chunk(:)
 
     uname = adjustl(fname)
     field_out(:,:) = 0.0_r8
 
-    ! Check standard state variables first
+    ! Check 3D state variables
     select case (trim(uname))
     case ('T')
-      field_out(1:ncol, :) = state%t(1:ncol, :)
+      field_out(1:ncol, 1:nlev) = state%t(1:ncol, 1:nlev)
       return
     case ('U')
-      field_out(1:ncol, :) = state%u(1:ncol, :)
+      field_out(1:ncol, 1:nlev) = state%u(1:ncol, 1:nlev)
       return
     case ('V')
-      field_out(1:ncol, :) = state%v(1:ncol, :)
+      field_out(1:ncol, 1:nlev) = state%v(1:ncol, 1:nlev)
       return
     case ('OMEGA')
-      field_out(1:ncol, :) = state%omega(1:ncol, :)
+      field_out(1:ncol, 1:nlev) = state%omega(1:ncol, 1:nlev)
       return
     case ('Z3')
-      field_out(1:ncol, :) = state%zm(1:ncol, :)
+      field_out(1:ncol, 1:nlev) = state%zm(1:ncol, 1:nlev)
       return
     case ('Q')
-      field_out(1:ncol, :) = state%q(1:ncol, :, 1)
+      field_out(1:ncol, 1:nlev) = state%q(1:ncol, 1:nlev, 1)
       return
     end select
 
-    ! Try constituent lookup
+    ! Check 2D state variables
+    select case (trim(uname))
+    case ('PS')
+      if (nlev == 1) then
+        field_out(1:ncol, 1) = state%ps(1:ncol)
+      else
+        do k = 1, nlev
+          field_out(1:ncol, k) = state%ps(1:ncol)
+        end do
+      end if
+      return
+    case ('PHIS')
+      if (nlev == 1) then
+        field_out(1:ncol, 1) = state%phis(1:ncol)
+      else
+        do k = 1, nlev
+          field_out(1:ncol, k) = state%phis(1:ncol)
+        end do
+      end if
+      return
+    end select
+
+    ! Try constituent lookup (always 3D)
     call cnst_get_ind(trim(uname), idx, abrtf=.false.)
     if (idx > 0) then
-      field_out(1:ncol, :) = state%q(1:ncol, :, idx)
+      field_out(1:ncol, 1:nlev) = state%q(1:ncol, 1:nlev, idx)
       return
     end if
 
-    ! Try physics buffer lookup
+    ! Try physics buffer lookup (2D or 3D)
     errcode = -1
     pbuf_idx = pbuf_get_index(trim(uname), errcode)
     if (errcode == 0 .and. pbuf_idx > 0) then
       pbuf_chunk => pbuf_get_chunk(pbuf2d, state%lchnk)
-      call pbuf_get_field(pbuf_chunk, pbuf_idx, pbuf_fld)
-      field_out(1:ncol, :) = pbuf_fld(1:ncol, :)
+      pbuf_ndims = pbuf_get_field_ndims(pbuf_idx)
+
+      if (pbuf_ndims == 1) then
+        ! 2D pbuf field (horizontal only)
+        call pbuf_get_field(pbuf_chunk, pbuf_idx, pbuf_fld_2d)
+        if (nlev == 1) then
+          field_out(1:ncol, 1) = pbuf_fld_2d(1:ncol)
+        else
+          ! Broadcast across levels
+          do k = 1, nlev
+            field_out(1:ncol, k) = pbuf_fld_2d(1:ncol)
+          end do
+        end if
+      else
+        ! 3D pbuf field (horizontal + vertical)
+        call pbuf_get_field(pbuf_chunk, pbuf_idx, pbuf_fld_3d)
+        field_out(1:ncol, 1:nlev) = pbuf_fld_3d(1:ncol, 1:nlev)
+      end if
       return
     end if
 
     call endrun('eam_derived: get_field: unknown field "'//trim(uname)// &
-         '". Must be a state variable (T,U,V,OMEGA,Z3,Q), constituent, or physics buffer field.')
+         '". Must be a state variable (T,U,V,OMEGA,Z3,Q,PS,PHIS), '// &
+         'constituent, or physics buffer field.')
 
   end subroutine get_field
+
+  !============================================================================
+  function get_field_ndims(fname, def_index) result(ndims)
+    !--------------------------------------------------------------------------
+    ! Return the number of spatial dimensions for a field:
+    !   1 = horizontal only (2D: PS, PHIS, 1D pbuf fields)
+    !   2 = horizontal + vertical (3D: T, U, V, Q, constituents, 2D+ pbuf fields)
+    ! For derived fields, returns 1 if expr_is_2d, else 2.
+    !--------------------------------------------------------------------------
+    use constituents,   only: cnst_get_ind
+    use physics_buffer, only: pbuf_get_index, pbuf_get_field_ndims
+
+    character(len=*), intent(in) :: fname
+    integer,          intent(in) :: def_index  ! current definition index (for chaining)
+    integer :: ndims
+
+    integer :: k, idx, errcode
+    character(len=max_name_len) :: uname
+
+    uname = adjustl(fname)
+
+    ! Check 3D state variables
+    do k = 1, n_known_3d_state
+      if (trim(uname) == trim(known_3d_state_vars(k))) then
+        ndims = 2
+        return
+      end if
+    end do
+
+    ! Check 2D state variables
+    do k = 1, n_known_2d_state
+      if (trim(uname) == trim(known_2d_state_vars(k))) then
+        ndims = 1
+        return
+      end if
+    end do
+
+    ! Check previously defined derived fields
+    do k = 1, def_index - 1
+      if (trim(uname) == trim(expressions(k)%output_name)) then
+        if (expr_is_2d(k)) then
+          ndims = 1
+        else
+          ndims = 2
+        end if
+        return
+      end if
+    end do
+
+    ! Constituents are always 3D
+    call cnst_get_ind(trim(uname), idx, abrtf=.false.)
+    if (idx > 0) then
+      ndims = 2
+      return
+    end if
+
+    ! Physics buffer: query dimension count
+    errcode = -1
+    idx = pbuf_get_index(trim(uname), errcode)
+    if (errcode == 0 .and. idx > 0) then
+      ndims = pbuf_get_field_ndims(idx)
+      return
+    end if
+
+    ! Unknown field - will be caught by validate_field_name
+    ndims = 2
+
+  end function get_field_ndims
+
+  !============================================================================
+  function is_field_2d(fname) result(is_2d)
+    !--------------------------------------------------------------------------
+    ! Check if a field is 2D (horizontal only).
+    ! Used for tendency field dimensionality determination.
+    !--------------------------------------------------------------------------
+    use constituents,   only: cnst_get_ind
+    use physics_buffer, only: pbuf_get_index, pbuf_get_field_ndims
+
+    character(len=*), intent(in) :: fname
+    logical :: is_2d
+
+    integer :: k, idx, errcode
+    character(len=max_name_len) :: uname
+
+    uname = adjustl(fname)
+    is_2d = .false.
+
+    ! Check 2D state variables
+    do k = 1, n_known_2d_state
+      if (trim(uname) == trim(known_2d_state_vars(k))) then
+        is_2d = .true.
+        return
+      end if
+    end do
+
+    ! Check 3D state variables
+    do k = 1, n_known_3d_state
+      if (trim(uname) == trim(known_3d_state_vars(k))) then
+        return  ! is_2d = .false.
+      end if
+    end do
+
+    ! Check derived fields
+    do k = 1, n_derived
+      if (trim(uname) == trim(expressions(k)%output_name)) then
+        is_2d = expr_is_2d(k)
+        return
+      end if
+    end do
+
+    ! Constituents are always 3D
+    call cnst_get_ind(trim(uname), idx, abrtf=.false.)
+    if (idx > 0) return  ! is_2d = .false.
+
+    ! Physics buffer: check ndims
+    errcode = -1
+    idx = pbuf_get_index(trim(uname), errcode)
+    if (errcode == 0 .and. idx > 0) then
+      is_2d = (pbuf_get_field_ndims(idx) == 1)
+      return
+    end if
+
+  end function is_field_2d
 
   !============================================================================
   subroutine validate_field_name(fname, def_index)
@@ -438,13 +660,23 @@ contains
     uname = adjustl(fname)
     found = .false.
 
-    ! Check known state variables
-    do k = 1, n_known_state
-      if (trim(uname) == trim(known_state_vars(k))) then
+    ! Check known 3D state variables
+    do k = 1, n_known_3d_state
+      if (trim(uname) == trim(known_3d_state_vars(k))) then
         found = .true.
         exit
       end if
     end do
+
+    ! Check known 2D state variables
+    if (.not. found) then
+      do k = 1, n_known_2d_state
+        if (trim(uname) == trim(known_2d_state_vars(k))) then
+          found = .true.
+          exit
+        end if
+      end do
+    end if
 
     ! Check previously defined derived fields (for chaining)
     if (.not. found) then
@@ -495,13 +727,23 @@ contains
     uname = adjustl(fname)
     found = .false.
 
-    ! Check known state variables
-    do k = 1, n_known_state
-      if (trim(uname) == trim(known_state_vars(k))) then
+    ! Check known 3D state variables
+    do k = 1, n_known_3d_state
+      if (trim(uname) == trim(known_3d_state_vars(k))) then
         found = .true.
         exit
       end if
     end do
+
+    ! Check known 2D state variables
+    if (.not. found) then
+      do k = 1, n_known_2d_state
+        if (trim(uname) == trim(known_2d_state_vars(k))) then
+          found = .true.
+          exit
+        end if
+      end do
+    end if
 
     ! Check derived fields
     if (.not. found) then

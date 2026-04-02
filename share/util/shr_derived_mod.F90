@@ -6,6 +6,7 @@ module shr_derived_mod
   ! Provides component-independent routines for:
   !   1. Parsing derived field definitions (e.g., "TOTAL_WATER=Q+CLDICE+CLDLIQ+QRAIN")
   !   2. Evaluating parsed expressions given field data arrays
+  !   3. Computing tendencies from cached previous-step values
   !
   ! Supports:
   !   - Binary operators: +, -, *, / between fields and/or numeric constants
@@ -48,6 +49,7 @@ module shr_derived_mod
   ! Public routines
   public :: shr_derived_parse
   public :: shr_derived_eval
+  public :: shr_derived_tend
   public :: shr_derived_is_number
 
   type :: shr_derived_operand_t
@@ -247,6 +249,33 @@ contains
     end do
 
   end subroutine shr_derived_eval
+
+  !============================================================================
+  subroutine shr_derived_tend(curr, prev, ncol, nlev, max_col, dt, tend)
+    !--------------------------------------------------------------------------
+    ! Compute tendency as (curr - prev) / dt.
+    !
+    ! This is the pure-computation part of tendency calculation.
+    ! The component wrapper is responsible for caching prev values between
+    ! timesteps and managing first-timestep logic.
+    !
+    ! Works for both 2D (nlev=1) and 3D (nlev=pver) fields.
+    !--------------------------------------------------------------------------
+    integer,  intent(in)  :: ncol
+    integer,  intent(in)  :: nlev
+    integer,  intent(in)  :: max_col
+    real(r8), intent(in)  :: curr(max_col, nlev)   ! current timestep values
+    real(r8), intent(in)  :: prev(max_col, nlev)   ! previous timestep values
+    real(r8), intent(in)  :: dt                     ! timestep in seconds
+    real(r8), intent(out) :: tend(max_col, nlev)    ! output tendency
+
+    if (dt > 0.0_r8) then
+      tend(1:ncol, 1:nlev) = (curr(1:ncol, 1:nlev) - prev(1:ncol, 1:nlev)) / dt
+    else
+      tend(1:ncol, 1:nlev) = 0.0_r8
+    end if
+
+  end subroutine shr_derived_tend
 
   !============================================================================
   function shr_derived_is_number(token, val) result(is_num)
