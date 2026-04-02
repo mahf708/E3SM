@@ -521,6 +521,18 @@ physics buffer fields, or derived field names defined in derived_fld_defs.
 Default: none
 </entry>
 
+<entry id="tend_stages" type="char*16(10)" category="history"
+       group="eam_derived_nl" valid_values="total,phys,dyn" >
+Which tendency stages to output. Valid values:
+  total - total tendency d{NAME}_dt (default, always active)
+  phys  - physics-only tendency d{NAME}_dt_phys (change during physics)
+  dyn   - dynamics-only tendency d{NAME}_dt_dyn (= total - phys)
+Multiple stages can be specified. Requires tend_flds to be set.
+When phys or dyn is specified, a state snapshot is taken between
+dynamics and physics to split the tendency.
+Default: total
+</entry>
+
 <!-- Dry Convective Adjustment -->
 
 <entry id="nlvdry" type="integer"  category="dry_conv_adj"

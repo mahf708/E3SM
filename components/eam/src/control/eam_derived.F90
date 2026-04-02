@@ -7,7 +7,7 @@ module eam_derived
   ! the shared shr_derived_mod routines. All expression parsing and evaluation
   ! math is delegated to the shared module.
   !
-  ! Provides two capabilities:
+  ! Provides three capabilities:
   !   1. Derived fields: user-defined expressions combining state variables,
   !      constituents, physics buffer fields, and numeric constants.
   !      Supports both 2D (horizontal-only) and 3D (horizontal+vertical) fields.
@@ -15,10 +15,14 @@ module eam_derived
   !      the result is 3D (2D operands are broadcast across all levels).
   !   2. Automatic tendencies: cache previous timestep values and output
   !      time derivatives for any field (state, constituent, pbuf, or derived).
+  !   3. Stage-aware tendencies: split tendencies into physics and dynamics
+  !      contributions. Physics tendency = change during all physics schemes.
+  !      Dynamics tendency = total tendency - physics tendency.
   !
   ! Configuration via namelist (eam_derived_nl):
   !   derived_fld_defs  - expression definitions, e.g. "TOTAL_WATER=Q+CLDICE+CLDLIQ+QRAIN"
   !   tend_flds         - field names for automatic tendency output
+  !   tend_stages       - which stage tendencies to output: 'total', 'phys', 'dyn'
   !
   ! Expression syntax:
   !   OUTPUT_NAME=OPERAND1 op OPERAND2 op ...
@@ -35,10 +39,16 @@ module eam_derived
   ! Tendencies: for each field in tend_flds, outputs d{NAME}_dt = (curr - prev) / dt
   ! each physics timestep. The first timestep stores the initial value and outputs zero.
   !
-  ! Usage from physpkg.F90:
-  !   call eam_derived_readnl(nlfile)        ! during namelist reading
-  !   call eam_derived_register()            ! during phys_init / phys_register
-  !   call eam_derived_write(state, pbuf2d)  ! during physics timestep
+  ! Stage-aware tendencies: when tend_stages includes 'phys' or 'dyn':
+  !   d{NAME}_dt_phys = (state_after_physics - state_before_physics) / dt
+  !   d{NAME}_dt_dyn  = d{NAME}_dt - d{NAME}_dt_phys
+  !   d{NAME}_dt      = total tendency (existing behavior)
+  !
+  ! Usage:
+  !   call eam_derived_readnl(nlfile)            ! during namelist reading
+  !   call eam_derived_register()                ! during phys_init / phys_register
+  !   call eam_derived_stage(state, pbuf2d)      ! before physics (after dynamics output)
+  !   call eam_derived_write(state, pbuf2d)      ! after all physics
   !
   !-------------------------------------------------------------------------------------------
 
@@ -59,6 +69,7 @@ module eam_derived
 
   public :: eam_derived_readnl
   public :: eam_derived_register
+  public :: eam_derived_stage     ! snapshot state before physics (for stage tendencies)
   public :: eam_derived_write
 
   ! Parameters
@@ -77,9 +88,14 @@ module eam_derived
   character(len=max_name_len), parameter :: known_2d_state_vars(n_known_2d_state) = &
        (/ 'PS   ', 'PHIS ' /)
 
+  ! Stage tendency parameters
+  integer, parameter :: max_stages = 10
+  integer, parameter :: max_stage_len = 16
+
   ! Namelist variables
-  character(len=max_def_len)  :: derived_fld_defs(max_derived_flds)
-  character(len=max_name_len) :: tend_flds(max_tend_flds)
+  character(len=max_def_len)   :: derived_fld_defs(max_derived_flds)
+  character(len=max_name_len)  :: tend_flds(max_tend_flds)
+  character(len=max_stage_len) :: tend_stages(max_stages)
 
   ! Parsed state
   integer :: n_derived = 0
@@ -97,6 +113,13 @@ module eam_derived
   ! Tendency tracking (allocated during register)
   real(r8), allocatable :: tend_prev(:,:,:,:)        ! (pcols, pver, n_tend, begchunk:endchunk)
   logical :: tend_initialized = .false.
+
+  ! Stage-aware tendency tracking
+  integer :: n_stages = 0
+  logical :: do_stage_phys = .false.   ! output d{NAME}_dt_phys
+  logical :: do_stage_dyn  = .false.   ! output d{NAME}_dt_dyn
+  real(r8), allocatable :: phys_snap(:,:,:,:)  ! (pcols, pver, n_tend, begchunk:endchunk)
+  logical :: phys_snap_valid = .false.
 
   ! Flags
   logical :: has_derived = .false.
@@ -118,11 +141,13 @@ contains
 
     integer :: unitn, ierr, i
 
-    namelist /eam_derived_nl/ derived_fld_defs, tend_flds
+    namelist /eam_derived_nl/ derived_fld_defs, tend_flds, tend_stages
 
     ! Initialize defaults
     derived_fld_defs(:) = ''
     tend_flds(:) = ''
+    tend_stages(:) = ''
+    tend_stages(1) = 'total'   ! default: only output total tendency
 
     if (masterproc) then
       unitn = getunit()
@@ -142,6 +167,8 @@ contains
     call mpi_bcast(derived_fld_defs, max_def_len*max_derived_flds, mpi_character, &
          masterprocid, mpicom, ierr)
     call mpi_bcast(tend_flds, max_name_len*max_tend_flds, mpi_character, &
+         masterprocid, mpicom, ierr)
+    call mpi_bcast(tend_stages, max_stage_len*max_stages, mpi_character, &
          masterprocid, mpicom, ierr)
 
     ! Parse derived field definitions
@@ -166,6 +193,26 @@ contains
     end do
     has_tend = (n_tend > 0)
 
+    ! Parse tendency stages
+    n_stages = 0
+    do_stage_phys = .false.
+    do_stage_dyn  = .false.
+    do i = 1, max_stages
+      if (len_trim(tend_stages(i)) == 0) exit
+      n_stages = n_stages + 1
+      select case (trim(tend_stages(i)))
+      case ('phys')
+        do_stage_phys = .true.
+      case ('dyn')
+        do_stage_dyn = .true.
+      case ('total')
+        ! Default behavior, always active when has_tend
+      case default
+        call endrun('eam_derived_readnl: unknown tend_stage "'// &
+             trim(tend_stages(i))//'". Must be total, phys, or dyn.')
+      end select
+    end do
+
     if (masterproc) then
       if (has_derived) then
         write(iulog,*) 'eam_derived_readnl: ', n_derived, ' derived field(s) defined'
@@ -179,6 +226,9 @@ contains
         do i = 1, n_tend
           write(iulog,*) '  d', trim(tend_names(i)), '_dt'
         end do
+        write(iulog,*) '  stages:', (trim(tend_stages(i))//' ', i=1,n_stages)
+        if (do_stage_phys) write(iulog,*) '  physics stage tendencies enabled'
+        if (do_stage_dyn)  write(iulog,*) '  dynamics stage tendencies enabled'
       end if
     end if
 
@@ -231,12 +281,35 @@ contains
       call validate_tend_field(tend_names(i))
       tend_is_2d(i) = is_field_2d(tend_names(i))
 
+      ! Total tendency (always registered when tend_flds is set)
       fname = 'd' // trim(tend_names(i)) // '_dt'
       lname = 'd(' // trim(tend_names(i)) // ')/dt'
       if (tend_is_2d(i)) then
         call addfld(trim(fname), horiz_only, 'A', '/s', trim(lname))
       else
         call addfld(trim(fname), (/ 'lev' /), 'A', '/s', trim(lname))
+      end if
+
+      ! Physics stage tendency
+      if (do_stage_phys) then
+        fname = 'd' // trim(tend_names(i)) // '_dt_phys'
+        lname = 'd(' // trim(tend_names(i)) // ')/dt physics'
+        if (tend_is_2d(i)) then
+          call addfld(trim(fname), horiz_only, 'A', '/s', trim(lname))
+        else
+          call addfld(trim(fname), (/ 'lev' /), 'A', '/s', trim(lname))
+        end if
+      end if
+
+      ! Dynamics stage tendency
+      if (do_stage_dyn) then
+        fname = 'd' // trim(tend_names(i)) // '_dt_dyn'
+        lname = 'd(' // trim(tend_names(i)) // ')/dt dynamics'
+        if (tend_is_2d(i)) then
+          call addfld(trim(fname), horiz_only, 'A', '/s', trim(lname))
+        else
+          call addfld(trim(fname), (/ 'lev' /), 'A', '/s', trim(lname))
+        end if
       end if
     end do
 
@@ -252,6 +325,13 @@ contains
       allocate(tend_prev(pcols, pver, n_tend, begchunk:endchunk))
       tend_prev(:,:,:,:) = 0.0_r8
       tend_initialized = .false.
+
+      ! Allocate physics stage snapshot cache
+      if (do_stage_phys .or. do_stage_dyn) then
+        allocate(phys_snap(pcols, pver, n_tend, begchunk:endchunk))
+        phys_snap(:,:,:,:) = 0.0_r8
+        phys_snap_valid = .false.
+      end if
     end if
 
     module_is_initialized = .true.
@@ -268,6 +348,51 @@ contains
     end if
 
   end subroutine eam_derived_register
+
+  !============================================================================
+  subroutine eam_derived_stage(state, pbuf2d)
+    !--------------------------------------------------------------------------
+    ! Snapshot the current state of all tendency fields BEFORE physics begins.
+    ! Called from cam_comp.F90 after stepon_run1 (dynamics output loaded into
+    ! phys_state) and before phys_run1 (physics starts modifying state).
+    !
+    ! This snapshot is used later in eam_derived_write to compute:
+    !   d{NAME}_dt_phys = (state_after_phys - phys_snap) / dt
+    !   d{NAME}_dt_dyn  = d{NAME}_dt - d{NAME}_dt_phys
+    !--------------------------------------------------------------------------
+    use physics_types,  only: physics_state
+    use physics_buffer, only: physics_buffer_desc
+
+    type(physics_state),       intent(in) :: state
+    type(physics_buffer_desc), pointer    :: pbuf2d(:,:)
+
+    real(r8) :: curr_field(pcols, pver)
+    integer  :: i, ncol, lchnk, nlev
+
+    if (.not. has_tend) return
+    if (.not. do_stage_phys .and. .not. do_stage_dyn) return
+
+    ncol  = state%ncol
+    lchnk = state%lchnk
+
+    ! Snapshot each tendency field at this stage boundary
+    do i = 1, n_tend
+      if (tend_is_2d(i)) then
+        nlev = 1
+      else
+        nlev = pver
+      end if
+
+      ! Note: derived fields are NOT yet computed for this timestep, so
+      ! for derived tendency fields we snapshot the raw inputs. For state
+      ! vars, constituents, and pbuf fields this is straightforward.
+      call get_field(state, pbuf2d, tend_names(i), curr_field, ncol, nlev)
+      phys_snap(1:ncol, 1:nlev, i, lchnk) = curr_field(1:ncol, 1:nlev)
+    end do
+
+    phys_snap_valid = .true.
+
+  end subroutine eam_derived_stage
 
   !============================================================================
   subroutine eam_derived_write(state, pbuf2d)
@@ -287,9 +412,10 @@ contains
     real(r8) :: result(pcols, pver)
     real(r8) :: curr_field(pcols, pver)
     real(r8) :: tend_field(pcols, pver)
+    real(r8) :: phys_tend_field(pcols, pver)
     integer  :: i, n, ncol, lchnk, nlev
     real(r8) :: dt
-    character(len=max_name_len) :: fname
+    character(len=max_name_len+16) :: fname
 
     if (.not. has_derived .and. .not. has_tend) return
 
@@ -333,10 +459,11 @@ contains
           nlev = pver
         end if
 
-        ! Load current field value
+        ! Load current field value (after all physics)
         call get_field_or_derived(state, pbuf2d, tend_names(i), &
              curr_field, ncol, lchnk, nlev)
 
+        ! --- Total tendency: d{NAME}_dt ---
         if (tend_initialized) then
           call shr_derived_tend(curr_field, tend_prev(:,:,i,lchnk), &
                ncol, nlev, pcols, dt, tend_field)
@@ -344,9 +471,30 @@ contains
           tend_field(1:ncol, 1:nlev) = 0.0_r8
         end if
 
-        ! Output tendency
         fname = 'd' // trim(tend_names(i)) // '_dt'
         call outfld(trim(fname), tend_field, pcols, lchnk)
+
+        ! --- Physics tendency: d{NAME}_dt_phys ---
+        if (do_stage_phys .and. phys_snap_valid) then
+          call shr_derived_tend(curr_field, phys_snap(:,:,i,lchnk), &
+               ncol, nlev, pcols, dt, phys_tend_field)
+
+          fname = 'd' // trim(tend_names(i)) // '_dt_phys'
+          call outfld(trim(fname), phys_tend_field, pcols, lchnk)
+        end if
+
+        ! --- Dynamics tendency: d{NAME}_dt_dyn = total - phys ---
+        if (do_stage_dyn .and. tend_initialized .and. phys_snap_valid) then
+          ! dyn = total - phys
+          ! total = (curr - prev_timestep) / dt
+          ! phys  = (curr - before_phys) / dt
+          ! dyn   = (before_phys - prev_timestep) / dt
+          call shr_derived_tend(phys_snap(:,:,i,lchnk), tend_prev(:,:,i,lchnk), &
+               ncol, nlev, pcols, dt, tend_field)
+
+          fname = 'd' // trim(tend_names(i)) // '_dt_dyn'
+          call outfld(trim(fname), tend_field, pcols, lchnk)
+        end if
 
         ! Store current value for next timestep
         tend_prev(1:ncol, 1:nlev, i, lchnk) = curr_field(1:ncol, 1:nlev)
