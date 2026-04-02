@@ -1451,7 +1451,7 @@ subroutine phys_run2(phys_state, ztodt, phys_tend, pbuf2d,  cam_out, &
             phys_state(c), phys_tend(c), phys_buffer_chunk, phys_diag(c),  &
             fsds(1,c))
 
-       call eam_vcoarsen_write(phys_state(c))
+       call eam_vcoarsen_write(phys_state(c), pbuf2d)
 
        call system_clock(count=end_chnk_cnt, count_rate=sysclock_rate, count_max=sysclock_max)
        if ( end_chnk_cnt < beg_chnk_cnt ) end_chnk_cnt = end_chnk_cnt + sysclock_max
