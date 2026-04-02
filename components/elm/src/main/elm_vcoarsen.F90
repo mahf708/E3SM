@@ -52,10 +52,21 @@ module elm_vcoarsen
   integer, parameter :: max_fname_len    = 80
   integer, parameter :: max_out_flds     = 500  ! max total output fields
 
-  ! Known soil field names
-  integer, parameter :: n_known_soil = 3
+  ! Known soil field names (all column x level fields from column_energy_state
+  ! and column_water_state that span soil levels)
+  integer, parameter :: n_known_soil = 11
   character(len=max_name_len), parameter :: known_soil_flds(n_known_soil) = &
-       (/ 'TSOI    ', 'H2OSOI  ', 'SOILICE ' /)
+       (/ 'TSOI        ', &  ! soil/snow temperature (K)
+          'H2OSOI_LIQ  ', &  ! liquid water (kg/m2)
+          'H2OSOI_ICE  ', &  ! ice lens (kg/m2)
+          'H2OSOI_VOL  ', &  ! volumetric soil water (m3/m3)
+          'H2OSOI_LIQVOL', & ! volumetric liquid water (m3/m3)
+          'H2OSOI_ICEVOL', & ! volumetric ice content (m3/m3)
+          'SMP_L       ', &  ! liquid phase soil matric potential
+          'SOILP       ', &  ! soil pressure
+          'AIR_VOL     ', &  ! air filled porosity
+          'EXCESS_ICE  ', &  ! excess ground ice
+          'FRAC_ICEOLD ' /)  ! fraction ice relative to total water
 
   ! Namelist variables
   real(r8) :: elm_vcoarsen_zbounds(max_zbounds)
@@ -402,31 +413,45 @@ contains
 
     integer :: c, k
     character(len=max_name_len) :: uname
+    real(r8), pointer :: src(:,:)
 
     uname = adjustl(fname)
+    nullify(src)
 
+    ! Map field name to data pointer
     select case (trim(uname))
     case ('TSOI')
-      do k = 1, nlev
-        do c = 1, ncol
-          field_out(c, k) = col_es%t_soisno(begc + c - 1, k)
-        end do
-      end do
-    case ('H2OSOI')
-      do k = 1, nlev
-        do c = 1, ncol
-          field_out(c, k) = col_ws%h2osoi_liq(begc + c - 1, k)
-        end do
-      end do
-    case ('SOILICE')
-      do k = 1, nlev
-        do c = 1, ncol
-          field_out(c, k) = col_ws%h2osoi_ice(begc + c - 1, k)
-        end do
-      end do
+      src => col_es%t_soisno
+    case ('H2OSOI_LIQ')
+      src => col_ws%h2osoi_liq
+    case ('H2OSOI_ICE')
+      src => col_ws%h2osoi_ice
+    case ('H2OSOI_VOL')
+      src => col_ws%h2osoi_vol
+    case ('H2OSOI_LIQVOL')
+      src => col_ws%h2osoi_liqvol
+    case ('H2OSOI_ICEVOL')
+      src => col_ws%h2osoi_icevol
+    case ('SMP_L')
+      src => col_ws%smp_l
+    case ('SOILP')
+      src => col_ws%soilp
+    case ('AIR_VOL')
+      src => col_ws%air_vol
+    case ('EXCESS_ICE')
+      src => col_ws%excess_ice
+    case ('FRAC_ICEOLD')
+      src => col_ws%frac_iceold
     case default
       call endrun('elm_vcoarsen: get_soil_field: unknown field: '//trim(uname))
     end select
+
+    ! Copy from (begc:endc, 1:nlev) to (1:ncol, 1:nlev)
+    do k = 1, nlev
+      do c = 1, ncol
+        field_out(c, k) = src(begc + c - 1, k)
+      end do
+    end do
 
   end subroutine get_soil_field
 

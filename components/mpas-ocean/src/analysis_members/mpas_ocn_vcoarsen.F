@@ -158,29 +158,28 @@ contains
 
       type(block_type), pointer :: block
       type(mpas_pool_type), pointer :: statePool, meshPool, tracersPool, amPool
+      type(mpas_pool_type), pointer :: diagPool
 
       integer, pointer :: nCellsSolve, nVertLevels, nVcoarsenLevels
-      integer, pointer :: index_temperature, index_salinity
-      integer :: iCell, k, kOut
+      integer :: iCell, k, kOut, iField, tracerIdx
       integer, dimension(:), pointer :: maxLevelCell
 
       real(kind=RKIND), dimension(:, :, :), pointer :: tracers
       real(kind=RKIND), dimension(:, :), pointer :: layerThickness
-      real(kind=RKIND), dimension(:, :), pointer :: temperatureCoarsened
-      real(kind=RKIND), dimension(:, :), pointer :: salinityCoarsened
-      real(kind=RKIND), dimension(:, :), pointer :: velocityZonalCoarsened
-      real(kind=RKIND), dimension(:, :), pointer :: velocityMeridionalCoarsened
-      real(kind=RKIND), dimension(:, :), pointer :: layerThicknessCoarsened
+      real(kind=RKIND), dimension(:, :), pointer :: srcField2d
+      real(kind=RKIND), dimension(:, :), pointer :: outField2d
 
       ! Working arrays for single-column calls
       real(r8), allocatable :: coord_iface(:)   ! (nVertLevels+1)
       real(r8), allocatable :: field_1d(:)      ! (nVertLevels)
       real(r8), allocatable :: out_1d(:)        ! (nCoarsenLevels)
-      real(r8) :: depthTop, depthBot, overlap, denominator
+      character(len=64) :: fieldName, outFieldName
+      logical :: fieldFound
+      integer, pointer :: tracerIdxPtr
 
       err = 0
 
-      if (nCoarsenLevels == 0) return
+      if (nCoarsenLevels == 0 .or. nCoarsenFields == 0) return
 
       block => domain % blocklist
       do while (associated(block))
@@ -188,9 +187,8 @@ contains
          call mpas_pool_get_subpool(block % structs, 'mesh', meshPool)
          call mpas_pool_get_subpool(statePool, 'tracers', tracersPool)
          call mpas_pool_get_subpool(block % structs, 'vcoarsenAM', amPool)
+         call mpas_pool_get_subpool(block % structs, 'diagnostics', diagPool)
 
-         call mpas_pool_get_dimension(tracersPool, 'index_temperature', index_temperature)
-         call mpas_pool_get_dimension(tracersPool, 'index_salinity', index_salinity)
          call mpas_pool_get_dimension(block % dimensions, 'nCellsSolve', nCellsSolve)
          call mpas_pool_get_dimension(block % dimensions, 'nVertLevels', nVertLevels)
          call mpas_pool_get_dimension(block % dimensions, 'nVcoarsenLevels', nVcoarsenLevels)
@@ -199,86 +197,73 @@ contains
          call mpas_pool_get_array(statePool, 'layerThickness', layerThickness, timeLevel)
          call mpas_pool_get_array(meshPool, 'maxLevelCell', maxLevelCell)
 
-         call mpas_pool_get_array(amPool, 'temperatureCoarsened', temperatureCoarsened)
-         call mpas_pool_get_array(amPool, 'salinityCoarsened', salinityCoarsened)
-         call mpas_pool_get_array(amPool, 'velocityZonalCoarsened', velocityZonalCoarsened)
-         call mpas_pool_get_array(amPool, 'velocityMeridionalCoarsened', velocityMeridionalCoarsened)
-         call mpas_pool_get_array(amPool, 'layerThicknessCoarsened', layerThicknessCoarsened)
-
          allocate(coord_iface(nVertLevels + 1))
          allocate(field_1d(nVertLevels))
          allocate(out_1d(nCoarsenLevels))
 
-         do iCell = 1, nCellsSolve
+         ! Process each requested field
+         do iField = 1, nCoarsenFields
+            fieldName = trim(coarsenFieldNames(iField))
+            outFieldName = trim(fieldName) // 'Coarsened'
 
-            ! Build depth interfaces from layer thickness
-            coord_iface(1) = 0.0_r8
-            do k = 1, maxLevelCell(iCell)
-               coord_iface(k + 1) = coord_iface(k) + layerThickness(k, iCell)
-            end do
-            ! Fill remaining interfaces for unused levels
-            do k = maxLevelCell(iCell) + 1, nVertLevels
-               coord_iface(k + 1) = coord_iface(k)
-            end do
+            ! Look up the output array in the AM pool
+            nullify(outField2d)
+            call mpas_pool_get_array(amPool, trim(outFieldName), outField2d)
+            if (.not. associated(outField2d)) cycle
 
-            ! Temperature
-            field_1d(1:maxLevelCell(iCell)) = tracers(index_temperature, 1:maxLevelCell(iCell), iCell)
-            field_1d(maxLevelCell(iCell)+1:nVertLevels) = 0.0_r8
-            call shr_vcoarsen_avg(field_1d, coord_iface, nVertLevels, &
-                 depthBounds(1:nCoarsenLevels+1), nCoarsenLevels, &
-                 real(fillValue, r8), out_1d)
-            temperatureCoarsened(1:nCoarsenLevels, iCell) = out_1d(1:nCoarsenLevels)
+            ! Try to find the source field:
+            ! 1) Check tracer indices (temperature, salinity, etc.)
+            ! 2) Check state pool (layerThickness, normalVelocity, etc.)
+            ! 3) Check diagnostics pool (velocityZonal, velocityMeridional, etc.)
+            fieldFound = .false.
 
-            ! Salinity
-            field_1d(1:maxLevelCell(iCell)) = tracers(index_salinity, 1:maxLevelCell(iCell), iCell)
-            field_1d(maxLevelCell(iCell)+1:nVertLevels) = 0.0_r8
-            call shr_vcoarsen_avg(field_1d, coord_iface, nVertLevels, &
-                 depthBounds(1:nCoarsenLevels+1), nCoarsenLevels, &
-                 real(fillValue, r8), out_1d)
-            salinityCoarsened(1:nCoarsenLevels, iCell) = out_1d(1:nCoarsenLevels)
+            ! Check tracers by index name
+            nullify(tracerIdxPtr)
+            call mpas_pool_get_dimension(tracersPool, 'index_' // trim(fieldName), tracerIdxPtr)
 
-            ! Zonal velocity
-            field_1d(1:maxLevelCell(iCell)) = velocityZonal(1:maxLevelCell(iCell), iCell)
-            field_1d(maxLevelCell(iCell)+1:nVertLevels) = 0.0_r8
-            call shr_vcoarsen_avg(field_1d, coord_iface, nVertLevels, &
-                 depthBounds(1:nCoarsenLevels+1), nCoarsenLevels, &
-                 real(fillValue, r8), out_1d)
-            velocityZonalCoarsened(1:nCoarsenLevels, iCell) = out_1d(1:nCoarsenLevels)
+            if (associated(tracerIdxPtr)) then
+               ! Field is a tracer
+               fieldFound = .true.
+               tracerIdx = tracerIdxPtr
 
-            ! Meridional velocity
-            field_1d(1:maxLevelCell(iCell)) = velocityMeridional(1:maxLevelCell(iCell), iCell)
-            field_1d(maxLevelCell(iCell)+1:nVertLevels) = 0.0_r8
-            call shr_vcoarsen_avg(field_1d, coord_iface, nVertLevels, &
-                 depthBounds(1:nCoarsenLevels+1), nCoarsenLevels, &
-                 real(fillValue, r8), out_1d)
-            velocityMeridionalCoarsened(1:nCoarsenLevels, iCell) = out_1d(1:nCoarsenLevels)
+               do iCell = 1, nCellsSolve
+                  call build_coord_iface(coord_iface, layerThickness, iCell, &
+                       maxLevelCell(iCell), nVertLevels)
 
-            ! Layer thickness (sum, not average - compute directly)
-            do kOut = 1, nCoarsenLevels
-               denominator = 0.0_RKIND
-               depthTop = 0.0_RKIND
-               do k = 1, maxLevelCell(iCell)
-                  depthBot = depthTop + layerThickness(k, iCell)
-                  overlap = max(0.0_RKIND, min(depthBot, depthBounds(kOut+1)) &
-                       - max(depthTop, depthBounds(kOut)))
-                  denominator = denominator + overlap
-                  depthTop = depthBot
+                  field_1d(1:maxLevelCell(iCell)) = tracers(tracerIdx, 1:maxLevelCell(iCell), iCell)
+                  field_1d(maxLevelCell(iCell)+1:nVertLevels) = 0.0_r8
+                  call shr_vcoarsen_avg(field_1d, coord_iface, nVertLevels, &
+                       depthBounds(1:nCoarsenLevels+1), nCoarsenLevels, &
+                       real(fillValue, r8), out_1d)
+                  outField2d(1:nCoarsenLevels, iCell) = out_1d(1:nCoarsenLevels)
+                  outField2d(nCoarsenLevels+1:nVcoarsenLevels, iCell) = fillValue
                end do
-               if (denominator > 0.0_RKIND) then
-                  layerThicknessCoarsened(kOut, iCell) = denominator
-               else
-                  layerThicknessCoarsened(kOut, iCell) = fillValue
-               end if
-            end do
+            end if
 
-            ! Fill unused output levels
-            do kOut = nCoarsenLevels + 1, nVcoarsenLevels
-               temperatureCoarsened(kOut, iCell) = fillValue
-               salinityCoarsened(kOut, iCell) = fillValue
-               velocityZonalCoarsened(kOut, iCell) = fillValue
-               velocityMeridionalCoarsened(kOut, iCell) = fillValue
-               layerThicknessCoarsened(kOut, iCell) = fillValue
-            end do
+            if (.not. fieldFound) then
+               ! Try state pool, then diagnostics pool for 2D fields
+               nullify(srcField2d)
+               call mpas_pool_get_array(statePool, trim(fieldName), srcField2d, timeLevel)
+               if (.not. associated(srcField2d)) then
+                  call mpas_pool_get_array(diagPool, trim(fieldName), srcField2d)
+               end if
+
+               if (associated(srcField2d)) then
+                  fieldFound = .true.
+                  do iCell = 1, nCellsSolve
+                     call build_coord_iface(coord_iface, layerThickness, iCell, &
+                          maxLevelCell(iCell), nVertLevels)
+
+                     field_1d(1:maxLevelCell(iCell)) = srcField2d(1:maxLevelCell(iCell), iCell)
+                     field_1d(maxLevelCell(iCell)+1:nVertLevels) = 0.0_r8
+                     call shr_vcoarsen_avg(field_1d, coord_iface, nVertLevels, &
+                          depthBounds(1:nCoarsenLevels+1), nCoarsenLevels, &
+                          real(fillValue, r8), out_1d)
+                     outField2d(1:nCoarsenLevels, iCell) = out_1d(1:nCoarsenLevels)
+                     outField2d(nCoarsenLevels+1:nVcoarsenLevels, iCell) = fillValue
+                  end do
+               end if
+            end if
 
          end do
 
@@ -288,6 +273,23 @@ contains
       end do
 
    end subroutine ocn_compute_vcoarsen!}}}
+
+!***********************************************************************
+
+   subroutine build_coord_iface(coord_iface, layerThickness, iCell, maxLevel, nVertLevels)!{{{
+      real(kind=RKIND), intent(out) :: coord_iface(:)
+      real(kind=RKIND), dimension(:,:), intent(in) :: layerThickness
+      integer, intent(in) :: iCell, maxLevel, nVertLevels
+      integer :: k
+
+      coord_iface(1) = 0.0_RKIND
+      do k = 1, maxLevel
+         coord_iface(k + 1) = coord_iface(k) + layerThickness(k, iCell)
+      end do
+      do k = maxLevel + 1, nVertLevels
+         coord_iface(k + 1) = coord_iface(k)
+      end do
+   end subroutine build_coord_iface!}}}
 
 !***********************************************************************
 
