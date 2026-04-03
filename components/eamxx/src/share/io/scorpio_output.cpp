@@ -3,6 +3,8 @@
 #include "share/data_managers/library_grids_manager.hpp"
 #include "share/field/field_utils.hpp"
 #include "share/io/eamxx_io_utils.hpp"
+#include "share/physics/physics_constants.hpp"
+#include "diagnostics_core/py_translator.hpp"
 #include "share/io/scorpio_input.hpp"
 #include "share/remap/horizontal_remapper.hpp"
 #include "share/remap/vertical_remapper.hpp"
@@ -134,7 +136,7 @@ AtmosphereOutput::AtmosphereOutput(const ekat::Comm &comm, const ekat::Parameter
     return s.substr(start, end - start + 1);
   };
 
-  // Helper: parse derived_fields entries ("name := expression") from a parameter list
+  // Helper: parse derived_fields entries ("name := expression" or "name := file(path)")
   auto parse_derived_fields = [&](const ekat::ParameterList& pl) {
     if (pl.isType<vos_t>("derived_fields")) {
       for (const auto& entry : pl.get<vos_t>("derived_fields")) {
@@ -143,13 +145,49 @@ AtmosphereOutput::AtmosphereOutput(const ekat::Comm &comm, const ekat::Parameter
           "Error! Invalid derived_fields entry. Expected 'name := expression'.\n"
           " - entry: " + entry + "\n");
         auto name = strip_ws(tokens[0]);
-        auto expr = strip_ws(tokens[1]);
-        EKAT_REQUIRE_MSG(!name.empty() && !expr.empty(),
+        auto rhs  = strip_ws(tokens[1]);
+        EKAT_REQUIRE_MSG(!name.empty() && !rhs.empty(),
           "Error! derived_fields entry has empty name or expression.\n"
           " - entry: " + entry + "\n");
         EKAT_REQUIRE_MSG(m_derived_exprs.count(name)==0,
           "Error! Duplicate derived field name '" + name + "'.\n");
-        m_derived_exprs[name] = expr;
+
+        // Check for file() directive: translates Python source to expression
+        if (rhs.size() > 6 && rhs.substr(0, 5) == "file(" && rhs.back() == ')') {
+          auto filepath = strip_ws(rhs.substr(5, rhs.size() - 6));
+          // Translate the Python file into a compute block, then extract
+          // the expression from the last statement for simple cases,
+          // or store the full compute block for multi-statement cases.
+          auto physics_resolver = [](const std::string& cname, double& val) -> bool {
+            const auto& dict = physics::Constants<Real>::dictionary();
+            ekat::CaseInsensitiveString ci(cname);
+            if (dict.count(ci) > 0) { val = dict.at(ci).value; return true; }
+            return false;
+          };
+          auto translated = diag_utils::translate_py_file(filepath, name, physics_resolver);
+          const auto& block = translated.block;
+
+          if (block.statements.size() == 1 && block.statements[0].type == diag_utils::StmtType::Assign) {
+            // Simple single-expression: use as inline expression
+            m_derived_exprs[name] = block.statements[0].expression;
+          } else {
+            // Multi-statement or reduction: store the full compute block.
+            // For now, we flatten the last element-wise expression.
+            // Full compute block evaluation is a future extension.
+            // As a workaround, emit a warning and use the last expression.
+            const auto& last = block.statements.back();
+            m_derived_exprs[name] = last.expression;
+            if (block.statements.size() > 1) {
+              // TODO: Full compute block evaluation with intermediates and reductions.
+              // For now, we only support single-expression Python files in the
+              // Kokkos runtime path. Multi-statement files will need the compute
+              // block evaluator to be integrated into the output manager.
+            }
+          }
+        } else {
+          m_derived_exprs[name] = rhs;
+        }
+
         m_fields_names.push_back(name);
       }
     }

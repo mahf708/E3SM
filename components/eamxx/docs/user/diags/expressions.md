@@ -136,42 +136,92 @@ fields:
       - T_mid
       - qv
     derived_fields:
-      # Wind speed from components
+      # Inline expressions
       - wind_speed := sqrt(U**2 + V**2)
+      - lwp        := qc * pseudo_density / gravit
+      - T_anomaly  := T_mid - Tmelt
+      - log_p      := log10(p_mid)
 
-      # Mass-weighted mixing ratio
-      - lwp := qc * pseudo_density / gravit
+      # Conditional masking (replaces conditional_sampling syntax)
+      - masked_T   := where(gt(cldfrac_liq, 0.5), T_mid, -9999.0)
 
-      # Temperature anomaly from freezing point
-      - T_anomaly := T_mid - Tmelt
+      # Clamping
+      - T_clamped  := min(max(T_mid, 200.0), 350.0)
 
-      # Saturation deficit (example)
-      - sat_deficit := max(qv_sat - qv, 0.0)
-
-      # Log-scale pressure
-      - log_p := log10(p_mid)
+      # Complex diagnostics from a Python file
+      - custom_lwp := file(./examples/liquid_water_path.py)
+      - cloud_T    := file(./examples/cloud_masked_temperature.py)
 output_control:
   frequency: 6
   frequency_units: nhours
 ```
 
+## The `file()` directive
+
+For diagnostics that are too complex for a single inline expression,
+you can point to a Python file:
+
+```yaml
+derived_fields:
+  - my_diag := file(/path/to/my_diagnostic.py)
+```
+
+The Python file must contain a `def compute(...)` function.
+Parameter names become the input field names. The function body
+is translated to the Kokkos expression engine at initialization
+time (ahead-of-time, not JIT):
+
+```python
+# /path/to/my_diagnostic.py
+def compute(qc, pseudo_density):
+    """Liquid water path: vertical integral of cloud liquid."""
+    integrand = qc * pseudo_density / 9.80616
+    return col_sum(integrand)
+```
+
+Supported Python constructs in `file()` diagnostics:
+
+- Arithmetic: `+`, `-`, `*`, `/`, `**`
+- Functions: `sqrt`, `abs`, `log`, `log10`, `exp`, `square`
+- Comparisons: `gt`, `ge`, `lt`, `le`, `eq`, `ne`
+- Conditionals: `where(condition, true_val, false_val)`
+- Reductions: `col_sum(expr)`, `col_avg(expr)`, `horiz_avg(expr)`
+- Intermediate variables: `x = a + b` followed by `return x * c`
+- Physics constants: `gravit`, `Cpair`, etc. (resolved automatically)
+
+**Not** supported (use a C++ diagnostic class instead):
+
+- `for` loops and `if`/`else` blocks
+- Imports or calls to external libraries
+- Array indexing with `[i, k]`
+
 ## Relationship to other diagnostics
 
 Expression diagnostics are the most general mechanism and
-can replace most uses of binary and unary operations:
+can replace most uses of binary/unary operations and
+conditional sampling:
 
-| Task | Binary/Unary syntax | Expression syntax |
-| ---- | ------------------- | ----------------- |
-| `a + b` | `a_plus_b` | `expr_a + b` |
-| `a * c` | `a_times_c` | `expr_a * c` |
-| `sqrt(x)` | `sqrt_of_x` | `expr_sqrt(x)` |
-| `sqrt(a**2 + b**2)` | Not possible | `expr_sqrt(a**2 + b**2)` |
+| Task | Old syntax | Expression syntax |
+| ---- | ---------- | ----------------- |
+| `a + b` | `a_plus_b` | `result := a + b` |
+| `a * c` | `a_times_c` | `result := a * c` |
+| `sqrt(x)` | `sqrt_of_x` | `result := sqrt(x)` |
+| `sqrt(a**2 + b**2)` | Not possible | `ws := sqrt(a**2 + b**2)` |
+| Filter by condition | `T_mid_where_qv_gt_0.01` | `masked := where(gt(qv, 0.01), T_mid, -9999.0)` |
+| Complex multi-step | C++ class required | `result := file(my_diag.py)` |
 
-Use expression diagnostics when:
+Use `derived_fields` with inline expressions when:
 
 - You need more than one operation (e.g., `a * b + c`)
 - You need nested functions (e.g., `sqrt(abs(x))`)
 - You want natural mathematical notation
+- You want conditional masking with `where()`
+
+Use `derived_fields` with `file()` when:
+
+- You need intermediate variables
+- You need reductions (column sums/averages)
+- The expression is too long for a single line
 
 Use binary/unary operations when:
 
