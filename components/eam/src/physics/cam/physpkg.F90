@@ -42,6 +42,7 @@ module physpkg
   use perf_mod
   use cam_logfile,     only: iulog
   use camsrfexch,      only: cam_export
+  use eam_vcoarsen,    only: eam_vcoarsen_register
 
   use modal_aero_calcsize,    only: modal_aero_calcsize_init, &
                                     modal_aero_calcsize_reg
@@ -368,7 +369,9 @@ subroutine phys_register
        if (.not. do_clubb_sgs .and. .not. do_shoc_sgs) call vd_register()
 
        if (do_aerocom_ind3) call output_aerocom_aie_register()
-    
+
+       call eam_vcoarsen_register()
+
     end if
 
     ! Register diagnostics PBUF
@@ -2236,6 +2239,7 @@ subroutine tphysbc (ztodt,               &
     use physics_types,   only: physics_state, physics_tend, physics_ptend, &
          physics_ptend_init, physics_ptend_sum, physics_state_check, physics_ptend_scale
     use cam_diagnostics, only: diag_conv_tend_ini, diag_phys_writeout, diag_conv, diag_export, diag_state_b4_phys_write
+    use eam_vcoarsen,    only: eam_vcoarsen_write
     use cam_history,     only: outfld, fieldname_len
     use physconst,       only: cpair, latvap, gravit, rga
     use constituents,    only: pcnst, qmin, cnst_get_ind
@@ -3075,6 +3079,7 @@ end if
 
     call t_startf('bc_history_write')
     call diag_phys_writeout(state, cam_out%psl)
+    call eam_vcoarsen_write(state, pbuf)
     call diag_conv(state, ztodt, pbuf)
 
     call t_stopf('bc_history_write')
