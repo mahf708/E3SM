@@ -92,6 +92,9 @@ if (NOT SCREAM_ONLY_GENERATE_BASELINES)
   # Test binary ops
   CreateDiagTest(binary_ops "binary_ops_test.cpp")
 
+  # Test unary ops
+  CreateDiagTest(unary_ops "unary_ops_test.cpp")
+
   # Test histogram
   CreateDiagTest(histogram "histogram_test.cpp" MPI_RANKS 1 ${SCREAM_TEST_MAX_RANKS})
 endif()

@@ -31,174 +31,78 @@ int get_operator_code(const std::string& op) {
   return -1; // Invalid operator
 }
 
-// Utility function to apply conditional sampling for 1D fields (either ncols or nlevs)
-void apply_conditional_sampling_1d(
-    const Field &output_field, const Field &input_field, const Field &condition_field,
-    const std::string &condition_op, const Real &condition_val,
-    const Real &fill_value = constants::fill_value<Real>) {
-
-  // if fill_value is 0, we are counting
-  const auto is_counting = (fill_value == 0);
-  const auto output_v    = output_field.get_view<Real *>();
-  const auto mask_v = !is_counting ? output_field.get_header().get_extra_data<Field>("mask_data").get_view<Real *>() : output_v;
-  const auto input_v     = input_field.get_view<const Real *>();
-  const auto condition_v = condition_field.get_view<const Real *>();
-
-  // Try to get input and condition masks, if present
-  bool has_input_mask = input_field.get_header().has_extra_data("mask_data");
-  bool has_condition_mask = condition_field.get_header().has_extra_data("mask_data");
-  auto input_mask_v = has_input_mask ? input_field.get_header().get_extra_data<Field>("mask_data").get_view<const Real *>() : input_v;
-  auto condition_mask_v = has_condition_mask ? condition_field.get_header().get_extra_data<Field>("mask_data").get_view<const Real *>() : condition_v;
-
-  const int n_elements = output_field.get_header().get_identifier().get_layout().dims()[0];
-
-  // Convert operator string to integer code for device use
-  const int op_code = get_operator_code(condition_op);
-
-  Kokkos::parallel_for(
-      "ConditionalSampling1D", Kokkos::RangePolicy<>(0, n_elements), KOKKOS_LAMBDA(const int &idx) {
-        bool input_masked = has_input_mask && (input_mask_v(idx) == 0);
-        bool condition_masked = has_condition_mask && (condition_mask_v(idx) == 0);
-        if (input_masked || condition_masked) {
-          output_v(idx) = fill_value;
-          if (!is_counting) mask_v(idx) = 0;
-        } else if (evaluate_condition(condition_v(idx), op_code, condition_val)) {
-          output_v(idx) = input_v(idx);
-          if (!is_counting) mask_v(idx) = 1;
-        } else {
-          output_v(idx) = fill_value;
-          if (!is_counting) mask_v(idx) = 0;
-        }
-      });
-}
-
-// Utility function to apply conditional sampling for 2D fields (ncols x nlevs)
-void apply_conditional_sampling_2d(
-    const Field &output_field, const Field &input_field, const Field &condition_field,
-    const std::string &condition_op, const Real &condition_val,
-    const Real &fill_value = constants::fill_value<Real>) {
-
-  // if fill_value is 0, we are counting
-  const auto is_counting = (fill_value == 0);
-
-  const auto output_v    = output_field.get_view<Real **>();
-  const auto mask_v = !is_counting ? output_field.get_header().get_extra_data<Field>("mask_data").get_view<Real **>() : output_v;
-  const auto input_v     = input_field.get_view<const Real **>();
-  const auto condition_v = condition_field.get_view<const Real **>();
-
-  // Try to get input and condition masks, if present
-  bool has_input_mask = input_field.get_header().has_extra_data("mask_data");
-  bool has_condition_mask = condition_field.get_header().has_extra_data("mask_data");
-  auto input_mask_v = has_input_mask ? input_field.get_header().get_extra_data<Field>("mask_data").get_view<const Real **>() : input_v;
-  auto condition_mask_v = has_condition_mask ? condition_field.get_header().get_extra_data<Field>("mask_data").get_view<const Real **>() : condition_v;
-
-  const int ncols = output_field.get_header().get_identifier().get_layout().dims()[0];
-  const int nlevs = output_field.get_header().get_identifier().get_layout().dims()[1];
-
-  // Convert operator string to integer code for device use
-  const int op_code = get_operator_code(condition_op);
-
-  Kokkos::parallel_for(
-      "ConditionalSampling2D", Kokkos::RangePolicy<>(0, ncols * nlevs),
-      KOKKOS_LAMBDA(const int &idx) {
-        const int icol = idx / nlevs;
-        const int ilev = idx % nlevs;
-        bool input_masked = has_input_mask && (input_mask_v(icol, ilev) == 0);
-        bool condition_masked = has_condition_mask && (condition_mask_v(icol, ilev) == 0);
-        if (input_masked || condition_masked) {
-          output_v(icol, ilev) = fill_value;
-          if (!is_counting) mask_v(icol, ilev) = 0;
-        } else if (evaluate_condition(condition_v(icol, ilev), op_code, condition_val)) {
-          output_v(icol, ilev) = input_v(icol, ilev);
-          if (!is_counting) mask_v(icol, ilev) = 1;
-        } else {
-          output_v(icol, ilev) = fill_value;
-          if (!is_counting) mask_v(icol, ilev) = 0;
-        }
-      });
-}
-
-// Utility function to apply conditional sampling for 1D fields against level indices
-void apply_conditional_sampling_1d_lev(
+// Unified conditional sampling function that works for any rank (1D or 2D)
+// by operating on flat data pointers.  This replaces the former 4 separate
+// functions (apply_conditional_sampling_{1d,2d,1d_lev,2d_lev}) that were
+// nearly identical aside from view rank and condition source.
+//
+// Parameters:
+//   use_lev_condition - if true, condition value is the level index (not a field)
+//   nlevs            - number of vertical levels (used for lev condition; 1 for 1D lev)
+void apply_conditional_sampling(
     const Field &output_field, const Field &input_field,
+    const Field *condition_field_ptr,  // nullptr when use_lev_condition==true
     const std::string &condition_op, const Real &condition_val,
+    const bool use_lev_condition, const int nlevs_for_lev_cond,
     const Real &fill_value = constants::fill_value<Real>) {
 
-  // if fill_value is 0, we are counting
   const auto is_counting = (fill_value == 0);
 
-  const auto output_v = output_field.get_view<Real *>();
-  const auto mask_v = !is_counting ? output_field.get_header().get_extra_data<Field>("mask_data").get_view<Real *>() : output_v;
-  const auto input_v  = input_field.get_view<const Real *>();
+  // Get flat data pointers (rank-agnostic)
+  auto* output_data = output_field.get_internal_view_data<Real>();
+  auto* mask_data = !is_counting
+      ? output_field.get_header().get_extra_data<Field>("mask_data").get_internal_view_data<Real>()
+      : output_data;
+  const auto* input_data = input_field.get_internal_view_data<const Real>();
 
-  // Try to get input mask, if present
+  // Input mask (flat pointer)
   bool has_input_mask = input_field.get_header().has_extra_data("mask_data");
-  auto input_mask_v = has_input_mask ? input_field.get_header().get_extra_data<Field>("mask_data").get_view<const Real *>() : input_v;
+  const auto* input_mask_data = has_input_mask
+      ? input_field.get_header().get_extra_data<Field>("mask_data").get_internal_view_data<const Real>()
+      : input_data;
 
-  const int n_elements = output_field.get_header().get_identifier().get_layout().dims()[0];
+  // Condition field (flat pointer); only used when !use_lev_condition
+  const Real* cond_data = nullptr;
+  const Real* cond_mask_data = nullptr;
+  bool has_condition_mask = false;
+  if (!use_lev_condition && condition_field_ptr != nullptr) {
+    cond_data = condition_field_ptr->get_internal_view_data<const Real>();
+    has_condition_mask = condition_field_ptr->get_header().has_extra_data("mask_data");
+    cond_mask_data = has_condition_mask
+        ? condition_field_ptr->get_header().get_extra_data<Field>("mask_data").get_internal_view_data<const Real>()
+        : cond_data;
+  }
 
-  // Convert operator string to integer code for device use
+  const int total = output_field.get_header().get_identifier().get_layout().size();
   const int op_code = get_operator_code(condition_op);
+  const int nlevs = nlevs_for_lev_cond;
 
   Kokkos::parallel_for(
-      "ConditionalSampling1D_Lev", Kokkos::RangePolicy<>(0, n_elements), 
-      KOKKOS_LAMBDA(const int &idx) {
-        // For 1D case, the level index is just the element index
-        const Real level_idx = static_cast<Real>(idx);
-        bool input_masked = has_input_mask && (input_mask_v(idx) == 0);
-        if (input_masked) {
-          output_v(idx) = fill_value;
-          if (!is_counting) mask_v(idx) = 0;
-        } else if (evaluate_condition(level_idx, op_code, condition_val)) {
-          output_v(idx) = input_v(idx);
-          if (!is_counting) mask_v(idx) = 1;
+      "ConditionalSampling", Kokkos::RangePolicy<>(0, total),
+      KOKKOS_LAMBDA(const int &i) {
+        bool input_masked = has_input_mask && (input_mask_data[i] == 0);
+
+        // Determine condition value for this element
+        Real cond_v;
+        bool condition_masked = false;
+        if (use_lev_condition) {
+          // Level-based: for 1D fields nlevs==1 so lev_idx==i,
+          // for 2D fields lev_idx == i % nlevs
+          cond_v = static_cast<Real>(nlevs > 1 ? (i % nlevs) : i);
         } else {
-          output_v(idx) = fill_value;
-          if (!is_counting) mask_v(idx) = 0;
+          cond_v = cond_data[i];
+          condition_masked = has_condition_mask && (cond_mask_data[i] == 0);
         }
-      });
-}
 
-// Utility function to apply conditional sampling for 2D fields against level indices
-void apply_conditional_sampling_2d_lev(
-    const Field &output_field, const Field &input_field,
-    const std::string &condition_op, const Real &condition_val,
-    const Real &fill_value = constants::fill_value<Real>) {
-
-  // if fill_value is 0, we are counting
-  const auto is_counting = (fill_value == 0);
-
-  const auto output_v = output_field.get_view<Real **>();
-  const auto mask_v = !is_counting ? output_field.get_header().get_extra_data<Field>("mask_data").get_view<Real **>() : output_v;
-  const auto input_v  = input_field.get_view<const Real **>();
-
-  // Try to get input mask, if present
-  bool has_input_mask = input_field.get_header().has_extra_data("mask_data");
-  auto input_mask_v = has_input_mask ? input_field.get_header().get_extra_data<Field>("mask_data").get_view<const Real **>() : input_v;
-
-  const int ncols = output_field.get_header().get_identifier().get_layout().dims()[0];
-  const int nlevs = output_field.get_header().get_identifier().get_layout().dims()[1];
-
-  // Convert operator string to integer code for device use
-  const int op_code = get_operator_code(condition_op);
-
-  Kokkos::parallel_for(
-      "ConditionalSampling2D_Lev", Kokkos::RangePolicy<>(0, ncols * nlevs),
-      KOKKOS_LAMBDA(const int &idx) {
-        const int icol = idx / nlevs;
-        const int ilev = idx % nlevs;
-        // The level index is the second dimension index (ilev)
-        const Real level_idx = static_cast<Real>(ilev);
-        bool input_masked = has_input_mask && (input_mask_v(icol, ilev) == 0);
-        if (input_masked) {
-          output_v(icol, ilev) = fill_value;
-          if (!is_counting) mask_v(icol, ilev) = 0;
-        } else if (evaluate_condition(level_idx, op_code, condition_val)) {
-          output_v(icol, ilev) = input_v(icol, ilev);
-          if (!is_counting) mask_v(icol, ilev) = 1;
+        if (input_masked || condition_masked) {
+          output_data[i] = fill_value;
+          if (!is_counting) mask_data[i] = 0;
+        } else if (evaluate_condition(cond_v, op_code, condition_val)) {
+          output_data[i] = input_data[i];
+          if (!is_counting) mask_data[i] = 1;
         } else {
-          output_v(icol, ilev) = fill_value;
-          if (!is_counting) mask_v(icol, ilev) = 0;
+          output_data[i] = fill_value;
+          if (!is_counting) mask_data[i] = 0;
         }
       });
 }
@@ -324,24 +228,16 @@ void ConditionalSampling::compute_diagnostic_impl() {
                      " - field rank: " + std::to_string(rank) + "\n");
   }
   if (m_condition_f == "lev") {
-    // Level-based conditional sampling
-    if (rank == 1) {
-      // 1D field: level index is just the element index
-      apply_conditional_sampling_1d_lev(d, f, m_condition_op, m_condition_v, fill_value);
-    } else if (rank == 2) {
-      // 2D field: level index is the second dimension (ilev)
-      apply_conditional_sampling_2d_lev(d, f, m_condition_op, m_condition_v, fill_value);
-    }
+    // Level-based: nlevs_for_lev_cond controls how level indices are computed
+    // For 1D fields (rank==1), nlevs=1 so level_idx==flat_idx.
+    // For 2D fields (rank==2), level_idx = flat_idx % nlevs.
+    const int nlevs_lev = (rank == 2) ? layout.dims()[1] : 1;
+    apply_conditional_sampling(d, f, nullptr, m_condition_op, m_condition_v,
+                               true, nlevs_lev, fill_value);
   } else {
-    // Field-based conditional sampling
     const auto &c = get_field_in(m_condition_f);
-    if (rank == 1) {
-      // 1D field: (ncols) or (nlevs)
-      apply_conditional_sampling_1d(d, f, c, m_condition_op, m_condition_v, fill_value);
-    } else if (rank == 2) {
-      // 2D field: (ncols, nlevs)
-      apply_conditional_sampling_2d(d, f, c, m_condition_op, m_condition_v, fill_value);
-    }
+    apply_conditional_sampling(d, f, &c, m_condition_op, m_condition_v,
+                               false, 0, fill_value);
   }
 }
 

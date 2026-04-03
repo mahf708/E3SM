@@ -8,7 +8,9 @@
 #include <ekat_string_utils.hpp>
 
 #include <fstream>
+#include <functional>
 #include <regex>
+#include <vector>
 
 namespace scream {
 
@@ -121,146 +123,281 @@ util::TimeStamp read_timestamp (const std::string& filename,
   return ts;
 }
 
+// ---- Table-driven diagnostic name parser ----
+//
+// Each DiagSpec defines a regex pattern and a function that extracts
+// parameters from the match groups.  This replaces the former monolithic
+// if-else chain with a self-documenting table that is easy to extend:
+// just append a new entry -- no need to touch any other code.
+
+namespace {
+
+// Generic field name pattern: letters, digits, dash, dot, plus, minus, product, division
+const std::string generic_field = "([A-Za-z0-9_.+\\-\\*\\÷]+)";
+
+struct DiagSpec {
+  std::string  pattern_str;  // regex source (compiled lazily)
+  std::string  diag_name;    // factory key in AtmosphereDiagnosticFactory
+  // Given the match groups and the grid, populate `params`.
+  // Return false to signal that the diagnostic should NOT be created
+  // (e.g. disabled diagnostics that emit an error message).
+  std::function<bool(const std::smatch&,
+                     const std::shared_ptr<const AbstractGrid>&,
+                     ekat::ParameterList&)> extract;
+};
+
+// The table is ordered: earlier entries take priority (same semantics as
+// the original if-else chain).  Each lambda receives the regex match
+// groups and fills the parameter list for the diagnostic constructor.
+const std::vector<DiagSpec>& get_diag_specs ()
+{
+  static const std::vector<DiagSpec> specs = {
+    // --- FieldAtLevel: e.g. T_mid_at_lev_5, T_mid_at_model_top ---
+    { generic_field + R"(_at_(lev_(\d+)|model_(top|bot))$)",
+      "FieldAtLevel",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>& grid,
+         ekat::ParameterList& p) {
+        p.set("field_name",        m[1].str());
+        p.set("grid_name",         grid->name());
+        p.set("vertical_location", m[2].str());
+        return true;
+      }
+    },
+    // --- FieldAtPressureLevel: e.g. T_mid_at_500hPa ---
+    { generic_field + R"(_at_(\d+(\.\d+)?)(hPa|mb|Pa)$)",
+      "FieldAtPressureLevel",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>& grid,
+         ekat::ParameterList& p) {
+        p.set("field_name",      m[1].str());
+        p.set("grid_name",       grid->name());
+        p.set("pressure_value",  m[2].str());
+        p.set("pressure_units",  m[4].str());
+        return true;
+      }
+    },
+    // --- FieldAtHeight: e.g. T_mid_at_100m_above_sealevel ---
+    { generic_field + R"(_at_(\d+(\.\d+)?)(m)_above_(sealevel|surface)$)",
+      "FieldAtHeight",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>& grid,
+         ekat::ParameterList& p) {
+        p.set("field_name",         m[1].str());
+        p.set("grid_name",          grid->name());
+        p.set("height_value",       m[2].str());
+        p.set("height_units",       m[4].str());
+        p.set("surface_reference",  m[5].str());
+        return true;
+      }
+    },
+    // --- PrecipSurfMassFlux: e.g. precip_liq_surf_mass_flux ---
+    { R"(precip_(liq|ice|total)_surf_mass_flux$)",
+      "precip_surf_mass_flux",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>&,
+         ekat::ParameterList& p) {
+        p.set<std::string>("precip_type", m[1].str());
+        return true;
+      }
+    },
+    // --- WaterPath: e.g. LiqWaterPath ---
+    { R"((Ice|Liq|Rain|Rime|Vap)WaterPath$)",
+      "WaterPath",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>&,
+         ekat::ParameterList& p) {
+        p.set<std::string>("water_kind", m[1].str());
+        return true;
+      }
+    },
+    // --- NumberPath: e.g. IceNumberPath ---
+    { R"((Ice|Liq|Rain)NumberPath$)",
+      "NumberPath",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>&,
+         ekat::ParameterList& p) {
+        p.set<std::string>("number_kind", m[1].str());
+        return true;
+      }
+    },
+    // --- AeroComCld (disabled): e.g. AeroComCldTop ---
+    { R"(AeroComCld(Top|Bot)$)",
+      "AeroComCld",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>&,
+         ekat::ParameterList& p) {
+        EKAT_ERROR_MSG("Error! AeroComCld diags are disabled for now. Contact developers.\n"
+                       "      Some recent development made the code produce bad values,\n"
+                       "      even runtime aborts due to NaNs.\n"
+                       "      An alternative is to request variables like cdnc_at_cldtop,\n"
+                       "      which remain unaffected and scientifically valid.\n");
+        p.set<std::string>("aero_com_cld_kind", m[1].str());
+        return false;
+      }
+    },
+    // --- VaporFlux: e.g. MeridionalVapFlux ---
+    { R"((Meridional|Zonal)VapFlux$)",
+      "VaporFlux",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>&,
+         ekat::ParameterList& p) {
+        p.set<std::string>("wind_component", m[1].str());
+        return true;
+      }
+    },
+    // --- AtmBackTendDiag: e.g. T_mid_atm_backtend ---
+    { generic_field + R"(_atm_backtend$)",
+      "AtmBackTendDiag",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>& grid,
+         ekat::ParameterList& p) {
+        p.set("grid_name",              grid->name());
+        p.set<std::string>("tendency_name", m[1].str());
+        return true;
+      }
+    },
+    // --- PotentialTemperature: e.g. PotentialTemperature, LiqPotentialTemperature ---
+    { R"((Liq)?PotentialTemperature$)",
+      "PotentialTemperature",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>&,
+         ekat::ParameterList& p) {
+        p.set<std::string>("temperature_kind",
+                           m[1].str() != "" ? m[1].str() : std::string("Tot"));
+        return true;
+      }
+    },
+    // --- VerticalLayer: e.g. z_mid, geopotential_int ---
+    { R"((z|geopotential|height)_(mid|int)$)",
+      "VerticalLayer",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>&,
+         ekat::ParameterList& p) {
+        p.set<std::string>("diag_name",      m[1].str());
+        p.set<std::string>("vert_location",  m[2].str());
+        return true;
+      }
+    },
+    // --- HorizAvgDiag: e.g. T_mid_horiz_avg ---
+    { generic_field + R"(_horiz_avg$)",
+      "HorizAvgDiag",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>& grid,
+         ekat::ParameterList& p) {
+        p.set("grid_name",               grid->name());
+        p.set<std::string>("field_name",  m[1].str());
+        return true;
+      }
+    },
+    // --- VertContractDiag: e.g. T_mid_vert_avg, T_mid_vert_sum_dp_weighted ---
+    { generic_field + R"(_vert_(avg|sum)(_((dp|dz)_weighted))?$)",
+      "VertContractDiag",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>& grid,
+         ekat::ParameterList& p) {
+        p.set("grid_name",                     grid->name());
+        p.set<std::string>("field_name",        m[1].str());
+        p.set<std::string>("contract_method",   m[2].str());
+        if (m[3].matched) {
+          p.set<std::string>("weighting_method", m[5].str());
+        }
+        return true;
+      }
+    },
+    // --- VertDerivativeDiag: e.g. T_mid_pvert_derivative ---
+    { generic_field + R"(_(p|z)vert_derivative$)",
+      "VertDerivativeDiag",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>& grid,
+         ekat::ParameterList& p) {
+        p.set("grid_name",                       grid->name());
+        p.set<std::string>("field_name",          m[1].str());
+        p.set<std::string>("derivative_method",   m[2].str());
+        return true;
+      }
+    },
+    // --- ZonalAvgDiag: e.g. T_mid_zonal_avg_36_bins ---
+    { generic_field + R"(_zonal_avg_(\d+)_bins$)",
+      "ZonalAvgDiag",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>& grid,
+         ekat::ParameterList& p) {
+        p.set("grid_name",                            grid->name());
+        p.set<std::string>("field_name",               m[1].str());
+        p.set<std::string>("number_of_zonal_bins",     m[2].str());
+        return true;
+      }
+    },
+    // --- ConditionalSampling: e.g. T_mid_where_cldfrac_liq_gt_0.5 ---
+    { generic_field + R"(_where_)" + generic_field +
+      R"(_(gt|ge|eq|ne|le|lt)_([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)$)",
+      "ConditionalSampling",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>& grid,
+         ekat::ParameterList& p) {
+        p.set("grid_name",                          grid->name());
+        p.set<std::string>("input_field",            m[1].str());
+        p.set<std::string>("condition_field",        m[2].str());
+        p.set<std::string>("condition_operator",     m[3].str());
+        p.set<std::string>("condition_value",        m[4].str());
+        return true;
+      }
+    },
+    // --- UnaryOpsDiag: e.g. sqrt_of_T_mid, abs_of_qc ---
+    { R"((sqrt|abs|log|exp|square)_of_)" + generic_field + "$",
+      "UnaryOpsDiag",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>& grid,
+         ekat::ParameterList& p) {
+        p.set("grid_name",                grid->name());
+        p.set<std::string>("unary_op",    m[1].str());
+        p.set<std::string>("arg",         m[2].str());
+        return true;
+      }
+    },
+    // --- BinaryOpsDiag: e.g. qc_plus_qv, T_mid_times_gravit ---
+    { generic_field + R"(_(plus|minus|times|over)_)" + generic_field + "$",
+      "BinaryOpsDiag",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>& grid,
+         ekat::ParameterList& p) {
+        p.set("grid_name",               grid->name());
+        p.set<std::string>("arg1",        m[1].str());
+        p.set<std::string>("arg2",        m[3].str());
+        p.set<std::string>("binary_op",   m[2].str());
+        return true;
+      }
+    },
+    // --- HistogramDiag: e.g. T_mid_histogram_200_250_300 ---
+    { generic_field + R"(_histogram_(\d+(\.\d+)?(_\d+(\.\d+)?)+)$)",
+      "HistogramDiag",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>& grid,
+         ekat::ParameterList& p) {
+        p.set("grid_name",                       grid->name());
+        p.set<std::string>("field_name",          m[1].str());
+        p.set<std::string>("bin_configuration",   m[2].str());
+        return true;
+      }
+    },
+  };
+  return specs;
+}
+
+} // anonymous namespace
+
 std::shared_ptr<AtmosphereDiagnostic>
 create_diagnostic (const std::string& diag_field_name,
                    const std::shared_ptr<const AbstractGrid>& grid)
 {
-  // Note: use grouping (the (..) syntax), so you can later query the content
-  //       of each group in the matches output var!
-  // Note: use raw string syntax R"(<string>)" to avoid having to escape the \ character
-  // Note: the number for field_at_p/h can match positive integer/floating-point numbers
-  // Start with a generic for a field name allowing for all letters, all numbers, dash, dot, plus, minus, product, and division
-  // Escaping all the special ones just in case
-  std::string generic_field = "([A-Za-z0-9_.+\\-\\*\\÷]+)";
-  std::regex field_at_l (R"()" + generic_field + R"(_at_(lev_(\d+)|model_(top|bot))$)");
-  std::regex field_at_p (R"()" + generic_field + R"(_at_(\d+(\.\d+)?)(hPa|mb|Pa)$)");
-  std::regex field_at_h (R"()" + generic_field + R"(_at_(\d+(\.\d+)?)(m)_above_(sealevel|surface)$)");
-  std::regex surf_mass_flux ("precip_(liq|ice|total)_surf_mass_flux$");
-  std::regex water_path ("(Ice|Liq|Rain|Rime|Vap)WaterPath$");
-  std::regex number_path ("(Ice|Liq|Rain)NumberPath$");
-  std::regex aerocom_cld ("AeroComCld(Top|Bot)$");
-  std::regex vap_flux ("(Meridional|Zonal)VapFlux$");
-  std::regex backtend (generic_field + "_atm_backtend$");
-  std::regex pot_temp ("(Liq)?PotentialTemperature$");
-  std::regex vert_layer ("(z|geopotential|height)_(mid|int)$");
-  std::regex horiz_avg (generic_field + "_horiz_avg$");
-  std::regex vert_contract (generic_field + "_vert_(avg|sum)(_((dp|dz)_weighted))?$");
-  std::regex zonal_avg (R"()" + generic_field + R"(_zonal_avg_(\d+)_bins$)");
-  std::regex conditional_sampling (R"()" + generic_field + R"(_where_)" + generic_field + R"(_(gt|ge|eq|ne|le|lt)_([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)$)");
-  std::regex binary_ops (generic_field + "_" "(plus|minus|times|over)" + "_" + generic_field + "$");
-  std::regex histogram (R"()" + generic_field + R"(_histogram_(\d+(\.\d+)?(_\d+(\.\d+)?)+)$)");
-  std::regex vert_derivative (generic_field + "_(p|z)vert_derivative$");
-
   std::string diag_name;
-  std::smatch matches;
   ekat::ParameterList params(diag_field_name);
 
-  if (std::regex_search(diag_field_name,matches,field_at_l)) {
-    params.set("field_name",matches[1].str());
-    params.set("grid_name",grid->name());
-    params.set("vertical_location", matches[2].str());
-    diag_name = "FieldAtLevel";
-  } else if (std::regex_search(diag_field_name,matches,field_at_p)) {
-    params.set("field_name",matches[1].str());
-    params.set("grid_name",grid->name());
-    params.set("pressure_value",matches[2].str());
-    params.set("pressure_units", matches[4].str());
-    diag_name = "FieldAtPressureLevel";
-  } else if (std::regex_search(diag_field_name,matches,field_at_h)) {
-    params.set("field_name",matches[1].str());
-    params.set("grid_name",grid->name());
-    params.set("height_value",matches[2].str());
-    params.set("height_units",matches[4].str());
-    params.set("surface_reference", matches[5].str());
-    diag_name = "FieldAtHeight";
-  } else if (std::regex_search(diag_field_name,matches,surf_mass_flux)) {
-    diag_name = "precip_surf_mass_flux";
-    params.set<std::string>("precip_type",matches[1].str());
-  } else if (std::regex_search(diag_field_name,matches,water_path)) {
-    diag_name = "WaterPath";
-    params.set<std::string>("water_kind",matches[1].str());
-  } else if (std::regex_search(diag_field_name,matches,number_path)) {
-    diag_name = "NumberPath";
-    params.set<std::string>("number_kind",matches[1].str());
-  } else if (std::regex_search(diag_field_name,matches,aerocom_cld)) {
-    EKAT_ERROR_MSG("Error! AeroComCld diags are disabled for now. Contact developers.\n"
-                    "      Some recent development made the code produce bad values,\n"
-                    "      even runtime aborts due to NaNs.\n"
-                    "      An alternative is to request variables like cdnc_at_cldtop,\n"
-                    "      which remain unaffected and scientifically valid.\n");
-    diag_name = "AeroComCld";
-    params.set<std::string>("aero_com_cld_kind",matches[1].str());
-  } else if (std::regex_search(diag_field_name,matches,vap_flux)) {
-    diag_name = "VaporFlux";
-    params.set<std::string>("wind_component",matches[1].str());
-  } else if (std::regex_search(diag_field_name,matches,backtend)) {
-    diag_name = "AtmBackTendDiag";
-    params.set("grid_name",grid->name());
-    params.set<std::string>("tendency_name",matches[1].str());
-  } else if (std::regex_search(diag_field_name,matches,pot_temp)) {
-    diag_name = "PotentialTemperature";
-    params.set<std::string>("temperature_kind", matches[1].str()!="" ? matches[1].str() : std::string("Tot"));
-  } else if (std::regex_search(diag_field_name,matches,vert_layer)) {
-    diag_name = "VerticalLayer";
-    params.set<std::string>("diag_name",matches[1].str());
-    params.set<std::string>("vert_location",matches[2].str());
-  } else if (diag_field_name=="dz") {
-    diag_name = "VerticalLayer";
-    params.set<std::string>("diag_name","dz");
-    params.set<std::string>("vert_location","mid");
-  }
-  else if (std::regex_search(diag_field_name,matches,horiz_avg)) {
-    diag_name = "HorizAvgDiag";
-    params.set("grid_name",grid->name());
-    params.set<std::string>("field_name",matches[1].str());
-  }
-  else if (std::regex_search(diag_field_name,matches,vert_contract)) {
-    diag_name = "VertContractDiag";
-    params.set("grid_name", grid->name());
-    params.set<std::string>("field_name", matches[1].str());
-    params.set<std::string>("contract_method", matches[2].str());
-    // The 3rd match an optional _(dp|dz)_weighted, so check if it was matched
-    if (matches[3].matched) {
-      // note that the 4th match is (dp|dz)_weighted, while the 5th is (dp|dz)
-      params.set<std::string>("weighting_method", matches[5].str());
+  // Try each registered diagnostic pattern in order
+  bool matched = false;
+  for (const auto& spec : get_diag_specs()) {
+    std::smatch matches;
+    std::regex pattern(spec.pattern_str);
+    if (std::regex_search(diag_field_name, matches, pattern)) {
+      diag_name = spec.diag_name;
+      spec.extract(matches, grid, params);
+      matched = true;
+      break;
     }
   }
-  else if (std::regex_search(diag_field_name,matches,vert_derivative)) {
-    diag_name = "VertDerivativeDiag";
-    params.set("grid_name", grid->name());
-    params.set<std::string>("field_name", matches[1].str());
-    params.set<std::string>("derivative_method", matches[2].str());
+
+  // Special case: "dz" is a VerticalLayer diagnostic
+  if (!matched && diag_field_name == "dz") {
+    diag_name = "VerticalLayer";
+    params.set<std::string>("diag_name", "dz");
+    params.set<std::string>("vert_location", "mid");
+    matched = true;
   }
-  else if (std::regex_search(diag_field_name,matches,zonal_avg)) {
-    diag_name = "ZonalAvgDiag";
-    params.set("grid_name", grid->name());
-    params.set<std::string>("field_name", matches[1].str());
-    params.set<std::string>("number_of_zonal_bins", matches[2].str());
-  }
-  else if (std::regex_search(diag_field_name,matches,conditional_sampling)) {
-    diag_name = "ConditionalSampling";
-    params.set("grid_name", grid->name());
-    params.set<std::string>("input_field", matches[1].str());
-    params.set<std::string>("condition_field", matches[2].str());
-    params.set<std::string>("condition_operator", matches[3].str());
-    params.set<std::string>("condition_value", matches[4].str());
-  }
-  else if (std::regex_search(diag_field_name,matches,binary_ops)) {
-    diag_name = "BinaryOpsDiag";
-    params.set("grid_name", grid->name());
-    params.set<std::string>("arg1", matches[1].str());
-    params.set<std::string>("arg2", matches[3].str());
-    params.set<std::string>("binary_op", matches[2].str());
-  }
-  else if (std::regex_search(diag_field_name,matches,histogram)) {
-    diag_name = "HistogramDiag";
-    params.set("grid_name", grid->name());
-    params.set<std::string>("field_name", matches[1].str());
-    params.set<std::string>("bin_configuration", matches[2].str());
-  }
-  else
-  {
-    // No existing special regex matches, so we assume that the diag field name IS the diag name.
+
+  if (!matched) {
+    // No pattern matched -- assume the field name IS the diagnostic name.
     diag_name = diag_field_name;
   }
 
