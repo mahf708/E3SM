@@ -32,7 +32,7 @@ add_library (eamxx_diagnostics
   expression_diag.cpp
 )
 
-target_link_libraries(eamxx_diagnostics PUBLIC eamxx_atm_process)
+target_link_libraries(eamxx_diagnostics PUBLIC eamxx_atm_process kokkos_diag_utils)
 
 if (NOT SCREAM_LIB_ONLY AND NOT SCREAM_ONLY_GENERATE_BASELINES)
   add_subdirectory(tests)

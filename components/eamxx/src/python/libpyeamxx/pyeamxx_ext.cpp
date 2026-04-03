@@ -4,6 +4,7 @@
 #include "pyatmproc.hpp"
 #include "pyparamlist.hpp"
 #include "pyutils.hpp"
+#include "diagnostics_core/pydiag.hpp"
 
 #include <ekat_comm.hpp>
 
@@ -59,6 +60,7 @@ NB_MODULE (pyeamxx_ext,m) {
   nb_pyfield(m);
   nb_pygrid(m);
   nb_pyatmproc(m);
+  diag_utils::nb_pydiag(m);
 }
 
 } // namespace scream

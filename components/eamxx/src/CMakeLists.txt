@@ -4,6 +4,7 @@ if (NOT SCREAM_LIB_ONLY)
   target_include_directories (eamxx_test_support PUBLIC ${EKAT_SOURCE_DIR}/extern/Catch2/single_include)
 endif()
 
+add_subdirectory(diagnostics_core)
 add_subdirectory(share)
 
 add_subdirectory(dynamics)
