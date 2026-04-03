@@ -101,9 +101,10 @@ See the individual diagnostic pages for caveats.
 
 ## Detailed guides
 
+- [Expression diagnostics](expressions.md) (free-form math, `where()`, comparisons)
+- [Evaluation rules](evaluation.md) (precedence, order, composability)
 - [Field contraction](field_contraction.md) (horizontal/vertical reductions, zonal averages, histograms)
 - [Conditional sampling](conditional_sampling.md)
 - [Binary operations](binary_ops.md)
 - [Unary operations](unary_ops.md)
-- [Expression diagnostics](expressions.md)
 - [Vertical derivative](vert_derivative.md)

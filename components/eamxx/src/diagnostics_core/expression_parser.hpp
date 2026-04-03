@@ -56,6 +56,17 @@ enum class ExprOp : int {
   Min          = 15,
   Max          = 16,
 
+  // Comparison ops (pop 2, push 1: returns 1.0 or 0.0)
+  CmpGt        = 30,
+  CmpGe        = 31,
+  CmpLt        = 32,
+  CmpLe        = 33,
+  CmpEq        = 34,
+  CmpNe        = 35,
+
+  // Ternary ops (pop 3, push 1)
+  Where        = 40,   // pop false_val, true_val, condition; push result
+
   // Unary ops (pop 1, push 1)
   Sqrt         = 20,
   Abs          = 21,
@@ -230,14 +241,11 @@ class ExprParser {
       if (func.first) {
         advance();  // consume function name
         advance();  // consume '('
-        if (func.second == ExprOp::Min || func.second == ExprOp::Max) {
-          // Binary functions: min(a, b) / max(a, b)
-          parse_expr();
-          expect(TokenType::Comma, "',' in min/max");
+        int nargs = func_nargs(func.second);
+        parse_expr();
+        for (int a = 1; a < nargs; ++a) {
+          expect(TokenType::Comma, "',' between function arguments");
           advance();
-          parse_expr();
-        } else {
-          // Unary functions
           parse_expr();
         }
         expect(TokenType::RParen, "')' after function argument");
@@ -289,7 +297,29 @@ class ExprParser {
     if (name == "log10")  return {true, ExprOp::Log10};
     if (name == "min")    return {true, ExprOp::Min};
     if (name == "max")    return {true, ExprOp::Max};
+    if (name == "gt")     return {true, ExprOp::CmpGt};
+    if (name == "ge")     return {true, ExprOp::CmpGe};
+    if (name == "lt")     return {true, ExprOp::CmpLt};
+    if (name == "le")     return {true, ExprOp::CmpLe};
+    if (name == "eq")     return {true, ExprOp::CmpEq};
+    if (name == "ne")     return {true, ExprOp::CmpNe};
+    if (name == "where")  return {true, ExprOp::Where};
     return {false, ExprOp::PushConst};
+  }
+
+  static int func_nargs(ExprOp op) {
+    switch (op) {
+      // Ternary
+      case ExprOp::Where: return 3;
+      // Binary functions
+      case ExprOp::Min: case ExprOp::Max:
+      case ExprOp::CmpGt: case ExprOp::CmpGe:
+      case ExprOp::CmpLt: case ExprOp::CmpLe:
+      case ExprOp::CmpEq: case ExprOp::CmpNe:
+        return 2;
+      // Unary functions (default)
+      default: return 1;
+    }
   }
 
   bool peek_is_lparen() {

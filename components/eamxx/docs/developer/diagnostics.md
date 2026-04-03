@@ -294,13 +294,19 @@ unary  = ('-' unary) | func '(' args ')' | atom
 atom   = NUMBER | IDENTIFIER | '(' expr ')'
 ```
 
-**Instruction set** (14 opcodes):
+**Instruction set** (24 opcodes):
 
 | Category | Opcodes |
 | -------- | ------- |
 | Push | PushField, PushConst |
-| Binary | Add, Sub, Mul, Div, Pow, Min, Max |
-| Unary | Sqrt, Abs, Log, Exp, Square, Neg |
+| Binary arithmetic | Add, Sub, Mul, Div, Pow, Min, Max |
+| Comparisons | CmpGt, CmpGe, CmpLt, CmpLe, CmpEq, CmpNe |
+| Ternary | Where |
+| Unary | Sqrt, Abs, Log, Log10, Exp, Square, Neg |
+
+Comparisons return 1.0 (true) or 0.0 (false). `Where` pops three
+values: condition, true_val, false_val; pushes true_val if
+condition != 0, else false_val.
 
 **Limits:** 64 instructions max, 16-element operand stack.
 
@@ -431,3 +437,131 @@ it symbolically. This is complex and error-prone. For simple cases,
 use `BinaryOpsDiag` or `UnaryOpsDiag` which do track units. For
 complex cases, the user is expected to know what units their expression
 produces.
+
+## Prototypes for advanced diagnostics
+
+Two experimental approaches exist for diagnostics that go beyond
+element-wise expressions (loops, intermediates, reductions).
+
+### Prototype A: Python `@diagnostic` decorator
+
+**File:** `src/python/pyeamxx/pyeamxx_diag.py`
+
+Scientists write Python functions using NumPy, decorated with
+`@diagnostic`:
+
+```python
+from pyeamxx_diag import diagnostic, col_sum, where, sqrt
+
+@diagnostic(name="lwp", units="kg/m2")
+def liquid_water_path(qc, pseudo_density):
+    return col_sum(qc * pseudo_density / 9.80616)
+
+@diagnostic(name="wind_speed", units="m/s", mode="aot")
+def ws(U, V):
+    return sqrt(U**2 + V**2)
+
+@diagnostic(name="cloud_T", units="K")
+def cloud_T(T_mid, cldfrac_liq):
+    return where(cldfrac_liq > 0.5, T_mid, -9999.0)
+```
+
+**Two execution modes:**
+
+- **JIT (default):** Function runs in Python via NumPy at output
+  time. No compilation needed. Supports arbitrary logic (loops,
+  conditionals, intermediates). Performance cost: Python overhead +
+  host-device transfers. Acceptable for output-frequency diagnostics.
+
+- **AOT:** Simple one-liner functions are analyzed and translated
+  to `derived_fields` YAML entries. The `generate_yaml_block()`
+  function emits the YAML. Complex functions that cannot be
+  expressed as single expressions fall back to JIT.
+
+**Key functions in `pyeamxx_diag`:**
+
+| Function | Description |
+| -------- | ----------- |
+| `col_sum(x)` | Column sum (replaces `_vert_sum`) |
+| `col_avg(x)` | Column average (replaces `_vert_avg`) |
+| `horiz_avg(x)` | Horizontal average (replaces `_horiz_avg`) |
+| `where(c, t, f)` | Conditional (replaces `_where_`) |
+| `sqrt`, `abs`, `log`, `exp` | Math functions |
+
+**When to use:** Complex logic with loops, intermediates, or
+non-trivial conditionals that cannot be expressed as a single
+arithmetic expression.
+
+### Prototype B: Multi-statement compute blocks
+
+**File:** `src/diagnostics_core/compute_block.hpp`
+
+A YAML-native approach for multi-statement computations:
+
+```yaml
+compute_fields:
+  - name: lwp
+    inputs: [qc, pseudo_density]
+    compute: |
+      integrand = qc * pseudo_density / gravit
+      result = col_sum(integrand)
+
+  - name: cloud_masked_T
+    inputs: [T_mid, cldfrac_liq]
+    compute: |
+      mask = gt(cldfrac_liq, 0.5)
+      result = where(mask, T_mid, -9999.0)
+```
+
+Each line is `variable = expression` (element-wise) or
+`variable = col_sum(expression)` (reduction). The special
+variable `result` is the output.
+
+**Supported statement types:**
+
+| Statement | Description |
+| --------- | ----------- |
+| `var = expr` | Element-wise assignment |
+| `var = col_sum(expr)` | Vertical sum reduction |
+| `var = col_avg(expr)` | Vertical average reduction |
+| `var = horiz_avg(expr)` | Horizontal average reduction |
+
+**Status:** Parser is implemented in `compute_block.hpp`. The
+evaluator is not yet integrated into the EAMxx output manager.
+Integration would require:
+
+1. Parsing `compute_fields` YAML entries in `scorpio_output.cpp`
+2. A `ComputeBlockDiag` class that manages intermediate fields
+   and dispatches to existing reduction implementations
+3. Dependency tracking between statements
+
+### Comparison of approaches
+
+| Aspect | Expressions | Compute blocks | Python @diagnostic |
+| ------ | ----------- | -------------- | ------------------ |
+| Syntax | Single expression | Multi-line YAML | Python function |
+| Intermediates | No | Yes | Yes |
+| Loops | No | No | Yes |
+| Reductions | No (compose) | col_sum, col_avg | col_sum, col_avg |
+| Conditionals | where() | where() | Full Python if/else |
+| GPU execution | Yes | Yes (planned) | No (host NumPy) |
+| Compilation | None | None | None |
+| Unit tracking | No | No | No |
+| Replaces | BinaryOps, UnaryOps | ConditionalSampling, VertContract | All of the above |
+
+### Recommended evolution path
+
+1. **Now:** Use `derived_fields` with `where()`/comparisons for
+   conditional masking. Compose with `_vert_sum` etc. suffixes
+   for reductions.
+
+2. **Near-term:** Integrate compute blocks for multi-statement
+   diagnostics that need intermediates + reductions in one block.
+
+3. **Medium-term:** Use Python `@diagnostic` for prototyping
+   complex diagnostics. AOT-compatible ones auto-generate YAML.
+   JIT handles the rest.
+
+4. **Long-term:** Scientists write in Python, system auto-selects
+   JIT (for complex logic) or AOT (for simple expressions)
+   transparently.

@@ -58,6 +58,18 @@ double evaluate_rpn(const Instruction* program, const int n_instr,
       case ExprOp::Min: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=(a<b?a:b); break; }
       case ExprOp::Max: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=(a>b?a:b); break; }
 
+      // Comparison ops (return 1.0 for true, 0.0 for false)
+      case ExprOp::CmpGt: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=(a> b?1.0:0.0); break; }
+      case ExprOp::CmpGe: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=(a>=b?1.0:0.0); break; }
+      case ExprOp::CmpLt: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=(a< b?1.0:0.0); break; }
+      case ExprOp::CmpLe: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=(a<=b?1.0:0.0); break; }
+      case ExprOp::CmpEq: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=(a==b?1.0:0.0); break; }
+      case ExprOp::CmpNe: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=(a!=b?1.0:0.0); break; }
+
+      // Ternary: where(cond, true_val, false_val)
+      case ExprOp::Where: { auto f=stack[--sp]; auto t=stack[--sp]; auto c=stack[--sp];
+                             stack[sp++]=(c!=0.0?t:f); break; }
+
       // Unary ops
       case ExprOp::Sqrt:   { auto a=stack[--sp]; stack[sp++]=sqrt(a);  break; }
       case ExprOp::Abs:    { auto a=stack[--sp]; stack[sp++]=fabs(a);  break; }
@@ -94,6 +106,14 @@ float evaluate_rpn_f(const Instruction* program, const int n_instr,
       case ExprOp::Pow: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=powf(a,b); break; }
       case ExprOp::Min: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=(a<b?a:b); break; }
       case ExprOp::Max: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=(a>b?a:b); break; }
+      case ExprOp::CmpGt: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=(a> b?1.0f:0.0f); break; }
+      case ExprOp::CmpGe: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=(a>=b?1.0f:0.0f); break; }
+      case ExprOp::CmpLt: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=(a< b?1.0f:0.0f); break; }
+      case ExprOp::CmpLe: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=(a<=b?1.0f:0.0f); break; }
+      case ExprOp::CmpEq: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=(a==b?1.0f:0.0f); break; }
+      case ExprOp::CmpNe: { auto b=stack[--sp]; auto a=stack[--sp]; stack[sp++]=(a!=b?1.0f:0.0f); break; }
+      case ExprOp::Where: { auto f=stack[--sp]; auto t=stack[--sp]; auto c=stack[--sp];
+                             stack[sp++]=(c!=0.0f?t:f); break; }
       case ExprOp::Sqrt:   { auto a=stack[--sp]; stack[sp++]=sqrtf(a);  break; }
       case ExprOp::Abs:    { auto a=stack[--sp]; stack[sp++]=fabsf(a);  break; }
       case ExprOp::Log:    { auto a=stack[--sp]; stack[sp++]=logf(a);   break; }
