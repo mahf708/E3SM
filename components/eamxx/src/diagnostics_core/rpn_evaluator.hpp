@@ -65,6 +65,7 @@ double evaluate_rpn(const Instruction* program, const int n_instr,
       case ExprOp::Exp:    { auto a=stack[--sp]; stack[sp++]=exp(a);   break; }
       case ExprOp::Square: { auto a=stack[--sp]; stack[sp++]=a*a;      break; }
       case ExprOp::Neg:    { auto a=stack[--sp]; stack[sp++]=-a;       break; }
+      case ExprOp::Log10:  { auto a=stack[--sp]; stack[sp++]=log(a)/log(10.0); break; }
     }
   }
   return stack[0];
@@ -99,6 +100,7 @@ float evaluate_rpn_f(const Instruction* program, const int n_instr,
       case ExprOp::Exp:    { auto a=stack[--sp]; stack[sp++]=expf(a);   break; }
       case ExprOp::Square: { auto a=stack[--sp]; stack[sp++]=a*a;       break; }
       case ExprOp::Neg:    { auto a=stack[--sp]; stack[sp++]=-a;        break; }
+      case ExprOp::Log10:  { auto a=stack[--sp]; stack[sp++]=logf(a)/logf(10.0f); break; }
     }
   }
   return stack[0];

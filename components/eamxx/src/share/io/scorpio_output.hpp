@@ -232,6 +232,10 @@ protected:
   // Field aliasing support
   strmap_t<std::string> m_alias_to_orig; // Map from alias names to original names (used to set io attribute)
 
+  // Derived fields: user-defined expressions with named output
+  // Maps output name -> expression string (parsed from "name := expression" syntax)
+  strmap_t<std::string> m_derived_exprs;
+
   DefaultMetadata m_default_metadata;
 
   bool m_add_time_dim;

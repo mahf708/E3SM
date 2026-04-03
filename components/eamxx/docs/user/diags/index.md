@@ -56,7 +56,7 @@ Replace `X` with a field name.
 | ------- | ------- | ----------- | ------- |
 | `X_{op}_Y` | `T_mid_plus_p_mid` | Binary arithmetic | [Binary ops](binary_ops.md) |
 | `{op}_of_X` | `sqrt_of_T_mid` | Unary function | [Unary ops](unary_ops.md) |
-| `expr_{expression}` | `expr_sqrt(U**2+V**2)` | Free-form expression | [Expressions](expressions.md) |
+| `name := expression` | `ws := sqrt(U**2+V**2)` | Free-form expression (in `derived_fields`) | [Expressions](expressions.md) |
 
 ### Reduction and sampling diagnostics
 

@@ -117,7 +117,8 @@ inline void nb_pydiag(nb::module_& m) {
     .value("Log",       ExprOp::Log)
     .value("Exp",       ExprOp::Exp)
     .value("Square",    ExprOp::Square)
-    .value("Neg",       ExprOp::Neg);
+    .value("Neg",       ExprOp::Neg)
+    .value("Log10",     ExprOp::Log10);
 
   // Instruction struct
   nb::class_<Instruction>(m, "Instruction")

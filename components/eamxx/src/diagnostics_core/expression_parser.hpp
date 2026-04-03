@@ -63,6 +63,7 @@ enum class ExprOp : int {
   Exp          = 23,
   Square       = 24,
   Neg          = 25,
+  Log10        = 26,
 };
 
 // Plain-old-data instruction (trivially copyable → safe for GPU)
@@ -285,6 +286,7 @@ class ExprParser {
     if (name == "log")    return {true, ExprOp::Log};
     if (name == "exp")    return {true, ExprOp::Exp};
     if (name == "square") return {true, ExprOp::Square};
+    if (name == "log10")  return {true, ExprOp::Log10};
     if (name == "min")    return {true, ExprOp::Min};
     if (name == "max")    return {true, ExprOp::Max};
     return {false, ExprOp::PushConst};

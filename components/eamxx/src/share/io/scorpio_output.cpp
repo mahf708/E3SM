@@ -1,5 +1,6 @@
 #include "share/io/scorpio_output.hpp"
 
+#include "share/data_managers/library_grids_manager.hpp"
 #include "share/field/field_utils.hpp"
 #include "share/io/eamxx_io_utils.hpp"
 #include "share/io/scorpio_input.hpp"
@@ -125,6 +126,35 @@ AtmosphereOutput::AtmosphereOutput(const ekat::Comm &comm, const ekat::Parameter
   auto fm_grid = field_mgr->get_grids_manager()->get_grid(grid_name);
 
   std::string output_data_layout = "default";
+  // Helper to strip leading/trailing whitespace from a string
+  auto strip_ws = [](const std::string& s) -> std::string {
+    auto start = s.find_first_not_of(" \t\n\r");
+    if (start == std::string::npos) return "";
+    auto end = s.find_last_not_of(" \t\n\r");
+    return s.substr(start, end - start + 1);
+  };
+
+  // Helper: parse derived_fields entries ("name := expression") from a parameter list
+  auto parse_derived_fields = [&](const ekat::ParameterList& pl) {
+    if (pl.isType<vos_t>("derived_fields")) {
+      for (const auto& entry : pl.get<vos_t>("derived_fields")) {
+        auto tokens = ekat::split(entry,":=");
+        EKAT_REQUIRE_MSG(tokens.size()==2,
+          "Error! Invalid derived_fields entry. Expected 'name := expression'.\n"
+          " - entry: " + entry + "\n");
+        auto name = strip_ws(tokens[0]);
+        auto expr = strip_ws(tokens[1]);
+        EKAT_REQUIRE_MSG(!name.empty() && !expr.empty(),
+          "Error! derived_fields entry has empty name or expression.\n"
+          " - entry: " + entry + "\n");
+        EKAT_REQUIRE_MSG(m_derived_exprs.count(name)==0,
+          "Error! Duplicate derived field name '" + name + "'.\n");
+        m_derived_exprs[name] = expr;
+        m_fields_names.push_back(name);
+      }
+    }
+  };
+
   if (params.isParameter("field_names")) {
     // This simple parameter list option does *not* allow to remap fields
     // to an io grid different from that of the field manager. In order to
@@ -132,6 +162,7 @@ AtmosphereOutput::AtmosphereOutput(const ekat::Comm &comm, const ekat::Parameter
     m_fields_names = params.get<vos_t>("field_names");
     if (params.isParameter("output_data_layout"))
       output_data_layout = params.get<std::string>("output_data_layout");
+    parse_derived_fields(params);
   } else if (params.isSublist("fields")){
     const auto& f_pl = params.sublist("fields");
     bool grid_found = false;
@@ -149,6 +180,7 @@ AtmosphereOutput::AtmosphereOutput(const ekat::Comm &comm, const ekat::Parameter
             m_fields_names.clear();
           }
         }
+        parse_derived_fields(pl);
       }
     }
     EKAT_REQUIRE_MSG (grid_found,
@@ -1190,8 +1222,21 @@ process_requested_fields()
       } else {
         auto& diag = m_diag_repo[name];
         if (not diag) {
-          // First time we run into this diag. Create it
-          diag = create_diagnostic(name,fm_model->get_grid());
+          // First time we run into this diag. Create it.
+          // Check if this is a derived field (name := expression syntax)
+          if (m_derived_exprs.count(name) > 0) {
+            // Create ExpressionDiag with the user-chosen output name
+            auto comm = fm_model->get_grid()->get_comm();
+            ekat::ParameterList params(name);
+            params.set("grid_name", fm_model->get_grid()->name());
+            params.set<std::string>("expression", m_derived_exprs.at(name));
+            params.set<std::string>("diag_name", name);
+            diag = AtmosphereDiagnosticFactory::instance().create("ExpressionDiag", comm, params);
+            auto gm = std::make_shared<LibraryGridsManager>(fm_model->get_grid());
+            diag->set_grids(gm);
+          } else {
+            diag = create_diagnostic(name,fm_model->get_grid());
+          }
         }
         // Add its deps to the list of fields to process (if not already in fm_model)
         bool deps_met = true;

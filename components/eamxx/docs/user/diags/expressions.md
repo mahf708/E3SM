@@ -12,15 +12,32 @@ element-wise across all grid points and levels. You can use
 field names, physics constants, numeric literals, arithmetic
 operators, and mathematical functions.
 
-The YAML field name uses the `expr_` prefix followed by the
-expression:
+Use the `derived_fields` key in your output YAML. Each entry
+has the form `name := expression`, where `name` is the output
+variable name that will appear in your NetCDF file:
 
 ```yaml
-field_names:
-  - expr_qc * pseudo_density / gravit
-  - expr_sqrt(U**2 + V**2)
-  - expr_abs(T_mid - 273.15)
+fields:
+  physics_pg2:
+    field_names:
+      - T_mid
+      - LiqWaterPath
+    derived_fields:
+      - my_water_path := qc * pseudo_density / gravit
+      - wind_speed    := sqrt(U**2 + V**2)
+      - T_anomaly     := T_mid - Tmelt
+      - cloud_flag    := max(100 * (qc + qv) / gravit, 0.0) + log10(T_mid)
 ```
+
+The `:=` syntax gives you control over the output variable name.
+Each `derived_fields` entry produces a named field in the output
+file, computed from the expression on the right-hand side.
+
+> **Legacy syntax**: Expressions can also be requested via
+> `field_names` using the `expr_` prefix (e.g., `expr_sqrt(U**2+V**2)`),
+> but the `derived_fields` syntax is preferred because it gives you
+> a clean output variable name instead of encoding the expression
+> in the field name.
 
 ## Supported operators
 
@@ -46,6 +63,7 @@ Use parentheses to override: `(a + b) * c`.
 | `log(x)` | 1 | Natural logarithm |
 | `exp(x)` | 1 | Exponential ($e^x$) |
 | `square(x)` | 1 | Square ($x^2$) |
+| `log10(x)` | 1 | Base-10 logarithm |
 | `min(x, y)` | 2 | Element-wise minimum |
 | `max(x, y)` | 2 | Element-wise maximum |
 
@@ -115,20 +133,23 @@ averaging_type: instant
 fields:
   physics_pg2:
     field_names:
+      - T_mid
+      - qv
+    derived_fields:
       # Wind speed from components
-      - expr_sqrt(U**2 + V**2)
+      - wind_speed := sqrt(U**2 + V**2)
 
       # Mass-weighted mixing ratio
-      - expr_qc * pseudo_density / gravit
+      - lwp := qc * pseudo_density / gravit
 
       # Temperature anomaly from freezing point
-      - expr_T_mid - Tmelt
+      - T_anomaly := T_mid - Tmelt
 
       # Saturation deficit (example)
-      - expr_max(qv_sat - qv, 0.0)
+      - sat_deficit := max(qv_sat - qv, 0.0)
 
-      # Complex multi-field expression
-      - expr_0.5 * (T_mid + T_mid_prev)
+      # Log-scale pressure
+      - log_p := log10(p_mid)
 output_control:
   frequency: 6
   frequency_units: nhours

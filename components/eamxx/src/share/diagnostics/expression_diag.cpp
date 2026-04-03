@@ -64,7 +64,10 @@ void ExpressionDiag::initialize_impl(const RunType /*run_type*/)
   }
 
   auto gn = m_params.get<std::string>("grid_name");
-  FieldIdentifier d_fid("expr_" + m_expr_str, dl,
+  auto diag_name = m_params.isParameter("diag_name")
+                   ? m_params.get<std::string>("diag_name")
+                   : "expr_" + m_expr_str;
+  FieldIdentifier d_fid(diag_name, dl,
                         ekat::units::Units::nondimensional(), gn);
   m_diagnostic_output = Field(d_fid, true);
 }
