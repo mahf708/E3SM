@@ -29,6 +29,7 @@ add_library (eamxx_diagnostics
   zonal_avg.cpp
   conditional_sampling.cpp
   unary_ops.cpp
+  expression_diag.cpp
 )
 
 target_link_libraries(eamxx_diagnostics PUBLIC eamxx_atm_process)

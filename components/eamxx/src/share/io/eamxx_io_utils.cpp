@@ -351,6 +351,18 @@ const std::vector<DiagSpec>& get_diag_specs ()
         return true;
       }
     },
+    // --- ExpressionDiag: e.g. expr_qc*pseudo_density/gravit ---
+    // Any field name starting with "expr_" is treated as an expression diagnostic.
+    // The expression itself is everything after the "expr_" prefix.
+    { R"(^expr_(.+)$)",
+      "ExpressionDiag",
+      [](const std::smatch& m, const std::shared_ptr<const AbstractGrid>& grid,
+         ekat::ParameterList& p) {
+        p.set("grid_name",                  grid->name());
+        p.set<std::string>("expression",    m[1].str());
+        return true;
+      }
+    },
     // --- HistogramDiag: e.g. T_mid_histogram_200_250_300 ---
     { generic_field + R"(_histogram_(\d+(\.\d+)?(_\d+(\.\d+)?)+)$)",
       "HistogramDiag",

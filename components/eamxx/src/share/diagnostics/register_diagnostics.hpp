@@ -31,6 +31,7 @@
 #include "conditional_sampling.hpp"
 #include "binary_ops.hpp"
 #include "unary_ops.hpp"
+#include "expression_diag.hpp"
 #include "histogram.hpp"
 
 namespace scream {
@@ -66,6 +67,7 @@ inline void register_diagnostics () {
   diag_factory.register_product("ConditionalSampling",&create_atmosphere_diagnostic<ConditionalSampling>);
   diag_factory.register_product("BinaryOpsDiag", &create_atmosphere_diagnostic<BinaryOpsDiag>);
   diag_factory.register_product("UnaryOpsDiag", &create_atmosphere_diagnostic<UnaryOpsDiag>);
+  diag_factory.register_product("ExpressionDiag", &create_atmosphere_diagnostic<ExpressionDiag>);
   diag_factory.register_product("HistogramDiag",&create_atmosphere_diagnostic<HistogramDiag>);
 }
 

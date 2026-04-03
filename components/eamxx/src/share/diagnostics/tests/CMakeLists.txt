@@ -95,6 +95,9 @@ if (NOT SCREAM_ONLY_GENERATE_BASELINES)
   # Test unary ops
   CreateDiagTest(unary_ops "unary_ops_test.cpp")
 
+  # Test expression diagnostic
+  CreateDiagTest(expression_diag "expression_diag_test.cpp")
+
   # Test histogram
   CreateDiagTest(histogram "histogram_test.cpp" MPI_RANKS 1 ${SCREAM_TEST_MAX_RANKS})
 endif()
