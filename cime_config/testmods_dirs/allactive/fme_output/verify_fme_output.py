@@ -195,10 +195,21 @@ def find_files(rundir, pattern, exclude=None):
 
 
 def safe_open(path):
-    """Open a NetCDF file with xarray (preferred) or netCDF4."""
+    """Open a NetCDF file with xarray (preferred) or netCDF4.
+
+    If the file has time=0 (empty from restart), try the .base version
+    which contains the actual data from the completed run segment.
+    """
     if HAS_XR:
         try:
-            return xr.open_dataset(path, decode_times=False)
+            ds = xr.open_dataset(path, decode_times=False)
+            # Check for empty time dimension (CIME restart pattern)
+            if 'time' in ds.dims and ds.dims['time'] == 0:
+                base_path = path + '.base'
+                if os.path.exists(base_path):
+                    ds.close()
+                    ds = xr.open_dataset(base_path, decode_times=False)
+            return ds
         except Exception:
             pass
     if HAS_NC4:
@@ -494,9 +505,9 @@ def check_eam(rundir, outdir, verbose):
                 ("ICEFRAC","Blues",    0,   1, "fraction"),
             ]:
                 arr = get_var(ds, var)
-                if arr is None:
+                if arr is None or arr.size == 0:
                     continue
-                data = arr[0] if arr.ndim >= 2 else arr  # first time step
+                data = arr[0] if arr.ndim >= 2 and arr.shape[0] > 0 else arr
                 if lat_name and lon_name and data.ndim == 2:
                     lons = ds[lon_name].values
                     lats = ds[lat_name].values
