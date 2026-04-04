@@ -32,7 +32,7 @@ module seaice_fme_horiz_remap
                   pio_createfile, pio_closefile, &
                   pio_def_dim, pio_def_var, pio_enddef, &
                   pio_put_att, pio_put_var, pio_write_darray, &
-                  pio_initdecomp, &
+                  pio_initdecomp, pio_setframe, &
                   PIO_IOTYPE_PNETCDF, PIO_CLOBBER, PIO_REAL, PIO_DOUBLE, &
                   PIO_CHAR, PIO_OFFSET_KIND, PIO_GLOBAL, PIO_NOERR, &
                   PIO_UNLIMITED
@@ -246,6 +246,8 @@ contains
       err = 0
       do iv = 1, n_pio_vars
          if (trim(pio_var_names(iv)) == trim(varname)) then
+            call pio_setframe(pio_file, pio_var_descs(iv), &
+                 int(time_record, PIO_OFFSET_KIND))
             call pio_write_darray(pio_file, pio_var_descs(iv), iodesc_2d, fld_out, ierr)
             return
          end if
