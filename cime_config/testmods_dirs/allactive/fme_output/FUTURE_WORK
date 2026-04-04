@@ -1,18 +1,12 @@
 FME Online Output Processing — Future Work and Known Limitations
 ================================================================
 
-STATUS: All Priority 1 and Priority 2 items complete.
-        MPAS-O, MPAS-SI: full analysis members with depth coarsening,
-        derived fields, vertical reduction, air stress rotation, and
-        horizontal remapping (via PIO to separate lat-lon NetCDF files).
-        ELM, MOSART: history system integration complete (register/update
-        wired), source field lookup implemented for known fields.
-        EAM: vertical coarsening, derived fields, tendencies, and
-        horizontal remapping all functional.
+STATUS: MPAS-O, MPAS-SI, and EAM fully functional.
+        ELM and MOSART FME source files removed pending clean reimplementation
+        (see ELM/MOSART section below). Shell_commands namelist options for
+        ELM and MOSART remain commented out until reimplemented.
 
 COMPLETED:
-  [x] ELM full integration (register/update, field lookup for TSOI/H2OSOI/SOILICE)
-  [x] MOSART full integration (register/update, field lookup for rtmCTL members)
   [x] MPAS-O horizontal remapping (PIO write to lat-lon NetCDF)
   [x] MPAS-SI horizontal remapping (PIO write to lat-lon NetCDF)
   [x] MPAS-O depth coarsening generic field dispatch
@@ -48,33 +42,44 @@ PRIORITY 3: Extensions and Enhancements
    - 3D: per-depth-level based on temperature data availability
    - Could add as computed fields in fmeDerivedFields or fmeDepthCoarsening
 
-3. ELM/MOSART SOURCE FIELD EXPANSION
-   - Current field lookup covers TSOI, H2OSOI, SOILICE (ELM) and
-     QSUR_LIQ, QSUB_LIQ, VOLR_LIQ, etc. (MOSART)
-   - Add more fields as FME training data requirements expand
-   - ELM derived_update also supports masterlist scan for any registered field
+3. ELM FME INTEGRATION (DEFERRED)
+   - elm_fme_derived.F90 and elm_fme_vcoarsen.F90 were removed due to build
+     issues (histFileMod internals private, ptr_gcell pointer constraints).
+   - Reimplementation path: pass ELM state pointers directly to the register
+     function (avoid histFileMod internals); use col_ptr_t wrapper pattern
+     for hist_addfld1d pointer arguments.
+   - Fields of interest: TSOI, H2OSOI, SOILICE (vcoarsen), TOTAL_SOIL_WATER (derived)
+   - Shell_commands already has the namelist options, just commented out.
 
-4. MPAS-O DEPTH COARSENING + VERTICAL REDUCE REMAPPED OUTPUT
+4. MOSART FME INTEGRATION (DEFERRED)
+   - RtmFmeDerived.F90 was removed due to build issues (mpicom vs mpicom_rof,
+     ptr_rof pointer constraints).
+   - Reimplementation path: use mpicom_rof throughout; use col_ptr_t wrapper
+     pattern for RtmHistAddfld pointer arguments.
+   - Fields of interest: QSUR_LIQ, QSUB_LIQ, VOLR_LIQ, RUNOFFLND_LIQ, etc.
+   - Shell_commands already has the namelist options, just commented out.
+
+5. MPAS-O DEPTH COARSENING + VERTICAL REDUCE REMAPPED OUTPUT
    - Currently only fmeDerivedFields writes remapped output
    - Could extend fmeDepthCoarsening and fmeVerticalReduce to also write
      remapped files (requires multi-level PIO decomposition for 3D)
 
-5. SHARED MODULE ROBUSTNESS
+6. SHARED MODULE ROBUSTNESS
    - shr_horiz_remap_mod: Add MPI error return code checks
    - shr_horiz_remap_mod: PIO offset integer overflow for very large grids
    - shr_vcoarsen_mod: Validate bounds/coord_iface monotonicity consistency
    - shr_derived_mod: Reject empty operand tokens at parse time
 
-6. PERFORMANCE OPTIMIZATION
+7. PERFORMANCE OPTIMIZATION
    - Depth coarsening: persistent work arrays instead of per-block alloc
    - MPAS horiz remap: optimize send_local_cell lookup (currently O(n*m))
    - Vertical reduce: OpenMP for large grids
 
-7. UNIT TESTING
+8. UNIT TESTING
    - Standalone unit tests for shr_vcoarsen_mod, shr_derived_mod
    - Test edge cases: empty columns, single-level, mismatched bounds
 
-8. DOCUMENTATION
+9. DOCUMENTATION
    - User guide for FME output processing
    - Document all namelist options with examples
    - Document the ACE/Samudra training data pipeline end-to-end
@@ -93,7 +98,7 @@ TESTING CHECKLIST FOR PRODUCTION
 [ ] EAM vertical coarsening: correct layer count and field names
 [ ] EAM derived fields: TOTAL_WATER evaluates correctly
 [ ] EAM tendencies: non-zero after first timestep
-[ ] ELM vcoarsen: TSOI/H2OSOI coarsened fields present when enabled
+[ ] ELM vcoarsen: TSOI/H2OSOI coarsened fields present when enabled (deferred)
 [ ] Run verify_fme_output.py --rundir $RUNDIR --verbose
 [ ] ERS restart test: bit-for-bit with FME enabled
 [ ] Performance: measure overhead vs baseline

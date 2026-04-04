@@ -74,6 +74,8 @@ module eam_derived
   public :: eam_derived_register
   public :: eam_derived_stage     ! snapshot state before physics (for stage tendencies)
   public :: eam_derived_write
+  public :: eam_derived_get_cache ! read a derived field from the cache (for vcoarsen)
+  public :: eam_derived_is_defined! check if a field name is a defined derived field
 
   ! Parameters
   integer, parameter :: max_derived_flds = 50
@@ -920,5 +922,61 @@ contains
     end if
 
   end subroutine validate_tend_field
+
+  !============================================================================
+  subroutine eam_derived_get_cache(fname, lchnk, field_out, ncol, nlev, found)
+    !--------------------------------------------------------------------------
+    ! Return a previously computed derived field from the cache for chunk lchnk.
+    ! Sets found=.true. and fills field_out if the field is in derived_fld_defs.
+    ! Sets found=.false. otherwise (caller may then try other sources).
+    ! The cache is populated by eam_derived_write; callers must ensure they
+    ! run after eam_derived_write for the same chunk.
+    !--------------------------------------------------------------------------
+    character(len=*), intent(in)  :: fname
+    integer,          intent(in)  :: lchnk
+    real(r8),         intent(out) :: field_out(pcols, pver)
+    integer,          intent(in)  :: ncol
+    integer,          intent(in)  :: nlev
+    logical,          intent(out) :: found
+
+    integer :: i
+    character(len=max_name_len) :: uname
+
+    found = .false.
+    uname = adjustl(fname)
+    field_out(:,:) = 0.0_r8
+
+    if (.not. allocated(derived_cache)) return
+
+    do i = 1, n_derived
+      if (trim(expressions(i)%output_name) == trim(uname)) then
+        field_out(1:ncol, 1:nlev) = derived_cache(1:ncol, 1:nlev, i, lchnk)
+        found = .true.
+        return
+      end if
+    end do
+
+  end subroutine eam_derived_get_cache
+
+  !============================================================================
+  logical function eam_derived_is_defined(fname)
+    !--------------------------------------------------------------------------
+    ! Return .true. if fname matches any derived field output name defined via
+    ! derived_fld_defs in the namelist. Safe to call after eam_derived_readnl.
+    !--------------------------------------------------------------------------
+    character(len=*), intent(in) :: fname
+    integer :: i
+    character(len=max_name_len) :: uname
+
+    uname = adjustl(fname)
+    eam_derived_is_defined = .false.
+    do i = 1, n_derived
+      if (trim(expressions(i)%output_name) == trim(uname)) then
+        eam_derived_is_defined = .true.
+        return
+      end if
+    end do
+
+  end function eam_derived_is_defined
 
 end module eam_derived

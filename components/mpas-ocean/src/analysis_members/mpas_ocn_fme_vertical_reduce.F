@@ -125,6 +125,8 @@ contains
             nReduceFields = 0
          else
             nReduceFields = nFields
+            if (allocated(reduceFieldNames)) deallocate(reduceFieldNames)
+            if (allocated(reduceFieldMethods)) deallocate(reduceFieldMethods)
             allocate(reduceFieldNames(nReduceFields))
             allocate(reduceFieldMethods(nReduceFields))
 

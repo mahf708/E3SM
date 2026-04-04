@@ -114,6 +114,9 @@ CONTAINS
 
     ierr = 0
 
+    ! Guard against double-initialization (e.g. compute_on_startup calling init twice)
+    if (rd%initialized) return
+
     ierr = pio_openfile(iosystem, pioid, PIO_IOTYPE_NETCDF, trim(mapfile), pio_nowrite)
     if (ierr /= pio_noerr) then
       ierr = 1; return
@@ -281,6 +284,9 @@ CONTAINS
     integer, allocatable :: recvidx_unsorted(:), row_counts(:), bucket_pos(:)
 
     ierr = 0
+
+    ! Guard against double-initialization (e.g. compute_on_startup calling init twice)
+    if (rd%initialized) return
 
     ! --- Step 1: determine recv_counts ---
     allocate(need_from_rank(0:nprocs-1))
