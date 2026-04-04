@@ -250,14 +250,16 @@ CONTAINS
       ! frac_b = sum of remap weights per target cell. When source grid
       ! has land cells excluded, frac_b < 1 at coastlines. Dividing the
       ! remapped field by frac_b corrects for partial coverage.
-      allocate(frac_b_all(n_b))
-      pio_ierr = pio_inq_varid(pioid, 'frac_b', vid)
-      if (pio_ierr == pio_noerr) then
-        pio_ierr = pio_get_var(pioid, vid, frac_b_all)
-        allocate(rd%frac_b_local(rd%n_b_local))
-        rd%frac_b_local(1:rd%n_b_local) = frac_b_all(rd%row_start:rd%row_start+rd%n_b_local-1)
-      end if
-      deallocate(frac_b_all)
+      ! NOTE: temporarily disabled for debugging — if remap works without
+      ! frac_b, then the read is corrupting state.
+      !allocate(frac_b_all(n_b))
+      !pio_ierr = pio_inq_varid(pioid, 'frac_b', vid)
+      !if (pio_ierr == pio_noerr) then
+      !  pio_ierr = pio_get_var(pioid, vid, frac_b_all)
+      !  allocate(rd%frac_b_local(rd%n_b_local))
+      !  rd%frac_b_local(1:rd%n_b_local) = frac_b_all(rd%row_start:rd%row_start+rd%n_b_local-1)
+      !end if
+      !deallocate(frac_b_all)
 
       call pio_closefile(pioid)
 
