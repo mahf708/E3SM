@@ -97,9 +97,12 @@ contains
       type(mpas_pool_type), pointer :: meshPool
       integer, pointer :: nCellsSolve
       integer, dimension(:), pointer :: indexToCellID
-      integer :: myrank, nprocs, comm, ierr, iCell, gcol, i
-      integer, allocatable :: gcol_to_rank(:), send_gcol_list(:)
+      integer :: myrank, nprocs, comm, ierr, iCell, gcol, i, map_col
+      integer, allocatable :: gcol_to_rank(:), gcol_to_rank_global(:), send_gcol_list(:)
       integer(PIO_OFFSET_KIND), allocatable :: idof(:)
+      integer :: N_total, ocean_count
+      integer, allocatable :: is_ocean(:), gcol_to_ocean_col(:)
+      integer, dimension(:), pointer :: cellMask
 
       err = 0
       if (is_initialized) return
@@ -117,6 +120,61 @@ contains
          err = ierr; return
       end if
 
+      ! 1. Find global N_total
+      N_total = 0
+      block => domain % blocklist
+      do while (associated(block))
+         call mpas_pool_get_subpool(block % structs, 'mesh', meshPool)
+         call mpas_pool_get_dimension(block % dimensions, 'nCellsSolve', nCellsSolve)
+         call mpas_pool_get_array(meshPool, 'indexToCellID', indexToCellID)
+         do iCell = 1, nCellsSolve
+            if (indexToCellID(iCell) > N_total) N_total = indexToCellID(iCell)
+         end do
+         block => block % next
+      end do
+      call mpi_allreduce(N_total, iCell, 1, MPI_INTEGER, MPI_MAX, comm, ierr)
+      N_total = iCell
+
+      allocate(gcol_to_ocean_col(N_total))
+      if (remap_data%n_a == N_total) then
+         do i = 1, N_total
+            gcol_to_ocean_col(i) = i
+         end do
+      else
+         allocate(is_ocean(N_total))
+         is_ocean(:) = 0
+         block => domain % blocklist
+         do while (associated(block))
+            call mpas_pool_get_subpool(block % structs, 'mesh', meshPool)
+            call mpas_pool_get_dimension(block % dimensions, 'nCellsSolve', nCellsSolve)
+            call mpas_pool_get_array(meshPool, 'indexToCellID', indexToCellID)
+            call mpas_pool_get_array(meshPool, 'cellMask', cellMask)
+            do iCell = 1, nCellsSolve
+               if (cellMask(iCell) > 0) then
+                  is_ocean(indexToCellID(iCell)) = 1
+               end if
+            end do
+            block => block % next
+         end do
+
+         allocate(gcol_to_rank_global(N_total))
+         call mpi_allreduce(is_ocean, gcol_to_rank_global, N_total, &
+              MPI_INTEGER, MPI_MAX, comm, ierr)
+         is_ocean = gcol_to_rank_global
+         deallocate(gcol_to_rank_global)
+
+         ocean_count = 0
+         do i = 1, N_total
+            if (is_ocean(i) == 1) then
+               ocean_count = ocean_count + 1
+               gcol_to_ocean_col(i) = ocean_count
+            else
+               gcol_to_ocean_col(i) = 0
+            end if
+         end do
+         deallocate(is_ocean)
+      end if
+
       allocate(gcol_to_rank(remap_data%n_a))
       gcol_to_rank(:) = -1
       block => domain % blocklist
@@ -125,16 +183,18 @@ contains
          call mpas_pool_get_dimension(block % dimensions, 'nCellsSolve', nCellsSolve)
          call mpas_pool_get_array(meshPool, 'indexToCellID', indexToCellID)
          do iCell = 1, nCellsSolve
-            gcol = indexToCellID(iCell)
-            if (gcol >= 1 .and. gcol <= remap_data%n_a) gcol_to_rank(gcol) = myrank
+            map_col = gcol_to_ocean_col(indexToCellID(iCell))
+            if (map_col >= 1 .and. map_col <= remap_data%n_a) gcol_to_rank(map_col) = myrank
          end do
          block => block % next
       end do
 
-      ! Gather full gcol_to_rank across all ranks: each rank only knows which
-      ! cells it owns locally; after MPI_MAX every entry holds the owning rank.
-      call mpi_allreduce(MPI_IN_PLACE, gcol_to_rank, remap_data%n_a, &
+      ! Gather full gcol_to_rank across all ranks
+      allocate(gcol_to_rank_global(remap_data%n_a))
+      call mpi_allreduce(gcol_to_rank, gcol_to_rank_global, remap_data%n_a, &
            MPI_INTEGER, MPI_MAX, comm, ierr)
+      gcol_to_rank = gcol_to_rank_global
+      deallocate(gcol_to_rank_global)
 
       call remap_data%build_comm(gcol_to_rank, comm, myrank, nprocs, &
            send_gcol_list, ierr)
@@ -153,7 +213,8 @@ contains
          do i = 1, remap_data%n_send_total
             if (send_local_cell(i) > 0) cycle
             do iCell = 1, nCellsSolve
-               if (indexToCellID(iCell) == send_gcol_list(i)) then
+               map_col = gcol_to_ocean_col(indexToCellID(iCell))
+               if (map_col == send_gcol_list(i)) then
                   send_local_cell(i) = iCell; exit
                end if
             end do
@@ -161,6 +222,7 @@ contains
          block => block % next
       end do
       if (allocated(send_gcol_list)) deallocate(send_gcol_list)
+      if (allocated(gcol_to_ocean_col)) deallocate(gcol_to_ocean_col)
 
       ! Validate: all send_local_cell entries must be > 0
       do i = 1, remap_data%n_send_total
@@ -203,11 +265,12 @@ contains
       err = 0
       if (.not. is_initialized) then; err = 1; return; end if
 
+      if (.not. allocated(ws_send_buf) .or. size(ws_send_buf) < max(1, remap_data%n_send_total)) then
+         if (allocated(ws_send_buf)) deallocate(ws_send_buf)
+         allocate(ws_send_buf(max(1, remap_data%n_send_total)))
+      end if
+
       if (remap_data%n_send_total > 0) then
-         if (.not. allocated(ws_send_buf) .or. size(ws_send_buf) < remap_data%n_send_total) then
-            if (allocated(ws_send_buf)) deallocate(ws_send_buf)
-            allocate(ws_send_buf(remap_data%n_send_total))
-         end if
          do i = 1, remap_data%n_send_total
             ws_send_buf(i) = real(field1d(send_local_cell(i)), r8)
          end do

@@ -208,11 +208,9 @@ CONTAINS
 
     ! Grow persistent send workspace if needed
     needed = self%shared%n_send_total * numlev
-    if (needed > 0) then
-      if (.not. allocated(self%ws_send_buf) .or. size(self%ws_send_buf) < needed) then
-        if (allocated(self%ws_send_buf)) deallocate(self%ws_send_buf)
-        allocate(self%ws_send_buf(needed))
-      end if
+    if (.not. allocated(self%ws_send_buf) .or. size(self%ws_send_buf) < max(1, needed)) then
+      if (allocated(self%ws_send_buf)) deallocate(self%ws_send_buf)
+      allocate(self%ws_send_buf(max(1, needed)))
     end if
 
     ! Pack send buffer from EAM chunk layout

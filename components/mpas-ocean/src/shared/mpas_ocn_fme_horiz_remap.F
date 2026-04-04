@@ -125,10 +125,13 @@ contains
       integer, pointer :: nCellsSolve
       integer, dimension(:), pointer :: indexToCellID
       integer :: myrank, nprocs, comm, ierr
-      integer :: iCell, gcol
-      integer, allocatable :: gcol_to_rank(:)
+      integer :: iCell, gcol, map_col
+      integer, allocatable :: gcol_to_rank(:), gcol_to_rank_global(:)
       integer, allocatable :: send_gcol_list(:)
       integer :: i
+      integer :: N_total, ocean_count
+      integer, allocatable :: is_ocean(:), gcol_to_ocean_col(:)
+      integer, dimension(:), pointer :: maxLevelCell
 
       err = 0
 
@@ -153,6 +156,66 @@ contains
          return
       end if
 
+      ! Resolve cell ID mismatch: If n_a < N_total, the map file was generated
+      ! from a masked mesh (ocean only) and uses a 1-based contiguous sequence
+      ! for ocean cells, whereas MPAS indexToCellID contains all cells.
+      ! We map indexToCellID to this sequence by finding ocean cells.
+
+      ! 1. Find global N_total
+      N_total = 0
+      block => domain % blocklist
+      do while (associated(block))
+         call mpas_pool_get_subpool(block % structs, 'mesh', meshPool)
+         call mpas_pool_get_dimension(block % dimensions, 'nCellsSolve', nCellsSolve)
+         call mpas_pool_get_array(meshPool, 'indexToCellID', indexToCellID)
+         do iCell = 1, nCellsSolve
+            if (indexToCellID(iCell) > N_total) N_total = indexToCellID(iCell)
+         end do
+         block => block % next
+      end do
+      call mpi_allreduce(N_total, iCell, 1, MPI_INTEGER, MPI_MAX, comm, ierr)
+      N_total = iCell
+
+      allocate(gcol_to_ocean_col(N_total))
+      if (remap_data%n_a == N_total) then
+         do i = 1, N_total
+            gcol_to_ocean_col(i) = i
+         end do
+      else
+         allocate(is_ocean(N_total))
+         is_ocean(:) = 0
+         block => domain % blocklist
+         do while (associated(block))
+            call mpas_pool_get_subpool(block % structs, 'mesh', meshPool)
+            call mpas_pool_get_dimension(block % dimensions, 'nCellsSolve', nCellsSolve)
+            call mpas_pool_get_array(meshPool, 'indexToCellID', indexToCellID)
+            call mpas_pool_get_array(meshPool, 'maxLevelCell', maxLevelCell)
+            do iCell = 1, nCellsSolve
+               if (maxLevelCell(iCell) > 0) then
+                  is_ocean(indexToCellID(iCell)) = 1
+               end if
+            end do
+            block => block % next
+         end do
+
+         allocate(gcol_to_rank_global(N_total))
+         call mpi_allreduce(is_ocean, gcol_to_rank_global, N_total, &
+              MPI_INTEGER, MPI_MAX, comm, ierr)
+         is_ocean = gcol_to_rank_global
+         deallocate(gcol_to_rank_global)
+
+         ocean_count = 0
+         do i = 1, N_total
+            if (is_ocean(i) == 1) then
+               ocean_count = ocean_count + 1
+               gcol_to_ocean_col(i) = ocean_count
+            else
+               gcol_to_ocean_col(i) = 0
+            end if
+         end do
+         deallocate(is_ocean)
+      end if
+
       ! Build gcol_to_rank mapping from MPAS cell decomposition
       allocate(gcol_to_rank(remap_data%n_a))
       gcol_to_rank(:) = -1
@@ -164,19 +227,21 @@ contains
          call mpas_pool_get_array(meshPool, 'indexToCellID', indexToCellID)
 
          do iCell = 1, nCellsSolve
-            gcol = indexToCellID(iCell)
-            if (gcol >= 1 .and. gcol <= remap_data%n_a) then
-               gcol_to_rank(gcol) = myrank
+            map_col = gcol_to_ocean_col(indexToCellID(iCell))
+            if (map_col >= 1 .and. map_col <= remap_data%n_a) then
+               gcol_to_rank(map_col) = myrank
             end if
          end do
 
          block => block % next
       end do
 
-      ! Gather full gcol_to_rank across all ranks: each rank only knows which
-      ! cells it owns locally; after MPI_MAX every entry holds the owning rank.
-      call mpi_allreduce(MPI_IN_PLACE, gcol_to_rank, remap_data%n_a, &
+      ! Gather full gcol_to_rank across all ranks
+      allocate(gcol_to_rank_global(remap_data%n_a))
+      call mpi_allreduce(gcol_to_rank, gcol_to_rank_global, remap_data%n_a, &
            MPI_INTEGER, MPI_MAX, comm, ierr)
+      gcol_to_rank = gcol_to_rank_global
+      deallocate(gcol_to_rank_global)
 
       ! Phase 2: Build MPI communication pattern
       call remap_data%build_comm(gcol_to_rank, comm, myrank, nprocs, &
@@ -202,7 +267,8 @@ contains
          do i = 1, remap_data%n_send_total
             if (send_local_cell(i) > 0) cycle  ! already found
             do iCell = 1, nCellsSolve
-               if (indexToCellID(iCell) == send_gcol_list(i)) then
+               map_col = gcol_to_ocean_col(indexToCellID(iCell))
+               if (map_col == send_gcol_list(i)) then
                   send_local_cell(i) = iCell
                   exit
                end if
@@ -213,6 +279,7 @@ contains
       end do
 
       if (allocated(send_gcol_list)) deallocate(send_gcol_list)
+      if (allocated(gcol_to_ocean_col)) deallocate(gcol_to_ocean_col)
 
       ! Validate: all send_local_cell entries must be > 0
       do i = 1, remap_data%n_send_total
@@ -294,12 +361,12 @@ contains
       comm   = domain % dminfo % comm
 
       needed = remap_data%n_send_total * numlev
-      if (needed > 0) then
-         if (.not. allocated(ws_send_buf) .or. size(ws_send_buf) < needed) then
-            if (allocated(ws_send_buf)) deallocate(ws_send_buf)
-            allocate(ws_send_buf(needed))
-         end if
+      if (.not. allocated(ws_send_buf) .or. size(ws_send_buf) < max(1, needed)) then
+         if (allocated(ws_send_buf)) deallocate(ws_send_buf)
+         allocate(ws_send_buf(max(1, needed)))
+      end if
 
+      if (needed > 0) then
          do i = 1, remap_data%n_send_total
             icell = send_local_cell(i)
             do k = 1, numlev

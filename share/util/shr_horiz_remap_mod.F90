@@ -246,20 +246,8 @@ CONTAINS
       if (pio_ierr /= pio_noerr) then; ierr = 19; call pio_closefile(pioid); return; end if
       pio_ierr = pio_get_var(pioid, vid, yc_b)
 
-      ! --- target cell coverage fraction (for renormalization) ---
-      ! frac_b = sum of remap weights per target cell. When source grid
-      ! has land cells excluded, frac_b < 1 at coastlines. Dividing the
-      ! remapped field by frac_b corrects for partial coverage.
-      ! NOTE: temporarily disabled for debugging — if remap works without
-      ! frac_b, then the read is corrupting state.
-      !allocate(frac_b_all(n_b))
-      !pio_ierr = pio_inq_varid(pioid, 'frac_b', vid)
-      !if (pio_ierr == pio_noerr) then
-      !  pio_ierr = pio_get_var(pioid, vid, frac_b_all)
-      !  allocate(rd%frac_b_local(rd%n_b_local))
-      !  rd%frac_b_local(1:rd%n_b_local) = frac_b_all(rd%row_start:rd%row_start+rd%n_b_local-1)
-      !end if
-      !deallocate(frac_b_all)
+      ! frac_b (target cell coverage fraction) is computed in build_comm
+      ! from the CRS weight sum directly, avoiding PIO state corruption.
 
       call pio_closefile(pioid)
 
@@ -404,6 +392,15 @@ CONTAINS
 
     deallocate(recvidx_unsorted, row_counts, bucket_pos)
 
+    ! Compute target cell coverage fraction for coastal renormalization
+    allocate(rd%frac_b_local(rd%n_b_local))
+    rd%frac_b_local(:) = 0.0_r8
+    do i = 1, rd%n_b_local
+      do j = rd%row_offsets(i), rd%row_offsets(i+1) - 1
+        rd%frac_b_local(i) = rd%frac_b_local(i) + rd%wgt(j)
+      end do
+    end do
+
     ! Free init-only data
     deallocate(rd%tmp_dst, rd%tmp_src_gid, rd%tmp_wgt)
     rd%tmp_nnz = 0
@@ -440,12 +437,12 @@ CONTAINS
     ierr = 0
 
     ! Grow persistent recv workspace if needed
+    ! Always allocate at least size 1 to prevent MPI_Alltoallv from
+    ! crashing when passed an unallocated array.
     needed = rd%n_recv_total * numlev
-    if (needed > 0) then
-      if (.not. allocated(rd%ws_recv_buf) .or. size(rd%ws_recv_buf) < needed) then
-        if (allocated(rd%ws_recv_buf)) deallocate(rd%ws_recv_buf)
-        allocate(rd%ws_recv_buf(needed))
-      end if
+    if (.not. allocated(rd%ws_recv_buf) .or. size(rd%ws_recv_buf) < max(1, needed)) then
+      if (allocated(rd%ws_recv_buf)) deallocate(rd%ws_recv_buf)
+      allocate(rd%ws_recv_buf(max(1, needed)))
     end if
 
     ! Scale counts/displacements by numlev
