@@ -189,27 +189,18 @@ def find_files(rundir, pattern, exclude=None):
         Sorted list of matching file paths.
     """
     hits = sorted(glob.glob(os.path.join(rundir, pattern)))
+    # Always exclude .base restart files
+    hits = [f for f in hits if not f.endswith('.base')]
     if exclude:
         hits = [f for f in hits if exclude not in os.path.basename(f)]
     return hits
 
 
 def safe_open(path):
-    """Open a NetCDF file with xarray (preferred) or netCDF4.
-
-    If the file has time=0 (empty from restart), try the .base version
-    which contains the actual data from the completed run segment.
-    """
+    """Open a NetCDF file with xarray (preferred) or netCDF4."""
     if HAS_XR:
         try:
-            ds = xr.open_dataset(path, decode_times=False)
-            # Check for empty time dimension (CIME restart pattern)
-            if 'time' in ds.dims and ds.dims['time'] == 0:
-                base_path = path + '.base'
-                if os.path.exists(base_path):
-                    ds.close()
-                    ds = xr.open_dataset(base_path, decode_times=False)
-            return ds
+            return xr.open_dataset(path, decode_times=False)
         except Exception:
             pass
     if HAS_NC4:
