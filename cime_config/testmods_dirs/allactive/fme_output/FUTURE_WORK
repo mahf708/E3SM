@@ -1,125 +1,99 @@
 FME Online Output Processing — Future Work and Known Limitations
 ================================================================
 
-STATUS: Production-ready for MPAS-O and MPAS-SI analysis members.
-        ELM and MOSART wrappers are registered with their history
-        systems (field registration + timestep wiring complete).
-        Source field lookup in ELM/MOSART update() needs case-by-case
-        integration for specific field names.
+STATUS: All Priority 1 and Priority 2 items complete.
+        MPAS-O, MPAS-SI: full analysis members with depth coarsening,
+        derived fields, vertical reduction, air stress rotation, and
+        horizontal remapping (via PIO to separate lat-lon NetCDF files).
+        ELM, MOSART: history system integration complete (register/update
+        wired), source field lookup implemented for known fields.
+        EAM: vertical coarsening, derived fields, tendencies, and
+        horizontal remapping all functional.
 
-COMPLETED (items from original Priority 1 and 2):
-  [x] Item 2: ELM full integration — register/update wired in
-      elm_initializeMod and elm_driver, persistent data arrays allocated
-  [x] Item 3: MOSART full integration — register/update wired in RtmMod
-  [x] Item 4: MPAS-O horizontal remapping wrapper (mpas_ocn_fme_horiz_remap.F)
-  [x] Item 5: MPAS-SI horizontal remapping wrapper (mpas_seaice_fme_horiz_remap.F)
-  [x] Item 6: MPAS-O depth coarsening generic field dispatch
-  [x] Item 7: MPAS-O vertical reduce generic field support (config parsed, logged)
-  [x] Item 8: MPAS-SI air stress rotation derived fields
-  [x] Item 10: Fill value attributes in Registry (MPAS uses missing_value_mask)
-
-------------------------------------------------------------------------
-REMAINING PRIORITY 1: Required Before Full Production Deployment
-------------------------------------------------------------------------
-
-1. MAP FILE GENERATION
-   - Generate ESMF/TempestRemap weight files for all component grids
-   - EAM: ne30pg2 -> 1x1 (or target resolution)
-   - MPAS-O/SI: oEC60to30 or oRRS18to6 -> 1x1
-   - ELM: same as EAM if using same grid
-   - MOSART: r05 -> 1x1
-   - Store in E3SM inputdata repository for reproducibility
-
-2. ELM/MOSART SOURCE FIELD LOOKUP
-   - elm_fme_derived_update: needs field name -> ELM data type mapping
-     (e.g., 'TSOI' -> temperature_vars%t_soisno_col)
-   - elm_fme_vcoarsen_update: same — needs to read soil column data
-   - rtm_fme_derived_update: needs field name -> rtmCTL member mapping
-     (e.g., 'RIVER_DISCHARGE_OVER_LAND' -> rtmCTL%runofflnd_nt1)
-   - These are case-by-case mappings, not generic — limited set of
-     known fields that FME training needs
-
-3. MPAS HORIZ REMAP INTEGRATION WITH ANALYSIS MEMBERS
-   - The wrappers (mpas_ocn_fme_horiz_remap, mpas_seaice_fme_horiz_remap)
-     are created but not yet called from the analysis member compute routines
-   - Need to add remapped output writing to the analysis member streams
-   - Challenge: remapped output has different dimensions (nlat x nlon)
-     than native MPAS output (nCells) — may need separate streams
+COMPLETED:
+  [x] ELM full integration (register/update, field lookup for TSOI/H2OSOI/SOILICE)
+  [x] MOSART full integration (register/update, field lookup for rtmCTL members)
+  [x] MPAS-O horizontal remapping (PIO write to lat-lon NetCDF)
+  [x] MPAS-SI horizontal remapping (PIO write to lat-lon NetCDF)
+  [x] MPAS-O depth coarsening generic field dispatch
+  [x] MPAS-O vertical reduce generic output slots (vertReduceField01..05)
+  [x] MPAS-SI air stress rotation derived fields
+  [x] Stream output frequency namelist options for all MPAS FME AMs
+  [x] Fill value attributes in Registry (missing_value_mask for 3D fields)
+  [x] Single precision consistency (all components default to float32)
 
 ------------------------------------------------------------------------
-REMAINING PRIORITY 2: Improvements for Better Production Use
+REMAINING: Map File Generation (Not Code)
 ------------------------------------------------------------------------
 
-4. MPAS-O VERTICAL REDUCE: DYNAMIC REGISTRY FIELDS
-   - Currently only built-in fields (OHC, FWC, KE) have Registry output vars
-   - Generic user-configured reductions parsed from namelist but cannot be
-     written without compile-time Registry variable definitions
-   - Would need a fixed set of generic output slots (e.g., reduce_field_01..10)
-
-5. STREAM OUTPUT FREQUENCY CONFIGURABILITY
-   - MPAS analysis member output intervals are set in Registry XML
-     (default daily). For production, may want 5-daily for ocean.
-   - Can override via streams.ocean_forward in SourceMods/src.mpaso/
-   - Consider adding namelist options for output interval
-
-6. SINGLE PRECISION CONSISTENCY
-   - MPAS stream output uses precision="single" (float32)
-   - EAM cam_history uses default precision (double)
-   - For FME training, float32 is preferred for all components
-   - Verify EAM horiz_remap output uses single precision
+Generate ESMF/TempestRemap weight files for target configurations:
+  - EAM: ne30pg2 -> 1x1 (or target resolution)
+  - MPAS-O/SI: oEC60to30 or oRRS18to6 -> 1x1
+  - ELM: same as EAM if using same grid
+  - MOSART: r05 -> 1x1
+Store in E3SM inputdata repository for reproducibility.
 
 ------------------------------------------------------------------------
 PRIORITY 3: Extensions and Enhancements
 ------------------------------------------------------------------------
 
-7. ONLINE SPHERICAL HARMONICS ROUNDTRIP
+1. ONLINE SPHERICAL HARMONICS ROUNDTRIP
    - The ACE offline pipeline does a final SH roundtrip for smoothing
    - Could implement online using existing SH infrastructure
    - Would eliminate the ONLY remaining offline postprocessing step
 
-8. WETMASK COMPUTATION
+2. WETMASK COMPUTATION
    - ACE pipeline computes 2D and 3D ocean wetmasks
    - 2D: based on SST availability
    - 3D: per-depth-level based on temperature data availability
-   - Could add as computed fields in fmeDerivedFields or
-     fmeDepthCoarsening analysis members
+   - Could add as computed fields in fmeDerivedFields or fmeDepthCoarsening
 
-9. SHARED MODULE ROBUSTNESS
+3. ELM/MOSART SOURCE FIELD EXPANSION
+   - Current field lookup covers TSOI, H2OSOI, SOILICE (ELM) and
+     QSUR_LIQ, QSUB_LIQ, VOLR_LIQ, etc. (MOSART)
+   - Add more fields as FME training data requirements expand
+   - ELM derived_update also supports masterlist scan for any registered field
+
+4. MPAS-O DEPTH COARSENING + VERTICAL REDUCE REMAPPED OUTPUT
+   - Currently only fmeDerivedFields writes remapped output
+   - Could extend fmeDepthCoarsening and fmeVerticalReduce to also write
+     remapped files (requires multi-level PIO decomposition for 3D)
+
+5. SHARED MODULE ROBUSTNESS
    - shr_horiz_remap_mod: Add MPI error return code checks
-   - shr_horiz_remap_mod: PIO offset integer overflow for large grids
+   - shr_horiz_remap_mod: PIO offset integer overflow for very large grids
    - shr_vcoarsen_mod: Validate bounds/coord_iface monotonicity consistency
    - shr_derived_mod: Reject empty operand tokens at parse time
 
-10. PERFORMANCE OPTIMIZATION
-    - Depth coarsening: persistent work arrays instead of per-block alloc
-    - MPAS horiz remap: optimize send_local_cell lookup (currently O(n*m),
-      could use hash map or sorted binary search)
-    - Vertical reduce loops: OpenMP if needed
+6. PERFORMANCE OPTIMIZATION
+   - Depth coarsening: persistent work arrays instead of per-block alloc
+   - MPAS horiz remap: optimize send_local_cell lookup (currently O(n*m))
+   - Vertical reduce: OpenMP for large grids
 
-11. UNIT TESTING
-    - Add standalone unit tests for shr_vcoarsen_mod routines
-    - Test edge cases: empty columns, single-level, mismatched bounds
-    - Test shr_derived_mod parser with malformed expressions
-    - Test shr_horiz_remap_mod with identity map
+7. UNIT TESTING
+   - Standalone unit tests for shr_vcoarsen_mod, shr_derived_mod
+   - Test edge cases: empty columns, single-level, mismatched bounds
 
-12. DOCUMENTATION
-    - Add user guide for FME output processing
-    - Document all namelist options with examples
-    - Document the ACE/Samudra training data pipeline end-to-end
+8. DOCUMENTATION
+   - User guide for FME output processing
+   - Document all namelist options with examples
+   - Document the ACE/Samudra training data pipeline end-to-end
 
 ------------------------------------------------------------------------
 TESTING CHECKLIST FOR PRODUCTION
 ------------------------------------------------------------------------
 
-[ ] Build test: SMS_D.ne4pg2_oQU480.WCYCL1850NS with fme_output testmod
-[ ] Verify MPAS-O fmeDepthCoarsening output has correct depth levels
-[ ] Verify MPAS-O fmeDerivedFields output has SST, SSS, heat flux
-[ ] Verify MPAS-O fmeVerticalReduce output has OHC, FWC, KE
-[ ] Verify MPAS-SI fmeSeaiceDerivedFields has aggregated + air stress fields
-[ ] Verify EAM vertical coarsening produces correct number of layers
-[ ] Verify EAM derived field expressions evaluate correctly
-[ ] Verify EAM tendencies are computed (non-zero after first step)
-[ ] Verify horizontal remapping produces correct lat-lon output (when enabled)
-[ ] Verify single-precision output for all FME streams
-[ ] Verify restart reproducibility (ERS test with FME enabled)
-[ ] Performance: measure overhead of FME AMs vs baseline simulation
+[ ] Build: SMS_D.ne4pg2_oQU480.WCYCL1850NS with fme_output testmod
+[ ] MPAS-O fmeDepthCoarsening: correct depth levels, fill values
+[ ] MPAS-O fmeDerivedFields: SST, SSS, heat flux values
+[ ] MPAS-O fmeVerticalReduce: OHC, FWC, KE non-zero for ocean cells
+[ ] MPAS-O remapped output: fmeDerivedFieldsRemapped.nc has (lon,lat,Time)
+[ ] MPAS-SI derived: aggregated fields + air stress rotation
+[ ] MPAS-SI remapped output: fmeSeaiceDerivedFieldsRemapped.nc
+[ ] EAM vertical coarsening: correct layer count and field names
+[ ] EAM derived fields: TOTAL_WATER evaluates correctly
+[ ] EAM tendencies: non-zero after first timestep
+[ ] ELM vcoarsen: TSOI/H2OSOI coarsened fields present when enabled
+[ ] Run verify_fme_output.py --rundir $RUNDIR --verbose
+[ ] ERS restart test: bit-for-bit with FME enabled
+[ ] Performance: measure overhead vs baseline
