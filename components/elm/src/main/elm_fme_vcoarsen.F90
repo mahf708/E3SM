@@ -192,31 +192,61 @@ contains
     ! Compute vertically coarsened fields each timestep.
     ! Uses shr_vcoarsen_avg with ELM's zisoi (soil interface depths)
     ! as the coordinate interfaces.
-    !
-    ! Note: Source field data lookup requires integration with ELM's
-    ! column-level data types. The coarsened output arrays are registered
-    ! with histFileMod and will be written when active on a history tape.
     !--------------------------------------------------------------------------
+    use ColumnDataType, only: col_es, col_ws
+
     type(bounds_type), intent(in) :: bounds
+
+    integer :: c, ifld, k, idx, begc, endc
+    real(r8) :: coord_iface(0:nlevgrnd)
+    real(r8) :: field_col(nlevgrnd)
+    real(r8) :: coarsened_out(n_vcoarsen_levs)
+    real(r8), pointer :: src_2d(:,:)
 
     if (.not. has_vcoarsen) return
 
-    ! Vertical coarsening evaluation is registered with histFileMod.
-    ! Source field lookup from ELM column data types (temperature_vars,
-    ! waterstate_vars, etc.) requires case-by-case integration similar
-    ! to how elm_initializeMod maps field names to data type pointers.
-    !
-    ! The persistent arrays (vcoarsen_data) are registered with histFileMod.
-    ! When a specific source field integration is added (e.g., TSOI from
-    ! temperature_vars%t_soisno_col), the update loop would be:
-    !
-    !   do c = begc, endc
-    !     call shr_vcoarsen_avg(source_col(:,c), zisoi(0:nlevsoi), nlevsoi, &
-    !          elm_vcoarsen_zbounds, n_vcoarsen_levs, spval, coarsened_out)
-    !     do k = 1, n_vcoarsen_levs
-    !       vcoarsen_data(c, (ifld-1)*n_vcoarsen_levs + k) = coarsened_out(k)
-    !     end do
-    !   end do
+    begc = bounds%begc
+    endc = bounds%endc
+
+    ! Build depth interface array from ELM soil interfaces (constant across columns)
+    ! zisoi(0:nlevgrnd) gives the interface depths in meters
+    do k = 0, nlevgrnd
+      coord_iface(k) = zisoi(k)
+    end do
+
+    do ifld = 1, n_vcoarsen_flds
+      ! Map field name to ELM data pointer
+      nullify(src_2d)
+      select case (trim(vcoarsen_fld_names(ifld)))
+      case ('TSOI')
+        src_2d => col_es%t_soisno(:,1:nlevgrnd)
+      case ('H2OSOI')
+        src_2d => col_ws%h2osoi_vol(:,1:nlevgrnd)
+      case ('SOILICE')
+        src_2d => col_ws%h2osoi_ice(:,1:nlevgrnd)
+      case default
+        if (masterproc) then
+          write(iulog,*) 'elm_fme_vcoarsen_update: unknown field ', &
+               trim(vcoarsen_fld_names(ifld)), ', filling with spval'
+        end if
+        idx = (ifld - 1) * n_vcoarsen_levs
+        vcoarsen_data(begc:endc, idx+1:idx+n_vcoarsen_levs) = spval
+        cycle
+      end select
+
+      ! Compute vertical coarsening for each column
+      do c = begc, endc
+        field_col(1:nlevgrnd) = src_2d(c, 1:nlevgrnd)
+
+        call shr_vcoarsen_avg(field_col, coord_iface, nlevgrnd, &
+             elm_vcoarsen_zbounds, n_vcoarsen_levs, spval, coarsened_out)
+
+        idx = (ifld - 1) * n_vcoarsen_levs
+        do k = 1, n_vcoarsen_levs
+          vcoarsen_data(c, idx + k) = coarsened_out(k)
+        end do
+      end do
+    end do
 
   end subroutine elm_fme_vcoarsen_update
 
