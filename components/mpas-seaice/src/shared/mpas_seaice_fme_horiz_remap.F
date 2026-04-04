@@ -24,6 +24,9 @@ module seaice_fme_horiz_remap
    use mpas_pool_routines
    use mpas_dmpar
    use mpas_kind_types
+   use mpas_timekeeping
+   use mpas_stream_manager, only: MPAS_stream_mgr_get_property, &
+        MPAS_STREAM_PROPERTY_FILENAME
    use mpas_log, only: mpas_log_write
 
    use shr_kind_mod, only: r8 => shr_kind_r8
@@ -50,6 +53,7 @@ module seaice_fme_horiz_remap
    public :: seaice_fme_horiz_remap_write_time
    public :: seaice_fme_horiz_remap_close_file
    public :: seaice_fme_horiz_remap_get_dims
+   public :: seaice_fme_remap_build_filename
 
    type(shr_horiz_remap_t) :: remap_data
    integer, allocatable :: send_local_cell(:)
@@ -216,6 +220,9 @@ contains
       ierr = pio_put_att(pio_file, pio_lat_var, 'units', 'degrees_north')
       ierr = pio_put_att(pio_file, pio_lat_var, 'long_name', 'latitude')
 
+      ierr = pio_put_att(pio_file, PIO_GLOBAL, 'source', 'E3SM FME online remapping')
+      ierr = pio_put_att(pio_file, PIO_GLOBAL, 'Conventions', 'CF-1.8')
+
       n_pio_vars = 0
       time_record = 0
       file_is_open = .true.
@@ -226,14 +233,25 @@ contains
       integer, intent(in) :: numlev
       integer, intent(out) :: err
       integer :: ierr
+      real(kind=4) :: fill_val
 
       err = 0
       n_pio_vars = n_pio_vars + 1
+      if (n_pio_vars > max_pio_vars) then
+         call mpas_log_write('seaice_fme_horiz_remap: exceeded max_pio_vars=$i for var: ' &
+              // trim(varname), messageType=MPAS_LOG_ERR, &
+              intArgs=(/max_pio_vars/))
+         n_pio_vars = n_pio_vars - 1
+         err = 2; return
+      end if
+
       pio_var_names(n_pio_vars) = varname
       ierr = pio_def_var(pio_file, trim(varname), PIO_REAL, &
            (/dim_lon_id, dim_lat_id, dim_time_id/), pio_var_descs(n_pio_vars))
       ierr = pio_put_att(pio_file, pio_var_descs(n_pio_vars), 'units', trim(units))
       ierr = pio_put_att(pio_file, pio_var_descs(n_pio_vars), 'long_name', trim(long_name))
+      fill_val = 1.0E34
+      ierr = pio_put_att(pio_file, pio_var_descs(n_pio_vars), '_FillValue', fill_val)
    end subroutine seaice_fme_horiz_remap_def_var!}}}
 
    subroutine seaice_fme_horiz_remap_write_var(varname, fld_out, numlev, err)!{{{
@@ -287,5 +305,56 @@ contains
    logical function seaice_fme_horiz_remap_active()!{{{
       seaice_fme_horiz_remap_active = is_initialized
    end function seaice_fme_horiz_remap_active!}}}
+
+   subroutine seaice_fme_remap_build_filename(domain, streamName, filename, err)!{{{
+   !> Build a date-stamped remapped output filename from the native stream's
+   !> filename_template (set by buildnml, contains casename and date tokens).
+
+      type(domain_type), intent(inout) :: domain
+      character(len=*), intent(in) :: streamName
+      character(len=*), intent(out) :: filename
+      integer, intent(out) :: err
+
+      character(len=StrKIND) :: tmpl
+      type(MPAS_Time_Type) :: currTime
+      integer :: yr, mo, dy, ierr, idx
+      character(len=4) :: yr_str
+      character(len=2) :: mo_str, dy_str
+      character(len=len(filename)) :: tmp
+
+      err = 0
+      filename = ''
+
+      call MPAS_stream_mgr_get_property(domain % streamManager, &
+           trim(streamName), MPAS_STREAM_PROPERTY_FILENAME, tmpl, ierr=ierr)
+      if (ierr /= 0) then
+         tmpl = trim(streamName) // '.$Y-$M-$D.nc'
+      end if
+
+      ! Insert ".remapped" before ".nc"
+      idx = index(tmpl, '.nc', back=.true.)
+      if (idx > 0) then
+         tmpl = tmpl(1:idx-1) // '.remapped.nc'
+      else
+         tmpl = trim(tmpl) // '.remapped.nc'
+      end if
+
+      ! Substitute date from current model time
+      currTime = mpas_get_clock_time(domain % clock, MPAS_NOW, ierr)
+      call mpas_get_time(currTime, YYYY=yr, MM=mo, DD=dy, ierr=ierr)
+
+      write(yr_str, '(I4.4)') yr
+      write(mo_str, '(I2.2)') mo
+      write(dy_str, '(I2.2)') dy
+
+      filename = tmpl
+      idx = index(filename, '$Y')
+      if (idx > 0) then; tmp = filename(1:idx-1) // yr_str // filename(idx+2:); filename = tmp; end if
+      idx = index(filename, '$M')
+      if (idx > 0) then; tmp = filename(1:idx-1) // mo_str // filename(idx+2:); filename = tmp; end if
+      idx = index(filename, '$D')
+      if (idx > 0) then; tmp = filename(1:idx-1) // dy_str // filename(idx+2:); filename = tmp; end if
+
+   end subroutine seaice_fme_remap_build_filename!}}}
 
 end module seaice_fme_horiz_remap

@@ -27,7 +27,8 @@ module seaice_fme_derived_fields
         seaice_fme_horiz_remap_field, seaice_fme_horiz_remap_active, &
         seaice_fme_horiz_remap_open_file, seaice_fme_horiz_remap_def_var, &
         seaice_fme_horiz_remap_write_var, seaice_fme_horiz_remap_write_time, &
-        seaice_fme_horiz_remap_close_file, seaice_fme_horiz_remap_get_dims
+        seaice_fme_horiz_remap_close_file, seaice_fme_horiz_remap_get_dims, &
+        seaice_fme_remap_build_filename
 
    implicit none
    private
@@ -343,6 +344,7 @@ contains
       ! Remap workspace
       real(r8), allocatable :: fld_remap(:)
       integer :: ierr_remap
+      character(len=StrKIND) :: remap_filename
 
       real(kind=RKIND) :: &
            areaSum, &
@@ -434,15 +436,25 @@ contains
          ! --- Horizontal remapping to lat-lon grid ---
          if (do_horiz_remap) then
             if (.not. remap_file_opened) then
+               call seaice_fme_remap_build_filename(domain, &
+                    'fmeSeaiceDerivedFieldsOutput', remap_filename, ierr_remap)
                call seaice_fme_horiz_remap_open_file(domain, &
-                    'fmeSeaiceDerivedFieldsRemapped.nc', ierr_remap)
+                    trim(remap_filename), ierr_remap)
                if (ierr_remap == 0) then
                   call seaice_fme_horiz_remap_def_var('iceAreaTotal', 'unitless', &
-                       'Total ice area fraction (remapped)', 1, ierr_remap)
+                       'Total ice area fraction', 1, ierr_remap)
                   call seaice_fme_horiz_remap_def_var('iceVolumeTotal', 'm', &
-                       'Total ice volume (remapped)', 1, ierr_remap)
+                       'Total ice volume per unit area', 1, ierr_remap)
+                  call seaice_fme_horiz_remap_def_var('snowVolumeTotal', 'm', &
+                       'Total snow volume per unit area', 1, ierr_remap)
+                  call seaice_fme_horiz_remap_def_var('iceThicknessMean', 'm', &
+                       'Area-weighted mean ice thickness', 1, ierr_remap)
                   call seaice_fme_horiz_remap_def_var('surfaceTemperatureMean', 'K', &
-                       'Mean surface temperature (remapped)', 1, ierr_remap)
+                       'Area-weighted mean surface temperature', 1, ierr_remap)
+                  call seaice_fme_horiz_remap_def_var('airStressZonal', 'N m^-2', &
+                       'Zonal air stress on ice', 1, ierr_remap)
+                  call seaice_fme_horiz_remap_def_var('airStressMeridional', 'N m^-2', &
+                       'Meridional air stress on ice', 1, ierr_remap)
                   remap_file_opened = .true.
                end if
             end if
@@ -460,9 +472,25 @@ contains
                     nCellsSolve, fld_remap, ierr_remap)
                call seaice_fme_horiz_remap_write_var('iceVolumeTotal', fld_remap, 1, ierr_remap)
 
+               call seaice_fme_horiz_remap_field(domain, snowVolumeTotal, &
+                    nCellsSolve, fld_remap, ierr_remap)
+               call seaice_fme_horiz_remap_write_var('snowVolumeTotal', fld_remap, 1, ierr_remap)
+
+               call seaice_fme_horiz_remap_field(domain, iceThicknessMean, &
+                    nCellsSolve, fld_remap, ierr_remap)
+               call seaice_fme_horiz_remap_write_var('iceThicknessMean', fld_remap, 1, ierr_remap)
+
                call seaice_fme_horiz_remap_field(domain, surfaceTemperatureMean, &
                     nCellsSolve, fld_remap, ierr_remap)
                call seaice_fme_horiz_remap_write_var('surfaceTemperatureMean', fld_remap, 1, ierr_remap)
+
+               call seaice_fme_horiz_remap_field(domain, airStressZonal, &
+                    nCellsSolve, fld_remap, ierr_remap)
+               call seaice_fme_horiz_remap_write_var('airStressZonal', fld_remap, 1, ierr_remap)
+
+               call seaice_fme_horiz_remap_field(domain, airStressMeridional, &
+                    nCellsSolve, fld_remap, ierr_remap)
+               call seaice_fme_horiz_remap_write_var('airStressMeridional', fld_remap, 1, ierr_remap)
 
                deallocate(fld_remap)
             end if
