@@ -25,10 +25,10 @@ module seaice_fme_derived_fields
    use shr_kind_mod, only: r8 => shr_kind_r8
    use seaice_fme_horiz_remap, only: seaice_fme_horiz_remap_init, &
         seaice_fme_horiz_remap_field, seaice_fme_horiz_remap_active, &
-        seaice_fme_horiz_remap_open_file, seaice_fme_horiz_remap_def_var, &
         seaice_fme_horiz_remap_write_var, seaice_fme_horiz_remap_write_time, &
         seaice_fme_horiz_remap_close_file, seaice_fme_horiz_remap_get_dims, &
-        seaice_fme_remap_build_filename
+        seaice_fme_horiz_remap_register_var, seaice_fme_horiz_remap_check_rotate, &
+        remap_stream_name, file_is_open
 
    implicit none
    private
@@ -36,7 +36,6 @@ module seaice_fme_derived_fields
 
    ! Remap state
    logical :: do_horiz_remap = .false.
-   logical :: remap_file_opened = .false.
    integer :: remap_nlat = 0, remap_nlon = 0, remap_nb_local = 0
 
    !--------------------------------------------------------------------
@@ -185,6 +184,21 @@ contains
                   call mpas_log_write( &
                        'fmeSeaiceDerivedFields: horiz remap active, target $i x $i', &
                        intArgs=(/remap_nlon, remap_nlat/))
+                  remap_stream_name = 'fmeSeaiceDerivedFieldsOutput'
+                  call seaice_fme_horiz_remap_register_var('iceAreaTotal', &
+                       'unitless', 'Total ice area fraction', ierr)
+                  call seaice_fme_horiz_remap_register_var('iceVolumeTotal', &
+                       'm', 'Total ice volume per unit area', ierr)
+                  call seaice_fme_horiz_remap_register_var('snowVolumeTotal', &
+                       'm', 'Total snow volume per unit area', ierr)
+                  call seaice_fme_horiz_remap_register_var('iceThicknessMean', &
+                       'm', 'Area-weighted mean ice thickness', ierr)
+                  call seaice_fme_horiz_remap_register_var('surfaceTemperatureMean', &
+                       'K', 'Area-weighted mean surface temperature', ierr)
+                  call seaice_fme_horiz_remap_register_var('airStressZonal', &
+                       'N m^-2', 'Zonal air stress on ice', ierr)
+                  call seaice_fme_horiz_remap_register_var('airStressMeridional', &
+                       'N m^-2', 'Meridional air stress on ice', ierr)
                end if
             end if
          end if
@@ -344,7 +358,7 @@ contains
       ! Remap workspace
       real(r8), allocatable :: fld_remap(:)
       integer :: ierr_remap
-      character(len=StrKIND) :: remap_filename
+
 
       real(kind=RKIND) :: &
            areaSum, &
@@ -435,31 +449,9 @@ contains
 
          ! --- Horizontal remapping to lat-lon grid ---
          if (do_horiz_remap) then
-            if (.not. remap_file_opened) then
-               call seaice_fme_remap_build_filename(domain, &
-                    'fmeSeaiceDerivedFieldsOutput', remap_filename, ierr_remap)
-               call seaice_fme_horiz_remap_open_file(domain, &
-                    trim(remap_filename), ierr_remap)
-               if (ierr_remap == 0) then
-                  call seaice_fme_horiz_remap_def_var('iceAreaTotal', 'unitless', &
-                       'Total ice area fraction', 1, ierr_remap)
-                  call seaice_fme_horiz_remap_def_var('iceVolumeTotal', 'm', &
-                       'Total ice volume per unit area', 1, ierr_remap)
-                  call seaice_fme_horiz_remap_def_var('snowVolumeTotal', 'm', &
-                       'Total snow volume per unit area', 1, ierr_remap)
-                  call seaice_fme_horiz_remap_def_var('iceThicknessMean', 'm', &
-                       'Area-weighted mean ice thickness', 1, ierr_remap)
-                  call seaice_fme_horiz_remap_def_var('surfaceTemperatureMean', 'K', &
-                       'Area-weighted mean surface temperature', 1, ierr_remap)
-                  call seaice_fme_horiz_remap_def_var('airStressZonal', 'N m^-2', &
-                       'Zonal air stress on ice', 1, ierr_remap)
-                  call seaice_fme_horiz_remap_def_var('airStressMeridional', 'N m^-2', &
-                       'Meridional air stress on ice', 1, ierr_remap)
-                  remap_file_opened = .true.
-               end if
-            end if
+            call seaice_fme_horiz_remap_check_rotate(domain, ierr_remap)
 
-            if (remap_file_opened) then
+            if (file_is_open) then
                allocate(fld_remap(remap_nb_local))
 
                call seaice_fme_horiz_remap_write_time('', ierr_remap)
@@ -599,10 +591,7 @@ contains
 
       err = 0
 
-      if (remap_file_opened) then
-         call seaice_fme_horiz_remap_close_file(ierr)
-         remap_file_opened = .false.
-      end if
+      call seaice_fme_horiz_remap_close_file(ierr)
 
    end subroutine seaice_finalize_fme_derived_fields!}}}
 

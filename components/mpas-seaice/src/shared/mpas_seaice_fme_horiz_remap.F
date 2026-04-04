@@ -54,6 +54,9 @@ module seaice_fme_horiz_remap
    public :: seaice_fme_horiz_remap_close_file
    public :: seaice_fme_horiz_remap_get_dims
    public :: seaice_fme_remap_build_filename
+   public :: seaice_fme_horiz_remap_register_var
+   public :: seaice_fme_horiz_remap_check_rotate
+   public :: remap_stream_name, file_is_open
 
    type(shr_horiz_remap_t) :: remap_data
    integer, allocatable :: send_local_cell(:)
@@ -74,6 +77,13 @@ module seaice_fme_horiz_remap
    character(len=64) :: pio_var_names(max_pio_vars)
    type(var_desc_t) :: pio_var_descs(max_pio_vars)
    type(var_desc_t) :: pio_lon_var, pio_lat_var
+
+   ! Stored var metadata for replay on rotation
+   integer :: n_registered_vars = 0
+   character(len=64)  :: stored_units(max_pio_vars)
+   character(len=128) :: stored_long_names(max_pio_vars)
+   character(len=512) :: current_filename = ''
+   character(len=128) :: remap_stream_name = ''
 
 contains
 
@@ -294,8 +304,61 @@ contains
       if (file_is_open) then
          call pio_closefile(pio_file)
          file_is_open = .false.
+         current_filename = ''
       end if
    end subroutine seaice_fme_horiz_remap_close_file!}}}
+
+   subroutine seaice_fme_horiz_remap_register_var(varname, units, long_name, err)!{{{
+      character(len=*), intent(in) :: varname, units, long_name
+      integer, intent(out) :: err
+
+      err = 0
+      n_registered_vars = n_registered_vars + 1
+      if (n_registered_vars > max_pio_vars) then
+         call mpas_log_write('seaice_fme_horiz_remap: exceeded max_pio_vars=$i for var: ' &
+              // trim(varname), messageType=MPAS_LOG_ERR, &
+              intArgs=(/max_pio_vars/))
+         n_registered_vars = n_registered_vars - 1
+         err = 2; return
+      end if
+      pio_var_names(n_registered_vars) = varname
+      stored_units(n_registered_vars) = units
+      stored_long_names(n_registered_vars) = long_name
+   end subroutine seaice_fme_horiz_remap_register_var!}}}
+
+   subroutine seaice_fme_horiz_remap_check_rotate(domain, err)!{{{
+      type(domain_type), intent(inout) :: domain
+      integer, intent(out) :: err
+
+      character(len=512) :: new_filename
+      integer :: ierr, iv
+
+      err = 0
+      if (n_registered_vars == 0) return
+      if (len_trim(remap_stream_name) == 0) return
+
+      call seaice_fme_remap_build_filename(domain, &
+           trim(remap_stream_name), new_filename, ierr)
+      if (ierr /= 0) then; err = ierr; return; end if
+
+      if (.not. file_is_open .or. &
+           trim(new_filename) /= trim(current_filename)) then
+
+         if (file_is_open) then
+            call seaice_fme_horiz_remap_close_file(ierr)
+         end if
+
+         call seaice_fme_horiz_remap_open_file(domain, trim(new_filename), ierr)
+         if (ierr /= 0) then; err = ierr; return; end if
+         current_filename = new_filename
+
+         do iv = 1, n_registered_vars
+            call seaice_fme_horiz_remap_def_var(trim(pio_var_names(iv)), &
+                 trim(stored_units(iv)), trim(stored_long_names(iv)), 1, ierr)
+         end do
+      end if
+
+   end subroutine seaice_fme_horiz_remap_check_rotate!}}}
 
    subroutine seaice_fme_horiz_remap_get_dims(nlat, nlon, n_b_local)!{{{
       integer, intent(out) :: nlat, nlon, n_b_local

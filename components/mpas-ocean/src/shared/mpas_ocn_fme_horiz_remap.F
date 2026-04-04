@@ -88,15 +88,24 @@ module ocn_fme_horiz_remap
       integer :: dim_lon_id = 0, dim_lat_id = 0, dim_time_id = 0
       integer :: time_record = 0
       integer :: n_pio_vars = 0
-      character(len=64) :: pio_var_names(max_pio_vars)
-      type(var_desc_t) :: pio_var_descs(max_pio_vars)
-      type(var_desc_t) :: pio_lon_var, pio_lat_var
+      character(len=64)  :: pio_var_names(max_pio_vars)
+      type(var_desc_t)   :: pio_var_descs(max_pio_vars)
+      type(var_desc_t)   :: pio_lon_var, pio_lat_var
+      ! Stored metadata for replaying var definitions after rotation
+      character(len=64)  :: stored_units(max_pio_vars)
+      character(len=128) :: stored_long_names(max_pio_vars)
+      integer :: n_registered_vars = 0
+      ! Current open filename and stream name for rotation
+      character(len=512) :: current_filename = ''
+      character(len=128) :: stream_name = ''
    contains
-      procedure :: open_file  => remap_file_open
-      procedure :: def_var    => remap_file_def_var
-      procedure :: write_var  => remap_file_write_var
-      procedure :: write_time => remap_file_write_time
-      procedure :: close_file => remap_file_close
+      procedure :: open_file    => remap_file_open
+      procedure :: def_var      => remap_file_def_var
+      procedure :: register_var => remap_file_register_var
+      procedure :: write_var    => remap_file_write_var
+      procedure :: write_time   => remap_file_write_time
+      procedure :: close_file   => remap_file_close
+      procedure :: check_rotate => remap_file_check_rotate
    end type ocn_fme_remap_file_t
 
 !***********************************************************************
@@ -422,8 +431,73 @@ contains
          self%file_is_open = .false.
          self%n_pio_vars = 0
          self%time_record = 0
+         self%current_filename = ''
       end if
    end subroutine remap_file_close!}}}
+
+   subroutine remap_file_register_var(self, varname, units, long_name, err)!{{{
+   !> Register a variable for output. Stores metadata so that def_var can
+   !> be replayed automatically when a file is opened or rotated.
+   !> Call this once per variable during setup (before any writes).
+      class(ocn_fme_remap_file_t), intent(inout) :: self
+      character(len=*), intent(in) :: varname, units, long_name
+      integer, intent(out) :: err
+
+      err = 0
+      self%n_registered_vars = self%n_registered_vars + 1
+      if (self%n_registered_vars > max_pio_vars) then
+         call mpas_log_write('ocn_fme_remap_file: exceeded max_pio_vars=$i for var: ' &
+              // trim(varname), messageType=MPAS_LOG_ERR, &
+              intArgs=(/max_pio_vars/))
+         self%n_registered_vars = self%n_registered_vars - 1
+         err = 2; return
+      end if
+      self%pio_var_names(self%n_registered_vars) = varname
+      self%stored_units(self%n_registered_vars) = units
+      self%stored_long_names(self%n_registered_vars) = long_name
+   end subroutine remap_file_register_var!}}}
+
+   subroutine remap_file_check_rotate(self, domain, err)!{{{
+   !> Check whether the file needs rotation based on the current model date.
+   !> Builds a filename from the stream template + current date. If different
+   !> from the currently open file, closes the old file and opens a new one,
+   !> replaying all registered variable definitions.
+      class(ocn_fme_remap_file_t), intent(inout) :: self
+      type(domain_type), intent(inout) :: domain
+      integer, intent(out) :: err
+
+      character(len=512) :: new_filename
+      integer :: ierr, iv
+
+      err = 0
+      if (self%n_registered_vars == 0) return
+      if (len_trim(self%stream_name) == 0) return
+
+      call ocn_fme_remap_build_filename(domain, trim(self%stream_name), &
+           new_filename, ierr)
+      if (ierr /= 0) then; err = ierr; return; end if
+
+      ! First call or date boundary crossed: open (or rotate) file
+      if (.not. self%file_is_open .or. &
+           trim(new_filename) /= trim(self%current_filename)) then
+
+         if (self%file_is_open) then
+            call self%close_file(ierr)
+         end if
+
+         call self%open_file(trim(new_filename), ierr)
+         if (ierr /= 0) then; err = ierr; return; end if
+         self%current_filename = new_filename
+
+         ! Replay all registered variable definitions
+         do iv = 1, self%n_registered_vars
+            call self%def_var(trim(self%pio_var_names(iv)), &
+                 trim(self%stored_units(iv)), &
+                 trim(self%stored_long_names(iv)), 1, ierr)
+         end do
+      end if
+
+   end subroutine remap_file_check_rotate!}}}
 
 !***********************************************************************
 
