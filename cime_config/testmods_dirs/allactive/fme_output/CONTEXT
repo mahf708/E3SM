@@ -1,0 +1,159 @@
+FME Online Output Processing — Handoff Context
+================================================
+Date: 2026-04-04
+Branch: claude/extend-derived-diagnostics-LNfYG (40+ commits on origin/master)
+Latest commit: 3324db92 (DEBUG: add send buffer and output stats logging)
+
+========================================================================
+WHAT THIS BRANCH DOES
+========================================================================
+
+Adds online horizontal remapping, vertical coarsening, derived field
+computation, and vertical reduction to E3SM for FME (Full Model
+Emulation) training data generation (ACE/Samudra).
+
+Components:
+  share/util/shr_horiz_remap_mod.F90  -- shared CRS SpMV remap
+  share/util/shr_vcoarsen_mod.F90     -- shared vertical coarsening
+  share/util/shr_derived_mod.F90      -- shared expression parser
+  components/eam/src/control/          -- EAM wrappers (horiz_remap, vcoarsen, derived)
+  components/mpas-ocean/src/           -- 3 analysis members + horiz_remap wrapper
+  components/mpas-seaice/src/          -- 1 analysis member + horiz_remap wrapper
+  cime_config/testmods_dirs/allactive/fme_output/  -- testmod + verify script
+
+========================================================================
+CURRENT STATUS
+========================================================================
+
+EAM REMAPPING: WORKING
+  - Per-tape horiz_remap_file transparent remapping via cam_history
+  - Vertical coarsening (8 ACE pressure layers) + column integration
+  - Derived fields (TOTAL_WATER) + tendencies (DTENDTTW cross-validation)
+  - Output on lat-lon grid (180x360) is physically correct
+
+MPAS REMAPPING: BROKEN (garbage output ~1e9 scale)
+  - Native MPAS output is perfect (SST=18.3C, ice area correct)
+  - Remapped output is garbage for BOTH ocean AND sea ice
+  - The shared shr_horiz_remap_t%apply() SpMV produces wrong results
+    when called from MPAS wrappers, but works correctly from EAM wrapper
+  - Debug logging added (commit 3324db92) but not yet tested
+
+========================================================================
+KNOWN BUGS (in priority order)
+========================================================================
+
+1. MPAS REMAP PRODUCES GARBAGE [CRITICAL, UNRESOLVED]
+   - All MPAS remapped output (ocean + sea ice) has ~1e9 scale values
+   - Native data is correct; the remap itself is broken
+   - EAM uses the same shr_horiz_remap_t and works fine
+   - Difference: EAM packs from chunk-indexed history buffers,
+     MPAS packs from cell-indexed pool arrays
+   - Debug commit 3324db92 adds send buffer + output stats logging
+     to ocn_fme_horiz_remap_field. Run and check ocean log for:
+       DEBUG remap_field: n_send=XXX, buf_max=XXX
+       DEBUG remap_field output: n_b_local=XXX, out_max=XXX
+     If buf_max is ~31 (physical SST), bug is in apply().
+     If buf_max is ~1e9, bug is in data packing.
+   - Files: components/mpas-ocean/src/shared/mpas_ocn_fme_horiz_remap.F
+            components/mpas-seaice/src/shared/mpas_seaice_fme_horiz_remap.F
+            share/util/shr_horiz_remap_mod.F90
+
+2. frac_b PIO READ CORRUPTS SHARED MODULE STATE [FIXED, DISABLED]
+   - Reading frac_b from the map file inside read_pio_contents
+     corrupted the shr_horiz_remap_t state, producing garbage for ALL
+     components (EAM + MPAS). Confirmed by disabling the read.
+   - Currently DISABLED (commented out) in shr_horiz_remap_mod.F90
+   - Needs to be re-enabled with a different approach:
+     Option A: compute frac_b from weight sums (no PIO read needed)
+     Option B: read frac_b AFTER pio_closefile (separate reopen)
+     Option C: read frac_b in the component wrapper, not shared module
+   - frac_b is needed for correct coastal cell normalization (without it,
+     coastal values are diluted by ~34% on average for the ocean grid)
+
+3. DEPTH COARSENING FILL LEAKAGE [FIXED BUT UNTESTED WITH WORKING REMAP]
+   - Shallow ocean cells have fill values at deep coarsened levels
+   - Fixed: per-level validity mask from layerThicknessCoarsened
+   - File: mpas_ocn_fme_depth_coarsening.F
+
+========================================================================
+HOW TO TEST
+========================================================================
+
+  cd cime/scripts
+  ./create_test SMS_P512.ne30pg2_r05_IcoswISC30E3r5.WCYCL1850NS.pm-cpu_gnu \
+      --testmod allactive/fme_output
+
+  # After run:
+  micromamba run -n xgns python verify_fme_output.py \
+      --rundir $RUNDIR \
+      --outdir /pscratch/sd/m/mahf708/aifigs_v3LRpiControlSamudrACE \
+      --verbose
+
+  # Check ocean log for debug output:
+  zcat $RUNDIR/ocn.log.*.gz | grep 'DEBUG remap_field'
+
+Map files: /pscratch/sd/m/mahf708/fme_maps/
+  map_ne30pg2_to_gaussian_180by360_shifted.nc          (EAM)
+  map_IcoswISC30E3r5_to_gaussian_180by360_shifted.nc   (MPAS-O/SI)
+
+========================================================================
+KEY ARCHITECTURE DECISIONS
+========================================================================
+
+- MPAS stream manager only supports nCells/nEdges/nVertices decomposed
+  dims. Remapped (lon,lat) output MUST bypass stream manager via direct
+  PIO. This is by design, not a workaround.
+
+- Remapped filenames derived from native stream's filename_template via
+  MPAS_stream_mgr_get_property. Inserts ".remapped" before ".nc".
+
+- File rotation: register_var stores metadata at init, check_rotate
+  opens/closes files on date boundary, replays var defs automatically.
+
+- EAM remap is transparent: horiz_remap_file(tape) replaces data in
+  cam_history at write time. Same filename, same tape.
+
+========================================================================
+FILE INVENTORY
+========================================================================
+
+Testmod files:
+  CONTEXT        -- this file
+  PLAN           -- architecture overview and implementation roadmap
+  REVIEW         -- detailed code review findings
+  FUTURE_WORK    -- prioritized work items with [DONE] markers
+  README         -- quick-start description
+  shell_commands -- case setup, map file detection, namelist generation
+  user_nl_eam    -- EAM namelist (3 tapes, vcoarsen, derived, tendencies)
+  user_nl_mpaso  -- MPAS-O namelist (3 AMs: depth coarsen, derived, vert reduce)
+  user_nl_mpassi -- MPAS-SI namelist (1 AM: derived fields)
+  user_nl_elm    -- stub (deferred)
+  user_nl_mosart -- stub (deferred)
+  verify_fme_output.py -- verification + diagnostic figures + HTML viewer
+
+Output viewer: /pscratch/sd/m/mahf708/aifigs_v3LRpiControlSamudrACE/fme_output.html
+  Also at: https://mahf708.github.io/aifigs_v3LRpiControlSamudrACE/fme_output.html
+
+========================================================================
+WHAT TO INVESTIGATE NEXT
+========================================================================
+
+1. Run with debug logging (commit 3324db92) and check ocean log:
+   - If buf_max is physical (~31 for SST): bug is in apply() or MPI comm
+   - If buf_max is garbage: bug is in send buffer packing or send_local_cell
+
+2. Compare EAM vs MPAS call to apply() in detail:
+   - EAM: self%shared%apply(self%ws_send_buf, numlev, fld_out, mpicom, npes, ierr)
+     where ws_send_buf is a TYPE MEMBER (per-tape instance)
+   - MPAS: remap_data%apply(ws_send_buf, numlev, fld_out, comm, nprocs, err)
+     where ws_send_buf is MODULE-SCOPE (shared singleton)
+   - Could the module-scope ws_send_buf be getting clobbered between
+     the pack and the apply? Check if any other code modifies it.
+
+3. Check MPI communicator: EAM uses mpicom (atmosphere), MPAS uses
+   domain%dminfo%comm (ocean). Are they the same comm for the remap?
+   The shared module's build_comm and apply both use the passed comm.
+
+4. Re-enable frac_b properly once remap is fixed:
+   - Simplest: compute frac_b_local as sum of CRS row weights
+     (already available after build_comm, no PIO read needed)
