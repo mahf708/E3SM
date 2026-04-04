@@ -26,11 +26,13 @@ module eam_vcoarsen
   !   1. Physics state variables: T, U, V, OMEGA, Z3, Q
   !   2. Registered constituents (e.g., CLDLIQ, CLDICE)
   !   3. Physics buffer fields (e.g., CLD, CONCLD)
+  !   4. Derived fields defined via eam_derived (e.g., TOTAL_WATER)
+  !      -- requires eam_derived_write to run first for the same chunk
   !
   ! Usage from physpkg.F90:
   !   call eam_vcoarsen_readnl(nlfile)        ! during namelist reading
   !   call eam_vcoarsen_register()            ! during phys_register
-  !   call eam_vcoarsen_write(state, pbuf)    ! during tphysbc history write
+  !   call eam_vcoarsen_write(state, pbuf)    ! after eam_derived_write in tphysac loop
   !
   !-------------------------------------------------------------------------------------------
 
@@ -351,6 +353,7 @@ contains
     use physics_types,  only: physics_state
     use physics_buffer, only: physics_buffer_desc, pbuf_get_index, pbuf_get_field
     use constituents,   only: cnst_get_ind
+    use eam_derived,    only: eam_derived_get_cache
 
     type(physics_state), intent(in)  :: state
     type(physics_buffer_desc), pointer :: pbuf_chunk(:)
@@ -361,6 +364,7 @@ contains
     integer :: idx, pbuf_idx, errcode
     character(len=max_name_len) :: uname
     real(r8), pointer :: pbuf_fld(:,:)
+    logical :: found
 
     uname = adjustl(fname)
     field_out(:,:) = 0.0_r8
@@ -403,8 +407,12 @@ contains
       return
     end if
 
+    ! Try derived field cache (populated by eam_derived_write before vcoarsen runs)
+    call eam_derived_get_cache(trim(uname), state%lchnk, field_out, ncol, pver, found)
+    if (found) return
+
     call endrun('eam_vcoarsen: get_state_field: unknown field "'//trim(uname)// &
-         '". Must be a state variable, constituent, or physics buffer field.')
+         '". Must be a state variable, constituent, physics buffer field, or derived field.')
 
   end subroutine get_state_field
 
@@ -412,6 +420,7 @@ contains
   subroutine validate_field_name(fname)
     use constituents,   only: cnst_get_ind
     use physics_buffer, only: pbuf_get_index
+    use eam_derived,    only: eam_derived_is_defined
 
     character(len=*), intent(in) :: fname
     integer :: k, idx, errcode
@@ -436,15 +445,17 @@ contains
     end if
 
     ! Check physics buffer
-    ! pbuf_get_index returns index>0 if found, -1 if not
     if (.not. found) then
       idx = pbuf_get_index(trim(uname), errcode)
       found = (idx > 0)
     end if
 
+    ! Check derived fields (populated by eam_derived_readnl before phys_register)
+    if (.not. found) found = eam_derived_is_defined(trim(uname))
+
     if (.not. found) then
       call endrun('eam_vcoarsen: unknown field "'//trim(uname)// &
-           '". Must be a state variable, constituent, or physics buffer field.')
+           '". Must be a state variable, constituent, physics buffer field, or derived field.')
     end if
 
   end subroutine validate_field_name

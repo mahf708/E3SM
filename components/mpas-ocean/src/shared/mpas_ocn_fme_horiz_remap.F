@@ -92,8 +92,9 @@ module ocn_fme_horiz_remap
    type(var_desc_t) :: pio_var_descs(max_pio_vars)
    integer :: pio_var_nlevs(max_pio_vars)
 
-   ! Time variable
+   ! Time and coordinate variables
    type(var_desc_t) :: pio_time_var
+   type(var_desc_t) :: pio_lon_var, pio_lat_var
 
 !***********************************************************************
 
@@ -116,9 +117,11 @@ contains
       integer :: iCell, gcol
       integer, allocatable :: gcol_to_rank(:)
       integer, allocatable :: send_gcol_list(:)
-      integer :: n_send, i
+      integer :: i
 
       err = 0
+
+      if (is_initialized) return
 
       if (len_trim(mapfile) == 0 .or. trim(mapfile) == 'none') then
          is_initialized = .false.
@@ -161,7 +164,7 @@ contains
 
       ! Phase 2: Build MPI communication pattern
       call remap_data%build_comm(gcol_to_rank, comm, myrank, nprocs, &
-           send_gcol_list, n_send, ierr)
+           send_gcol_list, ierr)
       deallocate(gcol_to_rank)
 
       if (ierr /= 0) then
@@ -172,7 +175,7 @@ contains
       end if
 
       ! Convert send_gcol_list to local cell indices
-      allocate(send_local_cell(n_send))
+      allocate(send_local_cell(remap_data%n_send_total))
       send_local_cell(:) = 0
       block => domain % blocklist
       do while (associated(block))
@@ -180,7 +183,7 @@ contains
          call mpas_pool_get_dimension(block % dimensions, 'nCellsSolve', nCellsSolve)
          call mpas_pool_get_array(meshPool, 'indexToCellID', indexToCellID)
 
-         do i = 1, n_send
+         do i = 1, remap_data%n_send_total
             if (send_local_cell(i) > 0) cycle  ! already found
             do iCell = 1, nCellsSolve
                if (indexToCellID(iCell) == send_gcol_list(i)) then
@@ -289,7 +292,6 @@ contains
       character(len=*), intent(in) :: filename
       integer, intent(out) :: err
 
-      type(var_desc_t) :: lat_var, lon_var
       integer :: nlat, nlon, ierr
 
       err = 0
@@ -314,14 +316,14 @@ contains
       ierr = pio_def_dim(pio_file, 'lat', nlat, dim_lat_id)
       ierr = pio_def_dim(pio_file, 'Time', PIO_UNLIMITED, dim_time_id)
 
-      ! Define coordinate variables
-      ierr = pio_def_var(pio_file, 'lon', PIO_DOUBLE, (/dim_lon_id/), lon_var)
-      ierr = pio_put_att(pio_file, lon_var, 'units', 'degrees_east')
-      ierr = pio_put_att(pio_file, lon_var, 'long_name', 'longitude')
+      ! Define coordinate variables (descriptors saved at module scope for write_time)
+      ierr = pio_def_var(pio_file, 'lon', PIO_DOUBLE, (/dim_lon_id/), pio_lon_var)
+      ierr = pio_put_att(pio_file, pio_lon_var, 'units', 'degrees_east')
+      ierr = pio_put_att(pio_file, pio_lon_var, 'long_name', 'longitude')
 
-      ierr = pio_def_var(pio_file, 'lat', PIO_DOUBLE, (/dim_lat_id/), lat_var)
-      ierr = pio_put_att(pio_file, lat_var, 'units', 'degrees_north')
-      ierr = pio_put_att(pio_file, lat_var, 'long_name', 'latitude')
+      ierr = pio_def_var(pio_file, 'lat', PIO_DOUBLE, (/dim_lat_id/), pio_lat_var)
+      ierr = pio_put_att(pio_file, pio_lat_var, 'units', 'degrees_north')
+      ierr = pio_put_att(pio_file, pio_lat_var, 'long_name', 'latitude')
 
       ! Define time variable
       ierr = pio_def_var(pio_file, 'xtime', PIO_CHAR, (/dim_time_id/), pio_time_var)
@@ -429,17 +431,16 @@ contains
       integer, intent(out) :: err
 
       integer :: ierr
-      type(var_desc_t) :: lat_var_tmp, lon_var_tmp
 
       err = 0
 
       if (time_record == 0) then
          ! First write: end define mode and write coordinates
-         call pio_enddef(pio_file)
+         ierr = pio_enddef(pio_file)
 
-         ! Write lat/lon coordinate variables
-         ierr = pio_put_var(pio_file, 'lon', remap_data%lon(1:remap_data%nlon))
-         ierr = pio_put_var(pio_file, 'lat', remap_data%lat(1:remap_data%nlat))
+         ! Write lat/lon coordinate variables using module-level var descriptors
+         ierr = pio_put_var(pio_file, pio_lon_var, remap_data%lon(1:remap_data%nlon))
+         ierr = pio_put_var(pio_file, pio_lat_var, remap_data%lat(1:remap_data%nlat))
       end if
 
       time_record = time_record + 1

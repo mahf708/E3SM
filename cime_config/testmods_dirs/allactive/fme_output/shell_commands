@@ -7,35 +7,223 @@
 #
 # Output frequencies:
 #   EAM:     6-hourly (averaged and instantaneous)
-#   ELM:     6-hourly (averaged)
-#   MOSART:  6-hourly (averaged)
 #   MPAS-O:  daily (analysis member streams, configurable in Registry)
 #   MPAS-SI: daily (analysis member stream)
 #
 # ---------------------------------------------------------------------------
-# Map file generation (run separately before testing with horiz remap):
+# Map file generation (run once per grid combination, outside the case):
 #
-# For EAM (ne30pg2 -> 1-degree):
-#   ncremap -a fv2fv_flx \
-#     --src_grd=${INPUTDATA}/atm/cam/inic/homme/ne30pg2_scrip.nc \
-#     --dst_grd=${INPUTDATA}/share/meshes/fv1x1_141008.nc \
-#     -m map_ne30pg2_to_fv1x1_fme.nc
+# Maps for ne30pg2_r05_IcoswISC30E3r5 -> shifted Gaussian 1-degree (180x360)
+# are stored at: /pscratch/sd/m/mahf708/fme_maps/
 #
-# For MPAS-O / MPAS-SI (oEC60to30 -> 1-degree):
-#   ncremap -a fv2fv_flx \
-#     --src_grd=${MPAS_MESH_SCRIP} \
-#     --dst_grd=${INPUTDATA}/share/meshes/fv1x1_141008.nc \
-#     -m map_oEC60to30_to_fv1x1_fme.nc
+# To regenerate them:
 #
-# For low-res testing (ne4pg2_oQU480):
-#   ncremap -a fv2fv_flx \
-#     --src_grd=ne4pg2_scrip.nc --dst_grd=fv4x5.nc \
-#     -m map_ne4pg2_to_fv4x5_fme.nc
-#   ncremap -a fv2fv_flx \
-#     --src_grd=oQU480_scrip.nc --dst_grd=fv4x5.nc \
-#     -m map_oQU480_to_fv4x5_fme.nc
+#   OUTDIR=/pscratch/sd/m/mahf708/fme_maps
+#   mkdir -p $OUTDIR && cd $OUTDIR
+#
+#   # 1. Generate Gaussian 180x360 grid
+#   ncremap -g ncremap_gaussian_grid_180_by_360.nc -G latlon=180,360#lat_typ=gss
+#
+#   # 2. Shift by 0.5 deg in longitude to match offline FV3-side grid
+#   python3 - <<'PYEOF'
+#   import netCDF4 as nc, shutil
+#   shutil.copy2("ncremap_gaussian_grid_180_by_360.nc",
+#                "ncremap_shifted_gaussian_grid_180_by_360.nc")
+#   with nc.Dataset("ncremap_shifted_gaussian_grid_180_by_360.nc", "r+") as ds:
+#       ds["grid_center_lon"][:] += 0.5
+#       ds["grid_corner_lon"][:] += 0.5
+#   PYEOF
+#
+#   # 3. Generate remapping weights for each source grid
+#   GAUSS=$OUTDIR/ncremap_shifted_gaussian_grid_180_by_360.nc
+#
+#   # EAM (ne30pg2); ATM_GRID xmlquery returns ne30np4.pg2, normalized to ne30pg2
+#   ncremap \
+#     -s /global/cfs/cdirs/e3sm/inputdata/share/meshes/homme/ne30pg2_scrip_20200209.nc \
+#     -g $GAUSS \
+#     -m $OUTDIR/map_ne30pg2_to_gaussian_180by360_shifted.nc
+#
+#   # ELM and MOSART (r05 = 0.5x0.5 regular lat-lon)
+#   ncremap \
+#     -s /global/cfs/cdirs/e3sm/inputdata/lnd/clm2/mappingdata/grids/SCRIPgrid_0.5x0.5_nomask_c110308.nc \
+#     -g $GAUSS \
+#     -m $OUTDIR/map_r05_to_gaussian_180by360_shifted.nc
+#
+#   # MPAS-O and MPAS-SI (IcoswISC30E3r5 unstructured mesh)
+#   ncremap \
+#     -s /global/cfs/cdirs/e3sm/inputdata/ocn/mpas-o/IcoswISC30E3r5/ocean.IcoswISC30E3r5.mask.scrip.20231120.nc \
+#     -g $GAUSS \
+#     -m $OUTDIR/map_IcoswISC30E3r5_to_gaussian_180by360_shifted.nc
+#
 # ---------------------------------------------------------------------------
 
 ./xmlchange STOP_OPTION=ndays
 ./xmlchange STOP_N=5
 
+# ---------------------------------------------------------------------------
+# Detect map files for this case's resolution
+# ---------------------------------------------------------------------------
+FME_MAPS_DIR=/pscratch/sd/m/mahf708/fme_maps
+
+# Read grid names from the case XML
+ATM_GRID=$(./xmlquery --value ATM_GRID)
+OCN_GRID=$(./xmlquery --value OCN_GRID)
+
+# Normalize ATM_GRID: CIME reports ne30np4.pg2; map files use ne30pg2 convention.
+# Rule: strip npN. (e.g. np4.) from the middle of the name.
+ATM_GRID_NORM=$(echo "$ATM_GRID" | sed 's/np[0-9]*\.//')
+
+EAM_MAP="${FME_MAPS_DIR}/map_${ATM_GRID_NORM}_to_gaussian_180by360_shifted.nc"
+OCN_MAP="${FME_MAPS_DIR}/map_${OCN_GRID}_to_gaussian_180by360_shifted.nc"
+
+echo "FME map detection:"
+echo "  ATM_GRID=${ATM_GRID} -> normalized: ${ATM_GRID_NORM}"
+echo "  OCN_GRID=${OCN_GRID}"
+echo "  EAM map : ${EAM_MAP} $([ -f "${EAM_MAP}" ] && echo '[found]' || echo '[NOT FOUND - remap disabled]')"
+echo "  OCN map : ${OCN_MAP} $([ -f "${OCN_MAP}" ] && echo '[found]' || echo '[NOT FOUND - remap disabled]')"
+
+# ---------------------------------------------------------------------------
+# EAM namelist
+# ---------------------------------------------------------------------------
+cat >> user_nl_eam << 'EOF'
+! FME (Full Model Emulation) online output processing -- EAM
+!
+! Production configuration for ACE/Samudra training data generation.
+!
+! Tape layout:
+!   Tape 1 (avg):  2D surface/flux/radiation fields ACE needs averaged
+!   Tape 2 (inst): Full-resolution 3D state (instantaneous snapshots)
+!   Tape 3 (avg):  8-level vertically coarsened 3D state (online vcoarsen)
+!
+! Vertical coarsening uses EAM L80 interface pressures matching the ACE
+! offline coarsening indices [0,25,38,46,52,56,61,69,80] (see:
+! github.com/ai2cm/ace/blob/exp/e3sm/scripts/data_process/configs/
+!   e3smv3-coupled-atm-1deg.yaml).
+! Derived from hyai/hybi in eami_mam4_Linoz_ne30np4_L80_c20231010.nc.
+
+empty_htapes = .true.
+avgflag_pertape = 'A','I','A'
+nhtfrq = -6,-6,-6
+mfilt  = 120,120,120
+
+! Tape 1: 6-hourly averaged 2D surface, flux, and radiation fields
+! Includes PHIS (time-invariant surface geopotential, constant across timesteps).
+fincl1 = 'PHIS',
+         'PS','TS','PSL',
+         'TAUX','TAUY',
+         'LHFLX','SHFLX','QFLX',
+         'PRECT','PRECSC','PRECSL',
+         'FLDS','FSDS','FLNS','FSNS',
+         'FSNTOA','FLUT','SOLIN',
+         'LWCF','SWCF',
+         'ICEFRAC','LANDFRAC','OCNFRAC',
+         'TMQ','TGCLDLWP','TGCLDIWP',
+         'TREFHT','QREFHT','U10'
+
+! Tape 2: 6-hourly instantaneous full-resolution 3D state
+! ACE needs instantaneous snapshots of state variables; 3D fields here
+! retain full L80 vertical resolution for offline diagnostics/comparison.
+fincl2 = 'PS','TS',
+         'T','Q','U','V','OMEGA',
+         'CLDLIQ','CLDICE','RAINQM',
+         'ICEFRAC','LANDFRAC','OCNFRAC',
+         'TAUX','TAUY'
+
+! Tape 3: 6-hourly averaged vertically coarsened state (8 ACE pressure layers)
+! vcoarsen_avg_flds are automatically output as T_0..T_7, Q_0..Q_7, etc.
+! TOTAL_WATER (derived below) is also coarsened -> specific_total_water_0-7.
+fincl3 = 'PS','TS'
+
+! Vertical coarsening: 8 pressure layers matching ACE L80 coarsening.
+! Interface pressures (Pa) from L80 hyai/hybi at indices [0,25,38,46,52,56,61,69,80]:
+!   0: 10.0 Pa,  25: 4803.8 Pa,  38: 13913.1 Pa,  46: 26856.3 Pa,
+!  52: 43998.3 Pa, 56: 59659.7 Pa, 61: 76854.2 Pa, 69: 90711.8 Pa, 80: 101325.0 Pa
+vcoarsen_pbounds = 10.0, 4803.81, 13913.06, 26856.34,
+                   43998.31, 59659.67, 76854.15, 90711.83, 101325.0
+vcoarsen_avg_flds = 'T','Q','U','V','CLDLIQ','CLDICE','RAINQM','TOTAL_WATER'
+
+! Derived fields (computed at full resolution before vcoarsen)
+! TOTAL_WATER -> specific_total_water in ACE naming
+! Note: PRECT is a native EAM field (no derived expression needed).
+derived_fld_defs = 'TOTAL_WATER=Q+CLDICE+CLDLIQ+RAINQM'
+
+! Tendencies for total water (physics timestep)
+tend_flds = 'TOTAL_WATER','T','Q'
+EOF
+
+if [ -f "${EAM_MAP}" ]; then
+    cat >> user_nl_eam << EOF
+! Horizontal remapping to shifted Gaussian 180x360
+horiz_remap_file(1) = '${EAM_MAP}'
+horiz_remap_file(2) = '${EAM_MAP}'
+horiz_remap_file(3) = '${EAM_MAP}'
+EOF
+fi
+
+# ---------------------------------------------------------------------------
+# ELM namelist: stub for now
+# ---------------------------------------------------------------------------
+cat >> user_nl_elm << 'EOF'
+hist_empty_htapes = .true.
+
+EOF
+
+# ---------------------------------------------------------------------------
+# MOSART namelist: stub for now
+# ---------------------------------------------------------------------------
+cat >> user_nl_mosart << 'EOF'
+
+EOF
+
+# ---------------------------------------------------------------------------
+# MPAS-Ocean namelist
+# ---------------------------------------------------------------------------
+cat >> user_nl_mpaso << 'EOF'
+!----------------------------------------------------------------------------------
+! FME (Full Model Emulation) online output processing -- MPAS-Ocean
+!
+! Production configuration for coupled FME training data generation.
+! MPAS-O analysis members compute at output_interval (daily by default).
+! Output stream intervals are configured in Registry XML (default daily).
+! For 5-daily output, override via streams.ocean_forward in SourceMods.
+!----------------------------------------------------------------------------------
+
+config_AM_fmeDepthCoarsening_enable = .true.
+! 19 depth layers matching ACE ocean interface levels from:
+! github.com/ai2cm/ace blob/exp/e3sm/scripts/data_process/configs/
+!   E3SMv3-piControl-ocean-vertical-coarsen.yaml
+config_AM_fmeDepthCoarsening_depth_bounds = '0,20,30,40,50,80,110,140,170,230,410,530,1020,1080,1720,1980,2820,3380,4620,6380'
+config_AM_fmeDepthCoarsening_fields = 'temperature,salinity,velocityZonal,velocityMeridional'
+
+config_AM_fmeDerivedFields_enable = .true.
+
+config_AM_fmeVerticalReduce_enable = .true.
+config_AM_fmeVerticalReduce_reference_salinity = 34.8
+EOF
+
+if [ -f "${OCN_MAP}" ]; then
+    cat >> user_nl_mpaso << EOF
+! Horizontal remapping to shifted Gaussian 180x360
+config_AM_fmeDerivedFields_horiz_remap_file = '${OCN_MAP}'
+EOF
+fi
+
+# ---------------------------------------------------------------------------
+# MPAS-SeaIce namelist
+# ---------------------------------------------------------------------------
+cat >> user_nl_mpassi << 'EOF'
+!----------------------------------------------------------------------------------
+! FME (Full Model Emulation) online output processing -- MPAS-Sea-Ice
+!
+! Production configuration for coupled FME training data generation.
+!----------------------------------------------------------------------------------
+
+config_AM_fmeSeaiceDerivedFields_enable = .true.
+EOF
+
+if [ -f "${OCN_MAP}" ]; then
+    cat >> user_nl_mpassi << EOF
+! Horizontal remapping to shifted Gaussian 180x360
+config_AM_fmeSeaiceDerivedFields_horiz_remap_file = '${OCN_MAP}'
+EOF
+fi

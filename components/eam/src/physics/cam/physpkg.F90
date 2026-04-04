@@ -42,7 +42,7 @@ module physpkg
   use perf_mod
   use cam_logfile,     only: iulog
   use camsrfexch,      only: cam_export
-  use eam_vcoarsen,    only: eam_vcoarsen_register
+  use eam_vcoarsen,    only: eam_vcoarsen_register, eam_vcoarsen_write
   use eam_derived,     only: eam_derived_register, eam_derived_write
 
   use modal_aero_calcsize,    only: modal_aero_calcsize_init, &
@@ -1456,6 +1456,10 @@ subroutine phys_run2(phys_state, ztodt, phys_tend, pbuf2d,  cam_out, &
             fsds(1,c))
 
        call eam_derived_write(phys_state(c), pbuf2d)
+       ! eam_vcoarsen_write must run after eam_derived_write so that derived
+       ! fields (e.g. TOTAL_WATER) are in the cache and accessible via
+       ! eam_derived_get_cache inside eam_vcoarsen's get_state_field.
+       call eam_vcoarsen_write(phys_state(c), phys_buffer_chunk)
 
        call system_clock(count=end_chnk_cnt, count_rate=sysclock_rate, count_max=sysclock_max)
        if ( end_chnk_cnt < beg_chnk_cnt ) end_chnk_cnt = end_chnk_cnt + sysclock_max
@@ -2263,7 +2267,6 @@ subroutine tphysbc (ztodt,               &
     use physics_types,   only: physics_state, physics_tend, physics_ptend, &
          physics_ptend_init, physics_ptend_sum, physics_state_check, physics_ptend_scale
     use cam_diagnostics, only: diag_conv_tend_ini, diag_phys_writeout, diag_conv, diag_export, diag_state_b4_phys_write
-    use eam_vcoarsen,    only: eam_vcoarsen_write
     use cam_history,     only: outfld, fieldname_len
     use physconst,       only: cpair, latvap, gravit, rga
     use constituents,    only: pcnst, qmin, cnst_get_ind
@@ -3124,7 +3127,6 @@ end if
 
     call t_startf('bc_history_write')
     call diag_phys_writeout(state, cam_out%psl)
-    call eam_vcoarsen_write(state, pbuf)
     call diag_conv(state, ztodt, pbuf)
 
     call t_stopf('bc_history_write')
