@@ -108,10 +108,18 @@ contains
          do iCell = 1, nCellsSolve
             sst(iCell) = tracers(index_temperature, 1, iCell)
             sss(iCell) = tracers(index_salinity, 1, iCell)
-            surfaceHeatFluxTotal(iCell) = shortWaveHeatFlux(iCell) &
-                 + longWaveHeatFluxDown(iCell) &
-                 + latentHeatFlux(iCell) &
-                 + sensibleHeatFlux(iCell)
+
+            if (associated(shortWaveHeatFlux) .and. &
+                associated(longWaveHeatFluxDown) .and. &
+                associated(latentHeatFlux) .and. &
+                associated(sensibleHeatFlux)) then
+               surfaceHeatFluxTotal(iCell) = shortWaveHeatFlux(iCell) &
+                    + longWaveHeatFluxDown(iCell) &
+                    + latentHeatFlux(iCell) &
+                    + sensibleHeatFlux(iCell)
+            else
+               surfaceHeatFluxTotal(iCell) = 0.0_RKIND
+            end if
          end do
 
          block => block % next

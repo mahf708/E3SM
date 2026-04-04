@@ -1,8 +1,10 @@
 !----------------------------------------------------------------------------------
 ! FME (Full Model Emulation) online output processing -- MPAS-Ocean
 !
-! Enables depth coarsening, derived surface fields, and column-integrated
-! diagnostics for ocean training data generation.
+! Production configuration for coupled FME training data generation.
+! MPAS-O analysis members compute at output_interval (daily by default).
+! Output stream intervals are configured in Registry XML (default daily).
+! For 5-daily output, override via streams.ocean_forward in SourceMods.
 !----------------------------------------------------------------------------------
 
 config_AM_fmeDepthCoarsening_enable = .true.
