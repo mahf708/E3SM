@@ -42,21 +42,26 @@ MPAS REMAPPING: BROKEN (garbage output ~1e9 scale)
 KNOWN BUGS (in priority order)
 ========================================================================
 
-1. MPAS REMAP PRODUCES GARBAGE [CRITICAL, UNRESOLVED]
-   - All MPAS remapped output (ocean + sea ice) has ~1e9 scale values
-   - Native data is correct; the remap itself is broken
-   - EAM uses the same shr_horiz_remap_t and works fine
-   - Difference: EAM packs from chunk-indexed history buffers,
-     MPAS packs from cell-indexed pool arrays
-   - Debug commit 3324db92 adds send buffer + output stats logging
-     to ocn_fme_horiz_remap_field. Run and check ocean log for:
-       DEBUG remap_field: n_send=XXX, buf_max=XXX
-       DEBUG remap_field output: n_b_local=XXX, out_max=XXX
-     If buf_max is ~31 (physical SST), bug is in apply().
-     If buf_max is ~1e9, bug is in data packing.
-   - Files: components/mpas-ocean/src/shared/mpas_ocn_fme_horiz_remap.F
-            components/mpas-seaice/src/shared/mpas_seaice_fme_horiz_remap.F
-            share/util/shr_horiz_remap_mod.F90
+1. MPAS REMAP PRODUCES ALL ZEROS FROM apply() [CRITICAL, DIAGNOSED]
+   - Send buffer is CORRECT: buf_max=26.6 for SST, 37.1 for salinity
+   - apply() output is ALL ZEROS: out_max=0.0 for every field, every timestep
+   - n_b_local=126 on rank 0 (64800/512 ranks)
+   - Root cause: CRS matrix has ZERO nonzero entries for all target rows
+     on rank 0. The SpMV inner loop hits the else branch (jbeg > jend)
+     for all 126 rows, producing fld_out = 0.
+   - This means build_comm is not constructing the CRS matrix correctly
+     for MPAS. The gcol_to_rank mapping (built from MPAS indexToCellID
+     via MPI_ALLREDUCE(MPI_MAX)) may have mismatched cell IDs vs what
+     the map file's col() array expects.
+   - NEXT STEP: Add debug logging to build_comm to check:
+     a) nnz_local (should be >0 on every rank that has target rows)
+     b) n_recv_total (should be >0; if 0, no source data is received)
+     c) Whether the gcol_to_rank values match the map file's col indices
+   - Hypothesis: the MPAS map file uses 1-based cell IDs but the
+     gcol_to_rank or the send_gcol_list indexing is off-by-one or
+     uses different numbering than the map file expects.
+   - Files: share/util/shr_horiz_remap_mod.F90 (build_comm, apply)
+            components/mpas-ocean/src/shared/mpas_ocn_fme_horiz_remap.F (init)
 
 2. frac_b PIO READ CORRUPTS SHARED MODULE STATE [FIXED, DISABLED]
    - Reading frac_b from the map file inside read_pio_contents
@@ -138,9 +143,14 @@ Output viewer: /pscratch/sd/m/mahf708/aifigs_v3LRpiControlSamudrACE/fme_output.h
 WHAT TO INVESTIGATE NEXT
 ========================================================================
 
-1. Run with debug logging (commit 3324db92) and check ocean log:
-   - If buf_max is physical (~31 for SST): bug is in apply() or MPI comm
-   - If buf_max is garbage: bug is in send buffer packing or send_local_cell
+1. DIAGNOSED: buf_max is physical (~26 for SST), out_max is ZERO.
+   The CRS matrix in apply() has no nonzero entries for rank 0's
+   126 target rows. build_comm is not building the matrix correctly.
+   Add debug logging to shr_horiz_remap_build_comm to print:
+     - nnz_local per rank (should be >0)
+     - n_recv_total per rank (should be >0)
+     - Sample col() values from map file vs gcol_to_rank entries
+   Most likely: cell ID mismatch between map file and MPAS indexToCellID.
 
 2. Compare EAM vs MPAS call to apply() in detail:
    - EAM: self%shared%apply(self%ws_send_buf, numlev, fld_out, mpicom, npes, ierr)
