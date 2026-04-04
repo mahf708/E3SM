@@ -40,7 +40,8 @@ module ocn_fme_derived_fields
    use shr_kind_mod, only: r8 => shr_kind_r8
    use ocn_fme_horiz_remap, only: ocn_fme_horiz_remap_init, &
         ocn_fme_horiz_remap_field, ocn_fme_horiz_remap_active, &
-        ocn_fme_horiz_remap_get_dims, ocn_fme_remap_file_t
+        ocn_fme_horiz_remap_get_dims, ocn_fme_remap_file_t, &
+        ocn_fme_remap_build_filename
 
    implicit none
    private
@@ -131,7 +132,7 @@ contains
       ! Remap workspace
       real(r8), allocatable :: fld_remap(:,:)
       real(kind=RKIND), allocatable :: field_1lev(:,:)
-      character(len=StrKIND) :: timeStr
+      character(len=StrKIND) :: timeStr, remap_filename
       type(MPAS_Time_Type) :: currTime
 
       err = 0
@@ -181,7 +182,9 @@ contains
 
             ! Open remapped output file on first compute call
             if (.not. remap_file_opened) then
-               call remap_outfile%open_file('fmeDerivedFieldsRemapped.nc', ierr)
+               call ocn_fme_remap_build_filename(domain, &
+                    'fmeDerivedFieldsOutput', remap_filename, ierr)
+               call remap_outfile%open_file(trim(remap_filename), ierr)
                if (ierr == 0) then
                   call remap_outfile%def_var('sst', 'degC', &
                        'Sea surface temperature (remapped)', 1, ierr)

@@ -1,104 +1,147 @@
 FME Online Output Processing — Future Work and Known Limitations
 ================================================================
+Updated: 2026-04-04 (post-rebase on origin/master, post-review)
 
-STATUS: MPAS-O, MPAS-SI, and EAM fully functional.
-        ELM and MOSART FME source files removed pending clean reimplementation
-        (see ELM/MOSART section below). Shell_commands namelist options for
-        ELM and MOSART remain commented out until reimplemented.
+STATUS: EAM fully functional with transparent per-tape remapping.
+        MPAS-O and MPAS-SI functional but remapped output uses separate
+        hardcoded files — see REVIEW for full architectural analysis.
+        ELM and MOSART deferred (source files removed).
 
 COMPLETED:
+  [x] EAM horizontal remapping (transparent, per-tape, via cam_history)
+  [x] EAM vertical coarsening (8 ACE pressure layers)
+  [x] EAM derived fields (TOTAL_WATER expression parser)
+  [x] EAM tendencies (TOTAL_WATER, T, Q physics timestep diffs)
   [x] MPAS-O horizontal remapping (PIO write to lat-lon NetCDF)
   [x] MPAS-SI horizontal remapping (PIO write to lat-lon NetCDF)
   [x] MPAS-O depth coarsening generic field dispatch
-  [x] MPAS-O vertical reduce generic output slots (vertReduceField01..05)
-  [x] MPAS-SI air stress rotation derived fields
+  [x] MPAS-O vertical reduce (OHC, FWC, KE + 5 generic slots)
+  [x] MPAS-SI category aggregation + air stress rotation
   [x] Stream output frequency namelist options for all MPAS FME AMs
-  [x] Fill value attributes in Registry (missing_value_mask for 3D fields)
+  [x] Fill value attributes in Registry (missing_value_mask for 3D)
   [x] Single precision consistency (all components default to float32)
+  [x] Rebased onto origin/master (includes DTENDTTW merge)
 
-------------------------------------------------------------------------
-REMAINING: Map File Generation (Not Code)
-------------------------------------------------------------------------
+========================================================================
+PRIORITY 1: MPAS Remapped Output Quality (see REVIEW Part 3)
+========================================================================
 
-Generate ESMF/TempestRemap weight files for target configurations:
-  - EAM: ne30pg2 -> 1x1 (or target resolution)
-  - MPAS-O/SI: oEC60to30 or oRRS18to6 -> 1x1
-  - ELM: same as EAM if using same grid
-  - MOSART: r05 -> 1x1
-Store in E3SM inputdata repository for reproducibility.
+1. REMAPPED FILE NAMING [DONE]
+   [x] Filenames derived from native stream's filename_template via
+       MPAS_stream_mgr_get_property. Inserts ".remapped" before ".nc"
+       and substitutes $Y-$M-$D date tokens from model clock.
+   [x] Added ocn_fme_remap_build_filename and seaice_fme_remap_build_filename
+       helpers in the horiz_remap modules.
+   [x] All 4 MPAS AMs now use these helpers instead of hardcoded names.
+   Result: filenames like {casename}.mpaso.hist.am.fmeDerivedFields.remapped.2026-01-01.nc
 
-------------------------------------------------------------------------
+2. FILE ROTATION BY DATE [DEFERRED]
+   Current: file opened on first compute with that day's date in name.
+            All subsequent records go to the same file.
+   Future:  close/reopen on date boundary to match stream filename_interval.
+   This is a lower-priority enhancement — the current behavior produces
+   correct output, just in a single date-stamped file per run segment.
+
+3. INCOMPLETE REMAPPED FIELD SETS [HIGH]
+   [x] MPAS-SI: all 7 derived fields now remapped (was 3 of 7)
+   MPAS-O derived missing external fields from Registry stream:
+     ssh, windStressZonal, windStressMeridional, etc.
+   MPAS-O depth coarsening missing layerThicknessCoarsened
+   Files: mpas_ocn_fme_derived_fields.F:186-191,
+          mpas_ocn_fme_depth_coarsening.F:374-382
+
+4. _FillValue ATTRIBUTES ON REMAPPED VARIABLES [DONE]
+   [x] Added _FillValue=1.0E34 to both MPAS-O and MPAS-SI def_var
+   [x] Added CF-1.8 Conventions and source attributes to file headers
+
+5. BOUNDS CHECK ON max_pio_vars [DONE]
+   [x] Added runtime check with error message in both MPAS-O and MPAS-SI
+       def_var routines (graceful error instead of silent corruption)
+
+========================================================================
+PRIORITY 2: Integration Quality
+========================================================================
+
+6. CONDITIONAL STREAM GENERATION IN BUILDNML [MEDIUM]
+   buildnml generates FME stream XML unconditionally even when
+   output_stream='none'. Should skip when stream not needed.
+   Files: components/mpas-ocean/cime_config/buildnml:1237-1305,
+          components/mpas-seaice/cime_config/buildnml:839-860
+
+7. ASSOCIATED() GUARDS ON VELOCITY POINTERS [DONE]
+   [x] Added associated() checks in depth_coarsening (warns and skips)
+   [x] Added associated() check in vertical_reduce KE computation
+
+8. CF-COMPLIANT METADATA IN REMAPPED OUTPUT [MEDIUM]
+   Missing: Conventions attribute, calendar, time_bnds,
+   map file path as provenance attribute, depth coordinate for 3D
+   Files: ocn_fme_remap_file_t%open_file
+
+9. 3D PIO DECOMPOSITION FOR DEPTH-COARSENED FIELDS [MEDIUM]
+   Current: split into per-level 2D variables (temperatureCoarsened_0, _1)
+   Target:  single 3D variable (nlon, nlat, nFmeDepthLevels, Time)
+   Requires: new iodesc_3d, modified def_var/write_var
+   Files: mpas_ocn_fme_horiz_remap.F, mpas_ocn_fme_depth_coarsening.F
+
+========================================================================
 PRIORITY 3: Extensions and Enhancements
-------------------------------------------------------------------------
+========================================================================
 
-1. ONLINE SPHERICAL HARMONICS ROUNDTRIP
-   - The ACE offline pipeline does a final SH roundtrip for smoothing
-   - Could implement online using existing SH infrastructure
-   - Would eliminate the ONLY remaining offline postprocessing step
+10. ONLINE SPHERICAL HARMONICS ROUNDTRIP
+    ACE offline pipeline does a final SH roundtrip for smoothing.
+    Could implement online to eliminate last offline postprocessing step.
 
-2. WETMASK COMPUTATION
-   - ACE pipeline computes 2D and 3D ocean wetmasks
-   - 2D: based on SST availability
-   - 3D: per-depth-level based on temperature data availability
-   - Could add as computed fields in fmeDerivedFields or fmeDepthCoarsening
+11. WETMASK COMPUTATION
+    2D wetmask (based on SST availability) and 3D wetmask (per depth
+    level based on temperature data). Add to fmeDerivedFields or
+    fmeDepthCoarsening.
 
-3. ELM FME INTEGRATION (DEFERRED)
-   - elm_fme_derived.F90 and elm_fme_vcoarsen.F90 were removed due to build
-     issues (histFileMod internals private, ptr_gcell pointer constraints).
-   - Reimplementation path: pass ELM state pointers directly to the register
-     function (avoid histFileMod internals); use col_ptr_t wrapper pattern
-     for hist_addfld1d pointer arguments.
-   - Fields of interest: TSOI, H2OSOI, SOILICE (vcoarsen), TOTAL_SOIL_WATER (derived)
-   - Shell_commands already has the namelist options, just commented out.
+12. ELM FME INTEGRATION (DEFERRED)
+    elm_fme_derived.F90 and elm_fme_vcoarsen.F90 removed due to build
+    issues (histFileMod private internals, ptr_gcell pointer constraints).
+    Reimplementation: pass state pointers directly, use col_ptr_t wrapper.
+    Fields: TSOI, H2OSOI, SOILICE (vcoarsen), TOTAL_SOIL_WATER (derived).
 
-4. MOSART FME INTEGRATION (DEFERRED)
-   - RtmFmeDerived.F90 was removed due to build issues (mpicom vs mpicom_rof,
-     ptr_rof pointer constraints).
-   - Reimplementation path: use mpicom_rof throughout; use col_ptr_t wrapper
-     pattern for RtmHistAddfld pointer arguments.
-   - Fields of interest: QSUR_LIQ, QSUB_LIQ, VOLR_LIQ, RUNOFFLND_LIQ, etc.
-   - Shell_commands already has the namelist options, just commented out.
+13. MOSART FME INTEGRATION (DEFERRED)
+    RtmFmeDerived.F90 removed due to build issues (mpicom vs mpicom_rof).
+    Reimplementation: use mpicom_rof, col_ptr_t wrapper.
+    Fields: QSUR_LIQ, QSUB_LIQ, VOLR_LIQ, RUNOFFLND_LIQ.
 
-5. MPAS-O DEPTH COARSENING + VERTICAL REDUCE REMAPPED OUTPUT
-   - Currently only fmeDerivedFields writes remapped output
-   - Could extend fmeDepthCoarsening and fmeVerticalReduce to also write
-     remapped files (requires multi-level PIO decomposition for 3D)
+14. SHARED MODULE ROBUSTNESS
+    - shr_horiz_remap_mod: MPI error return code checks
+    - shr_horiz_remap_mod: PIO offset overflow for very large grids
+    - shr_vcoarsen_mod: bounds/coord_iface monotonicity validation
+    - shr_derived_mod: reject empty operand tokens at parse time
 
-6. SHARED MODULE ROBUSTNESS
-   - shr_horiz_remap_mod: Add MPI error return code checks
-   - shr_horiz_remap_mod: PIO offset integer overflow for very large grids
-   - shr_vcoarsen_mod: Validate bounds/coord_iface monotonicity consistency
-   - shr_derived_mod: Reject empty operand tokens at parse time
+15. PERFORMANCE OPTIMIZATION
+    - Depth coarsening: persistent work arrays (avoid per-block alloc)
+    - MPAS horiz remap: optimize send_local_cell lookup (O(n*m) -> O(n))
+    - Vertical reduce: OpenMP for large grids
 
-7. PERFORMANCE OPTIMIZATION
-   - Depth coarsening: persistent work arrays instead of per-block alloc
-   - MPAS horiz remap: optimize send_local_cell lookup (currently O(n*m))
-   - Vertical reduce: OpenMP for large grids
+16. UNIT TESTING
+    Standalone tests for shr_vcoarsen_mod, shr_derived_mod.
+    Edge cases: empty columns, single-level, mismatched bounds.
 
-8. UNIT TESTING
-   - Standalone unit tests for shr_vcoarsen_mod, shr_derived_mod
-   - Test edge cases: empty columns, single-level, mismatched bounds
+17. DOCUMENTATION
+    User guide, namelist options reference, ACE pipeline end-to-end.
 
-9. DOCUMENTATION
-   - User guide for FME output processing
-   - Document all namelist options with examples
-   - Document the ACE/Samudra training data pipeline end-to-end
-
-------------------------------------------------------------------------
-TESTING CHECKLIST FOR PRODUCTION
-------------------------------------------------------------------------
+========================================================================
+TESTING CHECKLIST
+========================================================================
 
 [ ] Build: SMS_D.ne4pg2_oQU480.WCYCL1850NS with fme_output testmod
 [ ] MPAS-O fmeDepthCoarsening: correct depth levels, fill values
 [ ] MPAS-O fmeDerivedFields: SST, SSS, heat flux values
 [ ] MPAS-O fmeVerticalReduce: OHC, FWC, KE non-zero for ocean cells
-[ ] MPAS-O remapped output: fmeDerivedFieldsRemapped.nc has (lon,lat,Time)
-[ ] MPAS-SI derived: aggregated fields + air stress rotation
-[ ] MPAS-SI remapped output: fmeSeaiceDerivedFieldsRemapped.nc
+[ ] MPAS-O remapped output: correct (lon,lat,Time) structure
+[ ] MPAS-O remapped output: ALL expected fields present
+[ ] MPAS-SI derived: all 7 aggregated/rotated fields
+[ ] MPAS-SI remapped output: all 7 fields (not just 3)
 [ ] EAM vertical coarsening: correct layer count and field names
 [ ] EAM derived fields: TOTAL_WATER evaluates correctly
 [ ] EAM tendencies: non-zero after first timestep
-[ ] ELM vcoarsen: TSOI/H2OSOI coarsened fields present when enabled (deferred)
+[ ] EAM remapped output: correct (lon,lat) grid structure
+[ ] Remapped files have _FillValue attributes
 [ ] Run verify_fme_output.py --rundir $RUNDIR --verbose
 [ ] ERS restart test: bit-for-bit with FME enabled
 [ ] Performance: measure overhead vs baseline
