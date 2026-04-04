@@ -8198,4 +8198,13 @@ Use 'all' to apply to T, U, V, OMEGA, Z3, Q.
 Default: none
 </entry>
 
+<entry id="vcoarsen_int_flds" type="char*34(100)" category="physics"
+       group="eam_vcoarsen_nl" valid_values="" >
+Field names for column integration (vertical reduction).
+Computes sum(field * pdel / g) over all levels, producing a 2D field
+named {FIELD}_INT. Can be combined with tend_flds for tendencies.
+Use 'all' to apply to T, U, V, OMEGA, Z3, Q.
+Default: none
+</entry>
+
 </namelist_definition>
