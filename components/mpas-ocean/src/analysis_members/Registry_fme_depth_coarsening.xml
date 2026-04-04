@@ -32,6 +32,10 @@
 			description="Comma-separated tracer names to coarsen in the vertical."
 			possible_values="Comma-separated list of tracer field names or 'none'"
 		/>
+		<nml_option name="config_AM_fmeDepthCoarsening_horiz_remap_file" type="character" default_value="none"
+			description="Path to ESMF/TempestRemap weight file for horizontal remapping depth-coarsened fields to lat-lon grid. Each depth level is output as a separate 2D variable (e.g., temperatureCoarsened_0, temperatureCoarsened_1, ...)."
+			possible_values="Any valid file path or 'none'"
+		/>
 		<nml_option name="config_AM_fmeDepthCoarsening_stream_output_interval" type="character" default_value="00-00-01_00:00:00"
 			description="Output interval for the fmeDepthCoarsening stream. Format: YY-MM-DD_HH:MM:SS"
 			possible_values="Any valid MPAS time interval string"

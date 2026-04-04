@@ -1354,6 +1354,7 @@
 <config_AM_fmeDepthCoarsening_write_on_startup>.true.</config_AM_fmeDepthCoarsening_write_on_startup>
 <config_AM_fmeDepthCoarsening_depth_bounds>'none'</config_AM_fmeDepthCoarsening_depth_bounds>
 <config_AM_fmeDepthCoarsening_fields>'none'</config_AM_fmeDepthCoarsening_fields>
+<config_AM_fmeDepthCoarsening_horiz_remap_file>'none'</config_AM_fmeDepthCoarsening_horiz_remap_file>
 <config_AM_fmeDepthCoarsening_stream_output_interval>'00-00-01_00:00:00'</config_AM_fmeDepthCoarsening_stream_output_interval>
 
 <!-- AM_fmeDerivedFields -->
@@ -1374,6 +1375,7 @@
 <config_AM_fmeVerticalReduce_fields>'none'</config_AM_fmeVerticalReduce_fields>
 <config_AM_fmeVerticalReduce_methods>'none'</config_AM_fmeVerticalReduce_methods>
 <config_AM_fmeVerticalReduce_reference_salinity>34.8</config_AM_fmeVerticalReduce_reference_salinity>
+<config_AM_fmeVerticalReduce_horiz_remap_file>'none'</config_AM_fmeVerticalReduce_horiz_remap_file>
 <config_AM_fmeVerticalReduce_stream_output_interval>'00-00-01_00:00:00'</config_AM_fmeVerticalReduce_stream_output_interval>
 
 </namelist_defaults>

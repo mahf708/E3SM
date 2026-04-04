@@ -31,6 +31,10 @@
 			description="Reference salinity (PSU) for freshwater content calculation."
 			possible_values="Any positive real number"
 		/>
+		<nml_option name="config_AM_fmeVerticalReduce_horiz_remap_file" type="character" default_value="none"
+			description="Path to ESMF/TempestRemap weight file for horizontal remapping vertically reduced fields to lat-lon grid."
+			possible_values="Any valid file path or 'none'"
+		/>
 		<nml_option name="config_AM_fmeVerticalReduce_stream_output_interval" type="character" default_value="00-00-01_00:00:00"
 			description="Output interval for the fmeVerticalReduce stream. Format: YY-MM-DD_HH:MM:SS"
 			possible_values="Any valid MPAS time interval string"
