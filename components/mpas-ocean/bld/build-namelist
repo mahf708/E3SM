@@ -1900,6 +1900,7 @@ add_default($nl, 'config_AM_fmeDepthCoarsening_compute_on_startup');
 add_default($nl, 'config_AM_fmeDepthCoarsening_write_on_startup');
 add_default($nl, 'config_AM_fmeDepthCoarsening_depth_bounds');
 add_default($nl, 'config_AM_fmeDepthCoarsening_fields');
+add_default($nl, 'config_AM_fmeDepthCoarsening_horiz_remap_file');
 add_default($nl, 'config_AM_fmeDepthCoarsening_stream_output_interval');
 add_default($nl, 'config_AM_fmeDepthCoarsening_horiz_remap_file');
 
@@ -1927,6 +1928,7 @@ add_default($nl, 'config_AM_fmeVerticalReduce_write_on_startup');
 add_default($nl, 'config_AM_fmeVerticalReduce_fields');
 add_default($nl, 'config_AM_fmeVerticalReduce_methods');
 add_default($nl, 'config_AM_fmeVerticalReduce_reference_salinity');
+add_default($nl, 'config_AM_fmeVerticalReduce_horiz_remap_file');
 add_default($nl, 'config_AM_fmeVerticalReduce_stream_output_interval');
 add_default($nl, 'config_AM_fmeVerticalReduce_horiz_remap_file');
 
