@@ -35,12 +35,13 @@ PRIORITY 1: MPAS Remapped Output Quality (see REVIEW Part 3)
    [x] All 4 MPAS AMs now use these helpers instead of hardcoded names.
    Result: filenames like {casename}.mpaso.hist.am.fmeDerivedFields.remapped.2026-01-01.nc
 
-2. FILE ROTATION BY DATE [DEFERRED]
-   Current: file opened on first compute with that day's date in name.
-            All subsequent records go to the same file.
-   Future:  close/reopen on date boundary to match stream filename_interval.
-   This is a lower-priority enhancement — the current behavior produces
-   correct output, just in a single date-stamped file per run segment.
+2. FILE ROTATION BY DATE [DONE]
+   [x] Added check_rotate method to ocn_fme_remap_file_t and equivalent
+       seaice_fme_horiz_remap_check_rotate subroutine.
+   [x] Var definitions stored via register_var at init, replayed on rotation.
+   [x] Each compute step builds date-stamped filename and compares with
+       current open file. Closes and reopens with fresh defs on date change.
+   [x] All 4 MPAS AMs converted to register_var + check_rotate pattern.
 
 3. INCOMPLETE REMAPPED FIELD SETS [HIGH]
    [x] MPAS-SI: all 7 derived fields now remapped (was 3 of 7)

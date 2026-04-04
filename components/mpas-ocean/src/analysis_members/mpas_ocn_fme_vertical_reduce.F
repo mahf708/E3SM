@@ -56,7 +56,6 @@ module ocn_fme_vertical_reduce
 
    ! Remapped output workspace
    logical :: do_horiz_remap = .false.
-   logical :: remap_file_opened = .false.
    type(ocn_fme_remap_file_t) :: remap_outfile
    integer :: remap_nlat = 0, remap_nlon = 0, remap_nb_local = 0
 
@@ -86,8 +85,9 @@ contains
       character(len=StrKIND), pointer :: config_AM_fmeVerticalReduce_methods
       character(len=StrKIND), pointer :: config_AM_fmeVerticalReduce_horiz_remap_file
       character(len=StrKIND) :: tempStr, methodStr
+      character(len=32) :: slotName
       integer :: nFields, nMethods, i, iStart, iEnd, strLen
-      integer :: ierr
+      integer :: ierr, iGeneric
 
       err = 0
 
@@ -212,6 +212,18 @@ contains
                   call mpas_log_write('fmeVerticalReduce: horiz remap active, ' &
                        // 'target grid $i x $i', &
                        intArgs=(/remap_nlon, remap_nlat/))
+                  remap_outfile%stream_name = 'fmeVerticalReduceOutput'
+                  call remap_outfile%register_var('oceanHeatContent', 'J m^-2', &
+                       'Column-integrated ocean heat content', ierr)
+                  call remap_outfile%register_var('freshwaterContent', 'm', &
+                       'Column-integrated freshwater content', ierr)
+                  call remap_outfile%register_var('kineticEnergy', 'J m^-2', &
+                       'Column-integrated kinetic energy', ierr)
+                  do iGeneric = 1, min(nReduceFields, 5)
+                     write(slotName, '(A,I2.2)') 'vertReduceField', iGeneric
+                     call remap_outfile%register_var(trim(slotName), 'varies', &
+                          'User-configured vertical reduction field', ierr)
+                  end do
                end if
             end if
          end if
@@ -256,7 +268,7 @@ contains
       ! Remap workspace
       real(r8), allocatable :: fld_remap(:,:)
       real(kind=RKIND), allocatable :: field_1lev(:,:)
-      character(len=StrKIND) :: timeStr, remap_filename
+      character(len=StrKIND) :: timeStr
       type(MPAS_Time_Type) :: currTime
 
       err = 0
@@ -359,28 +371,9 @@ contains
          if (do_horiz_remap) then
             call mpas_pool_get_dimension(block % dimensions, 'nCells', nCells)
 
-            ! Open remapped output file on first compute call
-            if (.not. remap_file_opened) then
-               call ocn_fme_remap_build_filename(domain, &
-                    'fmeVerticalReduceOutput', remap_filename, ierr)
-               call remap_outfile%open_file(trim(remap_filename), ierr)
-               if (ierr == 0) then
-                  call remap_outfile%def_var('oceanHeatContent', 'J m^-2', &
-                       'Column-integrated ocean heat content (remapped)', 1, ierr)
-                  call remap_outfile%def_var('freshwaterContent', 'm', &
-                       'Column-integrated freshwater content (remapped)', 1, ierr)
-                  call remap_outfile%def_var('kineticEnergy', 'J m^-2', &
-                       'Column-integrated kinetic energy (remapped)', 1, ierr)
-                  do iGeneric = 1, min(nReduceFields, 5)
-                     write(slotName, '(A,I2.2)') 'vertReduceField', iGeneric
-                     call remap_outfile%def_var(trim(slotName), 'varies', &
-                          'Generic vertical reduction (remapped)', 1, ierr)
-                  end do
-                  remap_file_opened = .true.
-               end if
-            end if
+            call remap_outfile%check_rotate(domain, ierr)
 
-            if (remap_file_opened) then
+            if (remap_outfile%file_is_open) then
                allocate(fld_remap(remap_nb_local, 1))
                allocate(field_1lev(1, nCells))
 
@@ -444,10 +437,7 @@ contains
 
       err = 0
 
-      if (remap_file_opened) then
-         call remap_outfile%close_file(ierr)
-         remap_file_opened = .false.
-      end if
+      call remap_outfile%close_file(ierr)
 
       if (allocated(reduceFieldNames)) deallocate(reduceFieldNames)
       if (allocated(reduceFieldMethods)) deallocate(reduceFieldMethods)
