@@ -12,6 +12,8 @@ config_AM_fmeDepthCoarsening_depth_bounds = '0,15,25,40,62.5,87.5,112.5,150,200,
 config_AM_fmeDepthCoarsening_fields = 'temperature,salinity'
 
 config_AM_fmeDerivedFields_enable = .true.
+! Horizontal remapping (uncomment and set path when map file available):
+! config_AM_fmeDerivedFields_horiz_remap_file = '/path/to/map_oQU480_to_fv1x1_fme.nc'
 
 config_AM_fmeVerticalReduce_enable = .true.
 config_AM_fmeVerticalReduce_reference_salinity = 34.8
