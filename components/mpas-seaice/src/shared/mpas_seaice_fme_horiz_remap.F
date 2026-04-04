@@ -74,14 +74,14 @@ module seaice_fme_horiz_remap
 contains
 
    subroutine seaice_fme_horiz_remap_init(domain, mapfile, err)!{{{
+      use mpi, only: MPI_INTEGER, MPI_MAX, MPI_IN_PLACE
+
       type(domain_type), intent(inout) :: domain
       character(len=*), intent(in) :: mapfile
       integer, intent(out) :: err
 
       type(block_type), pointer :: block
       type(mpas_pool_type), pointer :: meshPool
-      use mpi, only: MPI_INTEGER, MPI_MAX, MPI_IN_PLACE
-
       integer, pointer :: nCellsSolve
       integer, dimension(:), pointer :: indexToCellID
       integer :: myrank, nprocs, comm, ierr, iCell, gcol, i
