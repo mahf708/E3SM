@@ -153,15 +153,64 @@ contains
     ! Evaluate derived field expressions and update output arrays.
     ! Must be called each timestep BEFORE RtmHistUpdateHbuf.
     !
-    ! Source field lookup from rtmCTL state variables requires
-    ! case-by-case integration similar to how RtmHistFldsSet
-    ! maps field names to rtmCTL pointers.
+    ! Looks up source field values from rtmCTL state by field name,
+    ! then evaluates the parsed expression using shr_derived_eval.
     !--------------------------------------------------------------------------
+    use shr_derived_mod, only: shr_derived_eval
+
+    integer :: i, n, ncol, begr, endr
+    real(r8), allocatable :: operand_data(:,:,:)
+    real(r8), allocatable :: result_data(:,:)
+    real(r8), pointer :: fld_ptr(:)
+    logical :: found
+
     if (.not. has_derived) return
 
-    ! The persistent arrays (derived_data) are registered with RtmHistFile.
-    ! Source field evaluation from rtmCTL state requires mapping field names
-    ! to rtmCTL data members (e.g., 'RIVER_DISCHARGE_OVER_LAND' -> rtmCTL%runofflnd_nt1).
+    begr = rtmCTL%begr
+    endr = rtmCTL%endr
+    ncol = endr - begr + 1
+
+    do i = 1, n_derived_flds
+      allocate(operand_data(ncol, 1, parsed_exprs(i)%n_operands))
+      operand_data(:,:,:) = 0.0_r8
+
+      do n = 1, parsed_exprs(i)%n_operands
+        if (parsed_exprs(i)%operands(n)%is_constant) cycle
+
+        ! Map known MOSART field names to rtmCTL data members
+        found = .true.
+        select case (trim(parsed_exprs(i)%operands(n)%field_name))
+        case ('QSUR_LIQ')
+          operand_data(1:ncol, 1, n) = rtmCTL%qsur(begr:endr, 1)
+        case ('QSUB_LIQ')
+          operand_data(1:ncol, 1, n) = rtmCTL%qsub(begr:endr, 1)
+        case ('QGWL_LIQ')
+          operand_data(1:ncol, 1, n) = rtmCTL%qgwl(begr:endr, 1)
+        case ('VOLR_LIQ')
+          operand_data(1:ncol, 1, n) = rtmCTL%volr(begr:endr, 1)
+        case ('RUNOFFLND_LIQ')
+          operand_data(1:ncol, 1, n) = rtmCTL%runofflnd(begr:endr, 1)
+        case ('RUNOFFOCN_LIQ')
+          operand_data(1:ncol, 1, n) = rtmCTL%runoffocn(begr:endr, 1)
+        case default
+          found = .false.
+        end select
+
+        if (.not. found) then
+          derived_data(begr:endr, i) = spval
+          deallocate(operand_data)
+          goto 100
+        end if
+      end do
+
+      allocate(result_data(ncol, 1))
+      call shr_derived_eval(parsed_exprs(i), operand_data, ncol, 1, ncol, result_data)
+      derived_data(begr:endr, i) = result_data(1:ncol, 1)
+      deallocate(result_data)
+      deallocate(operand_data)
+
+      100 continue
+    end do
 
   end subroutine rtm_fme_derived_update
 
