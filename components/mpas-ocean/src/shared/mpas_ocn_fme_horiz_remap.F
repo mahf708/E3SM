@@ -47,7 +47,7 @@ module ocn_fme_horiz_remap
                   pio_openfile, pio_closefile, pio_createfile, &
                   pio_def_dim, pio_def_var, pio_enddef, &
                   pio_put_att, pio_put_var, pio_write_darray, &
-                  pio_initdecomp, pio_freedecomp, &
+                  pio_initdecomp, pio_freedecomp, pio_setframe, &
                   PIO_IOTYPE_PNETCDF, PIO_IOTYPE_NETCDF4P, &
                   PIO_CLOBBER, PIO_REAL, PIO_DOUBLE, PIO_CHAR, &
                   PIO_OFFSET_KIND, PIO_GLOBAL, PIO_NOERR, &
@@ -411,6 +411,9 @@ contains
       ! Find variable index
       do iv = 1, n_pio_vars
          if (trim(pio_var_names(iv)) == trim(varname)) then
+            ! Set the time record frame before writing
+            call pio_setframe(pio_file, pio_var_descs(iv), &
+                 int(time_record, PIO_OFFSET_KIND))
             ! Write 2D field using PIO decomposition
             fld_1d(1:remap_data%n_b_local) = real(fld_out(1:remap_data%n_b_local, 1), r8)
             call pio_write_darray(pio_file, pio_var_descs(iv), iodesc_2d, fld_1d, ierr)
