@@ -7,10 +7,11 @@ module eam_vcoarsen
   ! the shared shr_vcoarsen_mod routines. All vertical coarsening math is
   ! delegated to the shared module.
   !
-  ! Supports three modes of vertical coarsening:
+  ! Supports four modes of vertical coarsening:
   !   1. Overlap-weighted averaging onto coarser pressure layers (pdel-weighted)
   !   2. Level selection by index (e.g., U_at_L5)
   !   3. Level selection by nearest pressure value (e.g., U_at_P850)
+  !   4. Column integration: sum(field * pdel / g) producing a 2D field (e.g., TOTAL_WATER_INT)
   !
   ! Configuration via namelist (eam_vcoarsen_nl):
   !   vcoarsen_pbounds         - pressure boundaries (Pa), top to surface
@@ -19,6 +20,7 @@ module eam_vcoarsen
   !   vcoarsen_select_lev_flds - fields for level index selection
   !   vcoarsen_select_pres     - pressure values in hPa for nearest-level selection
   !   vcoarsen_select_pres_flds - fields for pressure value selection
+  !   vcoarsen_int_flds        - fields to column-integrate (sum field*pdel/g)
   !
   ! Use 'all' as the sole entry in any field list to apply to all known 3D fields.
   !
@@ -70,6 +72,7 @@ module eam_vcoarsen
   character(len=max_name_len) :: vcoarsen_select_lev_flds(max_flds)
   real(r8) :: vcoarsen_select_pres(max_select_vals)
   character(len=max_name_len) :: vcoarsen_select_pres_flds(max_flds)
+  character(len=max_name_len) :: vcoarsen_int_flds(max_flds)
 
   ! Parsed counts
   integer :: n_avg_levs      = 0   ! number of coarsened pressure layers
@@ -78,11 +81,17 @@ module eam_vcoarsen
   integer :: n_sel_lev_flds  = 0   ! number of fields for level selection
   integer :: n_sel_pres      = 0   ! number of pressure values for selection
   integer :: n_sel_pres_flds = 0   ! number of fields for pressure selection
+  integer :: n_int_flds      = 0   ! number of fields for column integration
 
   ! Flags
-  logical :: has_avg     = .false.
-  logical :: has_sel_lev = .false.
+  logical :: has_avg      = .false.
+  logical :: has_sel_lev  = .false.
   logical :: has_sel_pres = .false.
+  logical :: has_int      = .false.
+
+  ! Column integration tendency: previous timestep values (begchunk:endchunk, pcols, max_flds)
+  real(r8), allocatable :: int_prev(:,:,:)
+  logical :: int_prev_valid = .false.
 
 contains
 
@@ -98,7 +107,8 @@ contains
 
     namelist /eam_vcoarsen_nl/ vcoarsen_pbounds, vcoarsen_avg_flds, &
          vcoarsen_select_levs, vcoarsen_select_lev_flds, &
-         vcoarsen_select_pres, vcoarsen_select_pres_flds
+         vcoarsen_select_pres, vcoarsen_select_pres_flds, &
+         vcoarsen_int_flds
 
     ! Initialize defaults
     vcoarsen_pbounds(:)         = -1.0_r8
@@ -107,6 +117,7 @@ contains
     vcoarsen_select_lev_flds(:) = ''
     vcoarsen_select_pres(:)     = -1.0_r8
     vcoarsen_select_pres_flds(:) = ''
+    vcoarsen_int_flds(:)        = ''
 
     if (masterproc) then
       unitn = getunit()
@@ -175,6 +186,11 @@ contains
     ! Count pressure selection fields; expand 'all'
     call count_and_expand_flds(vcoarsen_select_pres_flds, n_sel_pres_flds)
 
+    ! Column integration fields
+    call mpi_bcast(vcoarsen_int_flds, max_name_len*max_flds, mpi_character, masterprocid, mpicom, ierr)
+    call count_and_expand_flds(vcoarsen_int_flds, n_int_flds)
+    has_int = (n_int_flds > 0)
+
     if (masterproc) then
       if (has_avg) then
         write(iulog,*) 'eam_vcoarsen_readnl: averaging enabled, ', n_avg_levs, &
@@ -188,6 +204,9 @@ contains
         write(iulog,*) 'eam_vcoarsen_readnl: pressure selection enabled, ', n_sel_pres, &
              ' pressures, ', n_sel_pres_flds, ' fields'
       end if
+      if (has_int) then
+        write(iulog,*) 'eam_vcoarsen_readnl: column integration enabled, ', n_int_flds, ' fields'
+      end if
     end if
 
   end subroutine eam_vcoarsen_readnl
@@ -196,13 +215,14 @@ contains
   subroutine eam_vcoarsen_register()
     use cam_history, only: addfld, horiz_only
     use constituents, only: cnst_get_ind
+    use ppgrid,       only: begchunk, endchunk
 
     integer :: i, k, idx
     character(len=max_fname_len) :: fname
     character(len=256) :: lname
     logical :: found
 
-    if (.not. has_avg .and. .not. has_sel_lev .and. .not. has_sel_pres) return
+    if (.not. has_avg .and. .not. has_sel_lev .and. .not. has_sel_pres .and. .not. has_int) return
 
     ! Validate and register averaged fields
     if (has_avg) then
@@ -248,6 +268,25 @@ contains
       end do
     end if
 
+    ! Validate and register column-integrated fields + their tendencies
+    if (has_int) then
+      ! Allocate previous-timestep storage for tendency computation
+      allocate(int_prev(pcols, n_int_flds, begchunk:endchunk))
+      int_prev(:,:,:) = 0.0_r8
+      do i = 1, n_int_flds
+        call validate_field_name(vcoarsen_int_flds(i))
+        fname = trim(vcoarsen_int_flds(i)) // '_INT'
+        write(lname, '(A,A)') 'Column-integrated ', trim(vcoarsen_int_flds(i))
+        call addfld(trim(fname), horiz_only, 'A', 'varies', trim(lname), &
+             flag_xyfill=.true.)
+        ! Also register the tendency d{FIELD}_INT_dt
+        fname = 'd' // trim(vcoarsen_int_flds(i)) // '_INT_dt'
+        write(lname, '(A,A)') 'Tendency of column-integrated ', trim(vcoarsen_int_flds(i))
+        call addfld(trim(fname), horiz_only, 'A', 'varies', trim(lname), &
+             flag_xyfill=.true.)
+      end do
+    end if
+
     if (masterproc) then
       write(iulog,*) 'eam_vcoarsen_register: registration complete'
     end if
@@ -261,6 +300,8 @@ contains
     use cam_history,    only: outfld
     use shr_vcoarsen_mod, only: shr_vcoarsen_avg_cols, shr_vcoarsen_select_index, &
                                 shr_vcoarsen_select_nearest
+    use physconst,      only: gravit
+    use time_manager,   only: get_step_size
 
     type(physics_state), intent(in) :: state
     type(physics_buffer_desc), pointer :: pbuf_chunk(:)
@@ -268,13 +309,15 @@ contains
     real(r8) :: src_field(pcols, pver)
     real(r8) :: coarsened(pcols, max(n_avg_levs, 1))
     real(r8) :: selected(pcols)
+    real(r8) :: integrated(pcols)
     real(r8) :: coord_iface(pcols, pverp)
     real(r8) :: coord_mid(pcols, pver)
+    real(r8) :: dt
     integer  :: nlev_max(pcols)
     integer  :: i, k, ncol, lchnk
     character(len=max_fname_len) :: fname
 
-    if (.not. has_avg .and. .not. has_sel_lev .and. .not. has_sel_pres) return
+    if (.not. has_avg .and. .not. has_sel_lev .and. .not. has_sel_pres .and. .not. has_int) return
 
     ncol  = state%ncol
     lchnk = state%lchnk
@@ -341,6 +384,43 @@ contains
           call outfld(trim(fname), selected, pcols, lchnk)
         end do
       end do
+    end if
+
+    ! --- Column integration: sum(field * pdel / g) ---
+    if (has_int) then
+      ! int_prev allocated in eam_vcoarsen_register
+
+      do i = 1, n_int_flds
+        call get_state_field(state, pbuf_chunk, vcoarsen_int_flds(i), src_field, ncol)
+
+        integrated(:) = fillvalue
+        integrated(1:ncol) = 0.0_r8
+        do k = 1, pver
+          integrated(1:ncol) = integrated(1:ncol) + &
+               src_field(1:ncol, k) * state%pdel(1:ncol, k) / gravit
+        end do
+
+        fname = trim(vcoarsen_int_flds(i)) // '_INT'
+        call outfld(trim(fname), integrated, pcols, lchnk)
+
+        ! Compute tendency: (current - previous) / dt
+        dt = real(get_step_size(), r8)
+        selected(:) = fillvalue
+        if (int_prev_valid) then
+          selected(1:ncol) = (integrated(1:ncol) - int_prev(1:ncol, i, lchnk)) / dt
+        else
+          selected(1:ncol) = 0.0_r8
+        end if
+        fname = 'd' // trim(vcoarsen_int_flds(i)) // '_INT_dt'
+        call outfld(trim(fname), selected, pcols, lchnk)
+
+        ! Save current for next timestep
+        int_prev(1:ncol, i, lchnk) = integrated(1:ncol)
+      end do
+
+      ! Mark previous values as valid after first complete pass through all chunks.
+      ! This is approximate — it becomes valid after the first timestep completes.
+      if (.not. int_prev_valid) int_prev_valid = .true.
     end if
 
   end subroutine eam_vcoarsen_write
