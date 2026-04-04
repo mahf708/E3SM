@@ -25,6 +25,8 @@ import os
 import sys
 import glob
 import textwrap
+import time as _time
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -151,7 +153,7 @@ RANGE_CHECKS = {
     "iceVolumeTotal": (0, None),
     "snowVolumeTotal": (0, None),
     "iceThicknessMean": (0, None),
-    "surfaceTemperatureMean": (180, 320),
+    "surfaceTemperatureMean": (200, 320),
     "oceanHeatContent": (None, None),
     "freshwaterContent": (-1000, 1000),
     "kineticEnergy": (0, None),
@@ -247,18 +249,34 @@ def close_ds(ds):
         ds.close()
 
 
-def valid_data(arr, fill=1e15):
+def valid_data(arr, fill=1e10):
     """Return non-fill, finite values.
 
-    The threshold is 1e15 because remapped output can contain interpolated
-    fill artifacts from neighboring land/ocean cells that are very large
-    but not exactly _FillValue=1e34.  No geophysical quantity exceeds 1e15.
+    The threshold is 1e10 because remapped output can contain interpolated
+    fill artifacts from neighboring land/ocean cells that can reach ~1e14
+    scale while _FillValue is 1e34.  No geophysical quantity exceeds 1e10.
     """
     if arr is None:
         return None
     flat = arr.ravel().astype(float)
     mask = (np.abs(flat) < fill) & np.isfinite(flat)
     return flat[mask] if mask.any() else None
+
+
+def fill_nan_report(arr, name):
+    """Return a dict with fill/NaN fraction stats for a variable array."""
+    if arr is None:
+        return {"name": name, "total": 0, "valid": 0, "fill_nan": 0, "pct": 100.0}
+    flat = arr.ravel().astype(float)
+    total = flat.size
+    fill_mask = np.abs(flat) >= 1e10
+    nan_mask = ~np.isfinite(flat)
+    bad = fill_mask | nan_mask
+    n_bad = int(bad.sum())
+    n_valid = total - n_bad
+    pct = 100.0 * n_bad / total if total > 0 else 0.0
+    return {"name": name, "total": total, "valid": n_valid,
+            "fill_nan": n_bad, "pct": pct}
 
 
 def check_range(arr, name, vmin=None, vmax=None):
@@ -281,6 +299,27 @@ def summary_stats(arr):
     if v is None or v.size == 0:
         return "no valid data"
     return f"mean={v.mean():.4g}  min={v.min():.4g}  max={v.max():.4g}  n={v.size}"
+
+
+def has_time_zero(ds):
+    """Check if the Time/time dimension has size 0."""
+    dims = get_dims(ds)
+    for tname in ("Time", "time"):
+        if tname in dims and dims[tname] == 0:
+            return True
+    return False
+
+
+def last_time_index(arr):
+    """Return the index of the last timestep.
+
+    Uses -1 (last available) to avoid initialization artifacts at t=0.
+    """
+    if arr is None:
+        return -1
+    if arr.ndim >= 2 and arr.shape[0] > 0:
+        return -1
+    return -1
 
 
 # -----------------------------------------------------------------------------
@@ -342,15 +381,18 @@ def global_map(data, lons, lats, title, cmap="RdBu_r", vmin=None, vmax=None,
 
 def latlon_map(ds, varname, title, cmap="RdBu_r", vmin=None, vmax=None,
                outdir=None, fname=None, units="", subdir=None):
-    """Plot a variable from a remapped (lon, lat, Time) dataset."""
+    """Plot a variable from a remapped (lon, lat, Time) dataset.
+
+    Uses the LAST timestep to avoid initialization artifacts.
+    """
     if not HAS_MPL:
         return None
     arr = get_var(ds, varname)
     if arr is None:
         return None
-    # Get first timestep if time dimension present
+    # Use last timestep if time dimension present
     if arr.ndim == 3:
-        data = arr[0, :, :]
+        data = arr[-1, :, :]
     elif arr.ndim == 2:
         data = arr
     else:
@@ -463,6 +505,7 @@ def check_eam(rundir, outdir, verbose):
     print("\n=== EAM ===")
     issues = []
     plots = []
+    fill_reports = []
 
     # -- tape 1 (h0): averaged 2D fields -----------------------------------
     t1_files = find_files(rundir, "*.eam.h0.*.nc")
@@ -471,45 +514,51 @@ def check_eam(rundir, outdir, verbose):
     else:
         print(f"  tape1: found {len(t1_files)} h0 file(s)")
         ds = safe_open(t1_files[0])
-        for var in ["PHIS", "PS", "TS", "LHFLX", "SHFLX", "FLDS", "FSDS",
-                    "FLNS", "FSNS", "FSNTOA", "FLUT", "SOLIN",
-                    "ICEFRAC", "LANDFRAC", "OCNFRAC", "TAUX", "TAUY"]:
-            arr = get_var(ds, var)
-            if arr is None:
-                issues.append(f"  tape1 missing: {var}")
-            else:
-                vmin, vmax = RANGE_CHECKS.get(var, (None, None))
-                issues += check_range(arr, f"tape1/{var}", vmin, vmax)
-                if verbose:
-                    print(f"  tape1/{var}: {summary_stats(arr)}")
-
-        # Maps of key 2D fields on lat-lon grid
-        if HAS_MPL and HAS_XR and isinstance(ds, xr.Dataset):
-            lon_name = next((d for d in ["lon", "ncol", "longitude"] if d in ds.dims), None)
-            lat_name = next((d for d in ["lat", "latitude"] if d in ds.dims), None)
-            for var, cmap, vm, vx, units in [
-                ("TS",    "RdBu_r",  220, 320, "K"),
-                ("LHFLX","viridis",    0, 300, "W/m2"),
-                ("SHFLX","RdBu_r", -100, 200, "W/m2"),
-                ("FLUT", "inferno",  100, 320, "W/m2"),
-                ("PRECT","Blues",      0, 1e-3,"kg/m2/s"),
-                ("ICEFRAC","Blues",    0,   1, "fraction"),
-            ]:
+        if has_time_zero(ds):
+            print("  tape1: time dimension has size 0 -- skipping")
+            close_ds(ds)
+        else:
+            for var in ["PHIS", "PS", "TS", "LHFLX", "SHFLX", "FLDS", "FSDS",
+                        "FLNS", "FSNS", "FSNTOA", "FLUT", "SOLIN",
+                        "ICEFRAC", "LANDFRAC", "OCNFRAC", "TAUX", "TAUY"]:
                 arr = get_var(ds, var)
-                if arr is None or arr.size == 0:
-                    continue
-                data = arr[0] if arr.ndim >= 2 and arr.shape[0] > 0 else arr
-                if lat_name and lon_name and data.ndim == 2:
-                    lons = ds[lon_name].values
-                    lats = ds[lat_name].values
-                    if lons.ndim == 1:
-                        lons, lats = np.meshgrid(lons, lats)
-                    p = global_map(data, lons, lats, f"EAM {var} (tape1, t=0)",
-                                   cmap=cmap, vmin=vm, vmax=vx,
-                                   outdir=outdir, fname=f"eam_tape1_{var}.png",
-                                   units=units)
-                    if p: plots.append(p)
-        close_ds(ds)
+                if arr is None:
+                    issues.append(f"  tape1 missing: {var}")
+                else:
+                    vmin, vmax = RANGE_CHECKS.get(var, (None, None))
+                    issues += check_range(arr, f"tape1/{var}", vmin, vmax)
+                    fill_reports.append(fill_nan_report(arr, f"tape1/{var}"))
+                    if verbose:
+                        print(f"  tape1/{var}: {summary_stats(arr)}")
+
+            # Maps of key 2D fields on lat-lon grid -- use LAST timestep
+            if HAS_MPL and HAS_XR and isinstance(ds, xr.Dataset):
+                lon_name = next((d for d in ["lon", "ncol", "longitude"] if d in ds.dims), None)
+                lat_name = next((d for d in ["lat", "latitude"] if d in ds.dims), None)
+                for var, cmap, vm, vx, units in [
+                    ("TS",      "RdBu_r",  220, 320, "K"),
+                    ("LHFLX",   "viridis",   0, 300, "W/m2"),
+                    ("PRECT",   "Blues",     0, 1e-3, "kg/m2/s"),
+                    ("ICEFRAC", "Blues",      0,   1, "fraction"),
+                    ("FLUT",    "inferno",  100, 320, "W/m2"),
+                    ("FSDS",    "YlOrRd",     0, 500, "W/m2"),
+                ]:
+                    arr = get_var(ds, var)
+                    if arr is None or arr.size == 0:
+                        continue
+                    # Last timestep
+                    data = arr[-1] if arr.ndim >= 2 and arr.shape[0] > 0 else arr
+                    if lat_name and lon_name and data.ndim == 2:
+                        lons = ds[lon_name].values
+                        lats = ds[lat_name].values
+                        if lons.ndim == 1:
+                            lons, lats = np.meshgrid(lons, lats)
+                        p = global_map(data, lons, lats, f"EAM {var} (tape1, last t)",
+                                       cmap=cmap, vmin=vm, vmax=vx,
+                                       outdir=outdir, fname=f"eam_tape1_{var}.png",
+                                       units=units)
+                        if p: plots.append(p)
+            close_ds(ds)
 
     # -- tape 2 (h1): additional 2D fields ---------------------------------
     t2_files = find_files(rundir, "*.eam.h1.*.nc")
@@ -518,10 +567,13 @@ def check_eam(rundir, outdir, verbose):
     else:
         print(f"  tape2: found {len(t2_files)} h1 file(s)")
         ds2 = safe_open(t2_files[0])
-        varnames = get_varnames(ds2)
-        print(f"  tape2: {len(varnames)} variables in file")
-        if verbose:
-            print(f"  tape2 variables: {varnames[:30]}{'...' if len(varnames)>30 else ''}")
+        if has_time_zero(ds2):
+            print("  tape2: time dimension has size 0 -- skipping")
+        else:
+            varnames = get_varnames(ds2)
+            print(f"  tape2: {len(varnames)} variables in file")
+            if verbose:
+                print(f"  tape2 variables: {varnames[:30]}{'...' if len(varnames)>30 else ''}")
         close_ds(ds2)
 
     # -- tape 3 (h2): vertically coarsened 3D state -------------------------
@@ -531,49 +583,80 @@ def check_eam(rundir, outdir, verbose):
     else:
         print(f"  tape3: found {len(t3_files)} h2 file(s)")
         ds3 = safe_open(t3_files[0])
-        for base in ACE_ATM_3D_COARSENED:
-            found_layers = []
-            for k in range(1, N_ATM_LAYERS + 1):  # 1-based: T_1..T_8
-                vname = f"{base}_{k}"
-                arr = get_var(ds3, vname)
-                if arr is not None:
-                    found_layers.append(k)
-                    vmin, vmax = RANGE_CHECKS.get(base, (None, None))
-                    issues += check_range(arr, f"tape3/{vname}", vmin, vmax)
-            if len(found_layers) == N_ATM_LAYERS:
-                print(f"  tape3/{base}: all {N_ATM_LAYERS} layers present")
-            elif found_layers:
-                print(f"  tape3/{base}: {len(found_layers)}/{N_ATM_LAYERS} layers found "
-                      f"(indices {found_layers})")
-                issues.append(f"  tape3/{base}: only {len(found_layers)}/{N_ATM_LAYERS} layers")
-            else:
-                # EAM may name them differently; check alternate patterns
-                alts = [v for v in get_varnames(ds3)
-                        if v.startswith(base + "_") or v.startswith(base.upper() + "_")]
-                if alts:
-                    print(f"  tape3/{base}: found alternate names: {alts[:5]}")
+        if has_time_zero(ds3):
+            print("  tape3: time dimension has size 0 -- skipping")
+            close_ds(ds3)
+        else:
+            for base in ACE_ATM_3D_COARSENED:
+                found_layers = []
+                for k in range(1, N_ATM_LAYERS + 1):  # 1-based: T_1..T_8
+                    vname = f"{base}_{k}"
+                    arr = get_var(ds3, vname)
+                    if arr is not None:
+                        found_layers.append(k)
+                        vmin, vmax = RANGE_CHECKS.get(base, (None, None))
+                        issues += check_range(arr, f"tape3/{vname}", vmin, vmax)
+                        fill_reports.append(fill_nan_report(arr, f"tape3/{vname}"))
+                if len(found_layers) == N_ATM_LAYERS:
+                    print(f"  tape3/{base}: all {N_ATM_LAYERS} layers present")
+                elif found_layers:
+                    print(f"  tape3/{base}: {len(found_layers)}/{N_ATM_LAYERS} layers found "
+                          f"(indices {found_layers})")
+                    issues.append(f"  tape3/{base}: only {len(found_layers)}/{N_ATM_LAYERS} layers")
                 else:
-                    issues.append(f"  tape3 missing coarsened field: {base}_1..{base}_{N_ATM_LAYERS}")
-        close_ds(ds3)
+                    # EAM may name them differently; check alternate patterns
+                    alts = [v for v in get_varnames(ds3)
+                            if v.startswith(base + "_") or v.startswith(base.upper() + "_")]
+                    if alts:
+                        print(f"  tape3/{base}: found alternate names: {alts[:5]}")
+                    else:
+                        issues.append(f"  tape3 missing coarsened field: {base}_1..{base}_{N_ATM_LAYERS}")
+
+            # Plot T_1 (near-surface) and T_8 (near-top) at last timestep
+            if HAS_MPL and HAS_XR and isinstance(ds3, xr.Dataset):
+                lon_name = next((d for d in ["lon", "ncol", "longitude"] if d in ds3.dims), None)
+                lat_name = next((d for d in ["lat", "latitude"] if d in ds3.dims), None)
+                for vname, label_tag in [("T_1", "near-surface"), ("T_8", "near-top")]:
+                    arr = get_var(ds3, vname)
+                    if arr is None or arr.size == 0:
+                        continue
+                    data = arr[-1] if arr.ndim >= 2 and arr.shape[0] > 0 else arr
+                    if lat_name and lon_name and data.ndim == 2:
+                        lons = ds3[lon_name].values
+                        lats = ds3[lat_name].values
+                        if lons.ndim == 1:
+                            lons, lats = np.meshgrid(lons, lats)
+                        p = global_map(data, lons, lats,
+                                       f"EAM {vname} ({label_tag}, tape3, last t)",
+                                       cmap="RdBu_r", vmin=150, vmax=320,
+                                       outdir=outdir, fname=f"eam_tape3_{vname}.png",
+                                       units="K")
+                        if p: plots.append(p)
+            close_ds(ds3)
 
     _report("EAM", issues)
-    return issues, plots
+    return issues, plots, fill_reports
 
 
 def check_mpaso_depth_coarsening(rundir, outdir, verbose):
     print("\n=== MPAS-O Depth Coarsening (native) ===")
     issues = []
     plots = []
+    fill_reports = []
 
     # Native files: *.mpaso.hist.am.fmeDepthCoarsening.*.nc, excluding .remapped.
     files = find_files(rundir, "*.mpaso.hist.am.fmeDepthCoarsening.*.nc",
                        exclude=".remapped.")
     if not files:
         print("  SKIP: no native fmeDepthCoarsening files found")
-        return issues, plots
+        return issues, plots, fill_reports
 
     print(f"  Found {len(files)} native file(s)")
     ds = safe_open(files[0])
+    if has_time_zero(ds):
+        print("  time dimension has size 0 -- skipping")
+        close_ds(ds)
+        return issues, plots, fill_reports
 
     for var, ace_name in ACE_OCN_COARSENED.items():
         arr = get_var(ds, var)
@@ -581,64 +664,75 @@ def check_mpaso_depth_coarsening(rundir, outdir, verbose):
             issues.append(f"  native missing: {var} (ACE: {ace_name})")
             continue
         # arr shape: (Time, nFmeDepthLevels, nCells)
-        n_levels = arr.shape[1] if arr.ndim == 3 else arr.shape[0]
+        # Detect depth dimension: for 3D, shape[1] is nFmeDepthLevels only
+        # if it is smaller than shape[2] (nCells).
+        if arr.ndim == 3 and arr.shape[1] < arr.shape[2]:
+            n_levels = arr.shape[1]
+        elif arr.ndim == 3:
+            # Fallback: could be transposed, report shape
+            n_levels = arr.shape[1]
+            print(f"  WARNING: {var} shape {arr.shape} -- dim ordering may be unexpected")
+        else:
+            n_levels = arr.shape[0]
         if n_levels != N_OCN_LAYERS:
             issues.append(f"  {var}: {n_levels} depth layers, expected {N_OCN_LAYERS}")
         vmin, vmax = RANGE_CHECKS.get(var, (None, None))
         issues += check_range(arr, var, vmin, vmax)
+        fill_reports.append(fill_nan_report(arr, var))
         if verbose:
             print(f"  {var} ({ace_name}): {summary_stats(arr)}")
 
-        # Vertical profile plot (global mean across all cells, first timestep)
+        # Vertical profile plot (global mean across all cells, last timestep)
         if HAS_MPL and arr.ndim == 3:
-            layer_profiles(arr[0], f"{var} [{ace_name}]", outdir,
+            layer_profiles(arr[-1], f"{var} [{ace_name}]", outdir,
                            f"mpaso_depth_profile_{var}.png",
                            ylabel="Depth layer (0=surface)")
 
-    # Surface map of SST layer (layer 0 of temperatureCoarsened)
+    # Surface maps -- last timestep
     if HAS_MPL:
-        arr = get_var(ds, "temperatureCoarsened")
         lon = get_var(ds, "lonCell")
         lat = get_var(ds, "latCell")
-        if arr is not None and lon is not None and lat is not None:
-            data = arr[0, 0, :]  # first time, surface layer, all cells
+        if lon is not None and lat is not None:
             lon_deg = np.degrees(lon)
             lat_deg = np.degrees(lat)
-            p = global_map(data, lon_deg, lat_deg,
-                           "MPAS-O temperatureCoarsened layer 0 (native)",
-                           cmap="RdBu_r", vmin=-2, vmax=30,
-                           outdir=outdir, fname="mpaso_temp_surf_native.png", units="degC")
-            if p: plots.append(p)
-
-        arr = get_var(ds, "salinityCoarsened")
-        if arr is not None and lon is not None:
-            lon_deg = np.degrees(lon)
-            lat_deg = np.degrees(lat)
-            data = arr[0, 0, :]
-            p = global_map(data, lon_deg, lat_deg,
-                           "MPAS-O salinityCoarsened layer 0 (native)",
-                           cmap="viridis", vmin=30, vmax=40,
-                           outdir=outdir, fname="mpaso_sal_surf_native.png", units="PSU")
-            if p: plots.append(p)
+            for var, cmap, vm, vx, units in [
+                ("temperatureCoarsened", "RdBu_r", -2, 30, "degC"),
+                ("salinityCoarsened", "viridis", 30, 40, "PSU"),
+            ]:
+                arr = get_var(ds, var)
+                if arr is None or arr.ndim < 3:
+                    continue
+                data = arr[-1, 0, :]  # last time, surface layer, all cells
+                p = global_map(data, lon_deg, lat_deg,
+                               f"MPAS-O {var} layer 0 (native, last t)",
+                               cmap=cmap, vmin=vm, vmax=vx,
+                               outdir=outdir, fname=f"mpaso_depth_{var}_surf_native.png",
+                               units=units)
+                if p: plots.append(p)
 
     close_ds(ds)
 
     _report("MPAS-O depth coarsening (native)", issues)
-    return issues, plots
+    return issues, plots, fill_reports
 
 
 def check_mpaso_depth_coarsening_remapped(rundir, outdir, verbose):
     print("\n=== MPAS-O Depth Coarsening (remapped) ===")
     issues = []
     plots = []
+    fill_reports = []
 
     files = find_files(rundir, "*.mpaso.hist.am.fmeDepthCoarsening.*.remapped.nc")
     if not files:
         print("  SKIP: no remapped fmeDepthCoarsening files found")
-        return issues, plots
+        return issues, plots, fill_reports
 
     print(f"  Found {len(files)} remapped file(s)")
     ds = safe_open(files[0])
+    if has_time_zero(ds):
+        print("  time dimension has size 0 -- skipping")
+        close_ds(ds)
+        return issues, plots, fill_reports
 
     # Verify lat-lon grid
     issues += check_remapped_grid(ds, "depth coarsening remapped")
@@ -661,6 +755,7 @@ def check_mpaso_depth_coarsening_remapped(rundir, outdir, verbose):
                 arr = get_var(ds, vname)
                 vmin, vmax = RANGE_CHECKS.get(base, (None, None))
                 issues += check_range(arr, f"remapped/{vname}", vmin, vmax)
+                fill_reports.append(fill_nan_report(arr, f"remapped/{vname}"))
                 if verbose and k == 0:
                     print(f"  remapped/{vname}: {summary_stats(arr)}")
         if found_levels:
@@ -674,7 +769,7 @@ def check_mpaso_depth_coarsening_remapped(rundir, outdir, verbose):
         ]:
             vname = f"{base}_0"
             p = latlon_map(ds, vname,
-                           f"MPAS-O {base} layer 0 (remapped)",
+                           f"MPAS-O {base} layer 0 (remapped, last t)",
                            cmap=cmap, vmin=vm, vmax=vx,
                            outdir=outdir,
                            fname=f"mpaso_depth_{base}_0_remapped.png",
@@ -703,22 +798,27 @@ def check_mpaso_depth_coarsening_remapped(rundir, outdir, verbose):
     close_ds(ds)
 
     _report("MPAS-O depth coarsening (remapped)", issues)
-    return issues, plots
+    return issues, plots, fill_reports
 
 
 def check_mpaso_derived(rundir, outdir, verbose):
     print("\n=== MPAS-O Derived Fields (native) ===")
     issues = []
     plots = []
+    fill_reports = []
 
     files = find_files(rundir, "*.mpaso.hist.am.fmeDerivedFields.*.nc",
                        exclude=".remapped.")
     if not files:
         print("  SKIP: no native fmeDerivedFields files found")
-        return issues, plots
+        return issues, plots, fill_reports
 
     print(f"  Found {len(files)} native file(s)")
     ds = safe_open(files[0])
+    if has_time_zero(ds):
+        print("  time dimension has size 0 -- skipping")
+        close_ds(ds)
+        return issues, plots, fill_reports
 
     for var, ace_name in ACE_OCN_DERIVED.items():
         arr = get_var(ds, var)
@@ -727,6 +827,7 @@ def check_mpaso_derived(rundir, outdir, verbose):
             continue
         vmin, vmax = RANGE_CHECKS.get(var, (None, None))
         issues += check_range(arr, var, vmin, vmax)
+        fill_reports.append(fill_nan_report(arr, var))
         if verbose:
             print(f"  {var} ({ace_name}): {summary_stats(arr)}")
 
@@ -736,7 +837,7 @@ def check_mpaso_derived(rundir, outdir, verbose):
     if verbose:
         print(f"  Variables: {varnames}")
 
-    # Maps
+    # Maps -- use LAST timestep
     if HAS_MPL:
         lon = get_var(ds, "lonCell")
         lat = get_var(ds, "latCell")
@@ -751,9 +852,9 @@ def check_mpaso_derived(rundir, outdir, verbose):
                 arr = get_var(ds, var)
                 if arr is None:
                     continue
-                data = arr[0] if arr.ndim > 1 else arr
+                data = arr[-1] if arr.ndim > 1 else arr
                 p = global_map(data, lon_deg, lat_deg,
-                               f"MPAS-O {var} (native, t=0)",
+                               f"MPAS-O {var} (native, last t)",
                                cmap=cmap, vmin=vm, vmax=vx,
                                outdir=outdir, fname=f"mpaso_derived_{var}_native.png",
                                units=units)
@@ -762,21 +863,26 @@ def check_mpaso_derived(rundir, outdir, verbose):
     close_ds(ds)
 
     _report("MPAS-O derived fields (native)", issues)
-    return issues, plots
+    return issues, plots, fill_reports
 
 
 def check_mpaso_derived_remapped(rundir, outdir, verbose):
     print("\n=== MPAS-O Derived Fields (remapped) ===")
     issues = []
     plots = []
+    fill_reports = []
 
     files = find_files(rundir, "*.mpaso.hist.am.fmeDerivedFields.*.remapped.nc")
     if not files:
         print("  SKIP: no remapped fmeDerivedFields files found")
-        return issues, plots
+        return issues, plots, fill_reports
 
     print(f"  Found {len(files)} remapped file(s)")
     ds = safe_open(files[0])
+    if has_time_zero(ds):
+        print("  time dimension has size 0 -- skipping")
+        close_ds(ds)
+        return issues, plots, fill_reports
 
     # Verify lat-lon grid
     issues += check_remapped_grid(ds, "derived fields remapped")
@@ -790,10 +896,11 @@ def check_mpaso_derived_remapped(rundir, outdir, verbose):
         if arr is not None:
             vmin, vmax = RANGE_CHECKS.get(var, (None, None))
             issues += check_range(arr, f"remapped/{var}", vmin, vmax)
+            fill_reports.append(fill_nan_report(arr, f"remapped/{var}"))
             if verbose:
                 print(f"  remapped/{var}: {summary_stats(arr)}")
 
-    # Maps from remapped data
+    # Maps from remapped data -- last timestep via latlon_map
     if HAS_MPL:
         for var, cmap, vm, vx, units in [
             ("sst", "RdBu_r", -2, 30, "degC"),
@@ -801,7 +908,7 @@ def check_mpaso_derived_remapped(rundir, outdir, verbose):
             ("surfaceHeatFluxTotal", "RdBu_r", -300, 300, "W/m2"),
         ]:
             p = latlon_map(ds, var,
-                           f"MPAS-O {var} (remapped, t=0)",
+                           f"MPAS-O {var} (remapped, last t)",
                            cmap=cmap, vmin=vm, vmax=vx,
                            outdir=outdir,
                            fname=f"mpaso_derived_{var}_remapped.png",
@@ -811,22 +918,28 @@ def check_mpaso_derived_remapped(rundir, outdir, verbose):
     close_ds(ds)
 
     _report("MPAS-O derived fields (remapped)", issues)
-    return issues, plots
+    return issues, plots, fill_reports
 
 
 def check_mpaso_vertical_reduce(rundir, outdir, verbose):
     print("\n=== MPAS-O Vertical Reduction (native) ===")
     issues = []
     plots = []
+    fill_reports = []
 
     files = find_files(rundir, "*.mpaso.hist.am.fmeVerticalReduce.*.nc",
                        exclude=".remapped.")
     if not files:
         print("  SKIP: no native fmeVerticalReduce files found")
-        return issues, plots
+        return issues, plots, fill_reports
 
     print(f"  Found {len(files)} native file(s)")
     ds = safe_open(files[0])
+    if has_time_zero(ds):
+        print("  time dimension has size 0 -- skipping")
+        close_ds(ds)
+        return issues, plots, fill_reports
+
     for var, (vmin, vmax) in [("oceanHeatContent", (None, None)),
                                ("freshwaterContent", (-1000, 1000)),
                                ("kineticEnergy", (0, None))]:
@@ -835,11 +948,35 @@ def check_mpaso_vertical_reduce(rundir, outdir, verbose):
             issues.append(f"  native missing: {var}")
         else:
             issues += check_range(arr, var, vmin, vmax)
+            fill_reports.append(fill_nan_report(arr, var))
             if verbose:
                 print(f"  {var}: {summary_stats(arr)}")
 
-    # Time series of global-mean OHC
+    # Native scatter plots for vertical reduce fields
     if HAS_MPL:
+        lon = get_var(ds, "lonCell")
+        lat = get_var(ds, "latCell")
+        if lon is not None and lat is not None:
+            lon_deg = np.degrees(lon)
+            lat_deg = np.degrees(lat)
+            for var, cmap, vm, vx, units in [
+                ("oceanHeatContent", "inferno", None, None, "J/m2"),
+                ("freshwaterContent", "RdBu_r", -500, 500, "m"),
+                ("kineticEnergy", "YlOrRd", 0, None, "J/m2"),
+            ]:
+                arr = get_var(ds, var)
+                if arr is None:
+                    continue
+                data = arr[-1] if arr.ndim > 1 else arr
+                p = global_map(data, lon_deg, lat_deg,
+                               f"MPAS-O {var} (native, last t)",
+                               cmap=cmap, vmin=vm, vmax=vx,
+                               outdir=outdir,
+                               fname=f"mpaso_vertreduce_{var}_native.png",
+                               units=units)
+                if p: plots.append(p)
+
+        # Time series of global-mean OHC
         ohc = get_var(ds, "oceanHeatContent")
         if ohc is not None and ohc.ndim >= 2:
             area = get_var(ds, "areaCell")
@@ -852,21 +989,26 @@ def check_mpaso_vertical_reduce(rundir, outdir, verbose):
     close_ds(ds)
 
     _report("MPAS-O vertical reduction (native)", issues)
-    return issues, plots
+    return issues, plots, fill_reports
 
 
 def check_mpaso_vertical_reduce_remapped(rundir, outdir, verbose):
     print("\n=== MPAS-O Vertical Reduction (remapped) ===")
     issues = []
     plots = []
+    fill_reports = []
 
     files = find_files(rundir, "*.mpaso.hist.am.fmeVerticalReduce.*.remapped.nc")
     if not files:
         print("  SKIP: no remapped fmeVerticalReduce files found")
-        return issues, plots
+        return issues, plots, fill_reports
 
     print(f"  Found {len(files)} remapped file(s)")
     ds = safe_open(files[0])
+    if has_time_zero(ds):
+        print("  time dimension has size 0 -- skipping")
+        close_ds(ds)
+        return issues, plots, fill_reports
 
     # Verify lat-lon grid
     issues += check_remapped_grid(ds, "vertical reduce remapped")
@@ -880,10 +1022,11 @@ def check_mpaso_vertical_reduce_remapped(rundir, outdir, verbose):
         if arr is not None:
             vmin, vmax = RANGE_CHECKS.get(var, (None, None))
             issues += check_range(arr, f"remapped/{var}", vmin, vmax)
+            fill_reports.append(fill_nan_report(arr, f"remapped/{var}"))
             if verbose:
                 print(f"  remapped/{var}: {summary_stats(arr)}")
 
-    # Maps from remapped data
+    # Maps from remapped data -- last timestep via latlon_map
     if HAS_MPL:
         for var, cmap, vm, vx, units in [
             ("oceanHeatContent", "inferno", None, None, "J/m2"),
@@ -891,7 +1034,7 @@ def check_mpaso_vertical_reduce_remapped(rundir, outdir, verbose):
             ("kineticEnergy", "YlOrRd", 0, None, "J/m2"),
         ]:
             p = latlon_map(ds, var,
-                           f"MPAS-O {var} (remapped, t=0)",
+                           f"MPAS-O {var} (remapped, last t)",
                            cmap=cmap, vmin=vm, vmax=vx,
                            outdir=outdir,
                            fname=f"mpaso_vertreduce_{var}_remapped.png",
@@ -901,22 +1044,27 @@ def check_mpaso_vertical_reduce_remapped(rundir, outdir, verbose):
     close_ds(ds)
 
     _report("MPAS-O vertical reduction (remapped)", issues)
-    return issues, plots
+    return issues, plots, fill_reports
 
 
 def check_mpassi_derived(rundir, outdir, verbose):
     print("\n=== MPAS-SI Derived Fields (native) ===")
     issues = []
     plots = []
+    fill_reports = []
 
     files = find_files(rundir, "*.mpassi.hist.am.fmeSeaiceDerivedFields.*.nc",
                        exclude=".remapped.")
     if not files:
         print("  SKIP: no native fmeSeaiceDerivedFields files found")
-        return issues, plots
+        return issues, plots, fill_reports
 
     print(f"  Found {len(files)} native file(s)")
     ds = safe_open(files[0])
+    if has_time_zero(ds):
+        print("  time dimension has size 0 -- skipping")
+        close_ds(ds)
+        return issues, plots, fill_reports
 
     for var, ace_name in ACE_ICE_DERIVED.items():
         arr = get_var(ds, var)
@@ -925,10 +1073,11 @@ def check_mpassi_derived(rundir, outdir, verbose):
             continue
         vmin, vmax = RANGE_CHECKS.get(var, (None, None))
         issues += check_range(arr, var, vmin, vmax)
+        fill_reports.append(fill_nan_report(arr, var))
         if verbose:
             print(f"  {var} ({ace_name}): {summary_stats(arr)}")
 
-    # Maps
+    # Maps -- last timestep
     if HAS_MPL:
         lon = get_var(ds, "lonCell")
         lat = get_var(ds, "latCell")
@@ -939,13 +1088,14 @@ def check_mpassi_derived(rundir, outdir, verbose):
                 ("iceAreaTotal",   "Blues",   0, 1, "fraction"),
                 ("iceVolumeTotal", "viridis", 0, 5, "m"),
                 ("surfaceTemperatureMean", "RdBu_r", 210, 275, "K"),
+                ("airStressZonal", "RdBu_r", -1, 1, "N/m2"),
             ]:
                 arr = get_var(ds, var)
                 if arr is None:
                     continue
-                data = arr[0] if arr.ndim > 1 else arr
+                data = arr[-1] if arr.ndim > 1 else arr
                 p = global_map(data, lon_deg, lat_deg,
-                               f"MPAS-SI {var} (native, t=0)",
+                               f"MPAS-SI {var} (native, last t)",
                                cmap=cmap, vmin=vm, vmax=vx,
                                outdir=outdir, fname=f"mpassi_{var}_native.png",
                                units=units)
@@ -954,21 +1104,26 @@ def check_mpassi_derived(rundir, outdir, verbose):
     close_ds(ds)
 
     _report("MPAS-SI derived fields (native)", issues)
-    return issues, plots
+    return issues, plots, fill_reports
 
 
 def check_mpassi_derived_remapped(rundir, outdir, verbose):
     print("\n=== MPAS-SI Derived Fields (remapped) ===")
     issues = []
     plots = []
+    fill_reports = []
 
     files = find_files(rundir, "*.mpassi.hist.am.fmeSeaiceDerivedFields.*.remapped.nc")
     if not files:
         print("  SKIP: no remapped fmeSeaiceDerivedFields files found")
-        return issues, plots
+        return issues, plots, fill_reports
 
     print(f"  Found {len(files)} remapped file(s)")
     ds = safe_open(files[0])
+    if has_time_zero(ds):
+        print("  time dimension has size 0 -- skipping")
+        close_ds(ds)
+        return issues, plots, fill_reports
 
     # Verify lat-lon grid
     issues += check_remapped_grid(ds, "sea ice derived remapped")
@@ -982,19 +1137,21 @@ def check_mpassi_derived_remapped(rundir, outdir, verbose):
         if arr is not None:
             vmin, vmax = RANGE_CHECKS.get(var, (None, None))
             issues += check_range(arr, f"remapped/{var}", vmin, vmax)
+            fill_reports.append(fill_nan_report(arr, f"remapped/{var}"))
             if verbose:
                 print(f"  remapped/{var}: {summary_stats(arr)}")
 
-    # Maps from remapped data
+    # Maps from remapped data -- last timestep via latlon_map
     if HAS_MPL:
         for var, cmap, vm, vx, units in [
             ("iceAreaTotal", "Blues", 0, 1, "fraction"),
             ("iceVolumeTotal", "viridis", 0, 5, "m"),
             ("surfaceTemperatureMean", "RdBu_r", 210, 275, "K"),
             ("snowVolumeTotal", "PuBu", 0, 2, "m"),
+            ("airStressZonal", "RdBu_r", -1, 1, "N/m2"),
         ]:
             p = latlon_map(ds, var,
-                           f"MPAS-SI {var} (remapped, t=0)",
+                           f"MPAS-SI {var} (remapped, last t)",
                            cmap=cmap, vmin=vm, vmax=vx,
                            outdir=outdir,
                            fname=f"mpassi_{var}_remapped.png",
@@ -1004,7 +1161,7 @@ def check_mpassi_derived_remapped(rundir, outdir, verbose):
     close_ds(ds)
 
     _report("MPAS-SI derived fields (remapped)", issues)
-    return issues, plots
+    return issues, plots, fill_reports
 
 
 def _report(name, issues):
@@ -1059,13 +1216,14 @@ def read_timing_summary(rundir):
 # HTML index
 # -----------------------------------------------------------------------------
 
-def write_html_index(outdir, all_plots_by_comp, all_issues, timing_summary=None):
+def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
+                     all_fill_reports, timing_summary=None):
     index = os.path.join(outdir, "fme_output.html")
     n_issues = sum(len(v) for v in all_issues.values())
     n_pass = sum(1 for v in all_issues.values() if not v)
     n_total = len(all_issues)
     status = "ALL PASS" if n_issues == 0 else f"{n_issues} issues in {n_total - n_pass}/{n_total} components"
-    status_color = "#2a2" if n_issues == 0 else "#c33"
+    status_color = "#2a7d2a" if n_issues == 0 else "#c33"
 
     # Summary table
     summary_rows = ""
@@ -1082,6 +1240,23 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, timing_summary=None)
     for comp, issues in all_issues.items():
         for msg in issues:
             detail_rows += f'<tr><td>{comp}</td><td>{msg.strip()}</td></tr>\n'
+
+    # File inventory table
+    inventory_rows = ""
+    for label, count, flist in file_inventory_data:
+        status_cls = "pass" if count > 0 else "fail"
+        inventory_rows += (f'<tr><td>{label}</td>'
+                           f'<td class="{status_cls}">{count}</td></tr>\n')
+
+    # Fill/NaN report table
+    fill_rows = ""
+    for comp, reports in all_fill_reports.items():
+        for r in reports:
+            pct_cls = "pass" if r["pct"] < 50 else "fail"
+            fill_rows += (f'<tr><td>{comp}</td><td>{r["name"]}</td>'
+                          f'<td>{r["total"]:,}</td><td>{r["valid"]:,}</td>'
+                          f'<td>{r["fill_nan"]:,}</td>'
+                          f'<td class="{pct_cls}">{r["pct"]:.1f}%</td></tr>\n')
 
     # Group plots: pair native/remapped side by side where possible
     fig_sections = ""
@@ -1142,7 +1317,7 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, timing_summary=None)
 
     # Navigation
     nav_links = ""
-    nav_items = ["Summary"]
+    nav_items = ["Summary", "File_Inventory", "Fill_NaN_Report"]
     for base_name, _, _ in paired:
         nav_items.append(base_name)
     for comp in all_plots_by_comp:
@@ -1152,15 +1327,28 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, timing_summary=None)
         nav_items.append("Timing")
     for item in nav_items:
         anchor = item.replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
-        nav_links += f'<a href="#{anchor}">{item}</a>\n'
+        display = item.replace("_", " ")
+        nav_links += f'<a href="#{anchor}">{display}</a>\n'
 
     timing_html = ""
     if timing_summary:
-        timing_lines = "\n".join(timing_summary[:30])
+        timing_rows = ""
+        for line in timing_summary[:30]:
+            parts = line.split()
+            if len(parts) >= 2:
+                timing_rows += "<tr>" + "".join(f"<td>{p}</td>" for p in parts) + "</tr>\n"
+            else:
+                timing_rows += f"<tr><td colspan='6'>{line}</td></tr>\n"
         timing_html = f'''
     <h2 id="Timing">Performance Timing</h2>
-    <pre class="timing">{timing_lines}</pre>
+    <div class="timing-container">
+    <table class="timing-table">
+    {timing_rows}
+    </table>
+    </div>
 '''
+
+    gen_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     html = textwrap.dedent(f"""\
     <!DOCTYPE html><html><head>
@@ -1169,43 +1357,57 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, timing_summary=None)
     <style>
       * {{ box-sizing: border-box; }}
       body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-             margin: 0; padding: 20px 30px; background: #fafafa; color: #333; }}
-      h1 {{ color: #1a3a5c; border-bottom: 3px solid #1a3a5c; padding-bottom: 8px; }}
-      h2 {{ color: #1a3a5c; margin-top: 35px; border-bottom: 2px solid #ddd; padding-bottom: 6px; }}
-      h3 {{ color: #444; margin-top: 25px; }}
-      h4 {{ color: #666; margin: 8px 0 4px; font-size: 0.95em; }}
-      .status {{ font-size: 1.3em; font-weight: bold; color: {status_color}; }}
+             margin: 0; padding: 0; background: #f0f2f5; color: #333; }}
+      .container {{ max-width: 1600px; margin: 0 auto; padding: 20px 30px; }}
+      header {{ background: #1a2744; color: #fff; padding: 20px 30px; }}
+      header h1 {{ margin: 0 0 6px 0; font-size: 1.6em; }}
+      header .status {{ font-size: 1.2em; font-weight: bold;
+                        color: {"#6fcf6f" if n_issues == 0 else "#ff8888"}; }}
+      h2 {{ color: #1a2744; margin-top: 35px; border-bottom: 2px solid #1a2744;
+            padding-bottom: 6px; font-size: 1.3em; }}
+      h3 {{ color: #2c3e50; margin-top: 25px; }}
+      h4 {{ color: #555; margin: 8px 0 4px; font-size: 0.95em; }}
       nav {{ background: #fff; padding: 12px 16px; border-radius: 6px;
              box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin: 15px 0;
-             display: flex; flex-wrap: wrap; gap: 8px; }}
-      nav a {{ color: #1a3a5c; text-decoration: none; padding: 4px 10px;
-               background: #e8eef4; border-radius: 4px; font-size: 0.9em; }}
-      nav a:hover {{ background: #1a3a5c; color: #fff; }}
+             display: flex; flex-wrap: wrap; gap: 8px; position: sticky;
+             top: 0; z-index: 100; }}
+      nav a {{ color: #1a2744; text-decoration: none; padding: 5px 12px;
+               background: #e8eef4; border-radius: 4px; font-size: 0.85em;
+               font-weight: 500; transition: all 0.15s; }}
+      nav a:hover {{ background: #1a2744; color: #fff; }}
       table {{ border-collapse: collapse; width: 100%; background: #fff;
-               box-shadow: 0 1px 3px rgba(0,0,0,0.08); }}
-      td, th {{ border: 1px solid #ddd; padding: 6px 12px; text-align: left; }}
-      th {{ background: #f0f3f6; font-weight: 600; }}
-      .pass {{ color: #2a2; font-weight: bold; }}
+               box-shadow: 0 1px 3px rgba(0,0,0,0.08); border-radius: 4px;
+               overflow: hidden; margin-bottom: 16px; }}
+      td, th {{ border: 1px solid #e0e0e0; padding: 8px 14px; text-align: left; }}
+      th {{ background: #1a2744; color: #fff; font-weight: 600; font-size: 0.9em; }}
+      .pass {{ color: #2a7d2a; font-weight: bold; }}
       .fail {{ color: #c33; font-weight: bold; }}
-      .comparison {{ display: flex; gap: 20px; flex-wrap: wrap; }}
-      .col {{ flex: 1; min-width: 400px; }}
-      .gallery {{ display: flex; flex-wrap: wrap; gap: 10px; }}
+      .comparison {{ display: flex; gap: 24px; flex-wrap: wrap; }}
+      .col {{ flex: 1; min-width: 420px; }}
+      .gallery {{ display: flex; flex-wrap: wrap; gap: 12px; }}
       .fig {{ display: inline-block; margin: 4px; vertical-align: top; }}
-      .fig img {{ width: 400px; border: 1px solid #ccc; border-radius: 4px;
+      .fig img {{ width: 420px; border: 1px solid #ccc; border-radius: 4px;
                   transition: transform 0.2s; }}
       .fig img:hover {{ transform: scale(1.02); box-shadow: 0 2px 8px rgba(0,0,0,0.15); }}
       .fig span {{ display: block; font-size: 0.75em; color: #888; margin-top: 2px; }}
-      details {{ margin: 10px 0; }}
-      summary {{ cursor: pointer; font-weight: 600; color: #1a3a5c; }}
-      .timing {{ background: #fff; padding: 12px; border: 1px solid #ddd;
-                 border-radius: 4px; font-size: 11px; overflow-x: auto;
-                 max-height: 400px; overflow-y: auto; }}
-      footer {{ margin-top: 40px; padding-top: 10px; border-top: 1px solid #ddd;
-                color: #999; font-size: 0.8em; }}
+      details {{ margin: 10px 0; background: #fff; border-radius: 4px;
+                 box-shadow: 0 1px 3px rgba(0,0,0,0.08); }}
+      summary {{ cursor: pointer; font-weight: 600; color: #1a2744; padding: 10px 14px; }}
+      summary:hover {{ background: #f5f7fa; }}
+      .timing-container {{ background: #fff; padding: 16px; border-radius: 4px;
+                           box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+                           overflow-x: auto; max-height: 500px; overflow-y: auto; }}
+      .timing-table td {{ font-family: 'Courier New', monospace; font-size: 0.85em;
+                          padding: 4px 10px; white-space: nowrap; }}
+      footer {{ margin-top: 40px; padding: 16px 30px; border-top: 2px solid #1a2744;
+                color: #777; font-size: 0.8em; background: #fff; text-align: center; }}
     </style>
     </head><body>
-    <h1>FME Online Output Verification</h1>
-    <p class="status">{status}</p>
+    <header>
+      <h1>FME Online Output Verification</h1>
+      <span class="status">{status}</span>
+    </header>
+    <div class="container">
 
     <nav>{nav_links}</nav>
 
@@ -1217,11 +1419,26 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, timing_summary=None)
 
     {"<details><summary>Show all " + str(n_issues) + " issues</summary><table><tr><th>Component</th><th>Issue</th></tr>" + detail_rows + "</table></details>" if detail_rows else ""}
 
+    <h2 id="File_Inventory">File Inventory</h2>
+    <table>
+    <tr><th>Category</th><th>File Count</th></tr>
+    {inventory_rows}
+    </table>
+
+    <h2 id="Fill_NaN_Report">Fill / NaN Report</h2>
+    <details><summary>Variable-level fill fraction details</summary>
+    <table>
+    <tr><th>Component</th><th>Variable</th><th>Total Cells</th><th>Valid</th><th>Fill/NaN</th><th>Fill %</th></tr>
+    {fill_rows if fill_rows else '<tr><td colspan="6">No data collected.</td></tr>'}
+    </table>
+    </details>
+
     <h2>Diagnostic Figures</h2>
     {fig_sections if fig_sections else '<p>No figures generated.</p>'}
 
     {timing_html}
-    <footer>Generated by verify_fme_output.py &mdash; FME Online Output Processing for E3SM</footer>
+    </div>
+    <footer>Generated by verify_fme_output.py &mdash; FME Online Output Processing for E3SM &mdash; {gen_timestamp}</footer>
     </body></html>
     """)
     with open(index, "w") as fh:
@@ -1234,8 +1451,11 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, timing_summary=None)
 # File inventory
 # -----------------------------------------------------------------------------
 
-def print_file_inventory(rundir):
-    """Print a summary of all FME-related files in the run directory."""
+def collect_file_inventory(rundir):
+    """Collect file inventory data and print summary.
+
+    Returns list of (label, count, file_list) tuples for HTML rendering.
+    """
     print("\n=== File Inventory ===")
     categories = [
         ("EAM h0 (tape1)",             "*.eam.h0.*.nc",    None),
@@ -1251,13 +1471,15 @@ def print_file_inventory(rundir):
         ("MPAS-SI derived fields (R)", "*.mpassi.hist.am.fmeSeaiceDerivedFields.*.remapped.nc", None),
     ]
     total = 0
+    inventory_data = []
     for label, pattern, exclude in categories:
         hits = find_files(rundir, pattern, exclude=exclude)
         total += len(hits)
         status = f"{len(hits)} file(s)" if hits else "NONE"
         print(f"  {label:38s} {status}")
+        inventory_data.append((label, len(hits), hits))
     print(f"  {'TOTAL':38s} {total} FME-related file(s)")
-    return total
+    return inventory_data
 
 
 # -----------------------------------------------------------------------------
@@ -1291,10 +1513,11 @@ def main():
         sys.exit("ERROR: need xarray or netCDF4")
 
     # File inventory
-    print_file_inventory(args.rundir)
+    file_inventory_data = collect_file_inventory(args.rundir)
 
     all_issues = {}
     all_plots_by_comp = {}
+    all_fill_reports = {}
 
     # All figures go under fme_output/ subdir so fme_output.html can reference them
     fig_root = os.path.join(args.outdir, "fme_output")
@@ -1303,9 +1526,11 @@ def main():
     def run_check(name, func, subdir, *a):
         comp_outdir = os.path.join(fig_root, subdir)
         os.makedirs(comp_outdir, exist_ok=True)
-        issues, plots = func(*a[:1], comp_outdir, *a[1:])
+        result = func(*a[:1], comp_outdir, *a[1:])
+        issues, plots, fill_reports = result
         all_issues[name] = issues
         all_plots_by_comp[name] = plots
+        all_fill_reports[name] = fill_reports
 
     run_check("EAM", check_eam, "eam",
               args.rundir, args.verbose)
@@ -1336,6 +1561,7 @@ def main():
             print(f"  ... ({len(timing_summary) - 10} more lines in HTML report)")
 
     write_html_index(args.outdir, all_plots_by_comp, all_issues,
+                     file_inventory_data, all_fill_reports,
                      timing_summary=timing_summary)
 
     n_total = sum(len(v) for v in all_issues.values())
