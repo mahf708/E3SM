@@ -44,7 +44,7 @@ module ocn_fme_horiz_remap
    use mpas_log, only: mpas_log_write
 
    use shr_kind_mod, only: r8 => shr_kind_r8
-   use shr_horiz_remap_mod, only: shr_horiz_remap_t
+   use shr_horiz_remap_mod, only: shr_horiz_remap_t, SHR_FILL_VALUE
    use pio, only: file_desc_t, var_desc_t, io_desc_t, iosystem_desc_t, &
                   pio_openfile, pio_closefile, pio_createfile, &
                   pio_def_dim, pio_def_var, pio_enddef, &
@@ -77,6 +77,9 @@ module ocn_fme_horiz_remap
    type(iosystem_desc_t), pointer :: pio_sys => null()
    type(io_desc_t) :: iodesc_2d
    logical :: iodesc_2d_valid = .false.
+
+   ! MPAS-O fill value for input field detection (matches def_var _FillValue)
+   real(r8), parameter :: MPAS_OCN_FILL = 1.0E34_r8
 
    ! Per-file output state: each AM creates its own instance
    integer, parameter :: max_pio_vars = 512
@@ -348,9 +351,13 @@ contains
    subroutine ocn_fme_horiz_remap_field(domain, field2d, numlev, fld_out, err, &
         mask)!{{{
    !> Remap a field from the MPAS unstructured grid to the lat-lon target grid.
+   !> Builds a validity mask and uses apply_masked so that:
+   !>   - land cells (mask==0) and fill values (MPAS_OCN_FILL) are excluded
+   !>   - target cells with no valid sources get SHR_FILL_VALUE
+   !>   - coastal/mixed cells are normalized by actual valid coverage
+   !>
    !> field2d(numlev, *) is on the native MPAS grid indexed by cell.
-   !> If mask(nCells) is provided, cells where mask(iCell)==0 are set to zero
-   !> before remapping (use maxLevelCell for ocean fields to exclude land cells).
+   !> If mask(nCells) is provided, cells where mask(iCell)==0 are land.
 
       type(domain_type), intent(inout) :: domain
       integer, intent(in) :: numlev
@@ -359,7 +366,14 @@ contains
       integer, intent(out) :: err
       integer, intent(in), optional :: mask(*)
 
-      integer :: i, k, needed, comm, nprocs, icell
+      integer :: i, k, needed, comm, nprocs, icell, nlev_packed
+      real(r8) :: val
+      logical :: cell_valid
+
+      ! Fill detection threshold: 10% of MPAS fill value.
+      ! Catches 1e34 fills and any floating-point variants while staying
+      ! far above any physical value (geophysical quantities < 1e10).
+      real(r8), parameter :: fill_detect = MPAS_OCN_FILL * 0.1_r8
 
       err = 0
 
@@ -371,50 +385,53 @@ contains
       nprocs = domain % dminfo % nprocs
       comm   = domain % dminfo % comm
 
-      needed = remap_data%n_send_total * numlev
+      nlev_packed = numlev + 1
+
+      needed = remap_data%n_send_total * nlev_packed
       if (.not. allocated(ws_send_buf) .or. size(ws_send_buf) < max(1, needed)) then
          if (allocated(ws_send_buf)) deallocate(ws_send_buf)
          allocate(ws_send_buf(max(1, needed)))
       end if
 
-      if (needed > 0) then
+      if (remap_data%n_send_total > 0) then
          do i = 1, remap_data%n_send_total
             icell = send_local_cell(i)
-            do k = 1, numlev
-               if (present(mask)) then
-                  ! Zero out land/below-bottom: mask(iCell) is maxLevelCell
-                  ! for ocean, or >0 for valid cells in other contexts.
-                  if (mask(icell) < k) then
-                     ws_send_buf((i-1)*numlev + k) = 0.0_r8
+
+            ! Determine cell validity from mask argument (maxLevelCell)
+            if (present(mask)) then
+               cell_valid = (mask(icell) >= 1)
+            else
+               cell_valid = .true.
+            end if
+
+            if (.not. cell_valid) then
+               ! Land cell: zero field, mask = 0
+               do k = 1, numlev
+                  ws_send_buf((i-1)*nlev_packed + k) = 0.0_r8
+               end do
+               ws_send_buf((i-1)*nlev_packed + nlev_packed) = 0.0_r8
+            else
+               ! Ocean cell: pack field values, detect fills per level
+               do k = 1, numlev
+                  ! Below-bottom check (for multi-level fields)
+                  if (present(mask) .and. mask(icell) < k) then
+                     ws_send_buf((i-1)*nlev_packed + k) = 0.0_r8
                      cycle
                   end if
-               end if
-               ws_send_buf((i-1)*numlev + k) = &
-                    real(field2d(k, icell), r8)
-               ! Zero out fill values (MPAS uses 1e34) so they don't
-               ! corrupt the SpMV weighted average at nearby target cells.
-               if (abs(ws_send_buf((i-1)*numlev + k)) > 1.0e10_r8) then
-                  ws_send_buf((i-1)*numlev + k) = 0.0_r8
-               end if
-            end do
+                  val = real(field2d(k, icell), r8)
+                  if (abs(val) >= fill_detect) then
+                     ws_send_buf((i-1)*nlev_packed + k) = 0.0_r8
+                  else
+                     ws_send_buf((i-1)*nlev_packed + k) = val
+                  end if
+               end do
+               ! Mask = 1.0 for ocean cells
+               ws_send_buf((i-1)*nlev_packed + nlev_packed) = 1.0_r8
+            end if
          end do
       end if
 
-      ! DEBUG: print send buffer stats on rank 0
-      if (domain % dminfo % my_proc_id == 0 .and. needed > 0) then
-         call mpas_log_write('DEBUG remap_field: n_send=$i, numlev=$i, buf(1)=$r, buf_max=$r', &
-              intArgs=(/remap_data%n_send_total, numlev/), &
-              realArgs=(/ws_send_buf(1), maxval(abs(ws_send_buf(1:needed)))/))
-      end if
-
-      call remap_data%apply(ws_send_buf, numlev, fld_out, comm, nprocs, err)
-
-      ! DEBUG: print output stats on rank 0
-      if (domain % dminfo % my_proc_id == 0 .and. remap_data%n_b_local > 0) then
-         call mpas_log_write('DEBUG remap_field output: n_b_local=$i, out(1)=$r, out_max=$r', &
-              intArgs=(/remap_data%n_b_local/), &
-              realArgs=(/fld_out(1, 1), maxval(abs(fld_out(1:remap_data%n_b_local, 1)))/))
-      end if
+      call remap_data%apply_masked(ws_send_buf, numlev, fld_out, comm, nprocs, err)
 
    end subroutine ocn_fme_horiz_remap_field!}}}
 
@@ -493,7 +510,7 @@ contains
            'units', trim(units))
       ierr = pio_put_att(self%pio_file, self%pio_var_descs(self%n_pio_vars), &
            'long_name', trim(long_name))
-      fill_val = 1.0E34
+      fill_val = real(SHR_FILL_VALUE, 4)
       ierr = pio_put_att(self%pio_file, self%pio_var_descs(self%n_pio_vars), &
            '_FillValue', fill_val)
       ierr = pio_put_att(self%pio_file, self%pio_var_descs(self%n_pio_vars), &

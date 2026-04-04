@@ -29,7 +29,7 @@ module seaice_fme_horiz_remap
    use mpas_log, only: mpas_log_write
 
    use shr_kind_mod, only: r8 => shr_kind_r8
-   use shr_horiz_remap_mod, only: shr_horiz_remap_t
+   use shr_horiz_remap_mod, only: shr_horiz_remap_t, SHR_FILL_VALUE
    use pio, only: file_desc_t, var_desc_t, io_desc_t, iosystem_desc_t, &
                   pio_createfile, pio_closefile, &
                   pio_def_dim, pio_def_var, pio_enddef, &
@@ -61,6 +61,9 @@ module seaice_fme_horiz_remap
    integer, allocatable :: send_local_cell(:)
    real(r8), allocatable :: ws_send_buf(:)
    logical :: is_initialized = .false.
+
+   ! MPAS-SI fill value for input field detection (matches def_var _FillValue)
+   real(r8), parameter :: MPAS_SI_FILL = 1.0E34_r8
 
    ! PIO output
    type(file_desc_t) :: pio_file
@@ -263,34 +266,47 @@ contains
    subroutine seaice_fme_horiz_remap_field(domain, field1d, nCells, fld_out, err)!{{{
    !> nCells is informational only; field1d is assumed-size so the send list
    !> can safely access halo cells beyond nCellsSolve.
+   !> Fill values (1.0E34) are detected and masked for correct interpolation.
+   !> Target cells with no valid sources get SHR_FILL_VALUE.
       type(domain_type), intent(inout) :: domain
       integer, intent(in) :: nCells
       real(kind=RKIND), intent(in) :: field1d(*)
       real(r8), intent(out) :: fld_out(remap_data%n_b_local)
       integer, intent(out) :: err
       real(r8) :: fld_out_2d(remap_data%n_b_local, 1)
-      integer :: i
+      integer :: i, nlev_packed, needed
+      real(r8) :: val
+
+      ! Fill detection: 10% of MPAS fill value (catches 1e34 and variants)
+      real(r8), parameter :: fill_detect = MPAS_SI_FILL * 0.1_r8
 
       err = 0
       if (.not. is_initialized) then; err = 1; return; end if
 
-      if (.not. allocated(ws_send_buf) .or. size(ws_send_buf) < max(1, remap_data%n_send_total)) then
+      nlev_packed = 2  ! 1 field level + 1 mask level
+
+      needed = remap_data%n_send_total * nlev_packed
+      if (.not. allocated(ws_send_buf) .or. size(ws_send_buf) < max(1, needed)) then
          if (allocated(ws_send_buf)) deallocate(ws_send_buf)
-         allocate(ws_send_buf(max(1, remap_data%n_send_total)))
+         allocate(ws_send_buf(max(1, needed)))
       end if
 
       if (remap_data%n_send_total > 0) then
          do i = 1, remap_data%n_send_total
-            ws_send_buf(i) = real(field1d(send_local_cell(i)), r8)
-            ! Zero out fill values so they don't corrupt the SpMV
-            ! weighted average at nearby target cells.
-            if (abs(ws_send_buf(i)) > 1.0e10_r8) then
-               ws_send_buf(i) = 0.0_r8
+            val = real(field1d(send_local_cell(i)), r8)
+            if (abs(val) >= fill_detect) then
+               ! Fill value: zero field, mask = 0
+               ws_send_buf((i-1)*nlev_packed + 1) = 0.0_r8
+               ws_send_buf((i-1)*nlev_packed + 2) = 0.0_r8
+            else
+               ! Valid: field + mask = 1
+               ws_send_buf((i-1)*nlev_packed + 1) = val
+               ws_send_buf((i-1)*nlev_packed + 2) = 1.0_r8
             end if
          end do
       end if
 
-      call remap_data%apply(ws_send_buf, 1, fld_out_2d, &
+      call remap_data%apply_masked(ws_send_buf, 1, fld_out_2d, &
            domain % dminfo % comm, domain % dminfo % nprocs, err)
       fld_out(1:remap_data%n_b_local) = fld_out_2d(1:remap_data%n_b_local, 1)
    end subroutine seaice_fme_horiz_remap_field!}}}
@@ -347,7 +363,7 @@ contains
            (/dim_lon_id, dim_lat_id, dim_time_id/), pio_var_descs(n_pio_vars))
       ierr = pio_put_att(pio_file, pio_var_descs(n_pio_vars), 'units', trim(units))
       ierr = pio_put_att(pio_file, pio_var_descs(n_pio_vars), 'long_name', trim(long_name))
-      fill_val = 1.0E34
+      fill_val = real(SHR_FILL_VALUE, 4)
       ierr = pio_put_att(pio_file, pio_var_descs(n_pio_vars), '_FillValue', fill_val)
       ierr = pio_put_att(pio_file, pio_var_descs(n_pio_vars), 'missing_value', fill_val)
    end subroutine seaice_fme_horiz_remap_def_var!}}}

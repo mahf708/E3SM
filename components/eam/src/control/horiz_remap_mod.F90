@@ -11,7 +11,8 @@ module horiz_remap_mod
   !-------------------------------------------------------------------------------------------
 
   use shr_kind_mod,        only: r8 => shr_kind_r8
-  use shr_horiz_remap_mod, only: shr_horiz_remap_t
+  use shr_horiz_remap_mod, only: shr_horiz_remap_t, SHR_FILL_VALUE
+  use cam_history_support, only: cam_fillvalue => fillvalue
   use pio,                 only: io_desc_t
   use cam_logfile,         only: iulog
   use cam_abortutils,      only: endrun
@@ -186,6 +187,10 @@ CONTAINS
   subroutine eam_horiz_remap_field(self, hbuf, numlev, fld_out)
     !
     ! Remap a field from the physics grid to the target lat-lon grid.
+    ! Builds a validity mask and uses apply_masked so that:
+    !   - fill values (cam_fillvalue = 1e20) are excluded from the average
+    !   - target cells with no valid sources get SHR_FILL_VALUE
+    !   - coastal/mixed cells are normalized by actual valid coverage
     !
     ! Input: hbuf(pcols, numlev, begchunk:endchunk)
     ! Output: fld_out(n_b_local, numlev) - allocated here
@@ -197,12 +202,8 @@ CONTAINS
     integer,  intent(in)    :: numlev
     real(r8), allocatable, intent(out) :: fld_out(:,:)
 
-    integer :: i, k, lchnk, icol, ierr, needed
+    integer :: i, k, lchnk, icol, ierr, needed, nlev_packed
     real(r8) :: val
-    ! cam_history fillvalue is 1e+20, MPAS uses 1e+34.  No geophysical
-    ! quantity exceeds 1e10, so anything above that is a fill value that
-    ! must be zeroed before entering the SpMV weighted average.
-    real(r8), parameter :: fill_thresh = 1.0e10_r8
     character(len=*), parameter :: subname = 'horiz_remap_field'
 
     if (.not. self%shared%initialized) then
@@ -211,31 +212,41 @@ CONTAINS
 
     allocate(fld_out(self%shared%n_b_local, numlev))
 
-    ! Grow persistent send workspace if needed.
-    ! Always allocate at least size 1 so MPI_Alltoallv never receives
-    ! an unallocated array on ranks with no source cells.
-    needed = self%shared%n_send_total * numlev
+    nlev_packed = numlev + 1  ! field levels + mask level
+
+    ! Grow persistent send workspace for nlev_packed entries per cell.
+    needed = self%shared%n_send_total * nlev_packed
     if (.not. allocated(self%ws_send_buf) .or. size(self%ws_send_buf) < max(1, needed)) then
       if (allocated(self%ws_send_buf)) deallocate(self%ws_send_buf)
       allocate(self%ws_send_buf(max(1, needed)))
     end if
 
-    ! Pack send buffer from EAM chunk layout.
-    ! Zero out fill values (e.g. from vcoarsen at high-elevation columns
-    ! where surface pressure is below a coarsened layer's pressure range)
-    ! before SpMV so they don't corrupt the weighted average.
+    ! Pack send buffer: field levels + validity mask.
+    ! Fill detection uses cam_history's fillvalue constant (exact match).
     do i = 1, self%shared%n_send_total
       lchnk = self%send_cols_chunk(i)
       icol  = self%send_cols_icol(i)
-      do k = 1, numlev
-        val = hbuf(icol, k, lchnk - begchunk + 1)
-        if (abs(val) > fill_thresh) val = 0.0_r8
-        self%ws_send_buf((i-1)*numlev + k) = val
-      end do
+
+      ! Check if any level is fill (EAM enforces z-invariant fill per column)
+      val = hbuf(icol, 1, lchnk - begchunk + 1)
+      if (val == cam_fillvalue) then
+        ! Fill column: zero all levels, mask = 0
+        do k = 1, numlev
+          self%ws_send_buf((i-1)*nlev_packed + k) = 0.0_r8
+        end do
+        self%ws_send_buf((i-1)*nlev_packed + nlev_packed) = 0.0_r8
+      else
+        ! Valid column: copy field values, mask = 1
+        do k = 1, numlev
+          self%ws_send_buf((i-1)*nlev_packed + k) = &
+               hbuf(icol, k, lchnk - begchunk + 1)
+        end do
+        self%ws_send_buf((i-1)*nlev_packed + nlev_packed) = 1.0_r8
+      end if
     end do
 
-    ! Apply remap: alltoallv + CRS SpMV
-    call self%shared%apply(self%ws_send_buf, numlev, fld_out, mpicom, npes, ierr)
+    ! Apply masked remap: alltoallv + CRS SpMV with validity normalization
+    call self%shared%apply_masked(self%ws_send_buf, numlev, fld_out, mpicom, npes, ierr)
 
   end subroutine eam_horiz_remap_field
 

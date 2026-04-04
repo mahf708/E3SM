@@ -364,6 +364,10 @@ contains
            areaSum, &
            tempSum
 
+      ! Fill value for intensive quantities at ice-free cells.
+      ! Must match the _FillValue attribute in remapped output files.
+      real(kind=RKIND), parameter :: fillValue = 1.0E34_RKIND
+
       err = 0
 
       ! get configs
@@ -422,28 +426,38 @@ contains
 
             iceAreaTotal(iCell) = areaSum
 
-            ! Area-weighted mean ice thickness
+            ! Area-weighted mean ice thickness and surface temperature.
+            ! Intensive quantities are undefined for ice-free cells and must
+            ! be set to fillValue so that the horizontal remap (apply_masked)
+            ! correctly excludes them from weighted averages at the ice edge.
             if (areaSum > 0.0_RKIND) then
                iceThicknessMean(iCell) = iceVolumeTotal(iCell) / areaSum
                surfaceTemperatureMean(iCell) = tempSum / areaSum
             else
-               iceThicknessMean(iCell) = 0.0_RKIND
-               surfaceTemperatureMean(iCell) = 0.0_RKIND
+               iceThicknessMean(iCell) = fillValue
+               surfaceTemperatureMean(iCell) = fillValue
             end if
 
-            ! Rotate air stress from model coordinates to geographical coordinates
-            call seaice_latlon_vector_rotation_backward(&
-                 airStressZonal(iCell), &
-                 airStressMeridional(iCell), &
-                 airStressCellU(iCell), &
-                 airStressCellV(iCell), &
-                 latCell(iCell), &
-                 lonCell(iCell), &
-                 xCell(iCell), &
-                 yCell(iCell), &
-                 zCell(iCell), &
-                 sphereRadius, &
-                 rotateCartesianGrid)
+            ! Rotate air stress from model coordinates to geographical coordinates.
+            ! For ice-free cells, set to fillValue (stress on non-existent ice
+            ! is undefined, not zero).
+            if (areaSum > 0.0_RKIND) then
+               call seaice_latlon_vector_rotation_backward(&
+                    airStressZonal(iCell), &
+                    airStressMeridional(iCell), &
+                    airStressCellU(iCell), &
+                    airStressCellV(iCell), &
+                    latCell(iCell), &
+                    lonCell(iCell), &
+                    xCell(iCell), &
+                    yCell(iCell), &
+                    zCell(iCell), &
+                    sphereRadius, &
+                    rotateCartesianGrid)
+            else
+               airStressZonal(iCell) = fillValue
+               airStressMeridional(iCell) = fillValue
+            end if
 
          end do ! iCell
 

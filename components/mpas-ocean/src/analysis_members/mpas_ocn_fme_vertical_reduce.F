@@ -294,6 +294,15 @@ contains
          call mpas_pool_get_array(amPool, 'kineticEnergy', kineticEnergy)
 
          do iCell = 1, nCellsSolve
+            ! Land cells (maxLevelCell==0) get fillValue so the remap
+            ! correctly excludes them from weighted averages.
+            if (maxLevelCell(iCell) == 0) then
+               oceanHeatContent(iCell) = fillValue
+               freshwaterContent(iCell) = fillValue
+               kineticEnergy(iCell) = fillValue
+               cycle
+            end if
+
             ohc_sum = 0.0_RKIND
             fwc_sum = 0.0_RKIND
             ke_sum  = 0.0_RKIND
@@ -347,6 +356,11 @@ contains
             end select
 
             do iCell = 1, nCellsSolve
+               if (maxLevelCell(iCell) == 0) then
+                  genSlot(iCell) = fillValue
+                  cycle
+               end if
+
                gen_sum = 0.0_RKIND
                gen_wgt = 0.0_RKIND
                do k = 1, maxLevelCell(iCell)

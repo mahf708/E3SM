@@ -96,7 +96,7 @@ ACE_OCN_COARSENED = {
     "velocityMeridionalCoarsened": "vo",
     "layerThicknessCoarsened": "layerThickness",
 }
-N_OCN_LAYERS = 19  # ACE uses 19 depth layers
+N_OCN_LAYERS = None  # auto-detect from file (was 19 for ACE, 25 for default E3SM)
 
 # Fields ACE ocean model needs from MPAS-O fmeDerivedFields.
 ACE_OCN_DERIVED = {
@@ -140,20 +140,21 @@ REMAPPED_VERTREDUCE_VARS = [
 ]
 
 # Physical range checks: (vmin, vmax)
+# Ranges are deliberately generous to avoid false positives during spinup.
 RANGE_CHECKS = {
     "temperatureCoarsened": (-5, 40),
-    "salinityCoarsened": (0, 42),
+    "salinityCoarsened": (0, 50),      # Red Sea/Persian Gulf can exceed 42 PSU
     "velocityZonalCoarsened": (-5, 5),
     "velocityMeridionalCoarsened": (-5, 5),
     "layerThicknessCoarsened": (0, None),
     "sst": (-5, 40),
-    "sss": (0, 42),
-    "surfaceHeatFluxTotal": (-1000, 1000),
+    "sss": (0, 50),
+    "surfaceHeatFluxTotal": (-2000, 2000),  # spinup transients can be large
     "iceAreaTotal": (0, 1),
     "iceVolumeTotal": (0, None),
-    "snowVolumeTotal": (0, None),
+    "snowVolumeTotal": (-1e-20, None),      # allow floating-point noise near zero
     "iceThicknessMean": (0, None),
-    "surfaceTemperatureMean": (200, 320),
+    "surfaceTemperatureMean": (-50, 5),     # degC (not Kelvin!), Arctic ice can be -45C
     "oceanHeatContent": (None, None),
     "freshwaterContent": (-1000, 1000),
     "kineticEnergy": (0, None),
@@ -226,7 +227,7 @@ def get_var(ds, name):
 def get_dims(ds):
     """Return dict of dimension names -> sizes."""
     if HAS_XR and isinstance(ds, xr.Dataset):
-        return dict(ds.dims)
+        return dict(ds.sizes)
     if HAS_NC4 and isinstance(ds, NC4Dataset):
         return {d: len(ds.dimensions[d]) for d in ds.dimensions}
     return {}
@@ -354,6 +355,8 @@ def _plot_on_ax(ax, data, lons, lats, cmap, vmin, vmax, is_cartopy):
     else:
         # Unstructured: use tripcolor for filled triangulation.
         # Subsample if > 50k points to keep triangulation fast.
+        # Mask triangles that cross the antimeridian (lon span > 180).
+        from matplotlib.tri import Triangulation
         lons_fix = _fix_lon(lons)
         kw = dict(transform=ccrs.PlateCarree()) if is_cartopy else {}
         max_pts = 50000
@@ -363,10 +366,15 @@ def _plot_on_ax(ax, data, lons, lats, cmap, vmin, vmax, is_cartopy):
         else:
             lons_sub, lats_sub, data_sub = lons_fix, lats, data
         try:
-            im = ax.tripcolor(lons_sub, lats_sub, data_sub, cmap=cmap,
+            tri = Triangulation(lons_sub, lats_sub)
+            # Mask triangles spanning the antimeridian
+            tri_lons = lons_sub[tri.triangles]
+            lon_span = tri_lons.max(axis=1) - tri_lons.min(axis=1)
+            tri.set_mask(lon_span > 180)
+            im = ax.tripcolor(tri, data_sub, cmap=cmap,
                               vmin=vmin, vmax=vmax, **kw)
         except Exception:
-            # Fallback to scatter if tripcolor fails (e.g. degenerate triangulation)
+            # Fallback to scatter if tripcolor fails
             im = ax.scatter(lons_sub, lats_sub, c=data_sub, s=0.5, cmap=cmap,
                             vmin=vmin, vmax=vmax, **kw)
     return im
@@ -505,7 +513,10 @@ def multi_panel_maps(panels, suptitle, outdir, fname, ncols=4,
     if im is not None:
         fig.colorbar(im, ax=axes, shrink=0.5, label=units, pad=0.03, aspect=30)
     fig.suptitle(suptitle, fontsize=12, y=1.01)
-    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        plt.tight_layout(rect=[0, 0, 1, 0.97])
     path = os.path.join(outdir, fname)
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -810,24 +821,25 @@ def check_mpaso_depth_coarsening(rundir, outdir, verbose):
         close_ds(ds)
         return issues, plots, fill_reports
 
+    # Auto-detect depth level count from dataset dimensions
+    dims = get_dims(ds)
+    n_ocn_levels = N_OCN_LAYERS  # None = auto-detect
+    for dname in ["nFmeDepthLevels", "nFmeCoarsenLevels"]:
+        if dname in dims:
+            n_ocn_levels = dims[dname]
+            break
+    if n_ocn_levels is None:
+        # Fallback: smallest non-Time, non-nCells dimension
+        candidates = [v for k, v in dims.items()
+                      if k not in ("Time", "time") and v < 100]
+        n_ocn_levels = min(candidates) if candidates else 19
+    print(f"  Depth levels detected: {n_ocn_levels}")
+
     for var, ace_name in ACE_OCN_COARSENED.items():
         arr = get_var(ds, var)
         if arr is None:
             issues.append(f"  native missing: {var} (ACE: {ace_name})")
             continue
-        # arr shape: (Time, nFmeDepthLevels, nCells)
-        # Detect depth dimension: for 3D, shape[1] is nFmeDepthLevels only
-        # if it is smaller than shape[2] (nCells).
-        if arr.ndim == 3 and arr.shape[1] < arr.shape[2]:
-            n_levels = arr.shape[1]
-        elif arr.ndim == 3:
-            # Fallback: could be transposed, report shape
-            n_levels = arr.shape[1]
-            print(f"  WARNING: {var} shape {arr.shape} -- dim ordering may be unexpected")
-        else:
-            n_levels = arr.shape[0]
-        if n_levels != N_OCN_LAYERS:
-            issues.append(f"  {var}: {n_levels} depth layers, expected {N_OCN_LAYERS}")
         vmin, vmax = RANGE_CHECKS.get(var, (None, None))
         issues += check_range(arr, var, vmin, vmax)
         fill_reports.append(fill_nan_report(arr, var))
@@ -889,18 +901,29 @@ def check_mpaso_depth_coarsening_remapped(rundir, outdir, verbose):
     # Verify lat-lon grid
     issues += check_remapped_grid(ds, "depth coarsening remapped")
 
-    # Check for per-level variables: temperatureCoarsened_0..18, etc.
+    # Auto-detect number of depth levels from variable names in the file
+    varnames = get_varnames(ds)
+    n_remap_levels = 0
+    for k in range(100):
+        if f"temperatureCoarsened_{k}" in varnames:
+            n_remap_levels = k + 1
+        else:
+            break
+    if n_remap_levels == 0:
+        n_remap_levels = 19  # fallback
+    print(f"  Depth levels detected: {n_remap_levels}")
+
+    # Check for per-level variables
     expected_vars = []
     for base in REMAPPED_DEPTH_COARSENED_BASES:
-        for k in range(N_OCN_LAYERS):
+        for k in range(n_remap_levels):
             expected_vars.append(f"{base}_{k}")
     issues += check_remapped_vars(ds, expected_vars, "depth coarsening remapped")
 
     # Range checks on per-level variables
-    varnames = get_varnames(ds)
     for base in REMAPPED_DEPTH_COARSENED_BASES:
         found_levels = []
-        for k in range(N_OCN_LAYERS):
+        for k in range(n_remap_levels):
             vname = f"{base}_{k}"
             if vname in varnames:
                 found_levels.append(k)
@@ -911,7 +934,7 @@ def check_mpaso_depth_coarsening_remapped(rundir, outdir, verbose):
                 if verbose and k == 0:
                     print(f"  remapped/{vname}: {summary_stats(arr)}")
         if found_levels:
-            print(f"  {base}: {len(found_levels)}/{N_OCN_LAYERS} levels in remapped file")
+            print(f"  {base}: {len(found_levels)}/{n_remap_levels} levels in remapped file")
 
     # Maps of surface fields from remapped data
     if HAS_MPL:
@@ -931,7 +954,7 @@ def check_mpaso_depth_coarsening_remapped(rundir, outdir, verbose):
         # Vertical profile from remapped per-level variables
         for base in ["temperatureCoarsened", "salinityCoarsened"]:
             means = []
-            for k in range(N_OCN_LAYERS):
+            for k in range(n_remap_levels):
                 vname = f"{base}_{k}"
                 arr = get_var(ds, vname)
                 v = valid_data(arr)

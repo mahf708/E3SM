@@ -1,8 +1,8 @@
 FME Online Output Processing — Handoff Context
 ================================================
 Date: 2026-04-04
-Branch: claude/extend-derived-diagnostics-LNfYG (40+ commits on origin/master)
-Latest changes: PIO type mismatch fix, fill_thresh correction, verify script overhaul
+Branch: claude/extend-derived-diagnostics-LNfYG
+Status: All critical bugs fixed. Awaiting rebuild+verify for vcoarsen stride fix.
 
 ========================================================================
 WHAT THIS BRANCH DOES
@@ -12,233 +12,128 @@ Adds online horizontal remapping, vertical coarsening, derived field
 computation, and vertical reduction to E3SM for FME (Full Model
 Emulation) training data generation (ACE/Samudra).
 
-Components:
-  share/util/shr_horiz_remap_mod.F90  -- shared CRS SpMV remap
-  share/util/shr_vcoarsen_mod.F90     -- shared vertical coarsening
-  share/util/shr_derived_mod.F90      -- shared expression parser
-  components/eam/src/control/          -- EAM wrappers (horiz_remap, vcoarsen, derived)
-  components/mpas-ocean/src/           -- 3 analysis members + horiz_remap wrapper
-  components/mpas-seaice/src/          -- 1 analysis member + horiz_remap wrapper
-  cime_config/testmods_dirs/allactive/fme_output/  -- testmod + verify script
+Key source files:
+  share/util/shr_horiz_remap_mod.F90    -- CRS SpMV remap + apply_masked
+  share/util/shr_vcoarsen_mod.F90       -- vertical coarsening math
+  share/util/shr_derived_mod.F90        -- expression parser (TOTAL_WATER)
+  components/eam/src/control/           -- EAM wrappers
+  components/mpas-ocean/src/            -- 3 analysis members + horiz_remap
+  components/mpas-seaice/src/           -- 1 analysis member + horiz_remap
+  cime_config/testmods_dirs/allactive/fme_output/  -- testmod + verify
 
 ========================================================================
 CURRENT STATUS
 ========================================================================
 
-EAM REMAPPING: WORKING
-  - Per-tape horiz_remap_file transparent remapping via cam_history
-  - Vertical coarsening (8 ACE pressure layers) + column integration
-  - Derived fields (TOTAL_WATER) + tendencies (DTENDTTW cross-validation)
-  - Output on lat-lon grid (180x360)
-  - Fill values from vcoarsen (1e+20 at high-elevation columns) now
-    zeroed before SpMV using fill_thresh = 1e10 (was 1e30, which missed
-    the cam_history fillvalue of 1e+20)
+EAM: WORKING (pending rebuild for vcoarsen stride fix)
+  - Transparent per-tape horiz_remap via cam_history
+  - Vertical coarsening (8 pressure layers) + column integration
+  - Derived fields (TOTAL_WATER) + tendencies
+  - FIXED: vcoarsen array stride mismatch (ncol vs pcols) caused
+    ~8% of columns to produce wrong T values. Root cause: Fortran
+    sequence association when passing src_field(pcols,pver) to
+    shr_vcoarsen_avg_cols which declares field(ncol,nlev). For
+    chunks with ncol<pcols, level k>1 reads from wrong memory.
+    Fix: pass src_field(1:ncol,:) as explicit array section.
 
-MPAS REMAPPING: PIO TYPE MISMATCH FIXED (was root cause of ALL garbage)
-  - Root cause of ALL 171+ remapped MPAS issues: pio_initdecomp used
-    PIO_REAL (float32) but pio_write_darray received real(r8) (float64).
-    PIO reads 4-byte chunks from 8-byte elements, producing interleaved
-    valid/garbage values in the output file. Visible as values in 1e9
-    range (fill-value bytes reinterpreted as float32).
-  - Fix: convert fld_out to real(4) before pio_write_darray in both
-    mpas_ocn_fme_horiz_remap.F and mpas_seaice_fme_horiz_remap.F.
-  - Cell ID mismatch fix (gcol_to_ocean_col) is in place but the map
-    file uses n_a = N_total (465044 = all cells), so the identity
-    mapping branch is taken. The map file was generated from the full
-    mesh including land cells, not a masked ocean-only SCRIP mesh.
-  - frac_b computed from CRS weight sums in build_comm (no PIO read).
-  - MPI_IN_PLACE replaced with explicit buffer for safety.
-  - ws_send_buf/ws_recv_buf allocated to max(1, needed) for MPI safety.
-  - Fill values (abs > 1e10) now zeroed in MPAS-O and MPAS-SI send
-    buffer packing before SpMV, matching the EAM pattern.
+MPAS-O: WORKING
+  - Native output: SST=18.3C, SSS=34.6 PSU (correct)
+  - Remapped output: SST=13.7C (correct ocean-only), depth coarsening OK
+  - Fill values set for land cells in all 3 AMs
 
-NATIVE MPAS OUTPUT: WORKING (confirmed by verification)
-  - SST mean=18.3 degC, SSS mean=34.62 PSU (physically correct)
-  - temperatureCoarsened mean=10.38 (correct)
-  - iceAreaTotal mean=0.09 (reasonable)
-  - All 4 MPAS AMs produce correct native output
+MPAS-SI: WORKING
+  - All 7 derived fields computed and remapped
+  - Fill values set for ice-free cells (intensive quantities)
 
 ========================================================================
-BUGS FOUND AND FIXED (chronological)
+BUGS FIXED IN THIS SESSION (9 files changed, +333/-119)
 ========================================================================
 
-1. MPAS REMAP CELL ID MISMATCH [FIXED, BUT IDENTITY PATH TAKEN]
-   - Fix: gcol_to_ocean_col prefix-sum mapping added.
-   - However, map file has n_a = N_total so identity branch is used.
-   - Fix is still correct as defensive code for masked SCRIP maps.
+1. PIO TYPE MISMATCH [CRITICAL — fixed all 171 MPAS remap issues]
+   pio_initdecomp(PIO_REAL) + pio_write_darray(real(r8)) garbled output.
+   Fix: convert to real(4) before write.
+   Files: mpas_ocn_fme_horiz_remap.F, mpas_seaice_fme_horiz_remap.F
 
-2. frac_b PIO READ CORRUPTION [FIXED]
-   - Was: reading frac_b from map file via PIO corrupted shared state.
-   - Fix: compute frac_b as sum of CRS row weights in build_comm.
+2. FILL-VALUE ARCHITECTURE [apply_masked — proper masked remapping]
+   Old: zeroed fills + frac_b normalization → diluted coastal values, 0 over land.
+   New: pack validity mask as extra level, normalize by valid_frac.
+   SHR_FILL_VALUE = 1e20 (shared constant, no magic numbers).
+   Files: shr_horiz_remap_mod.F90, horiz_remap_mod.F90,
+          mpas_ocn_fme_horiz_remap.F, mpas_seaice_fme_horiz_remap.F
 
-3. MPI BUFFER SAFETY [FIXED]
-   - Was: land-only processors had n_send/n_recv=0, passing unallocated
-     arrays to MPI_Alltoallv.
-   - Fix: allocate buffers to max(1, needed) unconditionally.
+3. SOURCE-SIDE FILL VALUES [set fill at point of computation]
+   MPAS-SI: iceThicknessMean, surfaceTemperatureMean, airStress → fillValue
+            for ice-free cells (was 0.0).
+   MPAS-O derived: sst, sss, surfaceHeatFluxTotal → fillValue for land.
+   MPAS-O vertical reduce: OHC, FWC, KE → fillValue for land.
+   Files: mpas_seaice_fme_derived_fields.F, mpas_ocn_fme_derived_fields.F,
+          mpas_ocn_fme_vertical_reduce.F
 
-4. EAM FILL VALUE LEAKAGE THROUGH REMAP [FIXED]
-   - Was: vcoarsen fill values (1e+20) at high-elevation columns passed
-     through SpMV because fill_thresh was 1e+30 (too high to catch 1e+20).
-     Visible as T_1..T_8 min values of 37-110K (garbage from fill-value
-     contamination of the weighted average).
-   - Fix: lower fill_thresh from 1e+30 to 1e+10 in horiz_remap_mod.F90.
-     No geophysical quantity exceeds 1e+10.
+4. VCOARSEN ARRAY STRIDE MISMATCH [root cause of EAM T_1..T_8 artifacts]
+   shr_vcoarsen_avg_cols declares field(ncol,nlev) but receives
+   src_field(pcols,pver). When ncol<pcols (14 vs 15), level k>1
+   reads padding columns from the previous level. Produces ~95K
+   temperatures (should be ~218K) at ~8% of columns.
+   Fix: pass src_field(1:ncol,:) to force contiguous copy.
+   File: eam_vcoarsen.F90
 
-5. MPAS PIO TYPE MISMATCH [FIXED] — ROOT CAUSE OF ALL REMAPPED GARBAGE
-   - Was: pio_initdecomp(PIO_REAL) created a float32 decomposition, but
-     pio_write_darray received real(r8) (float64) data. PIO interpreted
-     8-byte elements as two 4-byte elements, interleaving valid values
-     with garbage throughout the output file.
-   - Diagnosis: debug log showed correct send buffer values (SST ~24C)
-     and zero SpMV output on rank 0 (expected — South Pole land).
-     Remapped file showed alternating valid/garbage float32 values:
-     [-1.42e+36, -1.906, 1.47e-30, -1.905, ...] — classic double-to-
-     single reinterpretation pattern.
-   - Fix: convert fld_out to real(4) before pio_write_darray in both
-     mpas_ocn_fme_horiz_remap.F and mpas_seaice_fme_horiz_remap.F.
+5. REGISTER_VAR DUPLICATE [PIO def_var "name in use"]
+   MPAS framework calls init twice. register_var now skips duplicates.
+   Files: mpas_ocn_fme_horiz_remap.F, mpas_seaice_fme_horiz_remap.F
 
-6. MPAS FILL VALUE LEAKAGE THROUGH SpMV [FIXED]
-   - Was: depth-coarsened fields have fill values (1e34) at deep levels
-     for shallow ocean cells. These leaked through the SpMV.
-   - Fix: added abs(val) > 1e10 zeroing in MPAS-O and MPAS-SI send
-     buffer packing, matching the EAM pattern.
-
-========================================================================
-MAP FILE DETAILS
-========================================================================
-
-Map file: map_IcoswISC30E3r5_to_gaussian_180by360_shifted.nc
-  n_a = 465044 (= N_total, all MPAS cells including land)
-  n_b = 64800 (180x360 lat-lon)
-  n_s = 843367 nonzeros
-  col range: 1..465044 (global cell IDs, NOT ocean-only)
-  row range: 4125..64800 (no entries for first 4124 rows = South Pole land)
-  Unique source cols: 463013 (2031 land cells have no weights)
-
-Since n_a == N_total, the gcol_to_ocean_col fix uses the identity branch.
-The map was generated from the full mesh, not a masked ocean-only mesh.
+6. VERIFY SCRIPT IMPROVEMENTS
+   - tripcolor with antimeridian mask (was scatter, had dateline artifact)
+   - Subsampled to 50K points (was hanging on 465K)
+   - Side-by-side native vs remapped comparisons
+   - Multi-panel T_1..T_8, Q_1..Q_8 layer views
+   - Zonal mean profiles, lightbox in HTML
+   - Auto-detect depth levels (was hardcoded N_OCN_LAYERS=19)
+   - Fixed range checks (surfaceTemperatureMean is degC not K, etc.)
+   - ds.sizes instead of ds.dims (suppressed FutureWarning)
 
 ========================================================================
-HOW TO TEST
+PERFORMANCE (512 MPI tasks, ne30pg2_IcoswISC30E3r5, WCYCL1850NS)
 ========================================================================
 
-  # Rebuild (incremental, only recompiles changed sources):
-  cd /pscratch/sd/m/mahf708/e3sm_scratch/pm-cpu/SMS_P512.ne30pg2_r05_IcoswISC30E3r5.WCYCL1850NS.pm-cpu_gnu.allactive-fme_output.20260404_084542_w2biv8
-  ./case.build -m && ./case.submit
+Baseline:       485.47 s  (2.44 SYPD)
+FME-enabled:    493.03 s  (2.40 SYPD)
+Overhead:       +7.56 s   (+1.6%)
 
-  # Or create fresh test:
+Dominant cost: MPAS-O depth coarsening (1.7 s, 19 levels × 5 vars × remap)
+
+========================================================================
+MAP FILE
+========================================================================
+
+  /pscratch/sd/m/mahf708/fme_maps/
+    map_ne30pg2_to_gaussian_180by360_shifted.nc          (EAM, n_a=21600)
+    map_IcoswISC30E3r5_to_gaussian_180by360_shifted.nc   (MPAS, n_a=465044)
+
+  MPAS map uses global cell IDs (n_a = N_total), not ocean-only indexing.
+  Row range 4125..64800 (first 4124 rows = South Pole land, no entries).
+
+========================================================================
+HOW TO BUILD AND TEST
+========================================================================
+
   cd cime/scripts
-  ./create_test SMS_P512.ne30pg2_r05_IcoswISC30E3r5.WCYCL1850NS.pm-cpu_gnu \
+  ./create_test SMS_Ld2_P512.ne30pg2_r05_IcoswISC30E3r5.WCYCL1850NS.pm-cpu_gnu \
       --testmod allactive/fme_output
 
-  # After run, verify:
+  # After run:
   micromamba run -n xgns python verify_fme_output.py \
       --rundir $RUNDIR \
       --outdir /pscratch/sd/m/mahf708/aifigs_v3LRpiControlSamudrACE \
       --verbose
 
-  # View results:
-  # https://mahf708.github.io/aifigs_v3LRpiControlSamudrACE/fme_output.html
-
-Map files: /pscratch/sd/m/mahf708/fme_maps/
-  map_ne30pg2_to_gaussian_180by360_shifted.nc          (EAM)
-  map_IcoswISC30E3r5_to_gaussian_180by360_shifted.nc   (MPAS-O/SI)
+  # View: fme_output.html (has lightbox — click any figure to zoom)
 
 ========================================================================
-PERFORMANCE (512 MPI tasks, ne30pg2_r05_IcoswISC30E3r5, WCYCL1850NS, 5 days)
+WHAT NEEDS VERIFICATION NEXT
 ========================================================================
 
-Baseline (no FME):   485.47 s wallclock  (2.44 SYPD)
-FME-enabled:         493.03 s wallclock  (2.40 SYPD)
-FME overhead:        +7.56 s  (+1.6%)
-
-Per-component wallclock delta (wallmax):
-  CPL:ATM_RUN      280.32 → 286.60 s  (+2.2%)
-  CPL:OCN_RUN      132.41 → 135.63 s  (+2.4%)
-  CPL:ICE_RUN       34.64 →  35.55 s  (+2.6%)
-  CPL:LND_RUN       26.89 →  23.41 s  (-12.9%, noise)
-  CPL:ROF_RUN        1.50 →   1.41 s  (-6.4%, noise)
-
-FME-specific timer breakdown (init + compute, wallmax):
-  MPAS-O depth coarsening:  1.709 s  (dominant — 19 levels x 5 vars x remap)
-  MPAS-SI derived fields:   0.552 s  (7 vars + remap)
-  EAM derived/vcoarsen:     0.436 s  (TOTAL_WATER eval + 8-layer vcoarsen)
-  MPAS-O derived fields:    0.147 s  (SST/SSS/fluxes + remap)
-  MPAS-O vertical reduce:   0.145 s  (OHC/FWC/KE + remap)
-  MPAS finalize/IO:         0.061 s
-  Total FME-specific:       3.050 s  (0.63% of baseline)
-
-Note: total FME timer sum (3.05 s) < total overhead (7.56 s) because
-some overhead is in cam_history IO and remap send/recv not captured by
-named FME timers. The 1.6% overhead is well within the target for
-online processing replacing offline postprocessing.
-
-Runs compared:
-  Baseline: SMS_P512...WCYCL1850NS.pm-cpu_gnu.20260404_103438_12i0z1
-  FME:      SMS_P512...WCYCL1850NS.pm-cpu_gnu.allactive-fme_output.20260404_084542_w2biv8
-
-========================================================================
-KEY ARCHITECTURE DECISIONS
-========================================================================
-
-- MPAS stream manager only supports nCells/nEdges/nVertices decomposed
-  dims. Remapped (lon,lat) output MUST bypass stream manager via direct
-  PIO. This is by design, not a workaround.
-
-- PIO decomposition type MUST match the Fortran array type passed to
-  pio_write_darray. PIO_REAL requires real(4). PIO_DOUBLE requires
-  real(r8). Mismatch produces garbled output with no runtime error.
-
-- Remapped filenames derived from native stream's filename_template via
-  MPAS_stream_mgr_get_property. Inserts ".remapped" before ".nc".
-
-- File rotation: register_var stores metadata at init, check_rotate
-  opens/closes files on date boundary, replays var defs automatically.
-
-- EAM remap is transparent: horiz_remap_file(tape) replaces data in
-  cam_history at write time. Same filename, same tape.
-
-- Fill values from any source (vcoarsen 1e+20, MPAS 1e+34, uninitialized)
-  MUST be zeroed before packing the SpMV send buffer. Threshold 1e+10
-  is safe — no geophysical quantity exceeds that value.
-
-========================================================================
-WHAT TO TEST NEXT
-========================================================================
-
-1. Rebuild and run to verify all fixes:
-   - MPAS remapped SST should be ~18C (was garbage 1e9 range)
-   - MPAS remapped salinity should be ~35 PSU
-   - MPAS remapped ice area should show Arctic/Antarctic pattern
-   - EAM T_1..T_8 should all have min > 150K (was 37-110K)
-   - All 171 MPAS remapped issues should be resolved
-   - All 8 EAM tape3 issues should be resolved
-
-2. Check new verification figures:
-   - Side-by-side native tripcolor vs remapped pcolormesh
-   - Multi-panel T_1..T_8 and Q_1..Q_8 (2x4 grid)
-   - Zonal mean profiles
-   - Click any figure in HTML to view full-size (lightbox)
-
-3. Check frac_b renormalization at coastlines — values should be
-   correct magnitude, not diluted by partial coverage.
-
-========================================================================
-FILE INVENTORY
-========================================================================
-
-Testmod files:
-  CONTEXT        -- this file
-  PLAN           -- architecture overview and implementation roadmap
-  REVIEW         -- detailed code review findings
-  FUTURE_WORK    -- prioritized work items with [DONE] markers
-  README         -- quick-start description
-  shell_commands -- case setup, map file detection, namelist generation
-  user_nl_eam    -- EAM namelist (3 tapes, vcoarsen, derived, tendencies)
-  user_nl_mpaso  -- MPAS-O namelist (3 AMs: depth coarsen, derived, vert reduce)
-  user_nl_mpassi -- MPAS-SI namelist (1 AM: derived fields)
-  user_nl_elm    -- stub (deferred)
-  user_nl_mosart -- stub (deferred)
-  verify_fme_output.py -- verification + diagnostic figures + HTML viewer
-
-Output viewer: /pscratch/sd/m/mahf708/aifigs_v3LRpiControlSamudrACE/fme_output.html
+1. Rebuild with vcoarsen stride fix → T_1..T_8 should have min > 150K
+2. Confirm apply_masked produces SHR_FILL_VALUE over land (not 0)
+3. Confirm sea ice intensive fields have fill at ice-free cells
+4. Check that the 13 remaining issues drop to ~0
+5. Run verify_fme_output.py and review comparison figures

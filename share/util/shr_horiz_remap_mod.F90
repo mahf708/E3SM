@@ -36,6 +36,11 @@ module shr_horiz_remap_mod
   save
 
   public :: shr_horiz_remap_t
+  public :: SHR_FILL_VALUE
+
+  ! Standard fill value for remapped output.  Matches CAM's fillvalue
+  ! (cam_history_support) and is representable in both real(4) and real(8).
+  real(r8), parameter :: SHR_FILL_VALUE = 1.0e20_r8
 
   type shr_horiz_remap_t
     logical  :: initialized = .false.
@@ -87,6 +92,7 @@ module shr_horiz_remap_mod
     procedure :: read_mapfile => shr_horiz_remap_read_mapfile
     procedure :: build_comm   => shr_horiz_remap_build_comm
     procedure :: apply        => shr_horiz_remap_apply
+    procedure :: apply_masked => shr_horiz_remap_apply_masked
   end type shr_horiz_remap_t
 
 CONTAINS
@@ -495,14 +501,108 @@ CONTAINS
             fld_out(i, k) = fld_out(i, k) / rd%frac_b_local(i)
           end do
         else
-          ! Pure land cell: zero out
+          ! Pure land cell: mark as fill
           do k = 1, numlev
-            fld_out(i, k) = 0.0_r8
+            fld_out(i, k) = SHR_FILL_VALUE
           end do
         end if
       end do
     end if
 
   end subroutine shr_horiz_remap_apply
+
+  !-------------------------------------------------------------------------------------------
+  subroutine shr_horiz_remap_apply_masked(rd, send_buf, numlev, fld_out, comm, nprocs, ierr)
+    !--------------------------------------------------------------------------
+    ! Phase 3 variant: Source-gather remap with validity mask.
+    !
+    ! The caller packs send_buf with (numlev+1) entries per source cell:
+    !   entries 1..numlev  = field values (fills zeroed to 0)
+    !   entry   numlev+1   = validity mask (1.0 for valid, 0.0 for fill)
+    !
+    ! After SpMV, the mask level gives valid_frac(i) = sum(w_j * mask_j),
+    ! the correct normalization denominator that excludes fill sources.
+    ! This replaces frac_b normalization for properly masked output.
+    !
+    ! Input:  send_buf(n_send_total * (numlev+1))
+    ! Output: fld_out(n_b_local, numlev) with SHR_FILL_VALUE where invalid
+    !--------------------------------------------------------------------------
+    use mpi, only: MPI_DOUBLE_PRECISION
+
+    class(shr_horiz_remap_t), intent(inout) :: rd
+    real(r8), intent(in)    :: send_buf(:)
+    integer,  intent(in)    :: numlev
+    real(r8), intent(out)   :: fld_out(:,:)
+    integer,  intent(in)    :: comm, nprocs
+    integer,  intent(out)   :: ierr
+
+    integer :: nlev_packed, needed, i, k, j, src_idx, jbeg, jend
+    integer :: send_counts_lev(0:nprocs-1), send_displs_lev(0:nprocs-1)
+    integer :: recv_counts_lev(0:nprocs-1), recv_displs_lev(0:nprocs-1)
+    real(r8) :: valid_frac
+    real(r8), parameter :: vfrac_eps = 1.0e-10_r8
+
+    ierr = 0
+    nlev_packed = numlev + 1
+
+    ! Grow persistent recv workspace if needed
+    needed = rd%n_recv_total * nlev_packed
+    if (.not. allocated(rd%ws_recv_buf) .or. size(rd%ws_recv_buf) < max(1, needed)) then
+      if (allocated(rd%ws_recv_buf)) deallocate(rd%ws_recv_buf)
+      allocate(rd%ws_recv_buf(max(1, needed)))
+    end if
+
+    ! Scale counts/displacements by nlev_packed
+    do i = 0, nprocs-1
+      send_counts_lev(i) = rd%send_counts(i) * nlev_packed
+      send_displs_lev(i) = rd%send_displs(i) * nlev_packed
+      recv_counts_lev(i) = rd%recv_counts(i) * nlev_packed
+      recv_displs_lev(i) = rd%recv_displs(i) * nlev_packed
+    end do
+
+    call mpi_alltoallv(send_buf, send_counts_lev, send_displs_lev, MPI_DOUBLE_PRECISION, &
+                       rd%ws_recv_buf, recv_counts_lev, recv_displs_lev, MPI_DOUBLE_PRECISION, &
+                       comm, ierr)
+
+    ! CRS SpMV over field levels + mask level, with per-row normalization
+    do i = 1, rd%n_b_local
+      jbeg = rd%row_offsets(i)
+      jend = rd%row_offsets(i+1) - 1
+      if (jbeg <= jend) then
+        ! First contribution
+        src_idx = rd%col_recvidx(jbeg)
+        do k = 1, numlev
+          fld_out(i, k) = rd%wgt(jbeg) * rd%ws_recv_buf((src_idx-1)*nlev_packed + k)
+        end do
+        valid_frac = rd%wgt(jbeg) * rd%ws_recv_buf((src_idx-1)*nlev_packed + nlev_packed)
+        ! Remaining contributions
+        do j = jbeg+1, jend
+          src_idx = rd%col_recvidx(j)
+          do k = 1, numlev
+            fld_out(i, k) = fld_out(i, k) + &
+                 rd%wgt(j) * rd%ws_recv_buf((src_idx-1)*nlev_packed + k)
+          end do
+          valid_frac = valid_frac + &
+               rd%wgt(j) * rd%ws_recv_buf((src_idx-1)*nlev_packed + nlev_packed)
+        end do
+        ! Normalize by valid_frac (the correct denominator excluding fills)
+        if (valid_frac > vfrac_eps) then
+          do k = 1, numlev
+            fld_out(i, k) = fld_out(i, k) / valid_frac
+          end do
+        else
+          do k = 1, numlev
+            fld_out(i, k) = SHR_FILL_VALUE
+          end do
+        end if
+      else
+        ! No source contributions (target cell outside source domain)
+        do k = 1, numlev
+          fld_out(i, k) = SHR_FILL_VALUE
+        end do
+      end if
+    end do
+
+  end subroutine shr_horiz_remap_apply_masked
 
 end module shr_horiz_remap_mod

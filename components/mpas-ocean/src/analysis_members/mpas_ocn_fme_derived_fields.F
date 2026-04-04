@@ -136,6 +136,9 @@ contains
       real(kind=RKIND), dimension(:), pointer :: longWaveHeatFluxDown
       real(kind=RKIND), dimension(:), pointer :: latentHeatFlux
       real(kind=RKIND), dimension(:), pointer :: sensibleHeatFlux
+
+      ! Fill value for land cells (must match _FillValue in remapped output)
+      real(kind=RKIND), parameter :: fillValue = 1.0E34_RKIND
       ! Remap workspace
       real(r8), allocatable :: fld_remap(:,:)
       real(kind=RKIND), allocatable :: field_1lev(:,:)
@@ -166,7 +169,17 @@ contains
          call mpas_pool_get_array(forcingPool, 'latentHeatFlux', latentHeatFlux)
          call mpas_pool_get_array(forcingPool, 'sensibleHeatFlux', sensibleHeatFlux)
 
+         call mpas_pool_get_array(meshPool, 'maxLevelCell', maxLevelCell)
          do iCell = 1, nCellsSolve
+            ! Land cells (maxLevelCell==0) get fillValue so the remap
+            ! correctly excludes them from weighted averages.
+            if (maxLevelCell(iCell) == 0) then
+               sst(iCell) = fillValue
+               sss(iCell) = fillValue
+               surfaceHeatFluxTotal(iCell) = fillValue
+               cycle
+            end if
+
             sst(iCell) = tracers(index_temperature, 1, iCell)
             sss(iCell) = tracers(index_salinity, 1, iCell)
 
@@ -179,7 +192,7 @@ contains
                     + latentHeatFlux(iCell) &
                     + sensibleHeatFlux(iCell)
             else
-               surfaceHeatFluxTotal(iCell) = 0.0_RKIND
+               surfaceHeatFluxTotal(iCell) = fillValue
             end if
          end do
 

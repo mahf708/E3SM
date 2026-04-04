@@ -333,8 +333,14 @@ contains
       do i = 1, n_avg_flds
         call get_state_field(state, pbuf_chunk, vcoarsen_avg_flds(i), src_field, ncol)
 
-        call shr_vcoarsen_avg_cols(src_field, coord_iface, ncol, pver, &
-             vcoarsen_pbounds(1:n_avg_levs+1), n_avg_levs, fillvalue, coarsened)
+        ! Pass array sections (1:ncol, :) so that Fortran creates contiguous
+        ! copies matching the declared shape (ncol, nlev) in shr_vcoarsen_avg_cols.
+        ! Without this, when ncol < pcols the dummy array's stride doesn't
+        ! match the actual array's stride, causing levels k>1 to read from
+        ! wrong memory offsets (padding columns of the previous level).
+        call shr_vcoarsen_avg_cols(src_field(1:ncol, :), coord_iface(1:ncol, :), &
+             ncol, pver, vcoarsen_pbounds(1:n_avg_levs+1), n_avg_levs, &
+             fillvalue, coarsened(1:ncol, :))
 
         do k = 1, n_avg_levs
           ! Fill inactive columns
