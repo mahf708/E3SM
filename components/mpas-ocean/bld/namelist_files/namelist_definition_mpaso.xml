@@ -6894,6 +6894,14 @@ Valid values: Comma-separated list of tracer field names or 'none'
 Default: Defined in namelist_defaults.xml
 </entry>
 
+<entry id="config_AM_fmeDepthCoarsening_horiz_remap_file" type="char*1024"
+	category="AM_fmeDepthCoarsening" group="AM_fmeDepthCoarsening">
+Path to ESMF/TempestRemap weight file for horizontal remapping depth-coarsened fields to lat-lon grid. Each depth level is output as a separate 2D variable (e.g., temperatureCoarsened_0, temperatureCoarsened_1, ...).
+
+Valid values: Any valid file path or 'none'
+Default: Defined in namelist_defaults.xml
+</entry>
+
 <entry id="config_AM_fmeDepthCoarsening_stream_output_interval" type="char*1024"
 	category="AM_fmeDepthCoarsening" group="AM_fmeDepthCoarsening">
 Output interval for the fmeDepthCoarsening stream. Format: YY-MM-DD_HH:MM:SS
@@ -7023,6 +7031,14 @@ Default: Defined in namelist_defaults.xml
 Reference salinity (PSU) for freshwater content calculation.
 
 Valid values: Any positive real number
+Default: Defined in namelist_defaults.xml
+</entry>
+
+<entry id="config_AM_fmeVerticalReduce_horiz_remap_file" type="char*1024"
+	category="AM_fmeVerticalReduce" group="AM_fmeVerticalReduce">
+Path to ESMF/TempestRemap weight file for horizontal remapping vertically reduced fields to lat-lon grid.
+
+Valid values: Any valid file path or 'none'
 Default: Defined in namelist_defaults.xml
 </entry>
 
