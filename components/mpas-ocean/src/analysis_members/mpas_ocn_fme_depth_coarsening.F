@@ -192,7 +192,7 @@ contains
                   do kOut = 0, nCoarsenLevels - 1
                      write(varName, '(A,A,I0)') &
                           trim(coarsenFieldNames(iField)), 'Coarsened_', kOut
-                     write(longName, '(A,A,I0)') 'Depth-coarsened ' &
+                     write(longName, '(A,I0)') 'Depth-coarsened ' &
                           // trim(coarsenFieldNames(iField)) // ' level ', kOut
                      call remap_outfile%register_var(trim(varName), '', &
                           trim(longName), ierr)

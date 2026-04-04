@@ -266,6 +266,8 @@ contains
       integer, intent(out) :: err
 
       integer :: i, k, needed, comm, nprocs
+      real(r8) :: val
+      real(r8), parameter :: fill_thresh = 1.0e30_r8
 
       err = 0
 
@@ -286,8 +288,11 @@ contains
 
          do i = 1, remap_data%n_send_total
             do k = 1, numlev
-               ws_send_buf((i-1)*numlev + k) = &
-                    real(field2d(k, send_local_cell(i)), r8)
+               val = real(field2d(k, send_local_cell(i)), r8)
+               ! Zero out fill values before remapping so the SpMV
+               ! weighted average is not corrupted by land/below-bottom cells.
+               if (abs(val) > fill_thresh) val = 0.0_r8
+               ws_send_buf((i-1)*numlev + k) = val
             end do
          end do
       end if
