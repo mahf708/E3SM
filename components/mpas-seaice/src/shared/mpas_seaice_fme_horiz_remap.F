@@ -80,6 +80,8 @@ contains
 
       type(block_type), pointer :: block
       type(mpas_pool_type), pointer :: meshPool
+      use mpi, only: MPI_INTEGER, MPI_MAX, MPI_IN_PLACE
+
       integer, pointer :: nCellsSolve
       integer, dimension(:), pointer :: indexToCellID
       integer :: myrank, nprocs, comm, ierr, iCell, gcol, i
@@ -115,6 +117,11 @@ contains
          end do
          block => block % next
       end do
+
+      ! Gather full gcol_to_rank across all ranks: each rank only knows which
+      ! cells it owns locally; after MPI_MAX every entry holds the owning rank.
+      call mpi_allreduce(MPI_IN_PLACE, gcol_to_rank, remap_data%n_a, &
+           MPI_INTEGER, MPI_MAX, comm, ierr)
 
       call remap_data%build_comm(gcol_to_rank, comm, myrank, nprocs, &
            send_gcol_list, ierr)
