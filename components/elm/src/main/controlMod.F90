@@ -35,6 +35,8 @@ module controlMod
   use SharedParamsMod         , only: anoxia_wtsat
   use CanopyStateType         , only: perchroot, perchroot_alt
   use CanopyHydrologyMod      , only: CanopyHydrology_readnl
+  use elm_fme_derived         , only: elm_fme_derived_readnl
+  use elm_fme_vcoarsen        , only: elm_fme_vcoarsen_readnl
   use SurfaceAlbedoType       , only: albice, lake_melt_icealb
   use UrbanParamsType         , only: urban_hac, urban_traffic
   use FrictionVelocityMod     , only: implicit_stress, atm_gustiness, force_land_gustiness
@@ -640,6 +642,10 @@ contains
     call init_hydrology( NLFilename )
 
     call CanopyHydrology_readnl( NLFilename )
+
+    ! FME (Full Model Emulation) online output processing
+    call elm_fme_derived_readnl( NLFilename )
+    call elm_fme_vcoarsen_readnl( NLFilename )
 
     ! ----------------------------------------------------------------------
     ! Broadcast all control information if appropriate

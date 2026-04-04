@@ -1,0 +1,7 @@
+! FME (Full Model Emulation) online output processing -- MOSART
+!
+! Placeholder for MOSART derived fields.
+! Uncomment when full MOSART integration is connected.
+!
+! rtm_derived_fld_defs = ''
+

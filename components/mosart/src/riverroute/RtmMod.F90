@@ -26,7 +26,8 @@ module RtmMod
   use RtmFileUtils    , only : getfil, getavu, relavu
   use RtmTimeManager  , only : timemgr_init, get_nstep, get_curr_date, advance_timestep
   use RtmTimeManager  , only : get_curr_date, is_end_curr_day, is_end_curr_month, is_first_step, is_first_restart_step, is_last_step
-  use RtmHistFlds     , only : RtmHistFldsInit, RtmHistFldsSet 
+  use RtmHistFlds     , only : RtmHistFldsInit, RtmHistFldsSet
+  use RtmFmeDerived   , only : rtm_fme_derived_readnl, rtm_fme_derived_register
   use RtmHistFile     , only : RtmHistUpdateHbuf, RtmHistHtapesWrapup, RtmHistHtapesBuild, &
                                rtmhist_ndens, rtmhist_mfilt, rtmhist_nhtfrq,     &
                                rtmhist_avgflag_pertape, rtmhist_avgflag_pertape, & 
@@ -440,6 +441,9 @@ contains
        call mpi_bcast (npt_elevProf,       1, MPI_INTEGER, 0, mpicom_rof, ier)
        call mpi_bcast (threshold_slpRatio, 1, MPI_REAL8  , 0, mpicom_rof, ier)
     end if
+
+    ! FME (Full Model Emulation) derived fields
+    call rtm_fme_derived_readnl(nlfilename_rof)
 
     runtyp(:)               = 'missing'
     runtyp(nsrStartup  + 1) = 'initial'
@@ -2050,6 +2054,10 @@ contains
        call RtmHistHtapesBuild()
     end if
     call RtmHistFldsSet()
+
+    ! FME (Full Model Emulation) derived fields
+    call rtm_fme_derived_register()
+
     delt_save = 0.0
 
     if (masterproc) write(iulog,*) subname,' done'

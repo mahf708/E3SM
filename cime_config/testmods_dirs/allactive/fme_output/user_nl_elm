@@ -1,0 +1,9 @@
+! FME (Full Model Emulation) online output processing -- ELM
+!
+! Placeholder for ELM vertical coarsening and derived fields.
+! Uncomment when full ELM integration is connected.
+!
+! elm_vcoarsen_zbounds = 0.0, 0.1, 0.5, 1.0, 2.0, 3.8
+! elm_vcoarsen_flds = 'TSOI','H2OSOI'
+! elm_derived_fld_defs = 'TOTAL_SOIL_WATER=H2OSOI+SOILICE'
+
