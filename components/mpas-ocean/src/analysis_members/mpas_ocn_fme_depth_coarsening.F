@@ -61,7 +61,6 @@ module ocn_fme_depth_coarsening
 
    !> Horizontal remapping state
    logical :: do_horiz_remap = .false.
-   logical :: remap_file_opened = .false.
    type(ocn_fme_remap_file_t) :: remap_outfile
    integer :: remap_nlat = 0, remap_nlon = 0, remap_nb_local = 0
 
@@ -80,7 +79,8 @@ contains
       character(len=StrKIND), pointer :: config_AM_fmeDepthCoarsening_fields
       character(len=StrKIND), pointer :: config_AM_fmeDepthCoarsening_horiz_remap_file
       character(len=StrKIND) :: tempStr
-      integer :: nBounds, i, iStart, iEnd, strLen, ierr
+      character(len=128) :: varName, longName
+      integer :: nBounds, i, iStart, iEnd, strLen, ierr, iField, kOut
 
       err = 0
 
@@ -186,6 +186,25 @@ contains
                call mpas_log_write('fmeDepthCoarsening: horiz remap active, ' &
                     // 'target grid $i x $i', &
                     intArgs=(/remap_nlon, remap_nlat/))
+               remap_outfile%stream_name = 'fmeDepthCoarseningOutput'
+               ! Register split-level 2D vars for each field and depth level
+               do iField = 1, nCoarsenFields
+                  do kOut = 0, nCoarsenLevels - 1
+                     write(varName, '(A,A,I0)') &
+                          trim(coarsenFieldNames(iField)), 'Coarsened_', kOut
+                     write(longName, '(A,A,I0)') 'Depth-coarsened ' &
+                          // trim(coarsenFieldNames(iField)) // ' level ', kOut
+                     call remap_outfile%register_var(trim(varName), '', &
+                          trim(longName), ierr)
+                  end do
+               end do
+               do kOut = 0, nCoarsenLevels - 1
+                  write(varName, '(A,I0)') 'layerThicknessCoarsened_', kOut
+                  write(longName, '(A,I0)') &
+                       'Depth-coarsened layer thickness level ', kOut
+                  call remap_outfile%register_var(trim(varName), 'm', &
+                       trim(longName), ierr)
+               end do
             end if
          end if
       end if
@@ -234,7 +253,7 @@ contains
       integer :: ifld, kOut, ierr
       real(r8), allocatable :: fld_remap(:,:)
       real(kind=RKIND), allocatable :: field_1lev(:,:)
-      character(len=StrKIND) :: timeStr, remap_filename
+      character(len=StrKIND) :: timeStr
       character(len=128) :: varName, longName
       type(MPAS_Time_Type) :: currTime
       ! Pointers to coarsened arrays for generic field loop
@@ -377,37 +396,9 @@ contains
          if (do_horiz_remap) then
             call mpas_pool_get_dimension(block % dimensions, 'nCells', nCells)
 
-            ! Open remapped output file on first compute call and define variables
-            if (.not. remap_file_opened) then
-               call ocn_fme_remap_build_filename(domain, &
-                    'fmeDepthCoarseningOutput', remap_filename, ierr)
-               call remap_outfile%open_file(trim(remap_filename), ierr)
-               if (ierr == 0) then
-                  ! Define split-level 2D variables for each coarsened field
-                  do ifld = 1, nCoarsenFields
-                     do kOut = 0, nCoarsenLevels - 1
-                        write(varName, '(A,A,I0)') &
-                             trim(coarsenFieldNames(ifld)), 'Coarsened_', kOut
-                        write(longName, '(A,A,I0)') &
-                             'Depth-coarsened ' // trim(coarsenFieldNames(ifld)) &
-                             // ' level ', kOut
-                        call remap_outfile%def_var(trim(varName), '', &
-                             trim(longName), 1, ierr)
-                     end do
-                  end do
-                  ! Also define split-level variables for layerThickness
-                  do kOut = 0, nCoarsenLevels - 1
-                     write(varName, '(A,I0)') 'layerThicknessCoarsened_', kOut
-                     write(longName, '(A,I0)') &
-                          'Depth-coarsened layer thickness level ', kOut
-                     call remap_outfile%def_var(trim(varName), 'm', &
-                          trim(longName), 1, ierr)
-                  end do
-                  remap_file_opened = .true.
-               end if
-            end if
+            call remap_outfile%check_rotate(domain, ierr)
 
-            if (remap_file_opened) then
+            if (remap_outfile%file_is_open) then
                allocate(fld_remap(remap_nb_local, 1))
                allocate(field_1lev(1, nCells))
 
@@ -503,10 +494,7 @@ contains
 
       err = 0
 
-      if (remap_file_opened) then
-         call remap_outfile%close_file(ierr)
-         remap_file_opened = .false.
-      end if
+      call remap_outfile%close_file(ierr)
 
       if (allocated(depthBounds)) deallocate(depthBounds)
       if (allocated(coarsenFieldNames)) deallocate(coarsenFieldNames)
