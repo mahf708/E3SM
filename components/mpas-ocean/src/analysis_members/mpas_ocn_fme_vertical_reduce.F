@@ -35,6 +35,7 @@ module ocn_fme_vertical_reduce
 
    use ocn_constants
    use ocn_diagnostics_variables
+   use mpas_log, only: mpas_log_write
 
    implicit none
    private
@@ -46,6 +47,16 @@ module ocn_fme_vertical_reduce
              ocn_finalize_fme_vertical_reduce
 
    real(kind=RKIND) :: referenceSalinity = 34.8_RKIND
+
+   !> Number of user-configured generic reduction fields (parsed from config)
+   integer :: nReduceFields = 0
+
+   !> Field names parsed from config_AM_fmeVerticalReduce_fields
+   character(len=64), allocatable :: reduceFieldNames(:)
+
+   !> Reduction methods parsed from config_AM_fmeVerticalReduce_methods
+   !> Each entry is 'sum' or 'avg'
+   character(len=64), allocatable :: reduceFieldMethods(:)
 
 !***********************************************************************
 
@@ -59,6 +70,10 @@ contains
       integer, intent(out) :: err
 
       real(kind=RKIND), pointer :: config_AM_fmeVerticalReduce_reference_salinity
+      character(len=StrKIND), pointer :: config_AM_fmeVerticalReduce_fields
+      character(len=StrKIND), pointer :: config_AM_fmeVerticalReduce_methods
+      character(len=StrKIND) :: tempStr, methodStr
+      integer :: nFields, nMethods, i, iStart, iEnd, strLen
 
       err = 0
 
@@ -67,6 +82,91 @@ contains
            config_AM_fmeVerticalReduce_reference_salinity)
 
       referenceSalinity = config_AM_fmeVerticalReduce_reference_salinity
+
+      ! --- Parse generic field names and methods ---
+      ! The built-in fields (OHC, FWC, KE) are always computed when
+      ! the AM is enabled. The generic fields/methods config allows
+      ! users to request additional reductions. However, MPAS Registry
+      ! requires compile-time variable definitions, so truly dynamic
+      ! output fields are not supported without Registry changes.
+      ! We parse the config here and log a warning if fields are
+      ! specified, noting that output requires corresponding Registry
+      ! variable definitions.
+
+      call mpas_pool_get_config(domain % configs, &
+           'config_AM_fmeVerticalReduce_fields', &
+           config_AM_fmeVerticalReduce_fields)
+      call mpas_pool_get_config(domain % configs, &
+           'config_AM_fmeVerticalReduce_methods', &
+           config_AM_fmeVerticalReduce_methods)
+
+      tempStr = trim(config_AM_fmeVerticalReduce_fields)
+      methodStr = trim(config_AM_fmeVerticalReduce_methods)
+
+      if (trim(tempStr) /= 'none' .and. len_trim(tempStr) > 0) then
+         ! Count comma-separated field names
+         nFields = 1
+         strLen = len_trim(tempStr)
+         do i = 1, strLen
+            if (tempStr(i:i) == ',') nFields = nFields + 1
+         end do
+
+         ! Count comma-separated methods
+         nMethods = 1
+         strLen = len_trim(methodStr)
+         do i = 1, strLen
+            if (methodStr(i:i) == ',') nMethods = nMethods + 1
+         end do
+
+         if (nFields /= nMethods) then
+            call mpas_log_write( &
+                 'fmeVerticalReduce WARNING: number of fields does not match ' &
+                 // 'number of methods. Generic fields will not be computed.')
+            nReduceFields = 0
+         else
+            nReduceFields = nFields
+            allocate(reduceFieldNames(nReduceFields))
+            allocate(reduceFieldMethods(nReduceFields))
+
+            ! Parse field names
+            iStart = 1
+            strLen = len_trim(tempStr)
+            do i = 1, nReduceFields
+               iEnd = index(tempStr(iStart:strLen), ',')
+               if (iEnd == 0) then
+                  iEnd = strLen + 1
+               else
+                  iEnd = iEnd + iStart - 1
+               end if
+               reduceFieldNames(i) = adjustl(tempStr(iStart:iEnd-1))
+               iStart = iEnd + 1
+            end do
+
+            ! Parse methods
+            iStart = 1
+            strLen = len_trim(methodStr)
+            do i = 1, nReduceFields
+               iEnd = index(methodStr(iStart:strLen), ',')
+               if (iEnd == 0) then
+                  iEnd = strLen + 1
+               else
+                  iEnd = iEnd + iStart - 1
+               end if
+               reduceFieldMethods(i) = adjustl(methodStr(iStart:iEnd-1))
+               iStart = iEnd + 1
+            end do
+
+            call mpas_log_write( &
+                 'fmeVerticalReduce WARNING: generic field reduction for $i' &
+                 // ' fields was requested via config_AM_fmeVerticalReduce_fields,' &
+                 // ' but output of generic fields is not yet supported.' &
+                 // ' MPAS Registry requires compile-time variable definitions.' &
+                 // ' Built-in fields (OHC, FWC, KE) will still be computed.', &
+                 intArgs=(/nReduceFields/))
+         end if
+      else
+         nReduceFields = 0
+      end if
 
    end subroutine ocn_init_fme_vertical_reduce!}}}
 
@@ -172,6 +272,9 @@ contains
       integer, intent(out) :: err
 
       err = 0
+
+      if (allocated(reduceFieldNames)) deallocate(reduceFieldNames)
+      if (allocated(reduceFieldMethods)) deallocate(reduceFieldMethods)
 
    end subroutine ocn_finalize_fme_vertical_reduce!}}}
 

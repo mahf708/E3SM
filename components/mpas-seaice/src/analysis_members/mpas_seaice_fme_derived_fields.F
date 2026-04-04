@@ -219,6 +219,8 @@ contains
 
    subroutine seaice_compute_fme_derived_fields(domain, instance, timeLevel, err)!{{{
 
+      use seaice_mesh, only: seaice_latlon_vector_rotation_backward
+
       !-----------------------------------------------------------------
       !
       ! input variables
@@ -256,6 +258,8 @@ contains
 
       type (mpas_pool_type), pointer :: &
            tracersPool, &
+           meshPool, &
+           velocitySolverPool, &
            amPool
 
       real(kind=RKIND), dimension(:,:,:), pointer :: &
@@ -271,6 +275,24 @@ contains
            iceThicknessMean, &
            surfaceTemperatureMean
 
+      ! air stress rotation variables
+      real(kind=RKIND), dimension(:), pointer :: &
+           airStressCellU, &
+           airStressCellV, &
+           airStressZonal, &
+           airStressMeridional, &
+           latCell, &
+           lonCell, &
+           xCell, &
+           yCell, &
+           zCell
+
+      real(kind=RKIND), pointer :: &
+           sphereRadius
+
+      logical, pointer :: &
+           rotateCartesianGrid
+
       integer, pointer :: &
            nCellsSolve, &
            nCategories
@@ -285,10 +307,15 @@ contains
 
       err = 0
 
+      ! get configs
+      call MPAS_pool_get_config(domain % configs, 'config_rotate_cartesian_grid', rotateCartesianGrid)
+
       block => domain % blocklist
       do while (associated(block))
 
          call mpas_pool_get_subpool(block % structs, 'tracers', tracersPool)
+         call mpas_pool_get_subpool(block % structs, 'mesh', meshPool)
+         call mpas_pool_get_subpool(block % structs, 'velocity_solver', velocitySolverPool)
          call mpas_pool_get_subpool(block % structs, 'fmeSeaiceDerivedFieldsAM', amPool)
 
          call mpas_pool_get_dimension(block % dimensions, 'nCellsSolve', nCellsSolve)
@@ -304,6 +331,20 @@ contains
          call mpas_pool_get_array(amPool, 'snowVolumeTotal', snowVolumeTotal)
          call mpas_pool_get_array(amPool, 'iceThicknessMean', iceThicknessMean)
          call mpas_pool_get_array(amPool, 'surfaceTemperatureMean', surfaceTemperatureMean)
+
+         ! air stress rotation arrays
+         call MPAS_pool_get_config(meshPool, 'sphere_radius', sphereRadius)
+         call MPAS_pool_get_array(meshPool, 'latCell', latCell)
+         call MPAS_pool_get_array(meshPool, 'lonCell', lonCell)
+         call MPAS_pool_get_array(meshPool, 'xCell', xCell)
+         call MPAS_pool_get_array(meshPool, 'yCell', yCell)
+         call MPAS_pool_get_array(meshPool, 'zCell', zCell)
+
+         call MPAS_pool_get_array(velocitySolverPool, 'airStressCellU', airStressCellU)
+         call MPAS_pool_get_array(velocitySolverPool, 'airStressCellV', airStressCellV)
+
+         call MPAS_pool_get_array(amPool, 'airStressZonal', airStressZonal)
+         call MPAS_pool_get_array(amPool, 'airStressMeridional', airStressMeridional)
 
          do iCell = 1, nCellsSolve
 
@@ -330,6 +371,20 @@ contains
                iceThicknessMean(iCell) = 0.0_RKIND
                surfaceTemperatureMean(iCell) = 0.0_RKIND
             end if
+
+            ! Rotate air stress from model coordinates to geographical coordinates
+            call seaice_latlon_vector_rotation_backward(&
+                 airStressZonal(iCell), &
+                 airStressMeridional(iCell), &
+                 airStressCellU(iCell), &
+                 airStressCellV(iCell), &
+                 latCell(iCell), &
+                 lonCell(iCell), &
+                 xCell(iCell), &
+                 yCell(iCell), &
+                 zCell(iCell), &
+                 sphereRadius, &
+                 rotateCartesianGrid)
 
          end do ! iCell
 

@@ -3813,6 +3813,7 @@ contains
 
     call t_startf('mosartr_hbuf')
     call RtmHistFldsSet()
+    call rtm_fme_derived_update()
     call RtmHistUpdateHbuf()
     call t_stopf('mosartr_hbuf')
 

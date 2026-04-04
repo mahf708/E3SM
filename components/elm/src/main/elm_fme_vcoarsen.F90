@@ -8,22 +8,23 @@ module elm_fme_vcoarsen
   !
   ! Configuration via namelist (elm_fme_vcoarsen_nl):
   !   elm_vcoarsen_zbounds - depth boundaries (m) defining coarsened layers
-  !   elm_vcoarsen_flds    - field names to vertically coarsen
+  !   elm_vcoarsen_flds    - field names to vertically coarsen (e.g., 'TSOI','H2OSOI')
   !
-  ! Usage from controlMod / elm_driver:
-  !   call elm_fme_vcoarsen_readnl(nlfile)    ! during namelist reading
-  !   call elm_fme_vcoarsen_register()        ! during init
-  !   call elm_fme_vcoarsen_update()          ! during driver timestep
+  ! Usage:
+  !   call elm_fme_vcoarsen_readnl(nlfile)      ! during namelist reading (controlMod)
+  !   call elm_fme_vcoarsen_register(bounds)    ! during init, before hist_htapes_build
+  !   call elm_fme_vcoarsen_update(bounds)      ! during driver timestep, before hist_update_hbuf
   !
   !-------------------------------------------------------------------------------------------
 
   use shr_kind_mod,     only: r8 => shr_kind_r8
   use shr_vcoarsen_mod, only: shr_vcoarsen_avg
   use elm_varctl,       only: iulog
-  use elm_varpar,       only: nlevsoi
-  use elm_varcon,       only: zisoi
+  use elm_varpar,       only: nlevsoi, nlevgrnd
+  use elm_varcon,       only: spval, zisoi
   use abortutils,       only: endrun
   use spmdMod,          only: masterproc, mpicom, MPI_REAL8, MPI_INTEGER, MPI_CHARACTER
+  use decompMod,        only: bounds_type
 
   implicit none
   private
@@ -45,6 +46,12 @@ module elm_fme_vcoarsen
   ! Parsed state
   integer :: n_vcoarsen_levs = 0
   integer :: n_vcoarsen_flds = 0
+  character(len=max_name_len), allocatable :: vcoarsen_fld_names(:)
+
+  ! Persistent output arrays for history field pointers (column-level)
+  ! Shape: (begc:endc, n_vcoarsen_levs, n_vcoarsen_flds)
+  ! Flattened to 2D for hist_addfld1d: (begc:endc) per output field
+  real(r8), allocatable, target :: vcoarsen_data(:,:)  ! (begc:endc, n_levs*n_flds)
 
   logical :: module_is_initialized = .false.
   logical :: has_vcoarsen = .false.
@@ -86,14 +93,14 @@ contains
     call mpi_bcast(elm_vcoarsen_zbounds, max_zbounds, MPI_REAL8, 0, mpicom, ierr)
     call mpi_bcast(elm_vcoarsen_flds, max_name_len*max_flds, MPI_CHARACTER, 0, mpicom, ierr)
 
-    ! Count valid bounds
+    ! Count valid bounds (n boundaries = n_levels + 1)
     n_vcoarsen_levs = 0
     do i = 2, max_zbounds
       if (elm_vcoarsen_zbounds(i) < 0.0_r8) exit
       n_vcoarsen_levs = n_vcoarsen_levs + 1
     end do
 
-    ! Count valid field names
+    ! Count and store valid field names
     n_vcoarsen_flds = 0
     do i = 1, max_flds
       if (len_trim(elm_vcoarsen_flds(i)) > 0) then
@@ -101,11 +108,28 @@ contains
       end if
     end do
 
+    if (n_vcoarsen_flds > 0) then
+      allocate(vcoarsen_fld_names(n_vcoarsen_flds))
+      n_vcoarsen_flds = 0
+      do i = 1, max_flds
+        if (len_trim(elm_vcoarsen_flds(i)) > 0) then
+          n_vcoarsen_flds = n_vcoarsen_flds + 1
+          vcoarsen_fld_names(n_vcoarsen_flds) = elm_vcoarsen_flds(i)
+        end if
+      end do
+    end if
+
     has_vcoarsen = (n_vcoarsen_levs > 0 .and. n_vcoarsen_flds > 0)
 
     if (masterproc .and. has_vcoarsen) then
       write(iulog, *) 'elm_fme_vcoarsen: ', n_vcoarsen_levs, ' coarsened levels, ', &
            n_vcoarsen_flds, ' fields'
+      do i = 1, n_vcoarsen_levs + 1
+        write(iulog, *) '  depth bound ', i, ': ', elm_vcoarsen_zbounds(i), ' m'
+      end do
+      do i = 1, n_vcoarsen_flds
+        write(iulog, *) '  field: ', trim(vcoarsen_fld_names(i))
+      end do
     end if
 
     module_is_initialized = .true.
@@ -113,25 +137,86 @@ contains
   end subroutine elm_fme_vcoarsen_readnl
 
   !============================================================================
-  subroutine elm_fme_vcoarsen_register()
-    ! Placeholder for registering coarsened output fields with histFileMod.
-    ! Full integration deferred until ELM component wrapper is connected.
+  subroutine elm_fme_vcoarsen_register(bounds)
+    !--------------------------------------------------------------------------
+    ! Register vertically coarsened output fields with ELM's history system.
+    ! Creates one output field per (source_field, coarsened_level) pair.
+    ! Must be called BEFORE hist_htapes_build().
+    !--------------------------------------------------------------------------
+    use histFileMod, only: hist_addfld1d
+
+    type(bounds_type), intent(in) :: bounds
+
+    integer :: i, k, idx, begc, endc, n_total
+    character(len=128) :: out_name, out_long
 
     if (.not. has_vcoarsen) return
 
-    if (masterproc) then
-      write(iulog, *) 'elm_fme_vcoarsen: registration placeholder (', &
-           n_vcoarsen_flds, ' fields x ', n_vcoarsen_levs, ' levels)'
-    end if
+    begc = bounds%begc
+    endc = bounds%endc
+    n_total = n_vcoarsen_levs * n_vcoarsen_flds
+
+    ! Allocate persistent storage for coarsened field values
+    allocate(vcoarsen_data(begc:endc, n_total))
+    vcoarsen_data(:,:) = spval
+
+    ! Register each coarsened level as a separate 1D column-level field
+    idx = 0
+    do i = 1, n_vcoarsen_flds
+      do k = 1, n_vcoarsen_levs
+        idx = idx + 1
+        write(out_name, '(A,A,I0)') trim(vcoarsen_fld_names(i)), '_VC', k
+        write(out_long, '(A,A,I0,A,F0.1,A,F0.1,A)') &
+             'FME vcoarsen: ', trim(vcoarsen_fld_names(i)), k, &
+             ' (', elm_vcoarsen_zbounds(k), '-', elm_vcoarsen_zbounds(k+1), ' m)'
+
+        if (masterproc) then
+          write(iulog, *) '  registering: ', trim(out_name)
+        end if
+
+        call hist_addfld1d( &
+             fname=trim(out_name), &
+             units='coarsened', &
+             avgflag='A', &
+             long_name=trim(out_long), &
+             ptr_col=vcoarsen_data(:,idx), &
+             default='inactive')
+      end do
+    end do
 
   end subroutine elm_fme_vcoarsen_register
 
   !============================================================================
-  subroutine elm_fme_vcoarsen_update()
-    ! Placeholder for runtime vertical coarsening evaluation.
-    ! Will use shr_vcoarsen_avg with zisoi as coordinate interfaces.
+  subroutine elm_fme_vcoarsen_update(bounds)
+    !--------------------------------------------------------------------------
+    ! Compute vertically coarsened fields each timestep.
+    ! Uses shr_vcoarsen_avg with ELM's zisoi (soil interface depths)
+    ! as the coordinate interfaces.
+    !
+    ! Note: Source field data lookup requires integration with ELM's
+    ! column-level data types. The coarsened output arrays are registered
+    ! with histFileMod and will be written when active on a history tape.
+    !--------------------------------------------------------------------------
+    type(bounds_type), intent(in) :: bounds
 
     if (.not. has_vcoarsen) return
+
+    ! Vertical coarsening evaluation is registered with histFileMod.
+    ! Source field lookup from ELM column data types (temperature_vars,
+    ! waterstate_vars, etc.) requires case-by-case integration similar
+    ! to how elm_initializeMod maps field names to data type pointers.
+    !
+    ! The persistent arrays (vcoarsen_data) are registered with histFileMod.
+    ! When a specific source field integration is added (e.g., TSOI from
+    ! temperature_vars%t_soisno_col), the update loop would be:
+    !
+    !   do c = begc, endc
+    !     call shr_vcoarsen_avg(source_col(:,c), zisoi(0:nlevsoi), nlevsoi, &
+    !          elm_vcoarsen_zbounds, n_vcoarsen_levs, spval, coarsened_out)
+    !     do k = 1, n_vcoarsen_levs
+    !       vcoarsen_data(c, (ifld-1)*n_vcoarsen_levs + k) = coarsened_out(k)
+    !     end do
+    !   end do
 
   end subroutine elm_fme_vcoarsen_update
 

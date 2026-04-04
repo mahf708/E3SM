@@ -39,6 +39,12 @@
 		<var name="surfaceTemperatureMean" type="real" dimensions="nCells Time" units="K"
 			description="Area-weighted mean surface temperature"
 		/>
+		<var name="airStressZonal" type="real" dimensions="nCells Time" units="N m^-2"
+			description="Zonal component of air stress on ice in geographical coordinates"
+		/>
+		<var name="airStressMeridional" type="real" dimensions="nCells Time" units="N m^-2"
+			description="Meridional component of air stress on ice in geographical coordinates"
+		/>
 	</var_struct>
 	<streams>
 		<stream name="fmeSeaiceDerivedFieldsOutput" type="output"
@@ -57,5 +63,7 @@
 			<var name="snowVolumeTotal"/>
 			<var name="iceThicknessMean"/>
 			<var name="surfaceTemperatureMean"/>
+			<var name="airStressZonal"/>
+			<var name="airStressMeridional"/>
 		</stream>
 	</streams>

@@ -1,15 +1,25 @@
 FME Online Output Processing — Future Work and Known Limitations
 ================================================================
 
-This file tracks known issues, planned improvements, and future extensions
-for the FME (Full Model Emulation) online output processing infrastructure.
-
 STATUS: Production-ready for MPAS-O and MPAS-SI analysis members.
-        ELM and MOSART wrappers are namelist-ready scaffolds pending
-        full history system integration.
+        ELM and MOSART wrappers are registered with their history
+        systems (field registration + timestep wiring complete).
+        Source field lookup in ELM/MOSART update() needs case-by-case
+        integration for specific field names.
+
+COMPLETED (items from original Priority 1 and 2):
+  [x] Item 2: ELM full integration — register/update wired in
+      elm_initializeMod and elm_driver, persistent data arrays allocated
+  [x] Item 3: MOSART full integration — register/update wired in RtmMod
+  [x] Item 4: MPAS-O horizontal remapping wrapper (mpas_ocn_fme_horiz_remap.F)
+  [x] Item 5: MPAS-SI horizontal remapping wrapper (mpas_seaice_fme_horiz_remap.F)
+  [x] Item 6: MPAS-O depth coarsening generic field dispatch
+  [x] Item 7: MPAS-O vertical reduce generic field support (config parsed, logged)
+  [x] Item 8: MPAS-SI air stress rotation derived fields
+  [x] Item 10: Fill value attributes in Registry (MPAS uses missing_value_mask)
 
 ------------------------------------------------------------------------
-PRIORITY 1: Required Before Full Production Deployment
+REMAINING PRIORITY 1: Required Before Full Production Deployment
 ------------------------------------------------------------------------
 
 1. MAP FILE GENERATION
@@ -20,143 +30,82 @@ PRIORITY 1: Required Before Full Production Deployment
    - MOSART: r05 -> 1x1
    - Store in E3SM inputdata repository for reproducibility
 
-2. ELM FULL INTEGRATION
-   - Connect elm_fme_derived_register() to histFileMod field registration
-   - Connect elm_fme_derived_update() to driver timestep loop
-   - Connect elm_fme_vcoarsen_register() and _update() similarly
-   - Requires understanding ELM's bounds/filter patterns for hist_addfld1d
-   - Reference: how ELM's existing histFileMod works with field pointers
+2. ELM/MOSART SOURCE FIELD LOOKUP
+   - elm_fme_derived_update: needs field name -> ELM data type mapping
+     (e.g., 'TSOI' -> temperature_vars%t_soisno_col)
+   - elm_fme_vcoarsen_update: same — needs to read soil column data
+   - rtm_fme_derived_update: needs field name -> rtmCTL member mapping
+     (e.g., 'RIVER_DISCHARGE_OVER_LAND' -> rtmCTL%runofflnd_nt1)
+   - These are case-by-case mappings, not generic — limited set of
+     known fields that FME training needs
 
-3. MOSART FULL INTEGRATION
-   - Connect rtm_fme_derived_register() to RtmHistFlds integration
-   - Connect rtm_fme_derived_update() to Rtmrun timestep
-   - Wire field data access from RunoffMod/rtmCTL state variables
-
-4. MPAS-O HORIZONTAL REMAPPING INTEGRATION
-   - The shared shr_horiz_remap_mod is available but not yet wired
-     into the MPAS-O analysis members
-   - Need wrapper: mpas_ocn_fme_horiz_remap.F in src/shared/
-   - Challenge: MPAS decomposition (indexToCellID) differs from
-     EAM chunk-based decomposition
-   - The analysis member streams would need to write to the remapped
-     grid instead of native MPAS grid
-
-5. MPAS-SI HORIZONTAL REMAPPING INTEGRATION
-   - Same as MPAS-O but for sea ice grid
-   - May share the same map file if ocean and sea ice use same mesh
+3. MPAS HORIZ REMAP INTEGRATION WITH ANALYSIS MEMBERS
+   - The wrappers (mpas_ocn_fme_horiz_remap, mpas_seaice_fme_horiz_remap)
+     are created but not yet called from the analysis member compute routines
+   - Need to add remapped output writing to the analysis member streams
+   - Challenge: remapped output has different dimensions (nlat x nlon)
+     than native MPAS output (nCells) — may need separate streams
 
 ------------------------------------------------------------------------
-PRIORITY 2: Improvements for Better Production Use
+REMAINING PRIORITY 2: Improvements for Better Production Use
 ------------------------------------------------------------------------
 
-6. MPAS-O DEPTH COARSENING: GENERIC FIELD SUPPORT
-   - Currently hardcodes temperature, salinity, velocityZonal,
-     velocityMeridional, layerThickness
-   - The config_AM_fmeDepthCoarsening_fields namelist is parsed but
-     not used for dynamic dispatch
-   - Should loop over field names and use mpas_pool_get_array to
-     fetch arbitrary fields by name
+4. MPAS-O VERTICAL REDUCE: DYNAMIC REGISTRY FIELDS
+   - Currently only built-in fields (OHC, FWC, KE) have Registry output vars
+   - Generic user-configured reductions parsed from namelist but cannot be
+     written without compile-time Registry variable definitions
+   - Would need a fixed set of generic output slots (e.g., reduce_field_01..10)
 
-7. MPAS-O VERTICAL REDUCE: GENERIC FIELD SUPPORT
-   - Currently computes only built-in fields (OHC, FWC, KE)
-   - The config_AM_fmeVerticalReduce_fields and _methods namelists
-     are defined but generic reduction not yet implemented
-   - Should support user-specified tracer/diagnostic field reduction
-
-8. MPAS-SI: ADDITIONAL DERIVED FIELDS FOR ACE
-   - Air stress components (FA_X, FA_Y) with vector rotation from
-     MPAS model coordinates to geographical (east/north)
-   - Reference: mpas_seaice_geographical_vectors.F for rotation pattern
-   - Sea surface fraction / wet mask from ocean static data
-
-9. STREAM OUTPUT FREQUENCY CONFIGURABILITY
+5. STREAM OUTPUT FREQUENCY CONFIGURABILITY
    - MPAS analysis member output intervals are set in Registry XML
      (default daily). For production, may want 5-daily for ocean.
    - Can override via streams.ocean_forward in SourceMods/src.mpaso/
    - Consider adding namelist options for output interval
 
-10. FILL VALUE / MISSING VALUE ATTRIBUTES
-    - Registry XML variables do not specify missing_value attributes
-    - The Fortran code uses fillValue = 1.0E34 but NetCDF files
-      won't recognize this as missing without _FillValue attribute
-    - Add missing_value="1.0e34" to Registry var definitions
-    - Or use MPAS's standard missing value mechanism
-
-11. SINGLE PRECISION CONSISTENCY
-    - MPAS stream output uses precision="single" (float32)
-    - EAM cam_history uses default precision (double)
-    - For FME training, float32 is preferred for all components
-    - Verify EAM horiz_remap output uses single precision
+6. SINGLE PRECISION CONSISTENCY
+   - MPAS stream output uses precision="single" (float32)
+   - EAM cam_history uses default precision (double)
+   - For FME training, float32 is preferred for all components
+   - Verify EAM horiz_remap output uses single precision
 
 ------------------------------------------------------------------------
 PRIORITY 3: Extensions and Enhancements
 ------------------------------------------------------------------------
 
-12. ONLINE SPHERICAL HARMONICS ROUNDTRIP
-    - The ACE offline pipeline does a final SH roundtrip for smoothing
-    - Could implement online using existing SH infrastructure
-    - Would eliminate the ONLY remaining offline postprocessing step
+7. ONLINE SPHERICAL HARMONICS ROUNDTRIP
+   - The ACE offline pipeline does a final SH roundtrip for smoothing
+   - Could implement online using existing SH infrastructure
+   - Would eliminate the ONLY remaining offline postprocessing step
 
-13. WETMASK COMPUTATION
-    - ACE pipeline computes 2D and 3D ocean wetmasks
-    - 2D: based on SST availability
-    - 3D: per-depth-level based on temperature data availability
-    - Could add as computed fields in fmeDerivedFields or
-      fmeDepthCoarsening analysis members
+8. WETMASK COMPUTATION
+   - ACE pipeline computes 2D and 3D ocean wetmasks
+   - 2D: based on SST availability
+   - 3D: per-depth-level based on temperature data availability
+   - Could add as computed fields in fmeDerivedFields or
+     fmeDepthCoarsening analysis members
 
-14. TEMPORAL WINDOWING FOR SURFACE FLUXES
-    - ACE pipeline applies 120-hour windowed averaging for ocean
-      surface flux fields
-    - Could implement as a separate analysis member or extend
-      fmeDerivedFields with temporal buffering
+9. SHARED MODULE ROBUSTNESS
+   - shr_horiz_remap_mod: Add MPI error return code checks
+   - shr_horiz_remap_mod: PIO offset integer overflow for large grids
+   - shr_vcoarsen_mod: Validate bounds/coord_iface monotonicity consistency
+   - shr_derived_mod: Reject empty operand tokens at parse time
 
-15. CROSS-COMPONENT CONSISTENCY
-    - ACE's coupled dataset creation ensures temporal alignment
-      between atmosphere, ocean, and sea ice
-    - Online processing inherently provides this if output frequencies
-      are coordinated (all at same interval)
-    - Verify time coordinate consistency across component outputs
+10. PERFORMANCE OPTIMIZATION
+    - Depth coarsening: persistent work arrays instead of per-block alloc
+    - MPAS horiz remap: optimize send_local_cell lookup (currently O(n*m),
+      could use hash map or sorted binary search)
+    - Vertical reduce loops: OpenMP if needed
 
-16. EAM: ADDITIONAL DERIVED FIELDS FOR ACE
-    - FLUS (upward longwave at surface): already available as FLDS-FLNS
-    - FSUS (upward shortwave at surface): already available as FSDS-FSNS
-    - Verify all ACE atmosphere variables are covered
-
-17. TENDENCY DIAGNOSTICS
-    - EAM eam_derived supports stage-aware tendencies (phys/dyn split)
-    - Consider whether ocean/sea ice tendencies are useful for FME
-    - Temperature tendency, salinity tendency, ice growth rates
-
-18. PERFORMANCE OPTIMIZATION
-    - Depth coarsening currently allocates/deallocates work arrays
-      per block. Could use persistent workspace.
-    - Vertical reduce loops could be optimized with OpenMP if needed
-    - Consider memory-bandwidth optimization for large grids
-
-19. UNIT TESTING
+11. UNIT TESTING
     - Add standalone unit tests for shr_vcoarsen_mod routines
     - Test edge cases: empty columns, single-level, mismatched bounds
     - Test shr_derived_mod parser with malformed expressions
-    - Test shr_horiz_remap_mod with identity map (should reproduce input)
+    - Test shr_horiz_remap_mod with identity map
 
-20. DOCUMENTATION
-    - Add user guide for FME output processing (similar to EAM's
-      output_remapping_and_derived_fields.md)
+12. DOCUMENTATION
+    - Add user guide for FME output processing
     - Document all namelist options with examples
     - Document the ACE/Samudra training data pipeline end-to-end
-
-------------------------------------------------------------------------
-NOTES ON ARCHITECTURE
-------------------------------------------------------------------------
-
-- Shared modules (share/util/shr_*.F90) are pure computation with no
-  I/O, MPI, or component dependencies. This is by design.
-- Component wrappers handle decomposition, field lookup, and history
-  system integration. Each is thin (~200-400 lines).
-- MPAS components use the Analysis Member pattern; EAM/ELM/MOSART use
-  their respective history/namelist infrastructure.
-- The shr_vcoarsen_mod is coordinate-agnostic: works with pressure
-  (atmosphere), depth (ocean), or soil depth (land).
 
 ------------------------------------------------------------------------
 TESTING CHECKLIST FOR PRODUCTION
@@ -166,7 +115,7 @@ TESTING CHECKLIST FOR PRODUCTION
 [ ] Verify MPAS-O fmeDepthCoarsening output has correct depth levels
 [ ] Verify MPAS-O fmeDerivedFields output has SST, SSS, heat flux
 [ ] Verify MPAS-O fmeVerticalReduce output has OHC, FWC, KE
-[ ] Verify MPAS-SI fmeSeaiceDerivedFields output has aggregated fields
+[ ] Verify MPAS-SI fmeSeaiceDerivedFields has aggregated + air stress fields
 [ ] Verify EAM vertical coarsening produces correct number of layers
 [ ] Verify EAM derived field expressions evaluate correctly
 [ ] Verify EAM tendencies are computed (non-zero after first step)

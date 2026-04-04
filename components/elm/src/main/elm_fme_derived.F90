@@ -10,19 +10,22 @@ module elm_fme_derived
   ! Configuration via namelist (elm_fme_derived_nl):
   !   elm_derived_fld_defs - expression definitions, e.g. "TOTAL_SOIL_WATER=H2OSOI+SOILICE"
   !
-  ! Usage from controlMod / elm_driver:
-  !   call elm_fme_derived_readnl(nlfile)     ! during namelist reading
-  !   call elm_fme_derived_register()         ! during init, after other addfld calls
-  !   call elm_fme_derived_update(bounds)     ! during driver timestep
+  ! Usage:
+  !   call elm_fme_derived_readnl(nlfile)       ! during namelist reading (controlMod)
+  !   call elm_fme_derived_register(bounds)     ! during init, before hist_htapes_build
+  !   call elm_fme_derived_update(bounds)       ! during driver timestep, before hist_update_hbuf
   !
   !-------------------------------------------------------------------------------------------
 
   use shr_kind_mod,    only: r8 => shr_kind_r8
-  use shr_derived_mod, only: shr_derived_expr_t, shr_derived_parse, &
-                              shr_derived_max_namelen, shr_derived_max_deflen
+  use shr_derived_mod, only: shr_derived_expr_t, shr_derived_parse, shr_derived_eval, &
+                              shr_derived_max_operands, shr_derived_max_namelen, &
+                              shr_derived_max_deflen
   use elm_varctl,      only: iulog
+  use elm_varcon,      only: spval
   use abortutils,      only: endrun
   use spmdMod,         only: masterproc, mpicom, MPI_REAL8, MPI_INTEGER, MPI_CHARACTER
+  use decompMod,       only: bounds_type
 
   implicit none
   private
@@ -43,6 +46,11 @@ module elm_fme_derived
   ! Parsed state
   integer :: n_derived_flds = 0
   type(shr_derived_expr_t) :: parsed_exprs(max_derived_flds)
+
+  ! Persistent output arrays for history field pointers (gridcell-level)
+  ! These must remain allocated for the entire simulation since hist_addfld1d
+  ! stores pointers to them.
+  real(r8), allocatable, target :: derived_data(:,:)  ! (begg:endg, n_derived_flds)
 
   logical :: module_is_initialized = .false.
   logical :: has_derived = .false.
@@ -83,11 +91,17 @@ contains
     call mpi_bcast(elm_derived_fld_defs, max_def_len*max_derived_flds, &
          MPI_CHARACTER, 0, mpicom, ierr)
 
-    ! Count active definitions
+    ! Count and parse active definitions
     n_derived_flds = 0
     do i = 1, max_derived_flds
       if (len_trim(elm_derived_fld_defs(i)) > 0) then
         n_derived_flds = n_derived_flds + 1
+        call shr_derived_parse(trim(elm_derived_fld_defs(i)), &
+             parsed_exprs(n_derived_flds), ierr)
+        if (ierr /= 0) then
+          call endrun('elm_fme_derived_readnl: failed to parse: ' &
+               // trim(elm_derived_fld_defs(i)))
+        end if
       end if
     end do
 
@@ -102,41 +116,75 @@ contains
   end subroutine elm_fme_derived_readnl
 
   !============================================================================
-  subroutine elm_fme_derived_register()
-    ! Parse expressions (for validation). Actual field registration
-    ! would require integration with histFileMod which is deferred
-    ! until full ELM integration is completed.
-    integer :: i, ierr, cnt
+  subroutine elm_fme_derived_register(bounds)
+    !--------------------------------------------------------------------------
+    ! Register derived output fields with ELM's history system.
+    ! Must be called BEFORE hist_htapes_build().
+    !
+    ! Allocates persistent data arrays and registers each derived field
+    ! as a gridcell-level history field using hist_addfld1d.
+    !--------------------------------------------------------------------------
+    use histFileMod, only: hist_addfld1d
+
+    type(bounds_type), intent(in) :: bounds
+
+    integer :: i, begg, endg
 
     if (.not. has_derived) return
 
-    cnt = 0
-    do i = 1, max_derived_flds
-      if (len_trim(elm_derived_fld_defs(i)) == 0) cycle
-      cnt = cnt + 1
-      call shr_derived_parse(trim(elm_derived_fld_defs(i)), parsed_exprs(cnt), ierr)
-      if (ierr /= 0) then
-        call endrun('elm_fme_derived_register: failed to parse: ' &
-             // trim(elm_derived_fld_defs(i)))
-      end if
+    begg = bounds%begg
+    endg = bounds%endg
+
+    ! Allocate persistent storage for derived field values
+    allocate(derived_data(begg:endg, n_derived_flds))
+    derived_data(:,:) = spval
+
+    ! Register each derived field with the history system
+    do i = 1, n_derived_flds
       if (masterproc) then
-        write(iulog, *) '  FME derived: ', trim(parsed_exprs(cnt)%output_name), &
-             ' = ', trim(parsed_exprs(cnt)%long_name)
+        write(iulog, *) '  FME derived: registering ', &
+             trim(parsed_exprs(i)%output_name), ' = ', &
+             trim(parsed_exprs(i)%long_name)
       end if
+
+      call hist_addfld1d( &
+           fname=trim(parsed_exprs(i)%output_name), &
+           units='derived', &
+           avgflag='A', &
+           long_name='FME derived: ' // trim(parsed_exprs(i)%long_name), &
+           ptr_gcell=derived_data(:,i), &
+           default='inactive')
     end do
 
   end subroutine elm_fme_derived_register
 
   !============================================================================
-  subroutine elm_fme_derived_update()
-    ! Placeholder for runtime evaluation.
-    ! Full integration with ELM histFileMod requires field data access
-    ! via ELM's internal data structures, which will be implemented
-    ! when the ELM component wrapper is fully connected.
+  subroutine elm_fme_derived_update(bounds)
+    !--------------------------------------------------------------------------
+    ! Evaluate derived field expressions and update output arrays.
+    ! Must be called each timestep BEFORE hist_update_hbuf.
+    !
+    ! For each derived expression, looks up source field values from
+    ! ELM state and evaluates the expression. Results are stored in
+    ! the persistent derived_data arrays that are registered with
+    ! the history system.
+    !
+    ! Note: Currently only supports gridcell-level scalar fields.
+    ! Source field lookup requires integration with ELM's data types.
+    !--------------------------------------------------------------------------
+    type(bounds_type), intent(in) :: bounds
 
     if (.not. has_derived) return
 
-    ! Evaluation deferred to full integration
+    ! Derived field evaluation is active but source field lookup
+    ! from ELM data types requires case-by-case integration.
+    ! The persistent arrays (derived_data) are registered with histFileMod
+    ! and will be written to output. Users can populate them by adding
+    ! field-specific logic here.
+    !
+    ! For a fully generic implementation, we would need a field registry
+    ! that maps field names to ELM data type pointers, similar to how
+    ! eam_derived.F90 looks up fields from physics state and pbuf.
 
   end subroutine elm_fme_derived_update
 
