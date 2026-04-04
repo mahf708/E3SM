@@ -156,13 +156,18 @@ contains
                iStart = iEnd + 1
             end do
 
-            call mpas_log_write( &
-                 'fmeVerticalReduce WARNING: generic field reduction for $i' &
-                 // ' fields was requested via config_AM_fmeVerticalReduce_fields,' &
-                 // ' but output of generic fields is not yet supported.' &
-                 // ' MPAS Registry requires compile-time variable definitions.' &
-                 // ' Built-in fields (OHC, FWC, KE) will still be computed.', &
-                 intArgs=(/nReduceFields/))
+            if (nReduceFields > 5) then
+               call mpas_log_write( &
+                    'fmeVerticalReduce WARNING: $i fields requested but only 5' &
+                    // ' generic output slots available (vertReduceField01..05).' &
+                    // ' Extra fields will be ignored.', &
+                    intArgs=(/nReduceFields/))
+            else
+               call mpas_log_write( &
+                    'fmeVerticalReduce: $i generic field reductions configured' &
+                    // ' (output in vertReduceField01..$i)', &
+                    intArgs=(/nReduceFields, nReduceFields/))
+            end if
          end if
       else
          nReduceFields = 0
@@ -186,7 +191,7 @@ contains
 
       integer, pointer :: nCellsSolve, nVertLevels
       integer, pointer :: index_temperature, index_salinity
-      integer :: iCell, k
+      integer :: iCell, k, iGeneric
       integer, dimension(:), pointer :: maxLevelCell
 
       real(kind=RKIND), dimension(:, :, :), pointer :: tracers
@@ -195,7 +200,14 @@ contains
       real(kind=RKIND), dimension(:), pointer :: freshwaterContent
       real(kind=RKIND), dimension(:), pointer :: kineticEnergy
 
+      ! Generic reduction output slots
+      real(kind=RKIND), dimension(:), pointer :: genSlot
+      character(len=32) :: slotName
+      integer, pointer :: index_tracer_generic
+
       real(kind=RKIND) :: ohc_sum, fwc_sum, ke_sum, h_k
+      real(kind=RKIND) :: gen_sum, gen_wgt
+      real(kind=RKIND), parameter :: fillValue = 1.0E34_RKIND
 
       err = 0
 
@@ -246,6 +258,49 @@ contains
             oceanHeatContent(iCell) = ohc_sum
             freshwaterContent(iCell) = fwc_sum
             kineticEnergy(iCell) = ke_sum
+         end do
+
+         ! --- Generic field reductions using output slots ---
+         ! Up to 5 user-configured fields written to vertReduceField01..05
+         do iGeneric = 1, min(nReduceFields, 5)
+            write(slotName, '(A,I2.2)') 'vertReduceField', iGeneric
+            call mpas_pool_get_array(amPool, trim(slotName), genSlot)
+            if (.not. associated(genSlot)) cycle
+
+            ! Look up tracer by name
+            nullify(index_tracer_generic)
+            select case (trim(reduceFieldNames(iGeneric)))
+            case ('temperature')
+               call mpas_pool_get_dimension(tracersPool, 'index_temperature', index_tracer_generic)
+            case ('salinity')
+               call mpas_pool_get_dimension(tracersPool, 'index_salinity', index_tracer_generic)
+            case default
+               ! Unknown field — fill with fillValue
+               do iCell = 1, nCellsSolve
+                  genSlot(iCell) = fillValue
+               end do
+               cycle
+            end select
+
+            do iCell = 1, nCellsSolve
+               gen_sum = 0.0_RKIND
+               gen_wgt = 0.0_RKIND
+               do k = 1, maxLevelCell(iCell)
+                  h_k = layerThickness(k, iCell)
+                  gen_sum = gen_sum + tracers(index_tracer_generic, k, iCell) * h_k
+                  gen_wgt = gen_wgt + h_k
+               end do
+
+               if (trim(reduceFieldMethods(iGeneric)) == 'avg') then
+                  if (gen_wgt > 0.0_RKIND) then
+                     genSlot(iCell) = gen_sum / gen_wgt
+                  else
+                     genSlot(iCell) = fillValue
+                  end if
+               else  ! 'sum' is default
+                  genSlot(iCell) = gen_sum
+               end if
+            end do
          end do
 
          block => block % next

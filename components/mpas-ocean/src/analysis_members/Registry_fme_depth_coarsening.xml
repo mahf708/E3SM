@@ -32,6 +32,10 @@
 			description="Comma-separated tracer names to coarsen in the vertical."
 			possible_values="Comma-separated list of tracer field names or 'none'"
 		/>
+		<nml_option name="config_AM_fmeDepthCoarsening_stream_output_interval" type="character" default_value="00-00-01_00:00:00"
+			description="Output interval for the fmeDepthCoarsening stream. Format: YY-MM-DD_HH:MM:SS"
+			possible_values="Any valid MPAS time interval string"
+		/>
 	</nml_record>
 	<packages>
 		<package name="fmeDepthCoarseningAMPKG" description="This package includes variables required for the fmeDepthCoarsening analysis member."/>
@@ -59,6 +63,7 @@
 		/>
 	</var_struct>
 	<streams>
+		<!-- output_interval default is daily; override via SourceMods/streams.ocean_forward -->
 		<stream name="fmeDepthCoarseningOutput" type="output"
 				mode="forward;analysis"
 				precision="single"

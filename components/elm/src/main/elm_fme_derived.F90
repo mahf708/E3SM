@@ -164,27 +164,70 @@ contains
     ! Evaluate derived field expressions and update output arrays.
     ! Must be called each timestep BEFORE hist_update_hbuf.
     !
-    ! For each derived expression, looks up source field values from
-    ! ELM state and evaluates the expression. Results are stored in
-    ! the persistent derived_data arrays that are registered with
-    ! the history system.
-    !
-    ! Note: Currently only supports gridcell-level scalar fields.
-    ! Source field lookup requires integration with ELM's data types.
+    ! Looks up source field values from ELM's history pointer arrays
+    ! (elmptr_rs for 1D fields) by scanning the masterlist for matching
+    ! field names, then evaluates the parsed expression.
     !--------------------------------------------------------------------------
+    use histFileMod, only: elmptr_rs, masterlist, nfmaster, max_flds
+    use shr_derived_mod, only: shr_derived_eval
+
     type(bounds_type), intent(in) :: bounds
+
+    integer :: i, n, nf, begg, endg, ncol, hpidx
+    real(r8), allocatable :: operand_data(:,:,:)
+    real(r8), allocatable :: result_data(:,:)
+    real(r8), pointer :: fld_ptr(:)
+    logical :: found
 
     if (.not. has_derived) return
 
-    ! Derived field evaluation is active but source field lookup
-    ! from ELM data types requires case-by-case integration.
-    ! The persistent arrays (derived_data) are registered with histFileMod
-    ! and will be written to output. Users can populate them by adding
-    ! field-specific logic here.
-    !
-    ! For a fully generic implementation, we would need a field registry
-    ! that maps field names to ELM data type pointers, similar to how
-    ! eam_derived.F90 looks up fields from physics state and pbuf.
+    begg = bounds%begg
+    endg = bounds%endg
+    ncol = endg - begg + 1
+
+    ! Evaluate each derived expression
+    do i = 1, n_derived_flds
+      ! Gather operand data (treat as 1D: ncol x nlev=1 x n_operands)
+      allocate(operand_data(ncol, 1, parsed_exprs(i)%n_operands))
+      operand_data(:,:,:) = 0.0_r8
+
+      do n = 1, parsed_exprs(i)%n_operands
+        if (parsed_exprs(i)%operands(n)%is_constant) cycle
+
+        ! Look up field by name in the history masterlist
+        found = .false.
+        do nf = 1, nfmaster
+          if (trim(masterlist(nf)%field%name) == &
+              trim(parsed_exprs(i)%operands(n)%field_name)) then
+            hpidx = masterlist(nf)%field%hpindex
+            if (masterlist(nf)%field%numdims == 1) then
+              fld_ptr => elmptr_rs(hpidx)%ptr
+              if (associated(fld_ptr)) then
+                operand_data(1:ncol, 1, n) = fld_ptr(begg:endg)
+                found = .true.
+              end if
+            end if
+            exit
+          end if
+        end do
+
+        if (.not. found) then
+          ! Field not found — result will be incorrect, fill with spval
+          derived_data(begg:endg, i) = spval
+          deallocate(operand_data)
+          goto 100  ! skip to next expression
+        end if
+      end do
+
+      ! Evaluate expression
+      allocate(result_data(ncol, 1))
+      call shr_derived_eval(parsed_exprs(i), operand_data, ncol, 1, ncol, result_data)
+      derived_data(begg:endg, i) = result_data(1:ncol, 1)
+      deallocate(result_data)
+      deallocate(operand_data)
+
+      100 continue
+    end do
 
   end subroutine elm_fme_derived_update
 

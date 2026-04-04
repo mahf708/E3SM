@@ -19,6 +19,10 @@
 			description="Logical flag determining if an analysis member write occurs on start-up."
 			possible_values="true or false"
 		/>
+		<nml_option name="config_AM_fmeSeaiceDerivedFields_stream_output_interval" type="character" default_value="00-00-01_00:00:00"
+			description="Output interval for the fmeSeaiceDerivedFields stream. Format: YY-MM-DD_HH:MM:SS"
+			possible_values="Any valid MPAS time interval string"
+		/>
 	</nml_record>
 	<packages>
 		<package name="fmeSeaiceDerivedFieldsAMPKG" description="This package includes variables required for the fmeSeaiceDerivedFields analysis member."/>
@@ -47,6 +51,7 @@
 		/>
 	</var_struct>
 	<streams>
+		<!-- output_interval default is daily; override via SourceMods/streams.ocean_forward -->
 		<stream name="fmeSeaiceDerivedFieldsOutput" type="output"
 				mode="forward;analysis"
 				filename_template="analysis_members/seaice_fmeSeaiceDerivedFields.$Y-$M-$D.nc"
