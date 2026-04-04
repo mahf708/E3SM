@@ -1,7 +1,11 @@
 ! FME (Full Model Emulation) online output processing -- MOSART
 !
-! Placeholder for MOSART derived fields.
-! Uncomment when full MOSART integration is connected.
-!
+! Production configuration for coupled FME training data generation.
+! MOSART outputs at 6-hourly frequency for river routing state.
+
+rtmhist_nhtfrq = -6
+rtmhist_mfilt = 120
+
+! FME derived fields (uncomment when fully integrated)
 ! rtm_derived_fld_defs = ''
 
