@@ -301,7 +301,7 @@ def savefig(fig, outdir, name, subdir=None):
 
 
 def global_map(data, lons, lats, title, cmap="RdBu_r", vmin=None, vmax=None,
-               outdir=None, fname=None, units=""):
+               outdir=None, fname=None, units="", subdir=None):
     """
     Plot a global filled map.  data is 2-D (lat x lon) or 1-D (nCells) on an
     unstructured grid (scatter plot fallback).
@@ -335,13 +335,13 @@ def global_map(data, lons, lats, title, cmap="RdBu_r", vmin=None, vmax=None,
 
     ax.set_title(title, fontsize=11)
     if outdir and fname:
-        return savefig(fig, outdir, fname)
+        return savefig(fig, outdir, fname, subdir=subdir)
     plt.show()
     return None
 
 
 def latlon_map(ds, varname, title, cmap="RdBu_r", vmin=None, vmax=None,
-               outdir=None, fname=None, units=""):
+               outdir=None, fname=None, units="", subdir=None):
     """Plot a variable from a remapped (lon, lat, Time) dataset."""
     if not HAS_MPL:
         return None
@@ -367,10 +367,10 @@ def latlon_map(ds, varname, title, cmap="RdBu_r", vmin=None, vmax=None,
         lons, lats = lon, lat
 
     return global_map(data, lons, lats, title, cmap=cmap, vmin=vmin, vmax=vmax,
-                      outdir=outdir, fname=fname, units=units)
+                      outdir=outdir, fname=fname, units=units, subdir=subdir)
 
 
-def layer_profiles(data3d, label, outdir, fname, ylabel="Level index"):
+def layer_profiles(data3d, label, outdir, fname, ylabel="Level index", subdir=None):
     """Plot global-mean vertical profile from (nlev x ncells) array."""
     if not HAS_MPL:
         return
@@ -385,10 +385,10 @@ def layer_profiles(data3d, label, outdir, fname, ylabel="Level index"):
     ax.set_ylabel(ylabel)
     ax.set_title(f"Global-mean vertical profile: {label}")
     ax.grid(True, alpha=0.4)
-    savefig(fig, outdir, fname)
+    savefig(fig, outdir, fname, subdir=subdir)
 
 
-def time_series(values, times_label, title, ylabel, outdir, fname):
+def time_series(values, times_label, title, ylabel, outdir, fname, subdir=None):
     """Plot a simple time series."""
     if not HAS_MPL:
         return
@@ -399,7 +399,7 @@ def time_series(values, times_label, title, ylabel, outdir, fname):
     ax.set_title(title)
     ax.grid(True, alpha=0.4)
     plt.tight_layout()
-    savefig(fig, outdir, fname)
+    savefig(fig, outdir, fname, subdir=subdir)
 
 
 # -----------------------------------------------------------------------------
@@ -1212,28 +1212,35 @@ def main():
     all_issues = {}
     all_plots_by_comp = {}
 
-    def run_check(name, func, *a):
-        issues, plots = func(*a)
+    # All figures go under fme_output/ subdir so fme_output.html can reference them
+    fig_root = os.path.join(args.outdir, "fme_output")
+    os.makedirs(fig_root, exist_ok=True)
+
+    def run_check(name, func, subdir, *a):
+        comp_outdir = os.path.join(fig_root, subdir)
+        os.makedirs(comp_outdir, exist_ok=True)
+        issues, plots = func(*a[:1], comp_outdir, *a[1:])
         all_issues[name] = issues
         all_plots_by_comp[name] = plots
 
-    run_check("EAM", check_eam, args.rundir, args.outdir, args.verbose)
-    run_check("MPAS-O Depth Coarsening (native)", check_mpaso_depth_coarsening,
-              args.rundir, args.outdir, args.verbose)
-    run_check("MPAS-O Depth Coarsening (remapped)", check_mpaso_depth_coarsening_remapped,
-              args.rundir, args.outdir, args.verbose)
-    run_check("MPAS-O Derived Fields (native)", check_mpaso_derived,
-              args.rundir, args.outdir, args.verbose)
-    run_check("MPAS-O Derived Fields (remapped)", check_mpaso_derived_remapped,
-              args.rundir, args.outdir, args.verbose)
-    run_check("MPAS-O Vertical Reduce (native)", check_mpaso_vertical_reduce,
-              args.rundir, args.outdir, args.verbose)
-    run_check("MPAS-O Vertical Reduce (remapped)", check_mpaso_vertical_reduce_remapped,
-              args.rundir, args.outdir, args.verbose)
-    run_check("MPAS-SI Derived Fields (native)", check_mpassi_derived,
-              args.rundir, args.outdir, args.verbose)
-    run_check("MPAS-SI Derived Fields (remapped)", check_mpassi_derived_remapped,
-              args.rundir, args.outdir, args.verbose)
+    run_check("EAM", check_eam, "eam",
+              args.rundir, args.verbose)
+    run_check("MPAS-O Depth Coarsening (native)", check_mpaso_depth_coarsening, "mpaso_native",
+              args.rundir, args.verbose)
+    run_check("MPAS-O Depth Coarsening (remapped)", check_mpaso_depth_coarsening_remapped, "mpaso_remapped",
+              args.rundir, args.verbose)
+    run_check("MPAS-O Derived Fields (native)", check_mpaso_derived, "mpaso_native",
+              args.rundir, args.verbose)
+    run_check("MPAS-O Derived Fields (remapped)", check_mpaso_derived_remapped, "mpaso_remapped",
+              args.rundir, args.verbose)
+    run_check("MPAS-O Vertical Reduce (native)", check_mpaso_vertical_reduce, "mpaso_native",
+              args.rundir, args.verbose)
+    run_check("MPAS-O Vertical Reduce (remapped)", check_mpaso_vertical_reduce_remapped, "mpaso_remapped",
+              args.rundir, args.verbose)
+    run_check("MPAS-SI Derived Fields (native)", check_mpassi_derived, "mpassi_native",
+              args.rundir, args.verbose)
+    run_check("MPAS-SI Derived Fields (remapped)", check_mpassi_derived_remapped, "mpassi_remapped",
+              args.rundir, args.verbose)
 
     # Timing summary
     timing_summary = read_timing_summary(args.rundir)
