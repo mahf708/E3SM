@@ -37,6 +37,11 @@ module ocn_fme_vertical_reduce
    use ocn_diagnostics_variables
    use mpas_log, only: mpas_log_write
 
+   use shr_kind_mod, only: r8 => shr_kind_r8
+   use ocn_fme_horiz_remap, only: ocn_fme_horiz_remap_init, &
+        ocn_fme_horiz_remap_field, ocn_fme_horiz_remap_active, &
+        ocn_fme_horiz_remap_get_dims, ocn_fme_remap_file_t
+
    implicit none
    private
    save
@@ -47,6 +52,12 @@ module ocn_fme_vertical_reduce
              ocn_finalize_fme_vertical_reduce
 
    real(kind=RKIND) :: referenceSalinity = 34.8_RKIND
+
+   ! Remapped output workspace
+   logical :: do_horiz_remap = .false.
+   logical :: remap_file_opened = .false.
+   type(ocn_fme_remap_file_t) :: remap_outfile
+   integer :: remap_nlat = 0, remap_nlon = 0, remap_nb_local = 0
 
    !> Number of user-configured generic reduction fields (parsed from config)
    integer :: nReduceFields = 0
@@ -72,8 +83,10 @@ contains
       real(kind=RKIND), pointer :: config_AM_fmeVerticalReduce_reference_salinity
       character(len=StrKIND), pointer :: config_AM_fmeVerticalReduce_fields
       character(len=StrKIND), pointer :: config_AM_fmeVerticalReduce_methods
+      character(len=StrKIND), pointer :: config_AM_fmeVerticalReduce_horiz_remap_file
       character(len=StrKIND) :: tempStr, methodStr
       integer :: nFields, nMethods, i, iStart, iEnd, strLen
+      integer :: ierr
 
       err = 0
 
@@ -175,6 +188,34 @@ contains
          nReduceFields = 0
       end if
 
+      ! --- Initialize horizontal remapping if requested ---
+      call mpas_pool_get_config(domain % configs, &
+           'config_AM_fmeVerticalReduce_horiz_remap_file', &
+           config_AM_fmeVerticalReduce_horiz_remap_file)
+
+      if (associated(config_AM_fmeVerticalReduce_horiz_remap_file)) then
+         if (trim(config_AM_fmeVerticalReduce_horiz_remap_file) /= 'none' .and. &
+             len_trim(config_AM_fmeVerticalReduce_horiz_remap_file) > 0) then
+
+            call ocn_fme_horiz_remap_init(domain, &
+                 trim(config_AM_fmeVerticalReduce_horiz_remap_file), ierr)
+            if (ierr /= 0) then
+               call mpas_log_write( &
+                    'fmeVerticalReduce: horiz remap init failed, continuing without remap', &
+                    messageType=MPAS_LOG_WARN)
+               do_horiz_remap = .false.
+            else
+               do_horiz_remap = ocn_fme_horiz_remap_active()
+               if (do_horiz_remap) then
+                  call ocn_fme_horiz_remap_get_dims(remap_nlat, remap_nlon, remap_nb_local)
+                  call mpas_log_write('fmeVerticalReduce: horiz remap active, ' &
+                       // 'target grid $i x $i', &
+                       intArgs=(/remap_nlon, remap_nlat/))
+               end if
+            end if
+         end if
+      end if
+
    end subroutine ocn_init_fme_vertical_reduce!}}}
 
 !***********************************************************************
@@ -191,9 +232,9 @@ contains
       type(mpas_pool_type), pointer :: tracersPool
       type(mpas_pool_type), pointer :: amPool
 
-      integer, pointer :: nCellsSolve, nVertLevels
+      integer, pointer :: nCellsSolve, nCells, nVertLevels
       integer, pointer :: index_temperature, index_salinity
-      integer :: iCell, k, iGeneric
+      integer :: iCell, k, iGeneric, ierr
       integer, dimension(:), pointer :: maxLevelCell
 
       real(kind=RKIND), dimension(:, :, :), pointer :: tracers
@@ -210,6 +251,12 @@ contains
       real(kind=RKIND) :: ohc_sum, fwc_sum, ke_sum, h_k
       real(kind=RKIND) :: gen_sum, gen_wgt
       real(kind=RKIND), parameter :: fillValue = 1.0E34_RKIND
+
+      ! Remap workspace
+      real(r8), allocatable :: fld_remap(:,:)
+      real(kind=RKIND), allocatable :: field_1lev(:,:)
+      character(len=StrKIND) :: timeStr
+      type(MPAS_Time_Type) :: currTime
 
       err = 0
 
@@ -305,6 +352,68 @@ contains
             end do
          end do
 
+         ! --- Horizontal remapping to lat-lon grid ---
+         if (do_horiz_remap) then
+            call mpas_pool_get_dimension(block % dimensions, 'nCells', nCells)
+
+            ! Open remapped output file on first compute call
+            if (.not. remap_file_opened) then
+               call remap_outfile%open_file(domain, &
+                    'fmeVerticalReduceRemapped.nc', ierr)
+               if (ierr == 0) then
+                  call remap_outfile%def_var('oceanHeatContent', 'J m^-2', &
+                       'Column-integrated ocean heat content (remapped)', 1, ierr)
+                  call remap_outfile%def_var('freshwaterContent', 'm', &
+                       'Column-integrated freshwater content (remapped)', 1, ierr)
+                  call remap_outfile%def_var('kineticEnergy', 'J m^-2', &
+                       'Column-integrated kinetic energy (remapped)', 1, ierr)
+                  do iGeneric = 1, min(nReduceFields, 5)
+                     write(slotName, '(A,I2.2)') 'vertReduceField', iGeneric
+                     call remap_outfile%def_var(trim(slotName), 'varies', &
+                          'Generic vertical reduction (remapped)', 1, ierr)
+                  end do
+                  remap_file_opened = .true.
+               end if
+            end if
+
+            if (remap_file_opened) then
+               allocate(fld_remap(remap_nb_local, 1))
+               allocate(field_1lev(1, nCells))
+
+               ! Get current time string
+               currTime = mpas_get_clock_time(domain % clock, MPAS_NOW, ierr)
+               call mpas_get_time(currTime, dateTimeString=timeStr)
+               call remap_outfile%write_time(trim(timeStr), ierr)
+
+               ! Remap oceanHeatContent
+               field_1lev(1, 1:nCells) = oceanHeatContent(1:nCells)
+               call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr)
+               call remap_outfile%write_var('oceanHeatContent', fld_remap, 1, ierr)
+
+               ! Remap freshwaterContent
+               field_1lev(1, 1:nCells) = freshwaterContent(1:nCells)
+               call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr)
+               call remap_outfile%write_var('freshwaterContent', fld_remap, 1, ierr)
+
+               ! Remap kineticEnergy
+               field_1lev(1, 1:nCells) = kineticEnergy(1:nCells)
+               call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr)
+               call remap_outfile%write_var('kineticEnergy', fld_remap, 1, ierr)
+
+               ! Remap generic reduction slots
+               do iGeneric = 1, min(nReduceFields, 5)
+                  write(slotName, '(A,I2.2)') 'vertReduceField', iGeneric
+                  call mpas_pool_get_array(amPool, trim(slotName), genSlot)
+                  if (.not. associated(genSlot)) cycle
+                  field_1lev(1, 1:nCells) = genSlot(1:nCells)
+                  call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr)
+                  call remap_outfile%write_var(trim(slotName), fld_remap, 1, ierr)
+               end do
+
+               deallocate(fld_remap, field_1lev)
+            end if
+         end if
+
          block => block % next
       end do
 
@@ -327,8 +436,14 @@ contains
 
       type(domain_type), intent(inout) :: domain
       integer, intent(out) :: err
+      integer :: ierr
 
       err = 0
+
+      if (remap_file_opened) then
+         call remap_outfile%close_file(ierr)
+         remap_file_opened = .false.
+      end if
 
       if (allocated(reduceFieldNames)) deallocate(reduceFieldNames)
       if (allocated(reduceFieldMethods)) deallocate(reduceFieldMethods)

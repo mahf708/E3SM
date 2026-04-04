@@ -40,9 +40,7 @@ module ocn_fme_derived_fields
    use shr_kind_mod, only: r8 => shr_kind_r8
    use ocn_fme_horiz_remap, only: ocn_fme_horiz_remap_init, &
         ocn_fme_horiz_remap_field, ocn_fme_horiz_remap_active, &
-        ocn_fme_horiz_remap_open_file, ocn_fme_horiz_remap_def_var, &
-        ocn_fme_horiz_remap_write_var, ocn_fme_horiz_remap_write_time, &
-        ocn_fme_horiz_remap_close_file, ocn_fme_horiz_remap_get_dims
+        ocn_fme_horiz_remap_get_dims, ocn_fme_remap_file_t
 
    implicit none
    private
@@ -57,6 +55,7 @@ module ocn_fme_derived_fields
    logical :: do_horiz_remap = .false.
    logical :: remap_file_opened = .false.
    integer :: remap_nlat = 0, remap_nlon = 0, remap_nb_local = 0
+   type(ocn_fme_remap_file_t) :: remap_outfile
 
 !***********************************************************************
 
@@ -182,14 +181,14 @@ contains
 
             ! Open remapped output file on first compute call
             if (.not. remap_file_opened) then
-               call ocn_fme_horiz_remap_open_file(domain, &
+               call remap_outfile%open_file(domain, &
                     'fmeDerivedFieldsRemapped.nc', ierr)
                if (ierr == 0) then
-                  call ocn_fme_horiz_remap_def_var('sst', 'degC', &
+                  call remap_outfile%def_var('sst', 'degC', &
                        'Sea surface temperature (remapped)', 1, ierr)
-                  call ocn_fme_horiz_remap_def_var('sss', 'PSU', &
+                  call remap_outfile%def_var('sss', 'PSU', &
                        'Sea surface salinity (remapped)', 1, ierr)
-                  call ocn_fme_horiz_remap_def_var('surfaceHeatFluxTotal', 'W m^-2', &
+                  call remap_outfile%def_var('surfaceHeatFluxTotal', 'W m^-2', &
                        'Total surface heat flux (remapped)', 1, ierr)
                   remap_file_opened = .true.
                end if
@@ -202,22 +201,22 @@ contains
                ! Get current time string
                currTime = mpas_get_clock_time(domain % clock, MPAS_NOW, ierr)
                call mpas_get_time(currTime, dateTimeString=timeStr)
-               call ocn_fme_horiz_remap_write_time(trim(timeStr), ierr)
+               call remap_outfile%write_time(trim(timeStr), ierr)
 
                ! Remap SST
                field_1lev(1, 1:nCells) = sst(1:nCells)
                call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr)
-               call ocn_fme_horiz_remap_write_var('sst', fld_remap, 1, ierr)
+               call remap_outfile%write_var('sst', fld_remap, 1, ierr)
 
                ! Remap SSS
                field_1lev(1, 1:nCells) = sss(1:nCells)
                call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr)
-               call ocn_fme_horiz_remap_write_var('sss', fld_remap, 1, ierr)
+               call remap_outfile%write_var('sss', fld_remap, 1, ierr)
 
                ! Remap surface heat flux
                field_1lev(1, 1:nCells) = surfaceHeatFluxTotal(1:nCells)
                call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr)
-               call ocn_fme_horiz_remap_write_var('surfaceHeatFluxTotal', fld_remap, 1, ierr)
+               call remap_outfile%write_var('surfaceHeatFluxTotal', fld_remap, 1, ierr)
 
                deallocate(fld_remap, field_1lev)
             end if
@@ -250,7 +249,7 @@ contains
       err = 0
 
       if (remap_file_opened) then
-         call ocn_fme_horiz_remap_close_file(ierr)
+         call remap_outfile%close_file(ierr)
          remap_file_opened = .false.
       end if
 

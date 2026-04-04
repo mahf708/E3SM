@@ -34,6 +34,9 @@ module ocn_fme_depth_coarsening
    use shr_vcoarsen_mod, only: shr_vcoarsen_avg
    use shr_kind_mod, only: r8 => shr_kind_r8
    use mpas_log, only: mpas_log_write
+   use ocn_fme_horiz_remap, only: ocn_fme_horiz_remap_init, &
+        ocn_fme_horiz_remap_field, ocn_fme_horiz_remap_active, &
+        ocn_fme_horiz_remap_get_dims, ocn_fme_remap_file_t
 
    implicit none
    private
@@ -55,6 +58,12 @@ module ocn_fme_depth_coarsening
 
    real(kind=RKIND), parameter :: fillValue = 1.0E34_RKIND
 
+   !> Horizontal remapping state
+   logical :: do_horiz_remap = .false.
+   logical :: remap_file_opened = .false.
+   type(ocn_fme_remap_file_t) :: remap_outfile
+   integer :: remap_nlat = 0, remap_nlon = 0, remap_nb_local = 0
+
 !***********************************************************************
 
 contains
@@ -68,8 +77,9 @@ contains
 
       character(len=StrKIND), pointer :: config_AM_fmeDepthCoarsening_depth_bounds
       character(len=StrKIND), pointer :: config_AM_fmeDepthCoarsening_fields
+      character(len=StrKIND), pointer :: config_AM_fmeDepthCoarsening_horiz_remap_file
       character(len=StrKIND) :: tempStr
-      integer :: nBounds, i, iStart, iEnd, strLen
+      integer :: nBounds, i, iStart, iEnd, strLen, ierr
 
       err = 0
 
@@ -153,6 +163,32 @@ contains
               intArgs=(/nCoarsenFields/))
       end if
 
+      ! --- Initialise horizontal remapping (optional) ---
+      call mpas_pool_get_config(domain % configs, &
+           'config_AM_fmeDepthCoarsening_horiz_remap_file', &
+           config_AM_fmeDepthCoarsening_horiz_remap_file)
+
+      if (trim(config_AM_fmeDepthCoarsening_horiz_remap_file) /= 'none' .and. &
+          len_trim(config_AM_fmeDepthCoarsening_horiz_remap_file) > 0) then
+
+         call ocn_fme_horiz_remap_init(domain, &
+              trim(config_AM_fmeDepthCoarsening_horiz_remap_file), ierr)
+         if (ierr /= 0) then
+            call mpas_log_write( &
+                 'fmeDepthCoarsening: horiz remap init failed, disabling', &
+                 messageType=MPAS_LOG_WARN)
+            do_horiz_remap = .false.
+         else
+            do_horiz_remap = ocn_fme_horiz_remap_active()
+            if (do_horiz_remap) then
+               call ocn_fme_horiz_remap_get_dims(remap_nlat, remap_nlon, remap_nb_local)
+               call mpas_log_write('fmeDepthCoarsening: horiz remap active, ' &
+                    // 'target grid $i x $i', &
+                    intArgs=(/remap_nlon, remap_nlat/))
+            end if
+         end if
+      end if
+
    end subroutine ocn_init_fme_depth_coarsening!}}}
 
 !***********************************************************************
@@ -191,6 +227,17 @@ contains
 
       ! Flags for which fields to compute, driven by coarsenFieldNames
       logical :: doTemperature, doSalinity, doVelocityZonal, doVelocityMeridional
+
+      ! Horizontal remap workspace
+      integer, pointer :: nCells
+      integer :: ifld, kOut, ierr
+      real(r8), allocatable :: fld_remap(:,:)
+      real(kind=RKIND), allocatable :: field_1lev(:,:)
+      character(len=StrKIND) :: timeStr
+      character(len=128) :: varName, longName
+      type(MPAS_Time_Type) :: currTime
+      ! Pointers to coarsened arrays for generic field loop
+      real(kind=RKIND), dimension(:,:), pointer :: coarsenedPtr
 
       err = 0
 
@@ -315,6 +362,89 @@ contains
 
          deallocate(coord_iface, field_1d, field_out)
 
+         ! --- Horizontal remapping to lat-lon grid ---
+         if (do_horiz_remap) then
+            call mpas_pool_get_dimension(block % dimensions, 'nCells', nCells)
+
+            ! Open remapped output file on first compute call and define variables
+            if (.not. remap_file_opened) then
+               call remap_outfile%open_file(domain, &
+                    'fmeDepthCoarseningRemapped.nc', ierr)
+               if (ierr == 0) then
+                  ! Define split-level 2D variables for each coarsened field
+                  do ifld = 1, nCoarsenFields
+                     do kOut = 0, nCoarsenLevels - 1
+                        write(varName, '(A,A,I0)') &
+                             trim(coarsenFieldNames(ifld)), 'Coarsened_', kOut
+                        write(longName, '(A,A,I0)') &
+                             'Depth-coarsened ' // trim(coarsenFieldNames(ifld)) &
+                             // ' level ', kOut
+                        call remap_outfile%def_var(trim(varName), '', &
+                             trim(longName), 1, ierr)
+                     end do
+                  end do
+                  ! Also define split-level variables for layerThickness
+                  do kOut = 0, nCoarsenLevels - 1
+                     write(varName, '(A,I0)') 'layerThicknessCoarsened_', kOut
+                     write(longName, '(A,I0)') &
+                          'Depth-coarsened layer thickness level ', kOut
+                     call remap_outfile%def_var(trim(varName), 'm', &
+                          trim(longName), 1, ierr)
+                  end do
+                  remap_file_opened = .true.
+               end if
+            end if
+
+            if (remap_file_opened) then
+               allocate(fld_remap(remap_nb_local, 1))
+               allocate(field_1lev(1, nCells))
+
+               ! Write time record
+               currTime = mpas_get_clock_time(domain % clock, MPAS_NOW, ierr)
+               call mpas_get_time(currTime, dateTimeString=timeStr)
+               call remap_outfile%write_time(trim(timeStr), ierr)
+
+               ! Remap each coarsened field, one depth level at a time
+               do ifld = 1, nCoarsenFields
+                  ! Point to the correct coarsened array
+                  select case (trim(coarsenFieldNames(ifld)))
+                  case ('temperature')
+                     coarsenedPtr => temperatureCoarsened
+                  case ('salinity')
+                     coarsenedPtr => salinityCoarsened
+                  case ('velocityZonal')
+                     coarsenedPtr => velocityZonalCoarsened
+                  case ('velocityMeridional')
+                     coarsenedPtr => velocityMeridionalCoarsened
+                  case default
+                     cycle
+                  end select
+
+                  do kOut = 0, nCoarsenLevels - 1
+                     field_1lev(1, 1:nCells) = coarsenedPtr(kOut + 1, 1:nCells)
+                     call ocn_fme_horiz_remap_field(domain, field_1lev, 1, &
+                          fld_remap, ierr)
+                     write(varName, '(A,A,I0)') &
+                          trim(coarsenFieldNames(ifld)), 'Coarsened_', kOut
+                     call remap_outfile%write_var(trim(varName), &
+                          fld_remap, 1, ierr)
+                  end do
+               end do
+
+               ! Remap layerThicknessCoarsened split levels
+               do kOut = 0, nCoarsenLevels - 1
+                  field_1lev(1, 1:nCells) = layerThicknessCoarsened(kOut + 1, 1:nCells)
+                  call ocn_fme_horiz_remap_field(domain, field_1lev, 1, &
+                       fld_remap, ierr)
+                  write(varName, '(A,I0)') 'layerThicknessCoarsened_', kOut
+                  call remap_outfile%write_var(trim(varName), &
+                       fld_remap, 1, ierr)
+               end do
+
+               deallocate(fld_remap, field_1lev)
+            end if
+         end if
+
          block => block % next
       end do
 
@@ -357,8 +487,14 @@ contains
 
       type(domain_type), intent(inout) :: domain
       integer, intent(out) :: err
+      integer :: ierr
 
       err = 0
+
+      if (remap_file_opened) then
+         call remap_outfile%close_file(ierr)
+         remap_file_opened = .false.
+      end if
 
       if (allocated(depthBounds)) deallocate(depthBounds)
       if (allocated(coarsenFieldNames)) deallocate(coarsenFieldNames)

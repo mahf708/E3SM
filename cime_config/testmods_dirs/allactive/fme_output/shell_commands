@@ -189,6 +189,7 @@ cat >> user_nl_mpaso << 'EOF'
 !----------------------------------------------------------------------------------
 
 config_AM_fmeDepthCoarsening_enable = .true.
+config_AM_fmeDepthCoarsening_compute_interval = '00-00-01_00:00:00'
 ! 19 depth layers matching ACE ocean interface levels from:
 ! github.com/ai2cm/ace blob/exp/e3sm/scripts/data_process/configs/
 !   E3SMv3-piControl-ocean-vertical-coarsen.yaml
@@ -196,15 +197,24 @@ config_AM_fmeDepthCoarsening_depth_bounds = '0,20,30,40,50,80,110,140,170,230,41
 config_AM_fmeDepthCoarsening_fields = 'temperature,salinity,velocityZonal,velocityMeridional'
 
 config_AM_fmeDerivedFields_enable = .true.
+config_AM_fmeDerivedFields_compute_interval = '00-00-01_00:00:00'
 
 config_AM_fmeVerticalReduce_enable = .true.
+config_AM_fmeVerticalReduce_compute_interval = '00-00-01_00:00:00'
 config_AM_fmeVerticalReduce_reference_salinity = 34.8
 EOF
 
 if [ -f "${OCN_MAP}" ]; then
     cat >> user_nl_mpaso << EOF
-! Horizontal remapping to shifted Gaussian 180x360
+! Horizontal remapping: all FME AMs remap to lat-lon grid.
+! Disable native-grid stream output (output_stream='none') since all
+! fields are written directly to lat-lon NetCDF files via PIO.
+config_AM_fmeDepthCoarsening_output_stream = 'none'
+config_AM_fmeDepthCoarsening_horiz_remap_file = '${OCN_MAP}'
+config_AM_fmeDerivedFields_output_stream = 'none'
 config_AM_fmeDerivedFields_horiz_remap_file = '${OCN_MAP}'
+config_AM_fmeVerticalReduce_output_stream = 'none'
+config_AM_fmeVerticalReduce_horiz_remap_file = '${OCN_MAP}'
 EOF
 fi
 
@@ -219,11 +229,13 @@ cat >> user_nl_mpassi << 'EOF'
 !----------------------------------------------------------------------------------
 
 config_AM_fmeSeaiceDerivedFields_enable = .true.
+config_AM_fmeSeaiceDerivedFields_compute_interval = '00-00-01_00:00:00'
 EOF
 
 if [ -f "${OCN_MAP}" ]; then
     cat >> user_nl_mpassi << EOF
-! Horizontal remapping to shifted Gaussian 180x360
+! Horizontal remapping: disable native stream, write lat-lon output only.
+config_AM_fmeSeaiceDerivedFields_output_stream = 'none'
 config_AM_fmeSeaiceDerivedFields_horiz_remap_file = '${OCN_MAP}'
 EOF
 fi

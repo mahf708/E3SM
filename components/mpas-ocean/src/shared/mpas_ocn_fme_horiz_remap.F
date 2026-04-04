@@ -60,12 +60,8 @@ module ocn_fme_horiz_remap
    public :: ocn_fme_horiz_remap_init
    public :: ocn_fme_horiz_remap_field
    public :: ocn_fme_horiz_remap_active
-   public :: ocn_fme_horiz_remap_open_file
-   public :: ocn_fme_horiz_remap_def_var
-   public :: ocn_fme_horiz_remap_write_var
-   public :: ocn_fme_horiz_remap_write_time
-   public :: ocn_fme_horiz_remap_close_file
    public :: ocn_fme_horiz_remap_get_dims
+   public :: ocn_fme_remap_file_t
 
    type(shr_horiz_remap_t) :: remap_data
 
@@ -74,27 +70,30 @@ module ocn_fme_horiz_remap
    real(r8), allocatable :: ws_send_buf(:)
    logical :: is_initialized = .false.
 
-   ! PIO output file state
-   type(file_desc_t) :: pio_file
+   ! PIO decomposition cache (shared across all file instances)
    type(iosystem_desc_t), pointer :: pio_sys => null()
-   logical :: file_is_open = .false.
-   integer :: dim_lon_id, dim_lat_id, dim_time_id
-   integer :: time_record = 0
-
-   ! PIO decomposition cache
    type(io_desc_t) :: iodesc_2d
    logical :: iodesc_2d_valid = .false.
 
-   ! Variable registry for the current file (up to 100 vars)
+   ! Per-file output state: each AM creates its own instance
    integer, parameter :: max_pio_vars = 100
-   integer :: n_pio_vars = 0
-   character(len=64) :: pio_var_names(max_pio_vars)
-   type(var_desc_t) :: pio_var_descs(max_pio_vars)
-   integer :: pio_var_nlevs(max_pio_vars)
 
-   ! Time and coordinate variables
-   type(var_desc_t) :: pio_time_var
-   type(var_desc_t) :: pio_lon_var, pio_lat_var
+   type :: ocn_fme_remap_file_t
+      type(file_desc_t) :: pio_file
+      logical :: file_is_open = .false.
+      integer :: dim_lon_id = 0, dim_lat_id = 0, dim_time_id = 0
+      integer :: time_record = 0
+      integer :: n_pio_vars = 0
+      character(len=64) :: pio_var_names(max_pio_vars)
+      type(var_desc_t) :: pio_var_descs(max_pio_vars)
+      type(var_desc_t) :: pio_lon_var, pio_lat_var
+   contains
+      procedure :: open_file  => remap_file_open
+      procedure :: def_var    => remap_file_def_var
+      procedure :: write_var  => remap_file_write_var
+      procedure :: write_time => remap_file_write_time
+      procedure :: close_file => remap_file_close
+   end type ocn_fme_remap_file_t
 
 !***********************************************************************
 
@@ -287,188 +286,129 @@ contains
 
 !***********************************************************************
 
-   subroutine ocn_fme_horiz_remap_open_file(domain, filename, err)!{{{
-      !-----------------------------------------------------------------
-      ! Create a new NetCDF file for remapped lat-lon output.
-      ! Defines lon, lat, Time dimensions and coordinate variables.
-      !-----------------------------------------------------------------
+   !-----------------------------------------------------------------
+   ! Type-bound methods for per-file PIO output
+   !-----------------------------------------------------------------
 
-      type(domain_type), intent(inout) :: domain
+   subroutine remap_file_open(self, filename, err)!{{{
+      class(ocn_fme_remap_file_t), intent(inout) :: self
       character(len=*), intent(in) :: filename
       integer, intent(out) :: err
 
       integer :: nlat, nlon, ierr
 
       err = 0
-      if (.not. is_initialized) then
-         err = 1; return
-      end if
+      if (.not. is_initialized) then; err = 1; return; end if
 
       nlat = remap_data%nlat
       nlon = remap_data%nlon
 
-      ! Create file
-      ierr = pio_createfile(pio_sys, pio_file, PIO_IOTYPE_PNETCDF, &
+      ierr = pio_createfile(pio_sys, self%pio_file, PIO_IOTYPE_PNETCDF, &
            trim(filename), PIO_CLOBBER)
       if (ierr /= PIO_NOERR) then
-         call mpas_log_write('ocn_fme_horiz_remap: failed to create file ' &
-              // trim(filename), messageType=MPAS_LOG_ERR)
+         call mpas_log_write('ocn_fme_remap_file: failed to create ' // trim(filename), &
+              messageType=MPAS_LOG_ERR)
          err = ierr; return
       end if
 
-      ! Define dimensions
-      ierr = pio_def_dim(pio_file, 'lon', nlon, dim_lon_id)
-      ierr = pio_def_dim(pio_file, 'lat', nlat, dim_lat_id)
-      ierr = pio_def_dim(pio_file, 'Time', PIO_UNLIMITED, dim_time_id)
+      ierr = pio_def_dim(self%pio_file, 'lon', nlon, self%dim_lon_id)
+      ierr = pio_def_dim(self%pio_file, 'lat', nlat, self%dim_lat_id)
+      ierr = pio_def_dim(self%pio_file, 'Time', PIO_UNLIMITED, self%dim_time_id)
 
-      ! Define coordinate variables (descriptors saved at module scope for write_time)
-      ierr = pio_def_var(pio_file, 'lon', PIO_DOUBLE, (/dim_lon_id/), pio_lon_var)
-      ierr = pio_put_att(pio_file, pio_lon_var, 'units', 'degrees_east')
-      ierr = pio_put_att(pio_file, pio_lon_var, 'long_name', 'longitude')
+      ierr = pio_def_var(self%pio_file, 'lon', PIO_DOUBLE, &
+           (/self%dim_lon_id/), self%pio_lon_var)
+      ierr = pio_put_att(self%pio_file, self%pio_lon_var, 'units', 'degrees_east')
+      ierr = pio_def_var(self%pio_file, 'lat', PIO_DOUBLE, &
+           (/self%dim_lat_id/), self%pio_lat_var)
+      ierr = pio_put_att(self%pio_file, self%pio_lat_var, 'units', 'degrees_north')
 
-      ierr = pio_def_var(pio_file, 'lat', PIO_DOUBLE, (/dim_lat_id/), pio_lat_var)
-      ierr = pio_put_att(pio_file, pio_lat_var, 'units', 'degrees_north')
-      ierr = pio_put_att(pio_file, pio_lat_var, 'long_name', 'latitude')
+      ierr = pio_put_att(self%pio_file, PIO_GLOBAL, 'source', 'E3SM FME online remapping')
 
-      ! Define time variable
-      ierr = pio_def_var(pio_file, 'xtime', PIO_CHAR, (/dim_time_id/), pio_time_var)
+      self%n_pio_vars = 0
+      self%time_record = 0
+      self%file_is_open = .true.
 
-      ! Global attributes
-      ierr = pio_put_att(pio_file, PIO_GLOBAL, 'source', 'E3SM FME online remapping')
-      ierr = pio_put_att(pio_file, PIO_GLOBAL, 'Conventions', 'CF-1.6')
+   end subroutine remap_file_open!}}}
 
-      ! Reset variable registry
-      n_pio_vars = 0
-      time_record = 0
-
-      ! Don't end define mode yet — caller will add variables via def_var
-      ! End define mode will happen on first write
-
-      file_is_open = .true.
-
-      ! Write coordinate data (must be after enddef, handled in first write)
-
-   end subroutine ocn_fme_horiz_remap_open_file!}}}
-
-!***********************************************************************
-
-   subroutine ocn_fme_horiz_remap_def_var(varname, units, long_name, numlev, err)!{{{
-      !-----------------------------------------------------------------
-      ! Define a variable in the remapped output file.
-      ! Must be called after open_file and before any write_var.
-      ! For 2D fields: numlev=1 -> dims (lon, lat, Time)
-      !-----------------------------------------------------------------
+   subroutine remap_file_def_var(self, varname, units, long_name, numlev, err)!{{{
+      class(ocn_fme_remap_file_t), intent(inout) :: self
       character(len=*), intent(in) :: varname, units, long_name
       integer, intent(in) :: numlev
       integer, intent(out) :: err
-
       integer :: ierr
 
       err = 0
-      if (.not. file_is_open) then
-         err = 1; return
-      end if
+      if (.not. self%file_is_open) then; err = 1; return; end if
 
-      n_pio_vars = n_pio_vars + 1
-      if (n_pio_vars > max_pio_vars) then
-         call mpas_log_write('ocn_fme_horiz_remap: too many variables defined', &
-              messageType=MPAS_LOG_ERR)
-         err = 2; return
-      end if
+      self%n_pio_vars = self%n_pio_vars + 1
+      if (self%n_pio_vars > max_pio_vars) then; err = 2; return; end if
 
-      pio_var_names(n_pio_vars) = varname
-      pio_var_nlevs(n_pio_vars) = numlev
+      self%pio_var_names(self%n_pio_vars) = varname
+      ierr = pio_def_var(self%pio_file, trim(varname), PIO_REAL, &
+           (/self%dim_lon_id, self%dim_lat_id, self%dim_time_id/), &
+           self%pio_var_descs(self%n_pio_vars))
+      ierr = pio_put_att(self%pio_file, self%pio_var_descs(self%n_pio_vars), &
+           'units', trim(units))
+      ierr = pio_put_att(self%pio_file, self%pio_var_descs(self%n_pio_vars), &
+           'long_name', trim(long_name))
 
-      ! Define as (lon, lat, Time) for 2D
-      ierr = pio_def_var(pio_file, trim(varname), PIO_REAL, &
-           (/dim_lon_id, dim_lat_id, dim_time_id/), &
-           pio_var_descs(n_pio_vars))
-      ierr = pio_put_att(pio_file, pio_var_descs(n_pio_vars), 'units', trim(units))
-      ierr = pio_put_att(pio_file, pio_var_descs(n_pio_vars), 'long_name', trim(long_name))
+   end subroutine remap_file_def_var!}}}
 
-   end subroutine ocn_fme_horiz_remap_def_var!}}}
-
-!***********************************************************************
-
-   subroutine ocn_fme_horiz_remap_write_var(varname, fld_out, numlev, err)!{{{
-      !-----------------------------------------------------------------
-      ! Write a remapped field to the output file.
-      ! fld_out should be the result of ocn_fme_horiz_remap_field.
-      !-----------------------------------------------------------------
+   subroutine remap_file_write_var(self, varname, fld_out, numlev, err)!{{{
+      class(ocn_fme_remap_file_t), intent(inout) :: self
       character(len=*), intent(in) :: varname
       real(r8), intent(in) :: fld_out(:,:)
       integer, intent(in) :: numlev
       integer, intent(out) :: err
-
       integer :: iv, ierr
       real(r8) :: fld_1d(remap_data%n_b_local)
 
       err = 0
-      if (.not. file_is_open) then
-         err = 1; return
-      end if
+      if (.not. self%file_is_open) then; err = 1; return; end if
 
-      ! Find variable index
-      do iv = 1, n_pio_vars
-         if (trim(pio_var_names(iv)) == trim(varname)) then
-            ! Set the time record frame before writing
-            call pio_setframe(pio_file, pio_var_descs(iv), &
-                 int(time_record, PIO_OFFSET_KIND))
-            ! Write 2D field using PIO decomposition
+      do iv = 1, self%n_pio_vars
+         if (trim(self%pio_var_names(iv)) == trim(varname)) then
+            call pio_setframe(self%pio_file, self%pio_var_descs(iv), &
+                 int(self%time_record, PIO_OFFSET_KIND))
             fld_1d(1:remap_data%n_b_local) = real(fld_out(1:remap_data%n_b_local, 1), r8)
-            call pio_write_darray(pio_file, pio_var_descs(iv), iodesc_2d, fld_1d, ierr)
+            call pio_write_darray(self%pio_file, self%pio_var_descs(iv), &
+                 iodesc_2d, fld_1d, ierr)
             return
          end if
       end do
-
-      ! Variable not found
-      call mpas_log_write('ocn_fme_horiz_remap_write_var: variable not found: ' &
-           // trim(varname))
       err = 3
 
-   end subroutine ocn_fme_horiz_remap_write_var!}}}
+   end subroutine remap_file_write_var!}}}
 
-!***********************************************************************
-
-   subroutine ocn_fme_horiz_remap_write_time(time_str, err)!{{{
-      !-----------------------------------------------------------------
-      ! Advance the time record and write coordinate data on first call.
-      ! Must be called once per output timestep before write_var calls.
-      !-----------------------------------------------------------------
+   subroutine remap_file_write_time(self, time_str, err)!{{{
+      class(ocn_fme_remap_file_t), intent(inout) :: self
       character(len=*), intent(in) :: time_str
       integer, intent(out) :: err
-
       integer :: ierr
 
       err = 0
-
-      if (time_record == 0) then
-         ! First write: end define mode and write coordinates
-         ierr = pio_enddef(pio_file)
-
-         ! Write lat/lon coordinate variables using module-level var descriptors
-         ierr = pio_put_var(pio_file, pio_lon_var, remap_data%lon(1:remap_data%nlon))
-         ierr = pio_put_var(pio_file, pio_lat_var, remap_data%lat(1:remap_data%nlat))
+      if (self%time_record == 0) then
+         ierr = pio_enddef(self%pio_file)
+         ierr = pio_put_var(self%pio_file, self%pio_lon_var, &
+              remap_data%lon(1:remap_data%nlon))
+         ierr = pio_put_var(self%pio_file, self%pio_lat_var, &
+              remap_data%lat(1:remap_data%nlat))
       end if
+      self%time_record = self%time_record + 1
 
-      time_record = time_record + 1
+   end subroutine remap_file_write_time!}}}
 
-   end subroutine ocn_fme_horiz_remap_write_time!}}}
-
-!***********************************************************************
-
-   subroutine ocn_fme_horiz_remap_close_file(err)!{{{
+   subroutine remap_file_close(self, err)!{{{
+      class(ocn_fme_remap_file_t), intent(inout) :: self
       integer, intent(out) :: err
-
       err = 0
-      if (file_is_open) then
-         call pio_closefile(pio_file)
-         file_is_open = .false.
-         n_pio_vars = 0
-         time_record = 0
+      if (self%file_is_open) then
+         call pio_closefile(self%pio_file)
+         self%file_is_open = .false.
+         self%n_pio_vars = 0
+         self%time_record = 0
       end if
-
-   end subroutine ocn_fme_horiz_remap_close_file!}}}
+   end subroutine remap_file_close!}}}
 
 !***********************************************************************
 
