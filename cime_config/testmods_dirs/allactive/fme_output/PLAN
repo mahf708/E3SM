@@ -1,15 +1,15 @@
 # FME Online Output Processing — Implementation Plan
 
 ## Branch: claude/extend-derived-diagnostics-LNfYG
-## Base: origin/combine-io-mayhem (shared infra + EAM wrappers)
+## Base: origin/master (rebased 2026-04-04)
 
 ---
 
-## What Exists
+## Current State
 
 ### Shared Infrastructure (in share/util/)
 - `shr_horiz_remap_mod.F90` — Type-bound CRS SpMV + source-gather MPI. 3-phase:
-  read_mapfile → build_comm → apply. Reads ESMF weight files.
+  read_mapfile -> build_comm -> apply. Reads ESMF weight files.
 - `shr_vcoarsen_mod.F90` — Coordinate-agnostic overlap-weighted averaging
   (atmosphere pressure, ocean depth, land soil). Also: level selection,
   category sum/wgtavg for sea ice.
@@ -21,47 +21,31 @@
 - `eam_vcoarsen.F90` — 3 modes: overlap avg, level select, pressure select
 - `eam_derived.F90` — Chained expressions, tendencies, stage-aware phys/dyn split
 - Integration: cam_history.F90, physpkg.F90, runtime_opts.F90, cam_comp.F90
+- STATUS: Mature. Transparent remapping within cam_history. No changes needed.
 
 ### MPAS-Ocean (in components/mpas-ocean/src/)
 Analysis members (analysis_members/):
 - `mpas_ocn_fme_depth_coarsening.F` — Layer-thickness-weighted vertical averaging
   onto configurable depth levels. Generic field dispatch from namelist.
-  Uses shr_vcoarsen_avg per cell.
+  Uses shr_vcoarsen_avg per cell. Optional remapped output.
 - `mpas_ocn_fme_derived_fields.F` — SST, SSS, combined surface heat flux.
   When horiz_remap_file set, remaps to lat-lon via PIO.
 - `mpas_ocn_fme_vertical_reduce.F` — Column-integrated OHC, FWC, KE plus
-  5 generic slots (vertReduceField01..05) for user-configured reductions.
+  5 generic slots for user-configured reductions. Optional remapped output.
 Shared (shared/):
 - `mpas_ocn_fme_horiz_remap.F` — Wraps shr_horiz_remap_t for MPAS cell
-  decomposition. PIO output to (lon, lat, Time) NetCDF files.
+  decomposition. Per-file PIO output via ocn_fme_remap_file_t type.
+- STATUS: Functional. Needs filename/metadata/completeness improvements.
 
 ### MPAS-Sea-Ice (in components/mpas-seaice/src/)
 - `mpas_seaice_fme_derived_fields.F` — Category aggregation (ice area/volume/snow
   totals, area-weighted means) + air stress rotation via
-  seaice_latlon_vector_rotation_backward. Horiz remap integration.
-- `mpas_seaice_fme_horiz_remap.F` — Same PIO pattern as MPAS-O.
+  seaice_latlon_vector_rotation_backward. Optional horiz remap.
+- `mpas_seaice_fme_horiz_remap.F` — Module-scope PIO pattern (single file).
+- STATUS: Functional. Only 3 of 7 fields remapped. Needs same fixes as MPAS-O.
 
-### ELM (DEFERRED — files removed)
-- `elm_fme_derived.F90` and `elm_fme_vcoarsen.F90` were removed.
-- Build blockers: histFileMod internals (masterlist, nfmaster) are private;
-  hist_addfld1d requires pointer dummy args, not array sections of target vars.
-- Reimplementation: pass state pointers explicitly; use col_ptr_t wrapper type.
-- Shell_commands has namelist options commented out for future re-enabling.
-
-### MOSART (DEFERRED — files removed)
-- `RtmFmeDerived.F90` was removed.
-- Build blockers: RtmSpmd exports mpicom_rof not mpicom; same ptr_rof issue.
-- Reimplementation: straightforward once col_ptr_t pattern is applied.
-- Shell_commands has namelist options commented out for future re-enabling.
-
-### Testmod: cime_config/testmods_dirs/allactive/fme_output/
-- user_nl_eam: 6-hourly, 14-layer vcoarsen, derived fields + tendencies
-- user_nl_elm: 6-hourly, vcoarsen/derived configs (commented)
-- user_nl_mosart: 6-hourly
-- user_nl_mpaso: daily, depth coarsening + derived + vertical reduce
-- user_nl_mpassi: daily, derived fields + air stress
-- verify_fme_output.py: Python validation script for output correctness
-- FUTURE_WORK: remaining items and testing checklist
+### ELM and MOSART (DEFERRED — files removed)
+- See FUTURE_WORK items 12-13.
 
 ---
 
@@ -71,13 +55,61 @@ Shared (shared/):
    init/compute/restart/finalize. Variables defined in Registry XML.
    Output via MPAS stream manager (native grid) or PIO (remapped grid).
 
-2. **Remapped output bypasses MPAS streams** because streams only support
-   nCells. PIO writes directly to (lon, lat, Time) NetCDF files.
+2. **Remapped output bypasses MPAS streams** because the stream manager
+   only recognizes nCells/nEdges/nVertices as decomposed dimensions
+   (hard-coded in mpas_stream_manager.F:is_decomposed_dim). There is
+   no mechanism to register regular lat-lon grids as stream output grids.
+   PIO writes directly to (lon, lat, Time) NetCDF files.
 
 3. **Shared modules are pure computation** — no I/O, MPI, or component
    dependencies. Each component provides a thin wrapper.
 
 4. **FME naming** instead of ACE — reflects full-model-emulation intent.
+
+5. **Separate files are architecturally necessary** for MPAS remapped
+   output. The goal is to make these files well-named, complete, and
+   with proper metadata — not to integrate into the stream manager.
+
+---
+
+## Architecture Comparison: EAM vs MPAS
+
+EAM:
+  horiz_remap_file(tape) -> cam_history accumulates on native grid
+  -> dump_field applies remap at write time -> PIO writes to (lon,lat)
+  -> SAME filename, SAME tape, transparent to user
+
+MPAS:
+  horiz_remap_file(AM) -> AM computes on native grid -> stores in pool
+  -> stream manager writes native file (or skips if output_stream='none')
+  -> SEPARATELY: AM remaps fields -> PIO writes to SEPARATE file
+
+The difference is structural (stream manager limitation), not a bug.
+The work ahead is to make the SEPARATE file experience as clean as
+possible: proper naming, date rotation, complete field sets, metadata.
+
+---
+
+## Next Steps (see REVIEW for full analysis)
+
+### Phase 1: Minimum Viable Remapped Output
+1. Fix filenames: case-aware, date-templated, instance-aware
+2. Complete MPAS-SI remapped field set (add 4 missing fields)
+3. Add _FillValue attributes to all remapped variables
+4. Add bounds check on max_pio_vars (100 limit)
+5. Add associated() guards on velocity pointers
+
+### Phase 2: Parity with Native Stream Output
+6. File rotation by date (match stream filename_interval)
+7. Conditional stream generation in buildnml
+8. CF-compliant metadata (Conventions, calendar, provenance)
+9. Depth coordinate in 3D remapped output
+
+### Phase 3: Clean Architecture
+10. 3D PIO decomposition for depth-coarsened fields
+11. Per-AM remap instances (remove singleton constraint)
+12. Move file creation to init phase
+13. Remap all fields in native stream (not hardcoded subset)
 
 ---
 
@@ -97,9 +129,6 @@ Shared (shared/):
 Just add to user_nl_eam: `derived_fld_defs = 'NEW_FIELD=A+B*C'`
 No code changes needed — the expression parser handles it dynamically.
 
-### ELM: Add a new source field for vcoarsen (DEFERRED)
-ELM FME files are not yet implemented. See FUTURE_WORK items 3 and 4.
-
 ---
 
 ## How to Test
@@ -116,12 +145,12 @@ python verify_fme_output.py --rundir . --verbose
 
 ---
 
-## Remaining Work (Priority 3 — see FUTURE_WORK)
+## Documents in This Directory
 
-- Map file generation for production grids
-- Online spherical harmonics roundtrip
-- Wetmask computation for ocean
-- Extend remapped output to depth coarsening and vertical reduce
-- Shared module robustness (MPI error checks, monotonicity validation)
-- Unit tests for shared modules
-- Documentation
+- PLAN (this file) — Architecture overview and implementation roadmap
+- REVIEW — Detailed code review with findings and recommendations
+- FUTURE_WORK — Prioritized work items and testing checklist
+- README — Quick-start description
+- shell_commands — Case setup and namelist generation
+- user_nl_* — Per-component namelist settings
+- verify_fme_output.py — Python validation script

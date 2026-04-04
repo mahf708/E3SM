@@ -39,6 +39,9 @@ module ocn_fme_horiz_remap
    use mpas_pool_routines
    use mpas_dmpar
    use mpas_kind_types
+   use mpas_timekeeping
+   use mpas_stream_manager, only: MPAS_stream_mgr_get_property, &
+        MPAS_STREAM_PROPERTY_FILENAME
    use mpas_log, only: mpas_log_write
 
    use shr_kind_mod, only: r8 => shr_kind_r8
@@ -62,6 +65,7 @@ module ocn_fme_horiz_remap
    public :: ocn_fme_horiz_remap_active
    public :: ocn_fme_horiz_remap_get_dims
    public :: ocn_fme_remap_file_t
+   public :: ocn_fme_remap_build_filename
 
    type(shr_horiz_remap_t) :: remap_data
 
@@ -323,6 +327,7 @@ contains
       ierr = pio_put_att(self%pio_file, self%pio_lat_var, 'units', 'degrees_north')
 
       ierr = pio_put_att(self%pio_file, PIO_GLOBAL, 'source', 'E3SM FME online remapping')
+      ierr = pio_put_att(self%pio_file, PIO_GLOBAL, 'Conventions', 'CF-1.8')
 
       self%n_pio_vars = 0
       self%time_record = 0
@@ -336,12 +341,19 @@ contains
       integer, intent(in) :: numlev
       integer, intent(out) :: err
       integer :: ierr
+      real(kind=4) :: fill_val
 
       err = 0
       if (.not. self%file_is_open) then; err = 1; return; end if
 
       self%n_pio_vars = self%n_pio_vars + 1
-      if (self%n_pio_vars > max_pio_vars) then; err = 2; return; end if
+      if (self%n_pio_vars > max_pio_vars) then
+         call mpas_log_write('ocn_fme_remap_file: exceeded max_pio_vars=$i for var: ' &
+              // trim(varname), messageType=MPAS_LOG_ERR, &
+              intArgs=(/max_pio_vars/))
+         self%n_pio_vars = self%n_pio_vars - 1
+         err = 2; return
+      end if
 
       self%pio_var_names(self%n_pio_vars) = varname
       ierr = pio_def_var(self%pio_file, trim(varname), PIO_REAL, &
@@ -351,6 +363,9 @@ contains
            'units', trim(units))
       ierr = pio_put_att(self%pio_file, self%pio_var_descs(self%n_pio_vars), &
            'long_name', trim(long_name))
+      fill_val = 1.0E34
+      ierr = pio_put_att(self%pio_file, self%pio_var_descs(self%n_pio_vars), &
+           '_FillValue', fill_val)
 
    end subroutine remap_file_def_var!}}}
 
@@ -424,6 +439,79 @@ contains
    logical function ocn_fme_horiz_remap_active()!{{{
       ocn_fme_horiz_remap_active = is_initialized
    end function ocn_fme_horiz_remap_active!}}}
+
+!***********************************************************************
+
+   subroutine ocn_fme_remap_build_filename(domain, streamName, filename, err)!{{{
+   !> Build a date-stamped remapped output filename by querying the stream
+   !> manager for the native stream's filename_template and substituting
+   !> the current date. The native stream's filename_template is set by
+   !> buildnml and contains the casename, instance string, and $Y-$M-$D
+   !> date placeholders (e.g., "mycase.mpaso.hist.am.fmeDerived.$Y-$M-$D.nc").
+   !> We replace the ".nc" extension with ".remapped.nc" and substitute dates.
+
+      type(domain_type), intent(inout) :: domain
+      character(len=*), intent(in) :: streamName
+      character(len=*), intent(out) :: filename
+      integer, intent(out) :: err
+
+      character(len=StrKIND) :: tmpl
+      type(MPAS_Time_Type) :: currTime
+      integer :: yr, mo, dy, ierr, idx
+      character(len=4) :: yr_str
+      character(len=2) :: mo_str, dy_str
+
+      err = 0
+      filename = ''
+
+      ! Query the stream manager for the native stream's filename template
+      call MPAS_stream_mgr_get_property(domain % streamManager, &
+           trim(streamName), MPAS_STREAM_PROPERTY_FILENAME, tmpl, ierr=ierr)
+      if (ierr /= 0) then
+         call mpas_log_write('ocn_fme_remap_build_filename: could not query stream ' &
+              // trim(streamName) // ', using fallback name', messageType=MPAS_LOG_WARN)
+         ! Fallback: use stream name directly with date
+         tmpl = trim(streamName) // '.$Y-$M-$D.nc'
+      end if
+
+      ! Insert ".remapped" before ".nc" extension
+      idx = index(tmpl, '.nc', back=.true.)
+      if (idx > 0) then
+         tmpl = tmpl(1:idx-1) // '.remapped.nc'
+      else
+         tmpl = trim(tmpl) // '.remapped.nc'
+      end if
+
+      ! Substitute date placeholders from current model time
+      currTime = mpas_get_clock_time(domain % clock, MPAS_NOW, ierr)
+      call mpas_get_time(currTime, YYYY=yr, MM=mo, DD=dy, ierr=ierr)
+
+      write(yr_str, '(I4.4)') yr
+      write(mo_str, '(I2.2)') mo
+      write(dy_str, '(I2.2)') dy
+
+      ! Replace $Y, $M, $D tokens
+      filename = tmpl
+      call replace_token(filename, '$Y', yr_str)
+      call replace_token(filename, '$M', mo_str)
+      call replace_token(filename, '$D', dy_str)
+
+   end subroutine ocn_fme_remap_build_filename!}}}
+
+!***********************************************************************
+
+   subroutine replace_token(str, token, replacement)!{{{
+      character(len=*), intent(inout) :: str
+      character(len=*), intent(in) :: token, replacement
+      integer :: idx
+      character(len=len(str)) :: tmp
+
+      idx = index(str, token)
+      if (idx > 0) then
+         tmp = str(1:idx-1) // trim(replacement) // str(idx+len(token):)
+         str = tmp
+      end if
+   end subroutine replace_token!}}}
 
 end module ocn_fme_horiz_remap
 

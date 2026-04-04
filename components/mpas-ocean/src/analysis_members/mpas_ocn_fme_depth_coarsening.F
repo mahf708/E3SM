@@ -36,7 +36,8 @@ module ocn_fme_depth_coarsening
    use mpas_log, only: mpas_log_write
    use ocn_fme_horiz_remap, only: ocn_fme_horiz_remap_init, &
         ocn_fme_horiz_remap_field, ocn_fme_horiz_remap_active, &
-        ocn_fme_horiz_remap_get_dims, ocn_fme_remap_file_t
+        ocn_fme_horiz_remap_get_dims, ocn_fme_remap_file_t, &
+        ocn_fme_remap_build_filename
 
    implicit none
    private
@@ -233,7 +234,7 @@ contains
       integer :: ifld, kOut, ierr
       real(r8), allocatable :: fld_remap(:,:)
       real(kind=RKIND), allocatable :: field_1lev(:,:)
-      character(len=StrKIND) :: timeStr
+      character(len=StrKIND) :: timeStr, remap_filename
       character(len=128) :: varName, longName
       type(MPAS_Time_Type) :: currTime
       ! Pointers to coarsened arrays for generic field loop
@@ -256,9 +257,19 @@ contains
          case ('salinity')
             doSalinity = .true.
          case ('velocityZonal')
-            doVelocityZonal = .true.
+            if (associated(velocityZonal)) then
+               doVelocityZonal = .true.
+            else
+               call mpas_log_write('fmeDepthCoarsening: velocityZonal not available, skipping', &
+                    messageType=MPAS_LOG_WARN)
+            end if
          case ('velocityMeridional')
-            doVelocityMeridional = .true.
+            if (associated(velocityMeridional)) then
+               doVelocityMeridional = .true.
+            else
+               call mpas_log_write('fmeDepthCoarsening: velocityMeridional not available, skipping', &
+                    messageType=MPAS_LOG_WARN)
+            end if
          end select
       end do
 
@@ -368,7 +379,9 @@ contains
 
             ! Open remapped output file on first compute call and define variables
             if (.not. remap_file_opened) then
-               call remap_outfile%open_file('fmeDepthCoarseningRemapped.nc', ierr)
+               call ocn_fme_remap_build_filename(domain, &
+                    'fmeDepthCoarseningOutput', remap_filename, ierr)
+               call remap_outfile%open_file(trim(remap_filename), ierr)
                if (ierr == 0) then
                   ! Define split-level 2D variables for each coarsened field
                   do ifld = 1, nCoarsenFields

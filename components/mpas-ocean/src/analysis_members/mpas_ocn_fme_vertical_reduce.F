@@ -40,7 +40,8 @@ module ocn_fme_vertical_reduce
    use shr_kind_mod, only: r8 => shr_kind_r8
    use ocn_fme_horiz_remap, only: ocn_fme_horiz_remap_init, &
         ocn_fme_horiz_remap_field, ocn_fme_horiz_remap_active, &
-        ocn_fme_horiz_remap_get_dims, ocn_fme_remap_file_t
+        ocn_fme_horiz_remap_get_dims, ocn_fme_remap_file_t, &
+        ocn_fme_remap_build_filename
 
    implicit none
    private
@@ -255,7 +256,7 @@ contains
       ! Remap workspace
       real(r8), allocatable :: fld_remap(:,:)
       real(kind=RKIND), allocatable :: field_1lev(:,:)
-      character(len=StrKIND) :: timeStr
+      character(len=StrKIND) :: timeStr, remap_filename
       type(MPAS_Time_Type) :: currTime
 
       err = 0
@@ -298,10 +299,12 @@ contains
                     / referenceSalinity * h_k
 
                ! Kinetic energy: 0.5 * (u^2 + v^2) * h * rho_sw
-               ke_sum = ke_sum + 0.5_RKIND &
-                    * (velocityZonal(k, iCell)**2 &
-                     + velocityMeridional(k, iCell)**2) &
-                    * h_k * rho_sw
+               if (associated(velocityZonal) .and. associated(velocityMeridional)) then
+                  ke_sum = ke_sum + 0.5_RKIND &
+                       * (velocityZonal(k, iCell)**2 &
+                        + velocityMeridional(k, iCell)**2) &
+                       * h_k * rho_sw
+               end if
             end do
 
             oceanHeatContent(iCell) = ohc_sum
@@ -358,7 +361,9 @@ contains
 
             ! Open remapped output file on first compute call
             if (.not. remap_file_opened) then
-               call remap_outfile%open_file('fmeVerticalReduceRemapped.nc', ierr)
+               call ocn_fme_remap_build_filename(domain, &
+                    'fmeVerticalReduceOutput', remap_filename, ierr)
+               call remap_outfile%open_file(trim(remap_filename), ierr)
                if (ierr == 0) then
                   call remap_outfile%def_var('oceanHeatContent', 'J m^-2', &
                        'Column-integrated ocean heat content (remapped)', 1, ierr)
