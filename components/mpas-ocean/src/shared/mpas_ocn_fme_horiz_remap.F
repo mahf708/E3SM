@@ -317,7 +317,21 @@ contains
          end do
       end if
 
+      ! DEBUG: print send buffer stats on rank 0
+      if (domain % dminfo % my_proc_id == 0 .and. needed > 0) then
+         call mpas_log_write('DEBUG remap_field: n_send=$i, numlev=$i, buf(1)=$r, buf_max=$r', &
+              intArgs=(/remap_data%n_send_total, numlev/), &
+              realArgs=(/ws_send_buf(1), maxval(abs(ws_send_buf(1:needed)))/))
+      end if
+
       call remap_data%apply(ws_send_buf, numlev, fld_out, comm, nprocs, err)
+
+      ! DEBUG: print output stats on rank 0
+      if (domain % dminfo % my_proc_id == 0 .and. remap_data%n_b_local > 0) then
+         call mpas_log_write('DEBUG remap_field output: n_b_local=$i, out(1)=$r, out_max=$r', &
+              intArgs=(/remap_data%n_b_local/), &
+              realArgs=(/fld_out(1, 1), maxval(abs(fld_out(1:remap_data%n_b_local, 1)))/))
+      end if
 
    end subroutine ocn_fme_horiz_remap_field!}}}
 
