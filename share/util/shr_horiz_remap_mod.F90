@@ -50,6 +50,11 @@ module shr_horiz_remap_mod
     real(r8), allocatable :: lat(:)   ! (nlat)
     real(r8), allocatable :: lon(:)   ! (nlon)
 
+    ! Target cell ocean fraction for renormalization of remapped values.
+    ! frac_b_local(i) = sum of weights for target cell i; dividing by this
+    ! corrects for partial ocean coverage at coastlines.
+    real(r8), allocatable :: frac_b_local(:)  ! (n_b_local)
+
     ! CRS sparse matrix for SpMV (built during build_comm).
     ! All entries for a given output row are contiguous — cache-friendly
     ! for the SpMV inner loop.
@@ -240,6 +245,22 @@ CONTAINS
       pio_ierr = pio_inq_varid(pioid, 'yc_b', vid)
       if (pio_ierr /= pio_noerr) then; ierr = 19; call pio_closefile(pioid); return; end if
       pio_ierr = pio_get_var(pioid, vid, yc_b)
+
+      ! --- target cell coverage fraction (for renormalization) ---
+      ! frac_b = sum of remap weights per target cell. When source grid
+      ! has land cells excluded, frac_b < 1 at coastlines. Dividing the
+      ! remapped field by frac_b corrects for partial coverage.
+      block
+        real(r8), allocatable :: frac_b_all(:)
+        allocate(frac_b_all(n_b))
+        pio_ierr = pio_inq_varid(pioid, 'frac_b', vid)
+        if (pio_ierr == pio_noerr) then
+          pio_ierr = pio_get_var(pioid, vid, frac_b_all)
+          allocate(rd%frac_b_local(rd%n_b_local))
+          rd%frac_b_local(1:rd%n_b_local) = frac_b_all(rd%row_start:rd%row_start+rd%n_b_local-1)
+        end if
+        deallocate(frac_b_all)
+      end block
 
       call pio_closefile(pioid)
 
@@ -464,6 +485,24 @@ CONTAINS
         end do
       end if
     end do
+
+    ! Renormalize by frac_b to correct for partial ocean coverage.
+    ! Without this, coastal target cells are systematically low because
+    ! the weight sum < 1 (land source cells contribute zero).
+    if (allocated(rd%frac_b_local)) then
+      do i = 1, rd%n_b_local
+        if (rd%frac_b_local(i) > 1.0e-6_r8) then
+          do k = 1, numlev
+            fld_out(i, k) = fld_out(i, k) / rd%frac_b_local(i)
+          end do
+        else
+          ! Pure land cell: zero out
+          do k = 1, numlev
+            fld_out(i, k) = 0.0_r8
+          end do
+        end if
+      end do
+    end if
 
   end subroutine shr_horiz_remap_apply
 
