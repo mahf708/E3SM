@@ -162,6 +162,15 @@ contains
       end do
       if (allocated(send_gcol_list)) deallocate(send_gcol_list)
 
+      ! Validate: all send_local_cell entries must be > 0
+      do i = 1, remap_data%n_send_total
+         if (send_local_cell(i) <= 0) then
+            call mpas_log_write('seaice_fme_horiz_remap_init: WARNING send_local_cell($i)=0', &
+                 intArgs=(/i/), messageType=MPAS_LOG_WARN)
+            send_local_cell(i) = 1
+         end if
+      end do
+
       pio_sys => domain % ioContext % pio_iosystem
 
       ! Build 2D PIO decomposition
