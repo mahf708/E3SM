@@ -69,6 +69,7 @@ module seaice_fme_horiz_remap
    integer :: n_pio_vars = 0
    character(len=64) :: pio_var_names(max_pio_vars)
    type(var_desc_t) :: pio_var_descs(max_pio_vars)
+   type(var_desc_t) :: pio_lon_var, pio_lat_var
 
 contains
 
@@ -81,11 +82,12 @@ contains
       type(mpas_pool_type), pointer :: meshPool
       integer, pointer :: nCellsSolve
       integer, dimension(:), pointer :: indexToCellID
-      integer :: myrank, nprocs, comm, ierr, iCell, gcol, i, n_send
+      integer :: myrank, nprocs, comm, ierr, iCell, gcol, i
       integer, allocatable :: gcol_to_rank(:), send_gcol_list(:)
       integer(PIO_OFFSET_KIND), allocatable :: idof(:)
 
       err = 0
+      if (is_initialized) return
       if (len_trim(mapfile) == 0 .or. trim(mapfile) == 'none') then
          is_initialized = .false.; return
       end if
@@ -115,20 +117,20 @@ contains
       end do
 
       call remap_data%build_comm(gcol_to_rank, comm, myrank, nprocs, &
-           send_gcol_list, n_send, ierr)
+           send_gcol_list, ierr)
       deallocate(gcol_to_rank)
       if (ierr /= 0) then
          err = ierr; return
       end if
 
-      allocate(send_local_cell(n_send))
+      allocate(send_local_cell(remap_data%n_send_total))
       send_local_cell(:) = 0
       block => domain % blocklist
       do while (associated(block))
          call mpas_pool_get_subpool(block % structs, 'mesh', meshPool)
          call mpas_pool_get_dimension(block % dimensions, 'nCellsSolve', nCellsSolve)
          call mpas_pool_get_array(meshPool, 'indexToCellID', indexToCellID)
-         do i = 1, n_send
+         do i = 1, remap_data%n_send_total
             if (send_local_cell(i) > 0) cycle
             do iCell = 1, nCellsSolve
                if (indexToCellID(iCell) == send_gcol_list(i)) then
@@ -199,6 +201,14 @@ contains
       ierr = pio_def_dim(pio_file, 'lat', remap_data%nlat, dim_lat_id)
       ierr = pio_def_dim(pio_file, 'Time', PIO_UNLIMITED, dim_time_id)
 
+      ! Define coordinate variables; descriptors saved at module scope for write_time
+      ierr = pio_def_var(pio_file, 'lon', PIO_DOUBLE, (/dim_lon_id/), pio_lon_var)
+      ierr = pio_put_att(pio_file, pio_lon_var, 'units', 'degrees_east')
+      ierr = pio_put_att(pio_file, pio_lon_var, 'long_name', 'longitude')
+      ierr = pio_def_var(pio_file, 'lat', PIO_DOUBLE, (/dim_lat_id/), pio_lat_var)
+      ierr = pio_put_att(pio_file, pio_lat_var, 'units', 'degrees_north')
+      ierr = pio_put_att(pio_file, pio_lat_var, 'long_name', 'latitude')
+
       n_pio_vars = 0
       time_record = 0
       file_is_open = .true.
@@ -243,9 +253,10 @@ contains
 
       err = 0
       if (time_record == 0) then
-         call pio_enddef(pio_file)
-         ierr = pio_put_var(pio_file, 'lon', remap_data%lon(1:remap_data%nlon))
-         ierr = pio_put_var(pio_file, 'lat', remap_data%lat(1:remap_data%nlat))
+         ierr = pio_enddef(pio_file)
+         ! Write lat/lon coordinate variables using module-level var descriptors
+         ierr = pio_put_var(pio_file, pio_lon_var, remap_data%lon(1:remap_data%nlon))
+         ierr = pio_put_var(pio_file, pio_lat_var, remap_data%lat(1:remap_data%nlat))
       end if
       time_record = time_record + 1
    end subroutine seaice_fme_horiz_remap_write_time!}}}

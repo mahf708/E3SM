@@ -91,6 +91,7 @@ contains
          if (tempStr(i:i) == ',') nBounds = nBounds + 1
       end do
 
+      if (allocated(depthBounds)) deallocate(depthBounds)
       allocate(depthBounds(nBounds))
 
       ! Parse comma-separated values
@@ -114,6 +115,7 @@ contains
            config_AM_fmeDepthCoarsening_fields)
 
       tempStr = trim(config_AM_fmeDepthCoarsening_fields)
+      if (allocated(coarsenFieldNames)) deallocate(coarsenFieldNames)
       if (trim(tempStr) == 'none' .or. len_trim(tempStr) == 0) then
          ! Default: compute all four fields
          nCoarsenFields = 4

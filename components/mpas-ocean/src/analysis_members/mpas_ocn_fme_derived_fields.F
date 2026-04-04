@@ -129,12 +129,10 @@ contains
       real(kind=RKIND), dimension(:), pointer :: longWaveHeatFluxDown
       real(kind=RKIND), dimension(:), pointer :: latentHeatFlux
       real(kind=RKIND), dimension(:), pointer :: sensibleHeatFlux
-      real(kind=RKIND), dimension(:), pointer :: ssh_ptr
-
       ! Remap workspace
       real(r8), allocatable :: fld_remap(:,:)
       real(kind=RKIND), allocatable :: field_1lev(:,:)
-      character(len=64) :: timeStr
+      character(len=StrKIND) :: timeStr
       type(MPAS_Time_Type) :: currTime
 
       err = 0

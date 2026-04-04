@@ -41,20 +41,18 @@ Shared (shared/):
   seaice_latlon_vector_rotation_backward. Horiz remap integration.
 - `mpas_seaice_fme_horiz_remap.F` — Same PIO pattern as MPAS-O.
 
-### ELM (in components/elm/src/main/)
-- `elm_fme_derived.F90` — Scans histFileMod masterlist for fields by name,
-  evaluates shr_derived_eval. Registered with hist_addfld1d (gridcell-level).
-- `elm_fme_vcoarsen.F90` — Maps TSOI→col_es%t_soisno, H2OSOI→col_ws%h2osoi_vol,
-  SOILICE→col_ws%h2osoi_ice. Calls shr_vcoarsen_avg with zisoi coordinates.
-  Registered with hist_addfld1d (column-level).
-- Integration: controlMod (readnl), elm_initializeMod (register before
-  hist_htapes_build), elm_driver (update before hist_update_hbuf).
+### ELM (DEFERRED — files removed)
+- `elm_fme_derived.F90` and `elm_fme_vcoarsen.F90` were removed.
+- Build blockers: histFileMod internals (masterlist, nfmaster) are private;
+  hist_addfld1d requires pointer dummy args, not array sections of target vars.
+- Reimplementation: pass state pointers explicitly; use col_ptr_t wrapper type.
+- Shell_commands has namelist options commented out for future re-enabling.
 
-### MOSART (in components/mosart/src/riverroute/)
-- `RtmFmeDerived.F90` — Maps field names to rtmCTL members (QSUR_LIQ,
-  QSUB_LIQ, VOLR_LIQ, etc.). Registered with RtmHistAddfld.
-- Integration: RtmMod (readnl, register after RtmHistFldsInit, update
-  before RtmHistUpdateHbuf).
+### MOSART (DEFERRED — files removed)
+- `RtmFmeDerived.F90` was removed.
+- Build blockers: RtmSpmd exports mpicom_rof not mpicom; same ptr_rof issue.
+- Reimplementation: straightforward once col_ptr_t pattern is applied.
+- Shell_commands has namelist options commented out for future re-enabling.
 
 ### Testmod: cime_config/testmods_dirs/allactive/fme_output/
 - user_nl_eam: 6-hourly, 14-layer vcoarsen, derived fields + tendencies
@@ -99,9 +97,8 @@ Shared (shared/):
 Just add to user_nl_eam: `derived_fld_defs = 'NEW_FIELD=A+B*C'`
 No code changes needed — the expression parser handles it dynamically.
 
-### ELM: Add a new source field for vcoarsen
-1. In elm_fme_vcoarsen.F90 update routine: add case to select/case block
-2. Map the field name to the appropriate ELM data type pointer
+### ELM: Add a new source field for vcoarsen (DEFERRED)
+ELM FME files are not yet implemented. See FUTURE_WORK items 3 and 4.
 
 ---
 
