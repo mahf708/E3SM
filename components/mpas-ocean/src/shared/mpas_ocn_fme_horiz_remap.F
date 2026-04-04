@@ -257,17 +257,21 @@ contains
 
 !***********************************************************************
 
-   subroutine ocn_fme_horiz_remap_field(domain, field2d, numlev, fld_out, err)!{{{
+   subroutine ocn_fme_horiz_remap_field(domain, field2d, numlev, fld_out, err, &
+        mask)!{{{
+   !> Remap a field from the MPAS unstructured grid to the lat-lon target grid.
+   !> field2d(numlev, *) is on the native MPAS grid indexed by cell.
+   !> If mask(nCells) is provided, cells where mask(iCell)==0 are set to zero
+   !> before remapping (use maxLevelCell for ocean fields to exclude land cells).
 
       type(domain_type), intent(inout) :: domain
       integer, intent(in) :: numlev
       real(kind=RKIND), intent(in) :: field2d(numlev, *)
       real(r8), intent(out) :: fld_out(remap_data%n_b_local, numlev)
       integer, intent(out) :: err
+      integer, intent(in), optional :: mask(*)
 
-      integer :: i, k, needed, comm, nprocs
-      real(r8) :: val
-      real(r8), parameter :: fill_thresh = 1.0e30_r8
+      integer :: i, k, needed, comm, nprocs, icell
 
       err = 0
 
@@ -287,12 +291,18 @@ contains
          end if
 
          do i = 1, remap_data%n_send_total
+            icell = send_local_cell(i)
             do k = 1, numlev
-               val = real(field2d(k, send_local_cell(i)), r8)
-               ! Zero out fill values before remapping so the SpMV
-               ! weighted average is not corrupted by land/below-bottom cells.
-               if (abs(val) > fill_thresh) val = 0.0_r8
-               ws_send_buf((i-1)*numlev + k) = val
+               if (present(mask)) then
+                  ! Zero out land/below-bottom: mask(iCell) is maxLevelCell
+                  ! for ocean, or >0 for valid cells in other contexts.
+                  if (mask(icell) < k) then
+                     ws_send_buf((i-1)*numlev + k) = 0.0_r8
+                     cycle
+                  end if
+               end if
+               ws_send_buf((i-1)*numlev + k) = &
+                    real(field2d(k, icell), r8)
             end do
          end do
       end if

@@ -127,6 +127,7 @@ contains
 
       integer, pointer :: nCellsSolve, nCells
       integer, pointer :: index_temperature, index_salinity
+      integer, dimension(:), pointer :: maxLevelCell
       integer :: iCell, ierr
 
       real(kind=RKIND), dimension(:, :, :), pointer :: tracers
@@ -185,6 +186,7 @@ contains
          ! --- Horizontal remapping to lat-lon grid ---
          if (do_horiz_remap) then
             call mpas_pool_get_dimension(block % dimensions, 'nCells', nCells)
+            call mpas_pool_get_array(meshPool, 'maxLevelCell', maxLevelCell)
 
             ! Open or rotate file based on current date
             call remap_outfile%check_rotate(domain, ierr)
@@ -196,15 +198,18 @@ contains
                call remap_outfile%write_time('', ierr)
 
                field_1lev(1, 1:nCells) = sst(1:nCells)
-               call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr)
+               call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
+                    mask=maxLevelCell)
                call remap_outfile%write_var('sst', fld_remap, 1, ierr)
 
                field_1lev(1, 1:nCells) = sss(1:nCells)
-               call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr)
+               call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
+                    mask=maxLevelCell)
                call remap_outfile%write_var('sss', fld_remap, 1, ierr)
 
                field_1lev(1, 1:nCells) = surfaceHeatFluxTotal(1:nCells)
-               call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr)
+               call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
+                    mask=maxLevelCell)
                call remap_outfile%write_var('surfaceHeatFluxTotal', fld_remap, 1, ierr)
 
                deallocate(fld_remap, field_1lev)
