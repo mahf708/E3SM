@@ -65,7 +65,16 @@ contains
       if (lexist) then
         unitn = getavu()
         open(unitn, file=trim(nlfile), status='old')
-        read(unitn, rtm_fme_derived_nl, iostat=ierr)
+        ! Loop to find the correct namelist group in multi-group file
+        ierr = 1
+        do while (ierr /= 0)
+          read(unitn, rtm_fme_derived_nl, iostat=ierr)
+          if (ierr < 0) then
+            ! EOF reached without finding namelist group — not an error,
+            ! just means this namelist group is absent from the file
+            exit
+          end if
+        end do
         close(unitn)
         call relavu(unitn)
       end if
