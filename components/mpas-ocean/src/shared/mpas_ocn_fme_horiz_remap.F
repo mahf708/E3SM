@@ -103,6 +103,7 @@ contains
 !***********************************************************************
 
    subroutine ocn_fme_horiz_remap_init(domain, mapfile, err)!{{{
+      use mpi, only: MPI_INTEGER, MPI_MAX, MPI_IN_PLACE
 
       type(domain_type), intent(inout) :: domain
       character(len=*), intent(in) :: mapfile
@@ -112,9 +113,6 @@ contains
       type(mpas_pool_type), pointer :: meshPool
       integer, pointer :: nCellsSolve
       integer, dimension(:), pointer :: indexToCellID
-
-      use mpi, only: MPI_INTEGER, MPI_MAX, MPI_IN_PLACE
-
       integer :: myrank, nprocs, comm, ierr
       integer :: iCell, gcol
       integer, allocatable :: gcol_to_rank(:)
