@@ -137,9 +137,23 @@ fincl2 = 'PS','TS',
          'TAUX','TAUY'
 
 ! Tape 3: 6-hourly averaged vertically coarsened state (8 ACE pressure layers)
-! vcoarsen_avg_flds are automatically output as T_0..T_7, Q_0..Q_7, etc.
-! TOTAL_WATER (derived below) is also coarsened -> specific_total_water_0-7.
-fincl3 = 'PS','TS'
+! vcoarsen_avg_flds output names: {FIELD}_{LAYER} where LAYER is 1-based index.
+! Must be explicitly listed in fincl3 for cam_history to write them.
+fincl3 = 'PS','TS',
+         'T_1','T_2','T_3','T_4','T_5','T_6','T_7','T_8',
+         'Q_1','Q_2','Q_3','Q_4','Q_5','Q_6','Q_7','Q_8',
+         'U_1','U_2','U_3','U_4','U_5','U_6','U_7','U_8',
+         'V_1','V_2','V_3','V_4','V_5','V_6','V_7','V_8',
+         'OMEGA_1','OMEGA_2','OMEGA_3','OMEGA_4',
+         'OMEGA_5','OMEGA_6','OMEGA_7','OMEGA_8',
+         'CLDLIQ_1','CLDLIQ_2','CLDLIQ_3','CLDLIQ_4',
+         'CLDLIQ_5','CLDLIQ_6','CLDLIQ_7','CLDLIQ_8',
+         'CLDICE_1','CLDICE_2','CLDICE_3','CLDICE_4',
+         'CLDICE_5','CLDICE_6','CLDICE_7','CLDICE_8',
+         'RAINQM_1','RAINQM_2','RAINQM_3','RAINQM_4',
+         'RAINQM_5','RAINQM_6','RAINQM_7','RAINQM_8',
+         'TOTAL_WATER_1','TOTAL_WATER_2','TOTAL_WATER_3','TOTAL_WATER_4',
+         'TOTAL_WATER_5','TOTAL_WATER_6','TOTAL_WATER_7','TOTAL_WATER_8'
 
 ! Vertical coarsening: 8 pressure layers matching ACE L80 coarsening.
 ! Interface pressures (Pa) from L80 hyai/hybi at indices [0,25,38,46,52,56,61,69,80]:
