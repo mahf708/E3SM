@@ -71,7 +71,7 @@ module seaice_fme_horiz_remap
    type(io_desc_t) :: iodesc_2d
    logical :: iodesc_2d_valid = .false.
 
-   integer, parameter :: max_pio_vars = 100
+   integer, parameter :: max_pio_vars = 512
    integer :: n_pio_vars = 0
    character(len=64) :: pio_var_names(max_pio_vars)
    type(var_desc_t) :: pio_var_descs(max_pio_vars)
