@@ -368,8 +368,7 @@ contains
 
             ! Open remapped output file on first compute call and define variables
             if (.not. remap_file_opened) then
-               call remap_outfile%open_file(domain, &
-                    'fmeDepthCoarseningRemapped.nc', ierr)
+               call remap_outfile%open_file('fmeDepthCoarseningRemapped.nc', ierr)
                if (ierr == 0) then
                   ! Define split-level 2D variables for each coarsened field
                   do ifld = 1, nCoarsenFields

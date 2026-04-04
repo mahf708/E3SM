@@ -181,8 +181,7 @@ contains
 
             ! Open remapped output file on first compute call
             if (.not. remap_file_opened) then
-               call remap_outfile%open_file(domain, &
-                    'fmeDerivedFieldsRemapped.nc', ierr)
+               call remap_outfile%open_file('fmeDerivedFieldsRemapped.nc', ierr)
                if (ierr == 0) then
                   call remap_outfile%def_var('sst', 'degC', &
                        'Sea surface temperature (remapped)', 1, ierr)

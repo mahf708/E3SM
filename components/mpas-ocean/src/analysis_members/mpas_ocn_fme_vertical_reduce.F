@@ -358,8 +358,7 @@ contains
 
             ! Open remapped output file on first compute call
             if (.not. remap_file_opened) then
-               call remap_outfile%open_file(domain, &
-                    'fmeVerticalReduceRemapped.nc', ierr)
+               call remap_outfile%open_file('fmeVerticalReduceRemapped.nc', ierr)
                if (ierr == 0) then
                   call remap_outfile%def_var('oceanHeatContent', 'J m^-2', &
                        'Column-integrated ocean heat content (remapped)', 1, ierr)
