@@ -384,17 +384,20 @@ contains
 
                ! Remap oceanHeatContent
                field_1lev(1, 1:nCells) = oceanHeatContent(1:nCells)
-               call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr)
+               call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
+                    mask=maxLevelCell)
                call remap_outfile%write_var('oceanHeatContent', fld_remap, 1, ierr)
 
                ! Remap freshwaterContent
                field_1lev(1, 1:nCells) = freshwaterContent(1:nCells)
-               call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr)
+               call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
+                    mask=maxLevelCell)
                call remap_outfile%write_var('freshwaterContent', fld_remap, 1, ierr)
 
                ! Remap kineticEnergy
                field_1lev(1, 1:nCells) = kineticEnergy(1:nCells)
-               call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr)
+               call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
+                    mask=maxLevelCell)
                call remap_outfile%write_var('kineticEnergy', fld_remap, 1, ierr)
 
                ! Remap generic reduction slots
@@ -403,7 +406,8 @@ contains
                   call mpas_pool_get_array(amPool, trim(slotName), genSlot)
                   if (.not. associated(genSlot)) cycle
                   field_1lev(1, 1:nCells) = genSlot(1:nCells)
-                  call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr)
+                  call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
+                       mask=maxLevelCell)
                   call remap_outfile%write_var(trim(slotName), fld_remap, 1, ierr)
                end do
 

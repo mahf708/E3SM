@@ -181,9 +181,11 @@ contains
    end subroutine seaice_fme_horiz_remap_init!}}}
 
    subroutine seaice_fme_horiz_remap_field(domain, field1d, nCells, fld_out, err)!{{{
+   !> nCells is informational only; field1d is assumed-size so the send list
+   !> can safely access halo cells beyond nCellsSolve.
       type(domain_type), intent(inout) :: domain
       integer, intent(in) :: nCells
-      real(kind=RKIND), intent(in) :: field1d(nCells)
+      real(kind=RKIND), intent(in) :: field1d(*)
       real(r8), intent(out) :: fld_out(remap_data%n_b_local)
       integer, intent(out) :: err
       real(r8) :: fld_out_2d(remap_data%n_b_local, 1)

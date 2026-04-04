@@ -426,7 +426,7 @@ contains
                   do kOut = 0, nCoarsenLevels - 1
                      field_1lev(1, 1:nCells) = coarsenedPtr(kOut + 1, 1:nCells)
                      call ocn_fme_horiz_remap_field(domain, field_1lev, 1, &
-                          fld_remap, ierr)
+                          fld_remap, ierr, mask=maxLevelCell)
                      write(varName, '(A,A,I0)') &
                           trim(coarsenFieldNames(ifld)), 'Coarsened_', kOut
                      call remap_outfile%write_var(trim(varName), &
@@ -438,7 +438,7 @@ contains
                do kOut = 0, nCoarsenLevels - 1
                   field_1lev(1, 1:nCells) = layerThicknessCoarsened(kOut + 1, 1:nCells)
                   call ocn_fme_horiz_remap_field(domain, field_1lev, 1, &
-                       fld_remap, ierr)
+                       fld_remap, ierr, mask=maxLevelCell)
                   write(varName, '(A,I0)') 'layerThicknessCoarsened_', kOut
                   call remap_outfile%write_var(trim(varName), &
                        fld_remap, 1, ierr)
