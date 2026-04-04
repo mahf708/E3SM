@@ -6,6 +6,8 @@ Checks that all fields required by ACE (github.com/ai2cm/ace, branch exp/e3sm)
 are present and physically reasonable, then produces diagnostic figures saved
 to an output directory for online browsing.
 
+Verifies both native (unstructured MPAS) and remapped (lat-lon) output files.
+
 ACE variable mapping reference:
   configs/experiments/2025-11-05-e3smv3-piControl-100yr/atmosphere/config-train.yaml
   configs/experiments/2025-11-05-e3smv3-piControl-100yr/ocean/config-train.yaml
@@ -27,7 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
-# ── optional imports ──────────────────────────────────────────────────────────
+# -- optional imports ----------------------------------------------------------
 try:
     import xarray as xr
     HAS_XR = True
@@ -56,7 +58,7 @@ try:
 except ImportError:
     HAS_NC4 = False
 
-# ── ACE variable requirements ─────────────────────────────────────────────────
+# -- ACE variable requirements ------------------------------------------------
 # Fields ACE atmosphere model needs from EAM (after offline renaming).
 # key = EAM output name,  value = ACE canonical name
 ACE_ATM_FIELDS = {
@@ -90,6 +92,7 @@ ACE_OCN_COARSENED = {
     "salinityCoarsened": "so",
     "velocityZonalCoarsened": "uo",
     "velocityMeridionalCoarsened": "vo",
+    "layerThicknessCoarsened": "layerThickness",
 }
 N_OCN_LAYERS = 19  # ACE uses 19 depth layers
 
@@ -97,20 +100,42 @@ N_OCN_LAYERS = 19  # ACE uses 19 depth layers
 ACE_OCN_DERIVED = {
     "sst": "sst",
     "sss": "sss",
-    "ssh": "zos",
-    "windStressZonal": "tauvo",
-    "windStressMeridional": "tauuo",
-    "shortWaveHeatFlux": "sw_heat_flux",
-    "longWaveHeatFluxDown": "lw_heat_flux_down",
-    "sensibleHeatFlux": "sensible_heat_flux",
-    "surfaceThicknessFlux": "evap_flux",
+    "surfaceHeatFluxTotal": "surfaceHeatFluxTotal",
+}
+
+# Fields ACE needs from MPAS-O fmeVerticalReduce.
+ACE_OCN_VERTREDUCE = {
+    "oceanHeatContent": "oceanHeatContent",
+    "freshwaterContent": "freshwaterContent",
+    "kineticEnergy": "kineticEnergy",
 }
 
 # Fields ACE needs from MPAS-SI fmeSeaiceDerivedFields.
 ACE_ICE_DERIVED = {
     "iceAreaTotal": "ocean_sea_ice_fraction",
     "iceVolumeTotal": "sea_ice_volume",
+    "snowVolumeTotal": "snowVolumeTotal",
+    "iceThicknessMean": "iceThicknessMean",
+    "surfaceTemperatureMean": "surfaceTemperatureMean",
+    "airStressZonal": "airStressZonal",
+    "airStressMeridional": "airStressMeridional",
 }
+
+# Expected variables in remapped files (lat-lon 360x180 output)
+REMAPPED_DERIVED_VARS = ["sst", "sss", "surfaceHeatFluxTotal"]
+REMAPPED_SEAICE_VARS = [
+    "iceAreaTotal", "iceVolumeTotal", "snowVolumeTotal",
+    "iceThicknessMean", "surfaceTemperatureMean",
+    "airStressZonal", "airStressMeridional",
+]
+REMAPPED_DEPTH_COARSENED_BASES = [
+    "temperatureCoarsened", "salinityCoarsened",
+    "velocityZonalCoarsened", "velocityMeridionalCoarsened",
+    "layerThicknessCoarsened",
+]
+REMAPPED_VERTREDUCE_VARS = [
+    "oceanHeatContent", "freshwaterContent", "kineticEnergy",
+]
 
 # Physical range checks: (vmin, vmax)
 RANGE_CHECKS = {
@@ -118,10 +143,18 @@ RANGE_CHECKS = {
     "salinityCoarsened": (0, 42),
     "velocityZonalCoarsened": (-5, 5),
     "velocityMeridionalCoarsened": (-5, 5),
+    "layerThicknessCoarsened": (0, None),
     "sst": (-5, 40),
     "sss": (0, 42),
+    "surfaceHeatFluxTotal": (-1000, 1000),
     "iceAreaTotal": (0, 1),
     "iceVolumeTotal": (0, None),
+    "snowVolumeTotal": (0, None),
+    "iceThicknessMean": (0, None),
+    "surfaceTemperatureMean": (180, 320),
+    "oceanHeatContent": (None, None),
+    "freshwaterContent": (-1000, 1000),
+    "kineticEnergy": (0, None),
     "T": (150, 350),
     "Q": (0, 0.05),
     "PS": (40000, 110000),
@@ -129,13 +162,36 @@ RANGE_CHECKS = {
     "PHIS": (-1000, 60000),
 }
 
+# Expected lat-lon grid dimensions for remapped output
+EXPECTED_NLON = 360
+EXPECTED_NLAT = 180
 
-# ─────────────────────────────────────────────────────────────────────────────
+
+# -----------------------------------------------------------------------------
 # Utility helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
-def find_files(rundir, pattern):
-    return sorted(glob.glob(os.path.join(rundir, pattern)))
+def find_files(rundir, pattern, exclude=None):
+    """Find files matching glob pattern, optionally excluding a substring.
+
+    Parameters
+    ----------
+    rundir : str
+        Directory to search in.
+    pattern : str
+        Glob pattern relative to rundir.
+    exclude : str or None
+        If set, exclude any file whose basename contains this substring.
+
+    Returns
+    -------
+    list of str
+        Sorted list of matching file paths.
+    """
+    hits = sorted(glob.glob(os.path.join(rundir, pattern)))
+    if exclude:
+        hits = [f for f in hits if exclude not in os.path.basename(f)]
+    return hits
 
 
 def safe_open(path):
@@ -163,8 +219,39 @@ def get_var(ds, name):
     return None
 
 
-def valid_data(arr, fill=1e33):
-    """Return non-fill, finite values."""
+def get_dims(ds):
+    """Return dict of dimension names -> sizes."""
+    if HAS_XR and isinstance(ds, xr.Dataset):
+        return dict(ds.dims)
+    if HAS_NC4 and isinstance(ds, NC4Dataset):
+        return {d: len(ds.dimensions[d]) for d in ds.dimensions}
+    return {}
+
+
+def get_varnames(ds):
+    """Return list of variable names in the dataset."""
+    if HAS_XR and isinstance(ds, xr.Dataset):
+        return list(ds.data_vars)
+    if HAS_NC4 and isinstance(ds, NC4Dataset):
+        return list(ds.variables.keys())
+    return []
+
+
+def close_ds(ds):
+    """Close a dataset if applicable."""
+    if HAS_XR and isinstance(ds, xr.Dataset):
+        ds.close()
+    elif HAS_NC4 and isinstance(ds, NC4Dataset):
+        ds.close()
+
+
+def valid_data(arr, fill=1e15):
+    """Return non-fill, finite values.
+
+    The threshold is 1e15 because remapped output can contain interpolated
+    fill artifacts from neighboring land/ocean cells that are very large
+    but not exactly _FillValue=1e34.  No geophysical quantity exceeds 1e15.
+    """
     if arr is None:
         return None
     flat = arr.ravel().astype(float)
@@ -194,9 +281,9 @@ def summary_stats(arr):
     return f"mean={v.mean():.4g}  min={v.min():.4g}  max={v.max():.4g}  n={v.size}"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Plotting helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def savefig(fig, outdir, name):
     path = os.path.join(outdir, name)
@@ -220,8 +307,9 @@ def global_map(data, lons, lats, title, cmap="RdBu_r", vmin=None, vmax=None,
         ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
         ax.set_global()
         if data.ndim == 2:
-            ax.pcolormesh(lons, lats, data, transform=ccrs.PlateCarree(),
-                          cmap=cmap, vmin=vmin, vmax=vmax, shading="auto")
+            im = ax.pcolormesh(lons, lats, data, transform=ccrs.PlateCarree(),
+                               cmap=cmap, vmin=vmin, vmax=vmax, shading="auto")
+            plt.colorbar(im, ax=ax, shrink=0.6, label=units)
         else:  # unstructured
             sc = ax.scatter(lons, lats, c=data, s=1, cmap=cmap,
                             vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
@@ -242,6 +330,36 @@ def global_map(data, lons, lats, title, cmap="RdBu_r", vmin=None, vmax=None,
         return savefig(fig, outdir, fname)
     plt.show()
     return None
+
+
+def latlon_map(ds, varname, title, cmap="RdBu_r", vmin=None, vmax=None,
+               outdir=None, fname=None, units=""):
+    """Plot a variable from a remapped (lon, lat, Time) dataset."""
+    if not HAS_MPL:
+        return None
+    arr = get_var(ds, varname)
+    if arr is None:
+        return None
+    # Get first timestep if time dimension present
+    if arr.ndim == 3:
+        data = arr[0, :, :]
+    elif arr.ndim == 2:
+        data = arr
+    else:
+        return None
+
+    lon = get_var(ds, "lon")
+    lat = get_var(ds, "lat")
+    if lon is None or lat is None:
+        return None
+
+    if lon.ndim == 1 and lat.ndim == 1:
+        lons, lats = np.meshgrid(lon, lat)
+    else:
+        lons, lats = lon, lat
+
+    return global_map(data, lons, lats, title, cmap=cmap, vmin=vmin, vmax=vmax,
+                      outdir=outdir, fname=fname, units=units)
 
 
 def layer_profiles(data3d, label, outdir, fname, ylabel="Level index"):
@@ -276,20 +394,74 @@ def time_series(values, times_label, title, ylabel, outdir, fname):
     savefig(fig, outdir, fname)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Remapped file verification helpers
+# -----------------------------------------------------------------------------
+
+def check_remapped_grid(ds, label):
+    """Verify that a remapped dataset has the expected lat-lon grid.
+
+    Returns a list of issues (empty if OK).
+    """
+    issues = []
+    dims = get_dims(ds)
+
+    # Check for lon/lat dimensions
+    has_lon = "lon" in dims
+    has_lat = "lat" in dims
+    if not has_lon:
+        issues.append(f"  {label}: missing 'lon' dimension")
+    if not has_lat:
+        issues.append(f"  {label}: missing 'lat' dimension")
+    if has_lon and dims["lon"] != EXPECTED_NLON:
+        issues.append(f"  {label}: lon={dims['lon']}, expected {EXPECTED_NLON}")
+    if has_lat and dims["lat"] != EXPECTED_NLAT:
+        issues.append(f"  {label}: lat={dims['lat']}, expected {EXPECTED_NLAT}")
+
+    # Check for Time dimension
+    has_time = "Time" in dims or "time" in dims
+    if not has_time:
+        issues.append(f"  {label}: missing 'Time' dimension")
+
+    if not issues:
+        nlon = dims.get("lon", "?")
+        nlat = dims.get("lat", "?")
+        print(f"  {label}: lat-lon grid OK ({nlon}x{nlat})")
+
+    return issues
+
+
+def check_remapped_vars(ds, expected_vars, label):
+    """Check that all expected variables are present in a remapped dataset."""
+    issues = []
+    varnames = get_varnames(ds)
+    for var in expected_vars:
+        if var not in varnames:
+            issues.append(f"  {label}: missing variable '{var}'")
+    present = [v for v in expected_vars if v in varnames]
+    missing = [v for v in expected_vars if v not in varnames]
+    if present:
+        print(f"  {label}: {len(present)}/{len(expected_vars)} expected variables present")
+    if missing:
+        print(f"  {label}: MISSING variables: {missing}")
+    return issues
+
+
+# -----------------------------------------------------------------------------
 # Per-component verification + visualization
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def check_eam(rundir, outdir, verbose):
     print("\n=== EAM ===")
     issues = []
     plots = []
 
-    # ── tape 1: averaged 2D fields ────────────────────────────────────────────
-    t1_files = find_files(rundir, "*.eam.h0.*.nc") or find_files(rundir, "*.cam.h0.*.nc")
+    # -- tape 1 (h0): averaged 2D fields -----------------------------------
+    t1_files = find_files(rundir, "*.eam.h0.*.nc")
     if not t1_files:
-        print("  SKIP tape 1: no h0 files found")
+        print("  SKIP tape 1: no *.eam.h0.*.nc files found")
     else:
+        print(f"  tape1: found {len(t1_files)} h0 file(s)")
         ds = safe_open(t1_files[0])
         for var in ["PHIS", "PS", "TS", "LHFLX", "SHFLX", "FLDS", "FSDS",
                     "FLNS", "FSNS", "FSNTOA", "FLUT", "SOLIN",
@@ -307,12 +479,12 @@ def check_eam(rundir, outdir, verbose):
         if HAS_MPL and HAS_XR and isinstance(ds, xr.Dataset):
             lon_name = next((d for d in ["lon", "ncol", "longitude"] if d in ds.dims), None)
             lat_name = next((d for d in ["lat", "latitude"] if d in ds.dims), None)
-            for var, cmap, vmin, vmax, units in [
+            for var, cmap, vm, vx, units in [
                 ("TS",    "RdBu_r",  220, 320, "K"),
-                ("LHFLX","viridis",    0, 300, "W/m²"),
-                ("SHFLX","RdBu_r", -100, 200, "W/m²"),
-                ("FLUT", "inferno",  100, 320, "W/m²"),
-                ("PRECT","Blues",      0, 1e-3,"kg/m²/s"),
+                ("LHFLX","viridis",    0, 300, "W/m2"),
+                ("SHFLX","RdBu_r", -100, 200, "W/m2"),
+                ("FLUT", "inferno",  100, 320, "W/m2"),
+                ("PRECT","Blues",      0, 1e-3,"kg/m2/s"),
                 ("ICEFRAC","Blues",    0,   1, "fraction"),
             ]:
                 arr = get_var(ds, var)
@@ -325,18 +497,31 @@ def check_eam(rundir, outdir, verbose):
                     if lons.ndim == 1:
                         lons, lats = np.meshgrid(lons, lats)
                     p = global_map(data, lons, lats, f"EAM {var} (tape1, t=0)",
-                                   cmap=cmap, vmin=vmin, vmax=vmax,
+                                   cmap=cmap, vmin=vm, vmax=vx,
                                    outdir=outdir, fname=f"eam_tape1_{var}.png",
                                    units=units)
                     if p: plots.append(p)
-        if HAS_XR and isinstance(ds, xr.Dataset):
-            ds.close()
+        close_ds(ds)
 
-    # ── tape 3: vertically coarsened 3D state ────────────────────────────────
-    t3_files = find_files(rundir, "*.eam.h2.*.nc") or find_files(rundir, "*.cam.h2.*.nc")
-    if not t3_files:
-        print("  SKIP tape 3: no h2 files found")
+    # -- tape 2 (h1): additional 2D fields ---------------------------------
+    t2_files = find_files(rundir, "*.eam.h1.*.nc")
+    if not t2_files:
+        print("  SKIP tape 2: no *.eam.h1.*.nc files found")
     else:
+        print(f"  tape2: found {len(t2_files)} h1 file(s)")
+        ds2 = safe_open(t2_files[0])
+        varnames = get_varnames(ds2)
+        print(f"  tape2: {len(varnames)} variables in file")
+        if verbose:
+            print(f"  tape2 variables: {varnames[:30]}{'...' if len(varnames)>30 else ''}")
+        close_ds(ds2)
+
+    # -- tape 3 (h2): vertically coarsened 3D state -------------------------
+    t3_files = find_files(rundir, "*.eam.h2.*.nc")
+    if not t3_files:
+        print("  SKIP tape 3: no *.eam.h2.*.nc files found")
+    else:
+        print(f"  tape3: found {len(t3_files)} h2 file(s)")
         ds3 = safe_open(t3_files[0])
         for base in ACE_ATM_3D_COARSENED:
             found_layers = []
@@ -348,42 +533,44 @@ def check_eam(rundir, outdir, verbose):
                     vmin, vmax = RANGE_CHECKS.get(base, (None, None))
                     issues += check_range(arr, f"tape3/{vname}", vmin, vmax)
             if len(found_layers) == N_ATM_LAYERS:
-                print(f"  tape3/{base}: all {N_ATM_LAYERS} layers present ✓")
+                print(f"  tape3/{base}: all {N_ATM_LAYERS} layers present")
             elif found_layers:
                 print(f"  tape3/{base}: {len(found_layers)}/{N_ATM_LAYERS} layers found "
                       f"(indices {found_layers})")
                 issues.append(f"  tape3/{base}: only {len(found_layers)}/{N_ATM_LAYERS} layers")
             else:
                 # EAM may name them differently; check alternate patterns
-                alts = [v for v in (ds3.data_vars if HAS_XR else ds3.variables)
+                alts = [v for v in get_varnames(ds3)
                         if v.startswith(base + "_") or v.startswith(base.upper() + "_")]
                 if alts:
                     print(f"  tape3/{base}: found alternate names: {alts[:5]}")
                 else:
                     issues.append(f"  tape3 missing coarsened field: {base}_0..{base}_{N_ATM_LAYERS-1}")
-        if HAS_XR and isinstance(ds3, xr.Dataset):
-            ds3.close()
+        close_ds(ds3)
 
     _report("EAM", issues)
     return issues, plots
 
 
 def check_mpaso_depth_coarsening(rundir, outdir, verbose):
-    print("\n=== MPAS-O Depth Coarsening ===")
+    print("\n=== MPAS-O Depth Coarsening (native) ===")
     issues = []
     plots = []
 
-    files = find_files(rundir, "analysis_members/fmeDepthCoarsening.*.nc")
+    # Native files: *.mpaso.hist.am.fmeDepthCoarsening.*.nc, excluding .remapped.
+    files = find_files(rundir, "*.mpaso.hist.am.fmeDepthCoarsening.*.nc",
+                       exclude=".remapped.")
     if not files:
-        print("  SKIP: no fmeDepthCoarsening files found")
+        print("  SKIP: no native fmeDepthCoarsening files found")
         return issues, plots
 
+    print(f"  Found {len(files)} native file(s)")
     ds = safe_open(files[0])
 
     for var, ace_name in ACE_OCN_COARSENED.items():
         arr = get_var(ds, var)
         if arr is None:
-            issues.append(f"  missing: {var} (ACE: {ace_name})")
+            issues.append(f"  native missing: {var} (ACE: {ace_name})")
             continue
         # arr shape: (Time, nFmeDepthLevels, nCells)
         n_levels = arr.shape[1] if arr.ndim == 3 else arr.shape[0]
@@ -410,171 +597,337 @@ def check_mpaso_depth_coarsening(rundir, outdir, verbose):
             lon_deg = np.degrees(lon)
             lat_deg = np.degrees(lat)
             p = global_map(data, lon_deg, lat_deg,
-                           "MPAS-O temperatureCoarsened layer 0 (surface)",
+                           "MPAS-O temperatureCoarsened layer 0 (native)",
                            cmap="RdBu_r", vmin=-2, vmax=30,
-                           outdir=outdir, fname="mpaso_temp_surf.png", units="°C")
+                           outdir=outdir, fname="mpaso_temp_surf_native.png", units="degC")
             if p: plots.append(p)
 
         arr = get_var(ds, "salinityCoarsened")
         if arr is not None and lon is not None:
+            lon_deg = np.degrees(lon)
+            lat_deg = np.degrees(lat)
             data = arr[0, 0, :]
             p = global_map(data, lon_deg, lat_deg,
-                           "MPAS-O salinityCoarsened layer 0 (surface)",
+                           "MPAS-O salinityCoarsened layer 0 (native)",
                            cmap="viridis", vmin=30, vmax=40,
-                           outdir=outdir, fname="mpaso_sal_surf.png", units="PSU")
+                           outdir=outdir, fname="mpaso_sal_surf_native.png", units="PSU")
             if p: plots.append(p)
 
-    if HAS_XR and isinstance(ds, xr.Dataset):
-        ds.close()
+    close_ds(ds)
 
-    _report("MPAS-O depth coarsening", issues)
+    _report("MPAS-O depth coarsening (native)", issues)
+    return issues, plots
+
+
+def check_mpaso_depth_coarsening_remapped(rundir, outdir, verbose):
+    print("\n=== MPAS-O Depth Coarsening (remapped) ===")
+    issues = []
+    plots = []
+
+    files = find_files(rundir, "*.mpaso.hist.am.fmeDepthCoarsening.*.remapped.nc")
+    if not files:
+        print("  SKIP: no remapped fmeDepthCoarsening files found")
+        return issues, plots
+
+    print(f"  Found {len(files)} remapped file(s)")
+    ds = safe_open(files[0])
+
+    # Verify lat-lon grid
+    issues += check_remapped_grid(ds, "depth coarsening remapped")
+
+    # Check for per-level variables: temperatureCoarsened_0..18, etc.
+    expected_vars = []
+    for base in REMAPPED_DEPTH_COARSENED_BASES:
+        for k in range(N_OCN_LAYERS):
+            expected_vars.append(f"{base}_{k}")
+    issues += check_remapped_vars(ds, expected_vars, "depth coarsening remapped")
+
+    # Range checks on per-level variables
+    varnames = get_varnames(ds)
+    for base in REMAPPED_DEPTH_COARSENED_BASES:
+        found_levels = []
+        for k in range(N_OCN_LAYERS):
+            vname = f"{base}_{k}"
+            if vname in varnames:
+                found_levels.append(k)
+                arr = get_var(ds, vname)
+                vmin, vmax = RANGE_CHECKS.get(base, (None, None))
+                issues += check_range(arr, f"remapped/{vname}", vmin, vmax)
+                if verbose and k == 0:
+                    print(f"  remapped/{vname}: {summary_stats(arr)}")
+        if found_levels:
+            print(f"  {base}: {len(found_levels)}/{N_OCN_LAYERS} levels in remapped file")
+
+    # Maps of surface fields from remapped data
+    if HAS_MPL:
+        for base, cmap, vm, vx, units in [
+            ("temperatureCoarsened", "RdBu_r", -2, 30, "degC"),
+            ("salinityCoarsened", "viridis", 30, 40, "PSU"),
+        ]:
+            vname = f"{base}_0"
+            p = latlon_map(ds, vname,
+                           f"MPAS-O {base} layer 0 (remapped)",
+                           cmap=cmap, vmin=vm, vmax=vx,
+                           outdir=outdir,
+                           fname=f"mpaso_depth_{base}_0_remapped.png",
+                           units=units)
+            if p: plots.append(p)
+
+        # Vertical profile from remapped per-level variables
+        for base in ["temperatureCoarsened", "salinityCoarsened"]:
+            means = []
+            for k in range(N_OCN_LAYERS):
+                vname = f"{base}_{k}"
+                arr = get_var(ds, vname)
+                v = valid_data(arr)
+                means.append(v.mean() if v is not None and v.size > 0 else np.nan)
+            if any(np.isfinite(m) for m in means):
+                fig, ax = plt.subplots(figsize=(4, 5))
+                ax.plot(means, np.arange(len(means)), "o-")
+                ax.invert_yaxis()
+                ax.set_xlabel(base)
+                ax.set_ylabel("Depth layer (0=surface)")
+                ax.set_title(f"Global-mean profile: {base} (remapped)")
+                ax.grid(True, alpha=0.4)
+                p = savefig(fig, outdir, f"mpaso_depth_profile_{base}_remapped.png")
+                if p: plots.append(p)
+
+    close_ds(ds)
+
+    _report("MPAS-O depth coarsening (remapped)", issues)
     return issues, plots
 
 
 def check_mpaso_derived(rundir, outdir, verbose):
-    print("\n=== MPAS-O Derived Fields ===")
+    print("\n=== MPAS-O Derived Fields (native) ===")
     issues = []
     plots = []
 
-    files = find_files(rundir, "analysis_members/fmeDerivedFields.*.nc")
+    files = find_files(rundir, "*.mpaso.hist.am.fmeDerivedFields.*.nc",
+                       exclude=".remapped.")
     if not files:
-        print("  SKIP: no fmeDerivedFields files found")
+        print("  SKIP: no native fmeDerivedFields files found")
         return issues, plots
 
+    print(f"  Found {len(files)} native file(s)")
     ds = safe_open(files[0])
 
     for var, ace_name in ACE_OCN_DERIVED.items():
         arr = get_var(ds, var)
         if arr is None:
-            issues.append(f"  missing: {var} (ACE: {ace_name})")
+            issues.append(f"  native missing: {var} (ACE: {ace_name})")
             continue
         vmin, vmax = RANGE_CHECKS.get(var, (None, None))
         issues += check_range(arr, var, vmin, vmax)
         if verbose:
             print(f"  {var} ({ace_name}): {summary_stats(arr)}")
 
-    # Cross-validate surfaceHeatFluxTotal if components present
-    component_vars = ["shortWaveHeatFlux", "longWaveHeatFluxDown",
-                      "sensibleHeatFlux", "surfaceThicknessFlux"]
-    shf_total = get_var(ds, "surfaceHeatFluxTotal")
-    if shf_total is not None and all(get_var(ds, v) is not None for v in component_vars):
-        comp_sum = sum(get_var(ds, v) for v in component_vars)
-        v_tot = valid_data(shf_total)
-        v_sum = valid_data(comp_sum)
-        if v_tot is not None and v_sum is not None:
-            diff = np.abs(v_tot - v_sum).max()
-            if diff > 1.0:
-                issues.append(f"  surfaceHeatFluxTotal vs component sum: max diff={diff:.4g}")
-            elif verbose:
-                print(f"  surfaceHeatFluxTotal cross-validation: max diff={diff:.2e} ✓")
+    # List all variables for reference
+    varnames = get_varnames(ds)
+    print(f"  Native file has {len(varnames)} variables")
+    if verbose:
+        print(f"  Variables: {varnames}")
 
     # Maps
     if HAS_MPL:
         lon = get_var(ds, "lonCell")
         lat = get_var(ds, "latCell")
-        if lon is not None:
+        if lon is not None and lat is not None:
             lon_deg = np.degrees(lon)
             lat_deg = np.degrees(lat)
-            for var, cmap, vmin, vmax, units in [
-                ("sst",  "RdBu_r",  -2, 30, "°C"),
-                ("ssh",  "RdBu_r",  -2,  2, "m"),
-                ("shortWaveHeatFlux", "YlOrRd", 0, 300, "W/m²"),
+            for var, cmap, vm, vx, units in [
+                ("sst",  "RdBu_r",  -2, 30, "degC"),
+                ("sss",  "viridis",  30, 40, "PSU"),
+                ("surfaceHeatFluxTotal", "RdBu_r", -300, 300, "W/m2"),
             ]:
                 arr = get_var(ds, var)
                 if arr is None:
                     continue
                 data = arr[0] if arr.ndim > 1 else arr
                 p = global_map(data, lon_deg, lat_deg,
-                               f"MPAS-O {var} (t=0)",
-                               cmap=cmap, vmin=vmin, vmax=vmax,
-                               outdir=outdir, fname=f"mpaso_derived_{var}.png",
+                               f"MPAS-O {var} (native, t=0)",
+                               cmap=cmap, vmin=vm, vmax=vx,
+                               outdir=outdir, fname=f"mpaso_derived_{var}_native.png",
                                units=units)
                 if p: plots.append(p)
 
-    if HAS_XR and isinstance(ds, xr.Dataset):
-        ds.close()
+    close_ds(ds)
 
-    _report("MPAS-O derived fields", issues)
+    _report("MPAS-O derived fields (native)", issues)
+    return issues, plots
+
+
+def check_mpaso_derived_remapped(rundir, outdir, verbose):
+    print("\n=== MPAS-O Derived Fields (remapped) ===")
+    issues = []
+    plots = []
+
+    files = find_files(rundir, "*.mpaso.hist.am.fmeDerivedFields.*.remapped.nc")
+    if not files:
+        print("  SKIP: no remapped fmeDerivedFields files found")
+        return issues, plots
+
+    print(f"  Found {len(files)} remapped file(s)")
+    ds = safe_open(files[0])
+
+    # Verify lat-lon grid
+    issues += check_remapped_grid(ds, "derived fields remapped")
+
+    # Check expected variables
+    issues += check_remapped_vars(ds, REMAPPED_DERIVED_VARS, "derived fields remapped")
+
+    # Range checks
+    for var in REMAPPED_DERIVED_VARS:
+        arr = get_var(ds, var)
+        if arr is not None:
+            vmin, vmax = RANGE_CHECKS.get(var, (None, None))
+            issues += check_range(arr, f"remapped/{var}", vmin, vmax)
+            if verbose:
+                print(f"  remapped/{var}: {summary_stats(arr)}")
+
+    # Maps from remapped data
+    if HAS_MPL:
+        for var, cmap, vm, vx, units in [
+            ("sst", "RdBu_r", -2, 30, "degC"),
+            ("sss", "viridis", 30, 40, "PSU"),
+            ("surfaceHeatFluxTotal", "RdBu_r", -300, 300, "W/m2"),
+        ]:
+            p = latlon_map(ds, var,
+                           f"MPAS-O {var} (remapped, t=0)",
+                           cmap=cmap, vmin=vm, vmax=vx,
+                           outdir=outdir,
+                           fname=f"mpaso_derived_{var}_remapped.png",
+                           units=units)
+            if p: plots.append(p)
+
+    close_ds(ds)
+
+    _report("MPAS-O derived fields (remapped)", issues)
     return issues, plots
 
 
 def check_mpaso_vertical_reduce(rundir, outdir, verbose):
-    print("\n=== MPAS-O Vertical Reduction ===")
+    print("\n=== MPAS-O Vertical Reduction (native) ===")
     issues = []
+    plots = []
 
-    files = find_files(rundir, "analysis_members/fmeVerticalReduce.*.nc")
+    files = find_files(rundir, "*.mpaso.hist.am.fmeVerticalReduce.*.nc",
+                       exclude=".remapped.")
     if not files:
-        print("  SKIP: no fmeVerticalReduce files found")
-        return issues, []
+        print("  SKIP: no native fmeVerticalReduce files found")
+        return issues, plots
 
+    print(f"  Found {len(files)} native file(s)")
     ds = safe_open(files[0])
     for var, (vmin, vmax) in [("oceanHeatContent", (None, None)),
                                ("freshwaterContent", (-1000, 1000)),
                                ("kineticEnergy", (0, None))]:
         arr = get_var(ds, var)
         if arr is None:
-            issues.append(f"  missing: {var}")
+            issues.append(f"  native missing: {var}")
         else:
             issues += check_range(arr, var, vmin, vmax)
             if verbose:
                 print(f"  {var}: {summary_stats(arr)}")
 
     # Time series of global-mean OHC
-    plots = []
     if HAS_MPL:
         ohc = get_var(ds, "oceanHeatContent")
         if ohc is not None and ohc.ndim >= 2:
             area = get_var(ds, "areaCell")
             if area is not None:
                 ts = [(ohc[t] * area).sum() / area.sum() for t in range(ohc.shape[0])]
-                time_series(ts, "Timestep", "Global-mean OHC",
-                            "J m⁻²", outdir, "mpaso_ohc_timeseries.png")
-                plots.append(os.path.join(outdir, "mpaso_ohc_timeseries.png"))
+                time_series(ts, "Timestep", "Global-mean OHC (native)",
+                            "J/m2", outdir, "mpaso_ohc_timeseries_native.png")
+                plots.append(os.path.join(outdir, "mpaso_ohc_timeseries_native.png"))
 
-    if HAS_XR and isinstance(ds, xr.Dataset):
-        ds.close()
+    close_ds(ds)
 
-    _report("MPAS-O vertical reduction", issues)
+    _report("MPAS-O vertical reduction (native)", issues)
+    return issues, plots
+
+
+def check_mpaso_vertical_reduce_remapped(rundir, outdir, verbose):
+    print("\n=== MPAS-O Vertical Reduction (remapped) ===")
+    issues = []
+    plots = []
+
+    files = find_files(rundir, "*.mpaso.hist.am.fmeVerticalReduce.*.remapped.nc")
+    if not files:
+        print("  SKIP: no remapped fmeVerticalReduce files found")
+        return issues, plots
+
+    print(f"  Found {len(files)} remapped file(s)")
+    ds = safe_open(files[0])
+
+    # Verify lat-lon grid
+    issues += check_remapped_grid(ds, "vertical reduce remapped")
+
+    # Check expected variables
+    issues += check_remapped_vars(ds, REMAPPED_VERTREDUCE_VARS, "vertical reduce remapped")
+
+    # Range checks
+    for var in REMAPPED_VERTREDUCE_VARS:
+        arr = get_var(ds, var)
+        if arr is not None:
+            vmin, vmax = RANGE_CHECKS.get(var, (None, None))
+            issues += check_range(arr, f"remapped/{var}", vmin, vmax)
+            if verbose:
+                print(f"  remapped/{var}: {summary_stats(arr)}")
+
+    # Maps from remapped data
+    if HAS_MPL:
+        for var, cmap, vm, vx, units in [
+            ("oceanHeatContent", "inferno", None, None, "J/m2"),
+            ("freshwaterContent", "RdBu_r", -500, 500, "m"),
+            ("kineticEnergy", "YlOrRd", 0, None, "J/m2"),
+        ]:
+            p = latlon_map(ds, var,
+                           f"MPAS-O {var} (remapped, t=0)",
+                           cmap=cmap, vmin=vm, vmax=vx,
+                           outdir=outdir,
+                           fname=f"mpaso_vertreduce_{var}_remapped.png",
+                           units=units)
+            if p: plots.append(p)
+
+    close_ds(ds)
+
+    _report("MPAS-O vertical reduction (remapped)", issues)
     return issues, plots
 
 
 def check_mpassi_derived(rundir, outdir, verbose):
-    print("\n=== MPAS-SI Derived Fields ===")
+    print("\n=== MPAS-SI Derived Fields (native) ===")
     issues = []
     plots = []
 
-    files = find_files(rundir, "analysis_members/seaice_fmeSeaiceDerivedFields.*.nc")
+    files = find_files(rundir, "*.mpassi.hist.am.fmeSeaiceDerivedFields.*.nc",
+                       exclude=".remapped.")
     if not files:
-        print("  SKIP: no seaice_fmeSeaiceDerivedFields files found")
+        print("  SKIP: no native fmeSeaiceDerivedFields files found")
         return issues, plots
 
+    print(f"  Found {len(files)} native file(s)")
     ds = safe_open(files[0])
 
     for var, ace_name in ACE_ICE_DERIVED.items():
         arr = get_var(ds, var)
         if arr is None:
-            issues.append(f"  missing: {var} (ACE: {ace_name})")
+            issues.append(f"  native missing: {var} (ACE: {ace_name})")
             continue
         vmin, vmax = RANGE_CHECKS.get(var, (None, None))
         issues += check_range(arr, var, vmin, vmax)
         if verbose:
             print(f"  {var} ({ace_name}): {summary_stats(arr)}")
 
-    for var in ["surfaceTemperatureMean", "airStressZonal", "airStressMeridional"]:
-        arr = get_var(ds, var)
-        if arr is None and verbose:
-            print(f"  INFO {var}: not present")
-        elif arr is not None:
-            issues += check_range(arr, var)
-
     # Maps
     if HAS_MPL:
         lon = get_var(ds, "lonCell")
         lat = get_var(ds, "latCell")
-        if lon is not None:
+        if lon is not None and lat is not None:
             lon_deg = np.degrees(lon)
             lat_deg = np.degrees(lat)
-            for var, cmap, vmin, vmax, units in [
+            for var, cmap, vm, vx, units in [
                 ("iceAreaTotal",   "Blues",   0, 1, "fraction"),
                 ("iceVolumeTotal", "viridis", 0, 5, "m"),
                 ("surfaceTemperatureMean", "RdBu_r", 210, 275, "K"),
@@ -584,16 +937,65 @@ def check_mpassi_derived(rundir, outdir, verbose):
                     continue
                 data = arr[0] if arr.ndim > 1 else arr
                 p = global_map(data, lon_deg, lat_deg,
-                               f"MPAS-SI {var} (t=0)",
-                               cmap=cmap, vmin=vmin, vmax=vmax,
-                               outdir=outdir, fname=f"mpassi_{var}.png",
+                               f"MPAS-SI {var} (native, t=0)",
+                               cmap=cmap, vmin=vm, vmax=vx,
+                               outdir=outdir, fname=f"mpassi_{var}_native.png",
                                units=units)
                 if p: plots.append(p)
 
-    if HAS_XR and isinstance(ds, xr.Dataset):
-        ds.close()
+    close_ds(ds)
 
-    _report("MPAS-SI derived fields", issues)
+    _report("MPAS-SI derived fields (native)", issues)
+    return issues, plots
+
+
+def check_mpassi_derived_remapped(rundir, outdir, verbose):
+    print("\n=== MPAS-SI Derived Fields (remapped) ===")
+    issues = []
+    plots = []
+
+    files = find_files(rundir, "*.mpassi.hist.am.fmeSeaiceDerivedFields.*.remapped.nc")
+    if not files:
+        print("  SKIP: no remapped fmeSeaiceDerivedFields files found")
+        return issues, plots
+
+    print(f"  Found {len(files)} remapped file(s)")
+    ds = safe_open(files[0])
+
+    # Verify lat-lon grid
+    issues += check_remapped_grid(ds, "sea ice derived remapped")
+
+    # Check expected variables
+    issues += check_remapped_vars(ds, REMAPPED_SEAICE_VARS, "sea ice derived remapped")
+
+    # Range checks
+    for var in REMAPPED_SEAICE_VARS:
+        arr = get_var(ds, var)
+        if arr is not None:
+            vmin, vmax = RANGE_CHECKS.get(var, (None, None))
+            issues += check_range(arr, f"remapped/{var}", vmin, vmax)
+            if verbose:
+                print(f"  remapped/{var}: {summary_stats(arr)}")
+
+    # Maps from remapped data
+    if HAS_MPL:
+        for var, cmap, vm, vx, units in [
+            ("iceAreaTotal", "Blues", 0, 1, "fraction"),
+            ("iceVolumeTotal", "viridis", 0, 5, "m"),
+            ("surfaceTemperatureMean", "RdBu_r", 210, 275, "K"),
+            ("snowVolumeTotal", "PuBu", 0, 2, "m"),
+        ]:
+            p = latlon_map(ds, var,
+                           f"MPAS-SI {var} (remapped, t=0)",
+                           cmap=cmap, vmin=vm, vmax=vx,
+                           outdir=outdir,
+                           fname=f"mpassi_{var}_remapped.png",
+                           units=units)
+            if p: plots.append(p)
+
+    close_ds(ds)
+
+    _report("MPAS-SI derived fields (remapped)", issues)
     return issues, plots
 
 
@@ -606,12 +1008,51 @@ def _report(name, issues):
         print(f"  PASS")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# HTML index (named olpp.html to distinguish it from other stuff)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Timing summary
+# -----------------------------------------------------------------------------
 
-def write_html_index(outdir, all_plots, all_issues):
-    index = os.path.join(outdir, "olpp.html")
+def read_timing_summary(rundir):
+    """Read model_timing_stats if present and return summary lines."""
+    timing_path = os.path.join(rundir, "timing", "model_timing_stats")
+    if not os.path.exists(timing_path):
+        return None
+
+    try:
+        with open(timing_path, "r") as fh:
+            lines = fh.readlines()
+    except Exception:
+        return None
+
+    if not lines:
+        return None
+
+    # Extract key timing info: look for overall model time and component times
+    summary = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # Keep header lines and lines with timing data
+        # Typical format: component-name  seconds  seconds  seconds
+        if any(kw in stripped.lower() for kw in [
+            "total", "atm", "lnd", "ocn", "ice", "cpl", "rof", "glc", "wav",
+            "init", "run", "final", "overall", "model",
+        ]):
+            summary.append(stripped)
+        elif len(summary) == 0:
+            # Keep initial header/description lines
+            summary.append(stripped)
+
+    return summary[:40] if summary else None
+
+
+# -----------------------------------------------------------------------------
+# HTML index
+# -----------------------------------------------------------------------------
+
+def write_html_index(outdir, all_plots, all_issues, timing_summary=None):
+    index = os.path.join(outdir, "fme_output.html")
     n_issues = sum(len(v) for v in all_issues.values())
     status = "PASS" if n_issues == 0 else f"FAIL ({n_issues} issues)"
     status_color = "green" if n_issues == 0 else "red"
@@ -630,6 +1071,16 @@ def write_html_index(outdir, all_plots, all_issues):
                          f'style="border:1px solid #ccc;"/></a>'
                          f'<br/><small>{rel}</small></div>\n')
 
+    timing_html = ""
+    if timing_summary:
+        timing_rows = "\n".join(f"<pre>{line}</pre>" for line in timing_summary)
+        timing_html = f"""
+    <h2>Performance Timing Summary</h2>
+    <div style="background:#f8f8f8;padding:10px;border:1px solid #ddd;font-family:monospace;font-size:12px;overflow-x:auto;">
+    {timing_rows}
+    </div>
+"""
+
     html = textwrap.dedent(f"""\
     <!DOCTYPE html><html><head>
     <meta charset="utf-8"/>
@@ -637,7 +1088,8 @@ def write_html_index(outdir, all_plots, all_issues):
     <style>body{{font-family:sans-serif;margin:20px}}
            table{{border-collapse:collapse}}
            td,th{{border:1px solid #ccc;padding:4px 8px}}
-           th{{background:#eee}}</style>
+           th{{background:#eee}}
+           h2{{margin-top:30px;border-bottom:1px solid #ddd;padding-bottom:5px}}</style>
     </head><body>
     <h1>FME Output Verification</h1>
     <p>Overall status: <b style="color:{status_color}">{status}</b></p>
@@ -647,6 +1099,7 @@ def write_html_index(outdir, all_plots, all_issues):
     </table>
     <h2>Diagnostic Figures</h2>
     {img_tags if img_tags else '<p>No figures generated (matplotlib/cartopy not available).</p>'}
+    {timing_html}
     </body></html>
     """)
     with open(index, "w") as fh:
@@ -655,9 +1108,39 @@ def write_html_index(outdir, all_plots, all_issues):
     return index
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# File inventory
+# -----------------------------------------------------------------------------
+
+def print_file_inventory(rundir):
+    """Print a summary of all FME-related files in the run directory."""
+    print("\n=== File Inventory ===")
+    categories = [
+        ("EAM h0 (tape1)",             "*.eam.h0.*.nc",    None),
+        ("EAM h1 (tape2)",             "*.eam.h1.*.nc",    None),
+        ("EAM h2 (tape3)",             "*.eam.h2.*.nc",    None),
+        ("MPAS-O depth coarsening",    "*.mpaso.hist.am.fmeDepthCoarsening.*.nc",      ".remapped."),
+        ("MPAS-O depth coarsening (R)","*.mpaso.hist.am.fmeDepthCoarsening.*.remapped.nc", None),
+        ("MPAS-O derived fields",      "*.mpaso.hist.am.fmeDerivedFields.*.nc",        ".remapped."),
+        ("MPAS-O derived fields (R)",  "*.mpaso.hist.am.fmeDerivedFields.*.remapped.nc", None),
+        ("MPAS-O vertical reduce",     "*.mpaso.hist.am.fmeVerticalReduce.*.nc",       ".remapped."),
+        ("MPAS-O vertical reduce (R)", "*.mpaso.hist.am.fmeVerticalReduce.*.remapped.nc", None),
+        ("MPAS-SI derived fields",     "*.mpassi.hist.am.fmeSeaiceDerivedFields.*.nc", ".remapped."),
+        ("MPAS-SI derived fields (R)", "*.mpassi.hist.am.fmeSeaiceDerivedFields.*.remapped.nc", None),
+    ]
+    total = 0
+    for label, pattern, exclude in categories:
+        hits = find_files(rundir, pattern, exclude=exclude)
+        total += len(hits)
+        status = f"{len(hits)} file(s)" if hits else "NONE"
+        print(f"  {label:38s} {status}")
+    print(f"  {'TOTAL':38s} {total} FME-related file(s)")
+    return total
+
+
+# -----------------------------------------------------------------------------
 # Main
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
@@ -679,31 +1162,60 @@ def main():
     print("=" * 70)
 
     if not HAS_MPL:
-        print("WARNING: matplotlib not available — no figures will be produced")
+        print("WARNING: matplotlib not available -- no figures will be produced")
     if not HAS_CARTOPY:
-        print("WARNING: cartopy not available — falling back to scatter maps")
+        print("WARNING: cartopy not available -- falling back to scatter maps")
     if not (HAS_XR or HAS_NC4):
         sys.exit("ERROR: need xarray or netCDF4")
+
+    # File inventory
+    print_file_inventory(args.rundir)
 
     all_issues = {}
     all_plots = []
 
+    # EAM
     issues, plots = check_eam(args.rundir, args.outdir, args.verbose)
     all_issues["EAM"] = issues; all_plots += plots
 
+    # MPAS-O Depth Coarsening: native + remapped
     issues, plots = check_mpaso_depth_coarsening(args.rundir, args.outdir, args.verbose)
-    all_issues["MPAS-O depth"] = issues; all_plots += plots
+    all_issues["MPAS-O depth (native)"] = issues; all_plots += plots
 
+    issues, plots = check_mpaso_depth_coarsening_remapped(args.rundir, args.outdir, args.verbose)
+    all_issues["MPAS-O depth (remapped)"] = issues; all_plots += plots
+
+    # MPAS-O Derived Fields: native + remapped
     issues, plots = check_mpaso_derived(args.rundir, args.outdir, args.verbose)
-    all_issues["MPAS-O derived"] = issues; all_plots += plots
+    all_issues["MPAS-O derived (native)"] = issues; all_plots += plots
 
+    issues, plots = check_mpaso_derived_remapped(args.rundir, args.outdir, args.verbose)
+    all_issues["MPAS-O derived (remapped)"] = issues; all_plots += plots
+
+    # MPAS-O Vertical Reduction: native + remapped
     issues, plots = check_mpaso_vertical_reduce(args.rundir, args.outdir, args.verbose)
-    all_issues["MPAS-O vertreduce"] = issues; all_plots += plots
+    all_issues["MPAS-O vertreduce (native)"] = issues; all_plots += plots
 
+    issues, plots = check_mpaso_vertical_reduce_remapped(args.rundir, args.outdir, args.verbose)
+    all_issues["MPAS-O vertreduce (remapped)"] = issues; all_plots += plots
+
+    # MPAS-SI: native + remapped
     issues, plots = check_mpassi_derived(args.rundir, args.outdir, args.verbose)
-    all_issues["MPAS-SI"] = issues; all_plots += plots
+    all_issues["MPAS-SI (native)"] = issues; all_plots += plots
 
-    write_html_index(args.outdir, all_plots, all_issues)
+    issues, plots = check_mpassi_derived_remapped(args.rundir, args.outdir, args.verbose)
+    all_issues["MPAS-SI (remapped)"] = issues; all_plots += plots
+
+    # Timing summary
+    timing_summary = read_timing_summary(args.rundir)
+    if timing_summary:
+        print("\n=== Performance Timing ===")
+        for line in timing_summary[:10]:
+            print(f"  {line}")
+        if len(timing_summary) > 10:
+            print(f"  ... ({len(timing_summary) - 10} more lines in HTML report)")
+
+    write_html_index(args.outdir, all_plots, all_issues, timing_summary=timing_summary)
 
     n_total = sum(len(v) for v in all_issues.values())
     print("\n" + "=" * 70)
