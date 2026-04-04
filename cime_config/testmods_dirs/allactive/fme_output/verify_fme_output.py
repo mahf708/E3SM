@@ -1062,82 +1062,166 @@ def read_timing_summary(rundir):
 def write_html_index(outdir, all_plots_by_comp, all_issues, timing_summary=None):
     index = os.path.join(outdir, "fme_output.html")
     n_issues = sum(len(v) for v in all_issues.values())
-    status = "PASS" if n_issues == 0 else f"FAIL ({n_issues} issues)"
-    status_color = "green" if n_issues == 0 else "red"
+    n_pass = sum(1 for v in all_issues.values() if not v)
+    n_total = len(all_issues)
+    status = "ALL PASS" if n_issues == 0 else f"{n_issues} issues in {n_total - n_pass}/{n_total} components"
+    status_color = "#2a2" if n_issues == 0 else "#c33"
 
-    rows_issues = ""
+    # Summary table
+    summary_rows = ""
     for comp, issues in all_issues.items():
-        color = "red" if issues else "green"
         if not issues:
-            rows_issues += (f"<tr><td>{comp}</td>"
-                            f"<td style='color:green'>PASS</td></tr>\n")
+            summary_rows += (f'<tr><td>{comp}</td><td class="pass">PASS</td>'
+                             f'<td>0</td></tr>\n')
         else:
-            for msg in issues:
-                rows_issues += (f"<tr><td>{comp}</td>"
-                                f"<td style='color:red'>{msg.strip()}</td></tr>\n")
+            summary_rows += (f'<tr><td>{comp}</td><td class="fail">FAIL</td>'
+                             f'<td>{len(issues)}</td></tr>\n')
 
-    # Build per-component figure sections
+    # Detailed issues (collapsible)
+    detail_rows = ""
+    for comp, issues in all_issues.items():
+        for msg in issues:
+            detail_rows += f'<tr><td>{comp}</td><td>{msg.strip()}</td></tr>\n'
+
+    # Group plots: pair native/remapped side by side where possible
     fig_sections = ""
-    for comp, plots in all_plots_by_comp.items():
-        if not plots:
+    # Identify paired components
+    paired = [
+        ("MPAS-O Depth Coarsening", "native", "remapped"),
+        ("MPAS-O Derived Fields", "native", "remapped"),
+        ("MPAS-O Vertical Reduce", "native", "remapped"),
+        ("MPAS-SI Derived Fields", "native", "remapped"),
+    ]
+    shown_comps = set()
+
+    for base_name, native_suffix, remap_suffix in paired:
+        native_key = f"{base_name} ({native_suffix})"
+        remap_key = f"{base_name} ({remap_suffix})"
+        native_plots = all_plots_by_comp.get(native_key, [])
+        remap_plots = all_plots_by_comp.get(remap_key, [])
+        if not native_plots and not remap_plots:
             continue
-        fig_sections += f"<h3>{comp}</h3>\n<div>\n"
+        anchor = base_name.replace(" ", "_").replace("-", "_")
+        fig_sections += f'<h3 id="{anchor}">{base_name}</h3>\n'
+        fig_sections += '<div class="comparison">\n'
+        if native_plots:
+            fig_sections += '<div class="col"><h4>Native Grid</h4>\n'
+            for p in native_plots:
+                if p and os.path.exists(p):
+                    rel = os.path.relpath(p, outdir)
+                    fig_sections += (f'<div class="fig"><a href="{rel}">'
+                                     f'<img src="{rel}"/></a>'
+                                     f'<span>{os.path.basename(p)}</span></div>\n')
+            fig_sections += '</div>\n'
+        if remap_plots:
+            fig_sections += '<div class="col"><h4>Remapped (lat-lon)</h4>\n'
+            for p in remap_plots:
+                if p and os.path.exists(p):
+                    rel = os.path.relpath(p, outdir)
+                    fig_sections += (f'<div class="fig"><a href="{rel}">'
+                                     f'<img src="{rel}"/></a>'
+                                     f'<span>{os.path.basename(p)}</span></div>\n')
+            fig_sections += '</div>\n'
+        fig_sections += '</div>\n'
+        shown_comps.add(native_key)
+        shown_comps.add(remap_key)
+
+    # Show remaining (unpaired) components
+    for comp, plots in all_plots_by_comp.items():
+        if comp in shown_comps or not plots:
+            continue
+        anchor = comp.replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
+        fig_sections += f'<h3 id="{anchor}">{comp}</h3>\n<div class="gallery">\n'
         for p in plots:
             if p and os.path.exists(p):
                 rel = os.path.relpath(p, outdir)
-                fig_sections += (
-                    f'<div style="display:inline-block;margin:6px;'
-                    f'vertical-align:top;">'
-                    f'<a href="{rel}"><img src="{rel}" width="420" '
-                    f'style="border:1px solid #ccc;"/></a>'
-                    f'<br/><small>{os.path.basename(p)}</small></div>\n')
-        fig_sections += "</div>\n"
+                fig_sections += (f'<div class="fig"><a href="{rel}">'
+                                 f'<img src="{rel}"/></a>'
+                                 f'<span>{os.path.basename(p)}</span></div>\n')
+        fig_sections += '</div>\n'
+
+    # Navigation
+    nav_links = ""
+    nav_items = ["Summary"]
+    for base_name, _, _ in paired:
+        nav_items.append(base_name)
+    for comp in all_plots_by_comp:
+        if comp not in shown_comps and all_plots_by_comp[comp]:
+            nav_items.append(comp)
+    if timing_summary:
+        nav_items.append("Timing")
+    for item in nav_items:
+        anchor = item.replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
+        nav_links += f'<a href="#{anchor}">{item}</a>\n'
 
     timing_html = ""
     if timing_summary:
-        timing_rows = "\n".join(f"<pre>{line}</pre>" for line in timing_summary)
-        timing_html = f"""
-    <h2>Performance Timing Summary</h2>
-    <div style="background:#f8f8f8;padding:10px;border:1px solid #ddd;
-                font-family:monospace;font-size:12px;overflow-x:auto;">
-    {timing_rows}
-    </div>
-"""
-
-    nav_links = ""
-    for comp in all_plots_by_comp:
-        anchor = comp.replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
-        nav_links += f'<a href="#{anchor}" style="margin-right:12px;">{comp}</a> '
+        timing_lines = "\n".join(timing_summary[:30])
+        timing_html = f'''
+    <h2 id="Timing">Performance Timing</h2>
+    <pre class="timing">{timing_lines}</pre>
+'''
 
     html = textwrap.dedent(f"""\
     <!DOCTYPE html><html><head>
     <meta charset="utf-8"/>
     <title>FME Output Verification</title>
     <style>
-      body {{ font-family: sans-serif; margin: 20px; max-width: 1600px; }}
-      table {{ border-collapse: collapse; }}
-      td, th {{ border: 1px solid #ccc; padding: 4px 8px; }}
-      th {{ background: #eee; }}
-      h2 {{ margin-top: 30px; border-bottom: 2px solid #336; padding-bottom: 5px; color: #336; }}
-      h3 {{ margin-top: 20px; color: #555; }}
-      .nav {{ background: #f4f4f4; padding: 10px; border-radius: 5px; margin-bottom: 15px; }}
+      * {{ box-sizing: border-box; }}
+      body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+             margin: 0; padding: 20px 30px; background: #fafafa; color: #333; }}
+      h1 {{ color: #1a3a5c; border-bottom: 3px solid #1a3a5c; padding-bottom: 8px; }}
+      h2 {{ color: #1a3a5c; margin-top: 35px; border-bottom: 2px solid #ddd; padding-bottom: 6px; }}
+      h3 {{ color: #444; margin-top: 25px; }}
+      h4 {{ color: #666; margin: 8px 0 4px; font-size: 0.95em; }}
+      .status {{ font-size: 1.3em; font-weight: bold; color: {status_color}; }}
+      nav {{ background: #fff; padding: 12px 16px; border-radius: 6px;
+             box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin: 15px 0;
+             display: flex; flex-wrap: wrap; gap: 8px; }}
+      nav a {{ color: #1a3a5c; text-decoration: none; padding: 4px 10px;
+               background: #e8eef4; border-radius: 4px; font-size: 0.9em; }}
+      nav a:hover {{ background: #1a3a5c; color: #fff; }}
+      table {{ border-collapse: collapse; width: 100%; background: #fff;
+               box-shadow: 0 1px 3px rgba(0,0,0,0.08); }}
+      td, th {{ border: 1px solid #ddd; padding: 6px 12px; text-align: left; }}
+      th {{ background: #f0f3f6; font-weight: 600; }}
+      .pass {{ color: #2a2; font-weight: bold; }}
+      .fail {{ color: #c33; font-weight: bold; }}
+      .comparison {{ display: flex; gap: 20px; flex-wrap: wrap; }}
+      .col {{ flex: 1; min-width: 400px; }}
+      .gallery {{ display: flex; flex-wrap: wrap; gap: 10px; }}
+      .fig {{ display: inline-block; margin: 4px; vertical-align: top; }}
+      .fig img {{ width: 400px; border: 1px solid #ccc; border-radius: 4px;
+                  transition: transform 0.2s; }}
+      .fig img:hover {{ transform: scale(1.02); box-shadow: 0 2px 8px rgba(0,0,0,0.15); }}
+      .fig span {{ display: block; font-size: 0.75em; color: #888; margin-top: 2px; }}
+      details {{ margin: 10px 0; }}
+      summary {{ cursor: pointer; font-weight: 600; color: #1a3a5c; }}
+      .timing {{ background: #fff; padding: 12px; border: 1px solid #ddd;
+                 border-radius: 4px; font-size: 11px; overflow-x: auto;
+                 max-height: 400px; overflow-y: auto; }}
+      footer {{ margin-top: 40px; padding-top: 10px; border-top: 1px solid #ddd;
+                color: #999; font-size: 0.8em; }}
     </style>
     </head><body>
     <h1>FME Online Output Verification</h1>
-    <p>Overall status: <b style="color:{status_color}; font-size:1.2em;">{status}</b></p>
+    <p class="status">{status}</p>
 
-    <div class="nav">{nav_links}</div>
+    <nav>{nav_links}</nav>
 
-    <h2>Issues by Component</h2>
-    <table><tr><th>Component</th><th>Status / Issue</th></tr>
-    {rows_issues}
+    <h2 id="Summary">Component Summary</h2>
+    <table>
+    <tr><th>Component</th><th>Status</th><th>Issues</th></tr>
+    {summary_rows}
     </table>
+
+    {"<details><summary>Show all " + str(n_issues) + " issues</summary><table><tr><th>Component</th><th>Issue</th></tr>" + detail_rows + "</table></details>" if detail_rows else ""}
 
     <h2>Diagnostic Figures</h2>
     {fig_sections if fig_sections else '<p>No figures generated.</p>'}
 
     {timing_html}
-    <hr/><p style="color:#888;font-size:11px;">Generated by verify_fme_output.py</p>
+    <footer>Generated by verify_fme_output.py &mdash; FME Online Output Processing for E3SM</footer>
     </body></html>
     """)
     with open(index, "w") as fh:
