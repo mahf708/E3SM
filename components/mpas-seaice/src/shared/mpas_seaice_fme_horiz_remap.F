@@ -25,8 +25,7 @@ module seaice_fme_horiz_remap
    use mpas_dmpar
    use mpas_kind_types
    use mpas_timekeeping
-   use mpas_stream_manager, only: MPAS_stream_mgr_get_property, &
-        MPAS_STREAM_PROPERTY_FILENAME
+   use mpas_stream_manager, only: MPAS_stream_mgr_get_property
    use mpas_log, only: mpas_log_write
 
    use shr_kind_mod, only: r8 => shr_kind_r8
