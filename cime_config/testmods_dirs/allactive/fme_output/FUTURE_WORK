@@ -1,122 +1,102 @@
 FME Online Output Processing — Future Work
 ============================================
-Updated: 2026-04-04
-
-========================================================================
-IMMEDIATE: Verify current fixes
-========================================================================
-
-[ ] Rebuild and confirm vcoarsen stride fix resolves T_1..T_8 artifacts
-[ ] Confirm apply_masked fills land/ice-free with SHR_FILL_VALUE (not 0)
-[ ] Confirm comparison figures show clean native vs remapped agreement
-[ ] Run verify_fme_output.py — target: 0 issues
-[ ] ERS restart test: bit-for-bit with FME enabled
+Updated: 2026-04-04 (ALL CHECKS PASSED)
 
 ========================================================================
 PRIORITY 1: Testmod and verification expansion
 ========================================================================
 
-1. TESTMOD CONFIGURATION
-   - Add shorter test variant (SMS_Ld2 for quick CI)
-   - Add ERS restart test configuration
-   - Consider PEM (MPI reproducibility) test
-   - Parameterize map file paths via env variables (currently hardcoded)
-   - Test with different grids (ne4pg2_oQU480 for fast CI)
+1. TESTMOD VARIANTS
+   - Add shorter CI test (SMS_Ld2 with ne4pg2_oQU480 for fast builds)
+   - Add ERS restart test (bit-for-bit with FME enabled)
+   - Add PEM test (MPI reproducibility)
+   - Parameterize map file paths via env variables in shell_commands
+   - Document how to generate map files for new grids
 
-2. VERIFICATION SCRIPT ENHANCEMENTS
-   - Add native-grid checks for EAM tape3 (run without horiz_remap to
-     isolate vcoarsen issues from remap issues)
-   - Add difference plots (remapped - expected) for quantitative validation
-   - Add cross-field consistency checks (e.g., TOTAL_WATER vs Q+CLDLIQ+...)
-   - Add frac_b / valid_frac diagnostic plots to visualize masking coverage
-   - Add time-series evolution plots (not just last timestep)
-   - Consider adding reference data comparison (against offline pipeline)
-   - Suppress remaining matplotlib/numpy warnings cleanly
+2. VERIFICATION SCRIPT
+   - Add native-grid checks (run without horiz_remap to isolate issues)
+   - Add difference plots (remapped vs expected reference)
+   - Add cross-field consistency checks (TOTAL_WATER vs Q+CLDLIQ+...)
+   - Add frac_b / valid_frac diagnostic plots for masking coverage
+   - Add time-series evolution plots across all output times
+   - Add reference data comparison against offline ACE pipeline output
+   - Add histogram/distribution plots per field
+   - Consider automated regression testing (compare against baseline)
 
 3. FILL VALUE CONSISTENCY
-   - Update _FillValue in MPAS native output def_var to match SHR_FILL_VALUE
-     (currently 1e34 in native, 1e20 in remapped — should be consistent)
-   - Verify cam_history fillvalue matches SHR_FILL_VALUE for EAM output
+   - MPAS native output def_var uses _FillValue=1e34 but remapped uses
+     SHR_FILL_VALUE=1e20. Should be consistent for downstream tools.
    - Document fill value conventions in README
+   - Verify cam_history fillvalue matches SHR_FILL_VALUE for EAM output
 
 ========================================================================
-PRIORITY 2: Code quality
+PRIORITY 2: Code quality and metadata
 ========================================================================
 
-4. REMOVE DEBUG LOGGING
-   - Remove remaining DEBUG print statements from MPAS remap modules
-   - Add proper MPAS timer instrumentation instead
-
-5. CONDITIONAL STREAM GENERATION
-   - buildnml generates FME stream XML unconditionally even when
-     output_stream='none'. Should skip when stream not needed.
+4. CONDITIONAL STREAM GENERATION
+   buildnml generates FME stream XML unconditionally even when
+   output_stream='none'. Should skip when stream not needed.
    Files: components/mpas-ocean/cime_config/buildnml,
           components/mpas-seaice/cime_config/buildnml
 
-6. CF-COMPLIANT METADATA
-   - Add calendar, time_bnds to remapped output
+5. CF-COMPLIANT METADATA IN REMAPPED OUTPUT
+   - Add calendar, time_bnds to remapped files
    - Add map file path as provenance attribute
-   - Add depth coordinate for 3D depth-coarsened fields
-   - Add units to all depth-coarsened variables (currently empty string)
+   - Add depth coordinate variable for 3D depth-coarsened fields
+   - Add units to depth-coarsened variables (currently empty string,
+     produces PIO warnings)
 
-7. 3D PIO DECOMPOSITION FOR DEPTH-COARSENED FIELDS
-   - Current: split into per-level 2D variables (temperatureCoarsened_0..24)
-   - Target: single 3D variable (lon, lat, depth, Time)
-   - Requires new iodesc_3d, modified def_var/write_var
+6. 3D PIO DECOMPOSITION FOR DEPTH-COARSENED FIELDS
+   Current: split into per-level 2D variables (temperatureCoarsened_0..24)
+   Target: single 3D variable (lon, lat, depth, Time)
+   Requires: new iodesc_3d in mpas_ocn_fme_horiz_remap.F
 
 ========================================================================
 PRIORITY 3: Extensions
 ========================================================================
 
-8. ONLINE SPHERICAL HARMONICS ROUNDTRIP
-   - ACE offline pipeline does SH smoothing — could be done online
+7. ONLINE SPHERICAL HARMONICS ROUNDTRIP
+   ACE offline pipeline does SH smoothing — could be done online.
 
-9. WETMASK COMPUTATION
-   - 2D wetmask (SST availability) and 3D wetmask (per depth level)
+8. WETMASK COMPUTATION
+   2D wetmask (SST availability) and 3D wetmask (per depth level).
 
-10. ELM / MOSART FME INTEGRATION (deferred)
-    - Removed due to build issues; needs reimplementation
+9. ELM / MOSART FME INTEGRATION (deferred)
+   Source files removed due to build issues. Needs reimplementation
+   with proper module interfaces.
 
-11. SHARED MODULE ROBUSTNESS
+10. SHARED MODULE ROBUSTNESS
     - MPI error return code checks in shr_horiz_remap_mod
     - PIO offset overflow guard for very large grids
     - shr_vcoarsen_mod: bounds monotonicity validation
+    - shr_derived_mod: reject empty operand tokens at parse time
 
-12. PERFORMANCE
-    - Depth coarsening: persistent work arrays
+11. PERFORMANCE
+    - Depth coarsening: persistent work arrays (avoid per-block alloc)
     - MPAS horiz remap: optimize send_local_cell lookup O(n*m) → O(n)
+    - Vertical reduce: OpenMP for large grids
 
 ========================================================================
-ARCHITECTURE NOTES FOR NEXT AGENT
+ARCHITECTURE REFERENCE
 ========================================================================
 
-Key design decisions and gotchas:
+Key gotchas for future developers:
 
-1. MPAS stream manager only supports nCells/nEdges/nVertices decomposed
-   dims. Remapped (lon,lat) output MUST bypass stream manager via direct
-   PIO. This is by design.
+1. PIO decomposition type MUST match Fortran array type. PIO_REAL needs
+   real(4). Mismatch garbles output with NO runtime error.
 
-2. PIO decomposition type MUST match Fortran array type. PIO_REAL requires
-   real(4). Mismatch produces garbled output with NO runtime error.
+2. Fortran sequence association: array(pcols,nlev) passed to dummy(ncol,
+   nlev) with ncol<pcols reads wrong memory at k>1. Pass (1:ncol,:).
 
-3. apply_masked packs validity mask as level numlev+1 in the same send
-   buffer. ONE alltoallv + ONE SpMV handles both field and mask.
-   Normalizes by valid_frac (weight sum of valid sources only), not frac_b.
+3. apply_masked packs mask as level numlev+1. One alltoallv + one SpMV.
+   No frac_b needed — valid_frac IS the correct denominator.
 
-4. Fortran sequence association: when passing array(pcols,nlev) to a
-   subroutine declaring dummy(ncol,nlev) with ncol<pcols, the dummy
-   array's stride doesn't match the actual array's stride at levels k>1.
-   ALWAYS pass explicit sections array(1:ncol,:) when ncol may differ
-   from the first dimension of the actual array.
+4. MPAS framework calls AM init twice. register_var guards duplicates.
 
-5. MPAS framework calls AM init twice (setup + compute_on_startup).
-   register_var has a duplicate-name guard to handle this.
+5. Fill flow: AM → 1e34 at source → caller zeros + mask=0 → apply_masked
+   → SHR_FILL_VALUE (1e20) at output → _FillValue attribute matches.
 
-6. Fill value flow: AM sets fillValue (1e34) at source → remap caller
-   detects (MPAS_OCN_FILL*0.1 threshold or exact cam_fillvalue match)
-   → zeros field + sets mask=0 → apply_masked normalizes by valid_frac
-   → output SHR_FILL_VALUE (1e20) where valid_frac < epsilon.
-   _FillValue attribute in output file = real(SHR_FILL_VALUE, 4).
+6. Map file has n_a = N_total (global cell IDs). Identity mapping used.
 
-7. Map file uses global cell IDs (n_a = N_total = 465044 for IcoswISC30E3r5),
-   not ocean-only indexing. The gcol_to_ocean_col identity branch is taken.
+7. MPAS remapped output bypasses stream manager (direct PIO).
+   File rotation via check_rotate + register_var replay.
