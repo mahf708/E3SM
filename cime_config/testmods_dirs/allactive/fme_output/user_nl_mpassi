@@ -1,0 +1,8 @@
+!----------------------------------------------------------------------------------
+! FME (Full Model Emulation) online output processing -- MPAS-Sea-Ice
+!
+! Enables category-aggregated derived fields for sea ice training data.
+!----------------------------------------------------------------------------------
+
+config_AM_fmeSeaiceDerivedFields_enable = .true.
+

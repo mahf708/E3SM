@@ -1,0 +1,41 @@
+#!/bin/bash
+# FME (Full Model Emulation) online output processing testmod
+#
+# This testmod enables online horizontal remapping, vertical coarsening,
+# derived diagnostics, and column-integrated fields for coupled E3SM
+# simulations targeting ACE/Samudra training data generation.
+#
+# ---------------------------------------------------------------------------
+# Map file generation (run separately before testing with horiz remap):
+#
+# The map files remap from native grids to a regular lat-lon target grid.
+# Use ncremap or ESMF_RegridWeightGen to create them.
+#
+# For EAM (ne4pg2 -> 1-degree):
+#   ncremap -a fv2fv_flx \
+#     --src_grd=${DIN_LOC_ROOT}/atm/cam/inic/homme/ne4pg2_scrip.nc \
+#     --dst_grd=${DIN_LOC_ROOT}/share/meshes/fv1x1_141008.nc \
+#     -m map_ne4pg2_to_fv1x1_fme.nc
+#
+# For MPAS-Ocean / MPAS-Sea-Ice (oQU480 -> 1-degree):
+#   ncremap -a fv2fv_flx \
+#     --src_grd=${MPAS_OCEAN_MESH_SCRIP} \
+#     --dst_grd=${DIN_LOC_ROOT}/share/meshes/fv1x1_141008.nc \
+#     -m map_oQU480_to_fv1x1_fme.nc
+#
+# For ELM (ne4pg2 land -> 1-degree):
+#   (same as EAM map file if land uses same grid)
+#
+# For MOSART (r05 -> 1-degree):
+#   ncremap -a fv2fv_flx \
+#     --src_grd=${DIN_LOC_ROOT}/lnd/clm2/mappingdata/grids/SCRIPgrid_0.5x0.5_nomask_c110308.nc \
+#     --dst_grd=${DIN_LOC_ROOT}/share/meshes/fv1x1_141008.nc \
+#     -m map_r05_to_fv1x1_fme.nc
+#
+# Place generated map files in ${DIN_LOC_ROOT}/share/meshes/ or specify
+# absolute paths in the user_nl_* files.
+# ---------------------------------------------------------------------------
+
+./xmlchange STOP_OPTION=ndays
+./xmlchange STOP_N=5
+
