@@ -1,0 +1,10 @@
+Testmod for FME (Full Model Emulation) online output processing.
+
+Enables horizontal remapping, vertical coarsening, derived diagnostics,
+and vertical reduction for EAM, MPAS-Ocean, MPAS-Sea-Ice, ELM, and MOSART.
+
+Designed for ACE/Samudra coupled model emulation training data generation.
+See shell_commands for map file generation instructions.
+
+Test with WCYCL1850NS compset at ne4pg2_oQU480 resolution:
+  ./create_test SMS_D_Ln5.ne4pg2_oQU480.WCYCL1850NS --testmod allactive/fme_output

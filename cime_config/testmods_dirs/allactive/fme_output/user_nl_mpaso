@@ -1,0 +1,16 @@
+!----------------------------------------------------------------------------------
+! FME (Full Model Emulation) online output processing -- MPAS-Ocean
+!
+! Enables depth coarsening, derived surface fields, and column-integrated
+! diagnostics for ocean training data generation.
+!----------------------------------------------------------------------------------
+
+config_AM_fmeDepthCoarsening_enable = .true.
+config_AM_fmeDepthCoarsening_depth_bounds = '0,15,25,40,62.5,87.5,112.5,150,200,275,375,500,650,825,1025,1275,1600,2050,2650,3500'
+config_AM_fmeDepthCoarsening_fields = 'temperature,salinity'
+
+config_AM_fmeDerivedFields_enable = .true.
+
+config_AM_fmeVerticalReduce_enable = .true.
+config_AM_fmeVerticalReduce_reference_salinity = 34.8
+
