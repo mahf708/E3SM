@@ -123,7 +123,9 @@ fincl1 = 'PHIS',
          'ICEFRAC','LANDFRAC','OCNFRAC',
          'TMQ','TGCLDLWP','TGCLDIWP',
          'TREFHT','QREFHT','U10',
-         'DTENDTTW','DTENDTH','DTENDTQ'
+         'DTENDTTW','DTENDTH','DTENDTQ',
+         'TOTAL_WATER_INT','T_INT','Q_INT',
+         'dTOTAL_WATER_INT_dt'
 
 ! Tape 2: 6-hourly instantaneous full-resolution 3D state
 ! ACE needs instantaneous snapshots of state variables; 3D fields here
@@ -147,12 +149,17 @@ vcoarsen_pbounds = 10.0, 4803.81, 13913.06, 26856.34,
                    43998.31, 59659.67, 76854.15, 90711.83, 101325.0
 vcoarsen_avg_flds = 'T','Q','U','V','OMEGA','CLDLIQ','CLDICE','RAINQM','TOTAL_WATER'
 
+! Column integration: sum(field * pdel / g) over all levels.
+! Produces 2D fields: TOTAL_WATER_INT, T_INT, Q_INT.
+! TOTAL_WATER_INT can be cross-validated against native DTENDTTW via tend_flds.
+vcoarsen_int_flds = 'TOTAL_WATER','T','Q'
+
 ! Derived fields (computed at full resolution before vcoarsen)
 ! TOTAL_WATER -> specific_total_water in ACE naming
 ! Note: PRECT is a native EAM field (no derived expression needed).
 derived_fld_defs = 'TOTAL_WATER=Q+CLDICE+CLDLIQ+RAINQM'
 
-! Tendencies for total water (physics timestep)
+! Tendencies for total water (physics timestep, per-level)
 tend_flds = 'TOTAL_WATER','T','Q'
 EOF
 
