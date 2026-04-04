@@ -44,7 +44,7 @@ module ocn_fme_depth_coarsening
              ocn_finalize_fme_depth_coarsening
 
    integer :: nCoarsenLevels = 0
-   real(kind=RKIND), allocatable :: depthBounds(:)
+   real(r8), allocatable :: depthBounds(:)
 
    real(kind=RKIND), parameter :: fillValue = 1.0E34_RKIND
 
@@ -129,11 +129,11 @@ contains
       real(kind=RKIND), dimension(:, :), pointer :: velocityMeridionalCoarsened
       real(kind=RKIND), dimension(:, :), pointer :: layerThicknessCoarsened
 
-      ! Work arrays for shr_vcoarsen_avg (single column)
+      ! Work arrays for shr_vcoarsen_avg (single column, r8 to match shared module)
       real(r8), allocatable :: coord_iface(:)
       real(r8), allocatable :: field_1d(:)
       real(r8), allocatable :: field_out(:)
-      real(r8) :: depthTop
+      real(kind=RKIND) :: depthTop
 
       err = 0
 
@@ -248,8 +248,8 @@ contains
 
       depthBot = depthTop + thickness
       do kOut = 1, nLevs
-         overlapTop = max(depthTop, depthBounds(kOut))
-         overlapBot = min(depthBot, depthBounds(kOut + 1))
+         overlapTop = max(depthTop, real(depthBounds(kOut), RKIND))
+         overlapBot = min(depthBot, real(depthBounds(kOut + 1), RKIND))
          overlap = max(0.0_RKIND, overlapBot - overlapTop)
          thickOut(kOut) = thickOut(kOut) + overlap
       end do
