@@ -33,6 +33,7 @@ module ocn_fme_depth_coarsening
    use ocn_diagnostics_variables
    use shr_vcoarsen_mod, only: shr_vcoarsen_avg
    use shr_kind_mod, only: r8 => shr_kind_r8
+   use mpas_log, only: mpas_log_write
 
    implicit none
    private
@@ -45,6 +46,12 @@ module ocn_fme_depth_coarsening
 
    integer :: nCoarsenLevels = 0
    real(r8), allocatable :: depthBounds(:)
+
+   !> Number of fields requested via config_AM_fmeDepthCoarsening_fields
+   integer :: nCoarsenFields = 0
+
+   !> Field names parsed from comma-separated config string
+   character(len=64), allocatable :: coarsenFieldNames(:)
 
    real(kind=RKIND), parameter :: fillValue = 1.0E34_RKIND
 
@@ -60,11 +67,13 @@ contains
       integer, intent(out) :: err
 
       character(len=StrKIND), pointer :: config_AM_fmeDepthCoarsening_depth_bounds
+      character(len=StrKIND), pointer :: config_AM_fmeDepthCoarsening_fields
       character(len=StrKIND) :: tempStr
       integer :: nBounds, i, iStart, iEnd, strLen
 
       err = 0
 
+      ! --- Parse depth bounds ---
       call mpas_pool_get_config(domain % configs, &
            'config_AM_fmeDepthCoarsening_depth_bounds', &
            config_AM_fmeDepthCoarsening_depth_bounds)
@@ -99,6 +108,49 @@ contains
 
       nCoarsenLevels = nBounds - 1
 
+      ! --- Parse field names for generic dispatch ---
+      call mpas_pool_get_config(domain % configs, &
+           'config_AM_fmeDepthCoarsening_fields', &
+           config_AM_fmeDepthCoarsening_fields)
+
+      tempStr = trim(config_AM_fmeDepthCoarsening_fields)
+      if (trim(tempStr) == 'none' .or. len_trim(tempStr) == 0) then
+         ! Default: compute all four fields
+         nCoarsenFields = 4
+         allocate(coarsenFieldNames(4))
+         coarsenFieldNames(1) = 'temperature'
+         coarsenFieldNames(2) = 'salinity'
+         coarsenFieldNames(3) = 'velocityZonal'
+         coarsenFieldNames(4) = 'velocityMeridional'
+         call mpas_log_write('fmeDepthCoarsening: no fields specified, ' &
+              // 'defaulting to temperature,salinity,velocityZonal,velocityMeridional')
+      else
+         ! Count comma-separated field names
+         nCoarsenFields = 1
+         strLen = len_trim(tempStr)
+         do i = 1, strLen
+            if (tempStr(i:i) == ',') nCoarsenFields = nCoarsenFields + 1
+         end do
+
+         allocate(coarsenFieldNames(nCoarsenFields))
+
+         ! Parse comma-separated field names
+         iStart = 1
+         do i = 1, nCoarsenFields
+            iEnd = index(tempStr(iStart:strLen), ',')
+            if (iEnd == 0) then
+               iEnd = strLen + 1
+            else
+               iEnd = iEnd + iStart - 1
+            end if
+            coarsenFieldNames(i) = adjustl(tempStr(iStart:iEnd-1))
+            iStart = iEnd + 1
+         end do
+
+         call mpas_log_write('fmeDepthCoarsening: configured to coarsen $i fields', &
+              intArgs=(/nCoarsenFields/))
+      end if
+
    end subroutine ocn_init_fme_depth_coarsening!}}}
 
 !***********************************************************************
@@ -118,7 +170,7 @@ contains
       integer, pointer :: nCellsSolve, nVertLevels
       integer, pointer :: index_temperature, index_salinity
       integer, pointer :: nFmeDepthLevels
-      integer :: iCell, k
+      integer :: iCell, k, iField
       integer, dimension(:), pointer :: maxLevelCell
 
       real(kind=RKIND), dimension(:, :, :), pointer :: tracers
@@ -135,9 +187,31 @@ contains
       real(r8), allocatable :: field_out(:)
       real(kind=RKIND) :: depthTop
 
+      ! Flags for which fields to compute, driven by coarsenFieldNames
+      logical :: doTemperature, doSalinity, doVelocityZonal, doVelocityMeridional
+
       err = 0
 
       if (nCoarsenLevels == 0) return
+
+      ! Determine which fields to compute based on parsed config
+      doTemperature = .false.
+      doSalinity = .false.
+      doVelocityZonal = .false.
+      doVelocityMeridional = .false.
+
+      do iField = 1, nCoarsenFields
+         select case (trim(coarsenFieldNames(iField)))
+         case ('temperature')
+            doTemperature = .true.
+         case ('salinity')
+            doSalinity = .true.
+         case ('velocityZonal')
+            doVelocityZonal = .true.
+         case ('velocityMeridional')
+            doVelocityMeridional = .true.
+         end select
+      end do
 
       block => domain % blocklist
       do while (associated(block))
@@ -162,6 +236,14 @@ contains
          call mpas_pool_get_array(amPool, 'velocityMeridionalCoarsened', velocityMeridionalCoarsened)
          call mpas_pool_get_array(amPool, 'layerThicknessCoarsened', layerThicknessCoarsened)
 
+         ! Initialize all output arrays to fillValue; only requested fields
+         ! will be overwritten with computed values.
+         temperatureCoarsened(:,:) = fillValue
+         salinityCoarsened(:,:) = fillValue
+         velocityZonalCoarsened(:,:) = fillValue
+         velocityMeridionalCoarsened(:,:) = fillValue
+         layerThicknessCoarsened(:,:) = fillValue
+
          allocate(coord_iface(nVertLevels + 1))
          allocate(field_1d(nVertLevels))
          allocate(field_out(nCoarsenLevels))
@@ -178,31 +260,40 @@ contains
                coord_iface(k + 1) = coord_iface(k)
             end do
 
-            ! Temperature coarsening
-            field_1d(1:nVertLevels) = tracers(index_temperature, 1:nVertLevels, iCell)
-            call shr_vcoarsen_avg(field_1d, coord_iface, maxLevelCell(iCell), &
-                 depthBounds, nCoarsenLevels, real(fillValue, r8), field_out)
-            temperatureCoarsened(1:nCoarsenLevels, iCell) = field_out(1:nCoarsenLevels)
+            ! Temperature coarsening (conditional on config)
+            if (doTemperature) then
+               field_1d(1:nVertLevels) = tracers(index_temperature, 1:nVertLevels, iCell)
+               call shr_vcoarsen_avg(field_1d, coord_iface, maxLevelCell(iCell), &
+                    depthBounds, nCoarsenLevels, real(fillValue, r8), field_out)
+               temperatureCoarsened(1:nCoarsenLevels, iCell) = field_out(1:nCoarsenLevels)
+            end if
 
-            ! Salinity coarsening
-            field_1d(1:nVertLevels) = tracers(index_salinity, 1:nVertLevels, iCell)
-            call shr_vcoarsen_avg(field_1d, coord_iface, maxLevelCell(iCell), &
-                 depthBounds, nCoarsenLevels, real(fillValue, r8), field_out)
-            salinityCoarsened(1:nCoarsenLevels, iCell) = field_out(1:nCoarsenLevels)
+            ! Salinity coarsening (conditional on config)
+            if (doSalinity) then
+               field_1d(1:nVertLevels) = tracers(index_salinity, 1:nVertLevels, iCell)
+               call shr_vcoarsen_avg(field_1d, coord_iface, maxLevelCell(iCell), &
+                    depthBounds, nCoarsenLevels, real(fillValue, r8), field_out)
+               salinityCoarsened(1:nCoarsenLevels, iCell) = field_out(1:nCoarsenLevels)
+            end if
 
-            ! Zonal velocity coarsening
-            field_1d(1:nVertLevels) = velocityZonal(1:nVertLevels, iCell)
-            call shr_vcoarsen_avg(field_1d, coord_iface, maxLevelCell(iCell), &
-                 depthBounds, nCoarsenLevels, real(fillValue, r8), field_out)
-            velocityZonalCoarsened(1:nCoarsenLevels, iCell) = field_out(1:nCoarsenLevels)
+            ! Zonal velocity coarsening (conditional on config)
+            if (doVelocityZonal) then
+               field_1d(1:nVertLevels) = velocityZonal(1:nVertLevels, iCell)
+               call shr_vcoarsen_avg(field_1d, coord_iface, maxLevelCell(iCell), &
+                    depthBounds, nCoarsenLevels, real(fillValue, r8), field_out)
+               velocityZonalCoarsened(1:nCoarsenLevels, iCell) = field_out(1:nCoarsenLevels)
+            end if
 
-            ! Meridional velocity coarsening
-            field_1d(1:nVertLevels) = velocityMeridional(1:nVertLevels, iCell)
-            call shr_vcoarsen_avg(field_1d, coord_iface, maxLevelCell(iCell), &
-                 depthBounds, nCoarsenLevels, real(fillValue, r8), field_out)
-            velocityMeridionalCoarsened(1:nCoarsenLevels, iCell) = field_out(1:nCoarsenLevels)
+            ! Meridional velocity coarsening (conditional on config)
+            if (doVelocityMeridional) then
+               field_1d(1:nVertLevels) = velocityMeridional(1:nVertLevels, iCell)
+               call shr_vcoarsen_avg(field_1d, coord_iface, maxLevelCell(iCell), &
+                    depthBounds, nCoarsenLevels, real(fillValue, r8), field_out)
+               velocityMeridionalCoarsened(1:nCoarsenLevels, iCell) = field_out(1:nCoarsenLevels)
+            end if
 
-            ! Layer thickness coarsening (sum of overlap, not average)
+            ! Layer thickness coarsening is always computed (metadata
+            ! needed by downstream consumers of coarsened fields)
             do k = 1, nCoarsenLevels
                layerThicknessCoarsened(k, iCell) = 0.0_RKIND
             end do
@@ -216,15 +307,6 @@ contains
                if (layerThicknessCoarsened(k, iCell) == 0.0_RKIND) then
                   layerThicknessCoarsened(k, iCell) = fillValue
                end if
-            end do
-
-            ! Fill unused levels with fill value
-            do k = nCoarsenLevels + 1, nFmeDepthLevels
-               temperatureCoarsened(k, iCell) = fillValue
-               salinityCoarsened(k, iCell) = fillValue
-               velocityZonalCoarsened(k, iCell) = fillValue
-               velocityMeridionalCoarsened(k, iCell) = fillValue
-               layerThicknessCoarsened(k, iCell) = fillValue
             end do
 
          end do
@@ -277,6 +359,7 @@ contains
       err = 0
 
       if (allocated(depthBounds)) deallocate(depthBounds)
+      if (allocated(coarsenFieldNames)) deallocate(coarsenFieldNames)
 
    end subroutine ocn_finalize_fme_depth_coarsening!}}}
 

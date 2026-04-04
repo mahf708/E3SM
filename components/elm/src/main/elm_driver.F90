@@ -27,6 +27,8 @@ module elm_driver
   use decompMod              , only : get_proc_clumps, get_clump_bounds, get_proc_bounds, bounds_type
   use filterMod              , only : filter, filter_inactive_and_active
   use histFileMod            , only : hist_update_hbuf, hist_htapes_wrapup
+  use elm_fme_derived        , only : elm_fme_derived_update
+  use elm_fme_vcoarsen       , only : elm_fme_vcoarsen_update
   use restFileMod            , only : restFile_write, restFile_filename
   use abortutils             , only : endrun
   !
@@ -1524,6 +1526,10 @@ contains
     ! ============================================================================
     ! Update history buffer
     ! ============================================================================
+
+    ! FME derived fields and vertical coarsening (before hist_update_hbuf)
+    call elm_fme_derived_update(bounds_proc)
+    call elm_fme_vcoarsen_update(bounds_proc)
 
     call t_startf('hbuf')
     call hist_update_hbuf(bounds_proc)

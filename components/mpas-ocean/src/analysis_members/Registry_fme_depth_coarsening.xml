@@ -38,18 +38,23 @@
 	</packages>
 	<var_struct name="fmeDepthCoarseningAM" time_levs="1" packages="fmeDepthCoarseningAMPKG">
 		<var name="temperatureCoarsened" type="real" dimensions="nFmeDepthLevels nCells Time" units="degC"
+			missing_value="FILLVAL" missing_value_mask="maxLevelCell"
 			description="Depth-coarsened temperature field"
 		/>
 		<var name="salinityCoarsened" type="real" dimensions="nFmeDepthLevels nCells Time" units="PSU"
+			missing_value="FILLVAL" missing_value_mask="maxLevelCell"
 			description="Depth-coarsened salinity field"
 		/>
 		<var name="velocityZonalCoarsened" type="real" dimensions="nFmeDepthLevels nCells Time" units="m s^-1"
+			missing_value="FILLVAL" missing_value_mask="maxLevelCell"
 			description="Depth-coarsened zonal velocity field"
 		/>
 		<var name="velocityMeridionalCoarsened" type="real" dimensions="nFmeDepthLevels nCells Time" units="m s^-1"
+			missing_value="FILLVAL" missing_value_mask="maxLevelCell"
 			description="Depth-coarsened meridional velocity field"
 		/>
 		<var name="layerThicknessCoarsened" type="real" dimensions="nFmeDepthLevels nCells Time" units="m"
+			missing_value="FILLVAL" missing_value_mask="maxLevelCell"
 			description="Depth-coarsened layer thickness"
 		/>
 	</var_struct>

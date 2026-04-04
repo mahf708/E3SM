@@ -531,6 +531,8 @@ contains
     use subgridWeightsMod     , only : init_subgrid_weights_mod
     use histFileMod           , only : hist_htapes_build, htapes_fieldlist
     use histFileMod           , only : hist_addfld1d, hist_addfld2d, no_snow_normal
+    use elm_fme_derived       , only : elm_fme_derived_register
+    use elm_fme_vcoarsen      , only : elm_fme_vcoarsen_register
     use restFileMod           , only : restFile_getfile, restFile_open, restFile_close
     use restFileMod           , only : restFile_read, restFile_write
     use accumulMod            , only : print_accum_fields
@@ -983,6 +985,11 @@ contains
     ! information has already been obtained from the restart data read above.
     ! Note that routine hist_htapes_build needs time manager information,
     ! so this call must be made after the restart information has been read.
+
+    ! FME (Full Model Emulation) derived fields and vertical coarsening
+    ! Must be registered before hist_htapes_build finalizes the tapes
+    call elm_fme_derived_register(bounds_proc)
+    call elm_fme_vcoarsen_register(bounds_proc)
 
     if (nsrest /= nsrContinue) then
        call hist_htapes_build()
