@@ -263,6 +263,7 @@ contains
       ierr = pio_put_att(pio_file, pio_var_descs(n_pio_vars), 'long_name', trim(long_name))
       fill_val = 1.0E34
       ierr = pio_put_att(pio_file, pio_var_descs(n_pio_vars), '_FillValue', fill_val)
+      ierr = pio_put_att(pio_file, pio_var_descs(n_pio_vars), 'missing_value', fill_val)
    end subroutine seaice_fme_horiz_remap_def_var!}}}
 
    subroutine seaice_fme_horiz_remap_write_var(varname, fld_out, numlev, err)!{{{
