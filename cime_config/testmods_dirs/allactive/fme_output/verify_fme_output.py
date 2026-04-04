@@ -83,8 +83,8 @@ ACE_ATM_FIELDS = {
     # 3D coarsened (tape 3): T_0..T_7, Q_0..Q_7, U_0..U_7, V_0..V_7,
     #                         TOTAL_WATER_0..7 -> specific_total_water_0..7
 }
-ACE_ATM_3D_COARSENED = ["T", "Q", "U", "V", "TOTAL_WATER"]
-N_ATM_LAYERS = 8  # ACE uses 8 pressure layers
+ACE_ATM_3D_COARSENED = ["T", "Q", "U", "V", "OMEGA", "CLDLIQ", "CLDICE", "RAINQM", "TOTAL_WATER"]
+N_ATM_LAYERS = 8  # ACE uses 8 pressure layers (1-based: T_1..T_8)
 
 # Fields ACE ocean model needs from MPAS-O fmeDepthCoarsening (19 layers).
 ACE_OCN_COARSENED = {
@@ -285,8 +285,14 @@ def summary_stats(arr):
 # Plotting helpers
 # -----------------------------------------------------------------------------
 
-def savefig(fig, outdir, name):
-    path = os.path.join(outdir, name)
+def savefig(fig, outdir, name, subdir=None):
+    """Save figure, optionally in a subdirectory."""
+    if subdir:
+        d = os.path.join(outdir, subdir)
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, name)
+    else:
+        path = os.path.join(outdir, name)
     fig.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)
     return path
@@ -525,7 +531,7 @@ def check_eam(rundir, outdir, verbose):
         ds3 = safe_open(t3_files[0])
         for base in ACE_ATM_3D_COARSENED:
             found_layers = []
-            for k in range(N_ATM_LAYERS):
+            for k in range(1, N_ATM_LAYERS + 1):  # 1-based: T_1..T_8
                 vname = f"{base}_{k}"
                 arr = get_var(ds3, vname)
                 if arr is not None:
@@ -545,7 +551,7 @@ def check_eam(rundir, outdir, verbose):
                 if alts:
                     print(f"  tape3/{base}: found alternate names: {alts[:5]}")
                 else:
-                    issues.append(f"  tape3 missing coarsened field: {base}_0..{base}_{N_ATM_LAYERS-1}")
+                    issues.append(f"  tape3 missing coarsened field: {base}_1..{base}_{N_ATM_LAYERS}")
         close_ds(ds3)
 
     _report("EAM", issues)
@@ -1051,7 +1057,7 @@ def read_timing_summary(rundir):
 # HTML index
 # -----------------------------------------------------------------------------
 
-def write_html_index(outdir, all_plots, all_issues, timing_summary=None):
+def write_html_index(outdir, all_plots_by_comp, all_issues, timing_summary=None):
     index = os.path.join(outdir, "fme_output.html")
     n_issues = sum(len(v) for v in all_issues.values())
     status = "PASS" if n_issues == 0 else f"FAIL ({n_issues} issues)"
@@ -1059,47 +1065,77 @@ def write_html_index(outdir, all_plots, all_issues, timing_summary=None):
 
     rows_issues = ""
     for comp, issues in all_issues.items():
-        for msg in issues:
-            rows_issues += f"<tr><td>{comp}</td><td style='color:red'>{msg.strip()}</td></tr>\n"
+        color = "red" if issues else "green"
+        if not issues:
+            rows_issues += (f"<tr><td>{comp}</td>"
+                            f"<td style='color:green'>PASS</td></tr>\n")
+        else:
+            for msg in issues:
+                rows_issues += (f"<tr><td>{comp}</td>"
+                                f"<td style='color:red'>{msg.strip()}</td></tr>\n")
 
-    img_tags = ""
-    for p in all_plots:
-        if p and os.path.exists(p):
-            rel = os.path.basename(p)
-            img_tags += (f'<div style="display:inline-block;margin:8px;">'
-                         f'<a href="{rel}"><img src="{rel}" width="480" '
-                         f'style="border:1px solid #ccc;"/></a>'
-                         f'<br/><small>{rel}</small></div>\n')
+    # Build per-component figure sections
+    fig_sections = ""
+    for comp, plots in all_plots_by_comp.items():
+        if not plots:
+            continue
+        fig_sections += f"<h3>{comp}</h3>\n<div>\n"
+        for p in plots:
+            if p and os.path.exists(p):
+                rel = os.path.relpath(p, outdir)
+                fig_sections += (
+                    f'<div style="display:inline-block;margin:6px;'
+                    f'vertical-align:top;">'
+                    f'<a href="{rel}"><img src="{rel}" width="420" '
+                    f'style="border:1px solid #ccc;"/></a>'
+                    f'<br/><small>{os.path.basename(p)}</small></div>\n')
+        fig_sections += "</div>\n"
 
     timing_html = ""
     if timing_summary:
         timing_rows = "\n".join(f"<pre>{line}</pre>" for line in timing_summary)
         timing_html = f"""
     <h2>Performance Timing Summary</h2>
-    <div style="background:#f8f8f8;padding:10px;border:1px solid #ddd;font-family:monospace;font-size:12px;overflow-x:auto;">
+    <div style="background:#f8f8f8;padding:10px;border:1px solid #ddd;
+                font-family:monospace;font-size:12px;overflow-x:auto;">
     {timing_rows}
     </div>
 """
+
+    nav_links = ""
+    for comp in all_plots_by_comp:
+        anchor = comp.replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
+        nav_links += f'<a href="#{anchor}" style="margin-right:12px;">{comp}</a> '
 
     html = textwrap.dedent(f"""\
     <!DOCTYPE html><html><head>
     <meta charset="utf-8"/>
     <title>FME Output Verification</title>
-    <style>body{{font-family:sans-serif;margin:20px}}
-           table{{border-collapse:collapse}}
-           td,th{{border:1px solid #ccc;padding:4px 8px}}
-           th{{background:#eee}}
-           h2{{margin-top:30px;border-bottom:1px solid #ddd;padding-bottom:5px}}</style>
+    <style>
+      body {{ font-family: sans-serif; margin: 20px; max-width: 1600px; }}
+      table {{ border-collapse: collapse; }}
+      td, th {{ border: 1px solid #ccc; padding: 4px 8px; }}
+      th {{ background: #eee; }}
+      h2 {{ margin-top: 30px; border-bottom: 2px solid #336; padding-bottom: 5px; color: #336; }}
+      h3 {{ margin-top: 20px; color: #555; }}
+      .nav {{ background: #f4f4f4; padding: 10px; border-radius: 5px; margin-bottom: 15px; }}
+    </style>
     </head><body>
-    <h1>FME Output Verification</h1>
-    <p>Overall status: <b style="color:{status_color}">{status}</b></p>
-    <h2>Issues</h2>
-    <table><tr><th>Component</th><th>Issue</th></tr>
-    {rows_issues if rows_issues else '<tr><td colspan=2>None</td></tr>'}
+    <h1>FME Online Output Verification</h1>
+    <p>Overall status: <b style="color:{status_color}; font-size:1.2em;">{status}</b></p>
+
+    <div class="nav">{nav_links}</div>
+
+    <h2>Issues by Component</h2>
+    <table><tr><th>Component</th><th>Status / Issue</th></tr>
+    {rows_issues}
     </table>
+
     <h2>Diagnostic Figures</h2>
-    {img_tags if img_tags else '<p>No figures generated (matplotlib/cartopy not available).</p>'}
+    {fig_sections if fig_sections else '<p>No figures generated.</p>'}
+
     {timing_html}
+    <hr/><p style="color:#888;font-size:11px;">Generated by verify_fme_output.py</p>
     </body></html>
     """)
     with open(index, "w") as fh:
@@ -1172,39 +1208,30 @@ def main():
     print_file_inventory(args.rundir)
 
     all_issues = {}
-    all_plots = []
+    all_plots_by_comp = {}
 
-    # EAM
-    issues, plots = check_eam(args.rundir, args.outdir, args.verbose)
-    all_issues["EAM"] = issues; all_plots += plots
+    def run_check(name, func, *a):
+        issues, plots = func(*a)
+        all_issues[name] = issues
+        all_plots_by_comp[name] = plots
 
-    # MPAS-O Depth Coarsening: native + remapped
-    issues, plots = check_mpaso_depth_coarsening(args.rundir, args.outdir, args.verbose)
-    all_issues["MPAS-O depth (native)"] = issues; all_plots += plots
-
-    issues, plots = check_mpaso_depth_coarsening_remapped(args.rundir, args.outdir, args.verbose)
-    all_issues["MPAS-O depth (remapped)"] = issues; all_plots += plots
-
-    # MPAS-O Derived Fields: native + remapped
-    issues, plots = check_mpaso_derived(args.rundir, args.outdir, args.verbose)
-    all_issues["MPAS-O derived (native)"] = issues; all_plots += plots
-
-    issues, plots = check_mpaso_derived_remapped(args.rundir, args.outdir, args.verbose)
-    all_issues["MPAS-O derived (remapped)"] = issues; all_plots += plots
-
-    # MPAS-O Vertical Reduction: native + remapped
-    issues, plots = check_mpaso_vertical_reduce(args.rundir, args.outdir, args.verbose)
-    all_issues["MPAS-O vertreduce (native)"] = issues; all_plots += plots
-
-    issues, plots = check_mpaso_vertical_reduce_remapped(args.rundir, args.outdir, args.verbose)
-    all_issues["MPAS-O vertreduce (remapped)"] = issues; all_plots += plots
-
-    # MPAS-SI: native + remapped
-    issues, plots = check_mpassi_derived(args.rundir, args.outdir, args.verbose)
-    all_issues["MPAS-SI (native)"] = issues; all_plots += plots
-
-    issues, plots = check_mpassi_derived_remapped(args.rundir, args.outdir, args.verbose)
-    all_issues["MPAS-SI (remapped)"] = issues; all_plots += plots
+    run_check("EAM", check_eam, args.rundir, args.outdir, args.verbose)
+    run_check("MPAS-O Depth Coarsening (native)", check_mpaso_depth_coarsening,
+              args.rundir, args.outdir, args.verbose)
+    run_check("MPAS-O Depth Coarsening (remapped)", check_mpaso_depth_coarsening_remapped,
+              args.rundir, args.outdir, args.verbose)
+    run_check("MPAS-O Derived Fields (native)", check_mpaso_derived,
+              args.rundir, args.outdir, args.verbose)
+    run_check("MPAS-O Derived Fields (remapped)", check_mpaso_derived_remapped,
+              args.rundir, args.outdir, args.verbose)
+    run_check("MPAS-O Vertical Reduce (native)", check_mpaso_vertical_reduce,
+              args.rundir, args.outdir, args.verbose)
+    run_check("MPAS-O Vertical Reduce (remapped)", check_mpaso_vertical_reduce_remapped,
+              args.rundir, args.outdir, args.verbose)
+    run_check("MPAS-SI Derived Fields (native)", check_mpassi_derived,
+              args.rundir, args.outdir, args.verbose)
+    run_check("MPAS-SI Derived Fields (remapped)", check_mpassi_derived_remapped,
+              args.rundir, args.outdir, args.verbose)
 
     # Timing summary
     timing_summary = read_timing_summary(args.rundir)
@@ -1215,7 +1242,8 @@ def main():
         if len(timing_summary) > 10:
             print(f"  ... ({len(timing_summary) - 10} more lines in HTML report)")
 
-    write_html_index(args.outdir, all_plots, all_issues, timing_summary=timing_summary)
+    write_html_index(args.outdir, all_plots_by_comp, all_issues,
+                     timing_summary=timing_summary)
 
     n_total = sum(len(v) for v in all_issues.values())
     print("\n" + "=" * 70)
