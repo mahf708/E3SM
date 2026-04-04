@@ -23,6 +23,10 @@
 			description="Output interval for the fmeSeaiceDerivedFields stream. Format: YY-MM-DD_HH:MM:SS"
 			possible_values="Any valid MPAS time interval string"
 		/>
+		<nml_option name="config_AM_fmeSeaiceDerivedFields_horiz_remap_file" type="character" default_value="none" units="unitless"
+			description="Path to ESMF/TempestRemap weight file for horizontal remapping of sea ice derived fields to lat-lon grid."
+			possible_values="Any valid file path or 'none'"
+		/>
 	</nml_record>
 	<packages>
 		<package name="fmeSeaiceDerivedFieldsAMPKG" description="This package includes variables required for the fmeSeaiceDerivedFields analysis member."/>

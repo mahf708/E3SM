@@ -1,8 +1,10 @@
 !----------------------------------------------------------------------------------
 ! FME (Full Model Emulation) online output processing -- MPAS-Sea-Ice
 !
-! Enables category-aggregated derived fields for sea ice training data.
+! Production configuration for coupled FME training data generation.
 !----------------------------------------------------------------------------------
 
 config_AM_fmeSeaiceDerivedFields_enable = .true.
+! Horizontal remapping (uncomment and set path when map file available):
+! config_AM_fmeSeaiceDerivedFields_horiz_remap_file = '/path/to/map_oQU480_to_fv1x1_fme.nc'
 

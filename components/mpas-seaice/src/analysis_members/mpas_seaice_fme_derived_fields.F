@@ -20,10 +20,23 @@ module seaice_fme_derived_fields
    use mpas_timekeeping
    use mpas_stream_manager
    use mpas_kind_types
+   use mpas_log, only: mpas_log_write
+
+   use shr_kind_mod, only: r8 => shr_kind_r8
+   use seaice_fme_horiz_remap, only: seaice_fme_horiz_remap_init, &
+        seaice_fme_horiz_remap_field, seaice_fme_horiz_remap_active, &
+        seaice_fme_horiz_remap_open_file, seaice_fme_horiz_remap_def_var, &
+        seaice_fme_horiz_remap_write_var, seaice_fme_horiz_remap_write_time, &
+        seaice_fme_horiz_remap_close_file, seaice_fme_horiz_remap_get_dims
 
    implicit none
    private
    save
+
+   ! Remap state
+   logical :: do_horiz_remap = .false.
+   logical :: remap_file_opened = .false.
+   integer :: remap_nlat = 0, remap_nlon = 0, remap_nb_local = 0
 
    !--------------------------------------------------------------------
    !
@@ -148,7 +161,33 @@ contains
       !
       !-----------------------------------------------------------------
 
+      character(len=StrKIND), pointer :: config_horiz_remap_file
+      integer :: ierr
+
       err = 0
+
+      ! Initialize horizontal remapping if configured
+      call mpas_pool_get_config(domain % configs, &
+           'config_AM_fmeSeaiceDerivedFields_horiz_remap_file', &
+           config_horiz_remap_file)
+
+      if (associated(config_horiz_remap_file)) then
+         if (trim(config_horiz_remap_file) /= 'none' .and. &
+             len_trim(config_horiz_remap_file) > 0) then
+            call seaice_fme_horiz_remap_init(domain, &
+                 trim(config_horiz_remap_file), ierr)
+            if (ierr == 0) then
+               do_horiz_remap = seaice_fme_horiz_remap_active()
+               if (do_horiz_remap) then
+                  call seaice_fme_horiz_remap_get_dims( &
+                       remap_nlat, remap_nlon, remap_nb_local)
+                  call mpas_log_write( &
+                       'fmeSeaiceDerivedFields: horiz remap active, target $i x $i', &
+                       intArgs=(/remap_nlon, remap_nlat/))
+               end if
+            end if
+         end if
+      end if
 
    end subroutine seaice_init_fme_derived_fields!}}}
 
@@ -301,6 +340,10 @@ contains
            iCell, &
            iCategory
 
+      ! Remap workspace
+      real(r8), allocatable :: fld_remap(:)
+      integer :: ierr_remap
+
       real(kind=RKIND) :: &
            areaSum, &
            tempSum
@@ -387,6 +430,43 @@ contains
                  rotateCartesianGrid)
 
          end do ! iCell
+
+         ! --- Horizontal remapping to lat-lon grid ---
+         if (do_horiz_remap) then
+            if (.not. remap_file_opened) then
+               call seaice_fme_horiz_remap_open_file(domain, &
+                    'fmeSeaiceDerivedFieldsRemapped.nc', ierr_remap)
+               if (ierr_remap == 0) then
+                  call seaice_fme_horiz_remap_def_var('iceAreaTotal', 'unitless', &
+                       'Total ice area fraction (remapped)', 1, ierr_remap)
+                  call seaice_fme_horiz_remap_def_var('iceVolumeTotal', 'm', &
+                       'Total ice volume (remapped)', 1, ierr_remap)
+                  call seaice_fme_horiz_remap_def_var('surfaceTemperatureMean', 'K', &
+                       'Mean surface temperature (remapped)', 1, ierr_remap)
+                  remap_file_opened = .true.
+               end if
+            end if
+
+            if (remap_file_opened) then
+               allocate(fld_remap(remap_nb_local))
+
+               call seaice_fme_horiz_remap_write_time('', ierr_remap)
+
+               call seaice_fme_horiz_remap_field(domain, iceAreaTotal, &
+                    nCellsSolve, fld_remap, ierr_remap)
+               call seaice_fme_horiz_remap_write_var('iceAreaTotal', fld_remap, 1, ierr_remap)
+
+               call seaice_fme_horiz_remap_field(domain, iceVolumeTotal, &
+                    nCellsSolve, fld_remap, ierr_remap)
+               call seaice_fme_horiz_remap_write_var('iceVolumeTotal', fld_remap, 1, ierr_remap)
+
+               call seaice_fme_horiz_remap_field(domain, surfaceTemperatureMean, &
+                    nCellsSolve, fld_remap, ierr_remap)
+               call seaice_fme_horiz_remap_write_var('surfaceTemperatureMean', fld_remap, 1, ierr_remap)
+
+               deallocate(fld_remap)
+            end if
+         end if
 
          block => block % next
       end do
@@ -487,7 +567,14 @@ contains
       !
       !-----------------------------------------------------------------
 
+      integer :: ierr
+
       err = 0
+
+      if (remap_file_opened) then
+         call seaice_fme_horiz_remap_close_file(ierr)
+         remap_file_opened = .false.
+      end if
 
    end subroutine seaice_finalize_fme_derived_fields!}}}
 
