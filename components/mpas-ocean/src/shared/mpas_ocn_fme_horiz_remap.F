@@ -79,7 +79,7 @@ module ocn_fme_horiz_remap
    logical :: iodesc_2d_valid = .false.
 
    ! Per-file output state: each AM creates its own instance
-   integer, parameter :: max_pio_vars = 100
+   integer, parameter :: max_pio_vars = 512
 
    type :: ocn_fme_remap_file_t
       type(file_desc_t) :: pio_file
