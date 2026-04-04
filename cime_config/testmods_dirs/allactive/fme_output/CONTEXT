@@ -2,7 +2,7 @@ FME Online Output Processing — Handoff Context
 ================================================
 Date: 2026-04-04
 Branch: claude/extend-derived-diagnostics-LNfYG (40+ commits on origin/master)
-Latest commit: 3324db92 (DEBUG: add send buffer and output stats logging)
+Latest changes: PIO type mismatch fix, fill_thresh correction, verify script overhaul
 
 ========================================================================
 WHAT THIS BRANCH DOES
@@ -29,77 +29,153 @@ EAM REMAPPING: WORKING
   - Per-tape horiz_remap_file transparent remapping via cam_history
   - Vertical coarsening (8 ACE pressure layers) + column integration
   - Derived fields (TOTAL_WATER) + tendencies (DTENDTTW cross-validation)
-  - Output on lat-lon grid (180x360) is physically correct
+  - Output on lat-lon grid (180x360)
+  - Fill values from vcoarsen (1e+20 at high-elevation columns) now
+    zeroed before SpMV using fill_thresh = 1e10 (was 1e30, which missed
+    the cam_history fillvalue of 1e+20)
 
-MPAS REMAPPING: BROKEN (garbage output ~1e9 scale)
-  - Native MPAS output is perfect (SST=18.3C, ice area correct)
-  - Remapped output is garbage for BOTH ocean AND sea ice
-  - The shared shr_horiz_remap_t%apply() SpMV produces wrong results
-    when called from MPAS wrappers, but works correctly from EAM wrapper
-  - Debug logging added (commit 3324db92) but not yet tested
+MPAS REMAPPING: PIO TYPE MISMATCH FIXED (was root cause of ALL garbage)
+  - Root cause of ALL 171+ remapped MPAS issues: pio_initdecomp used
+    PIO_REAL (float32) but pio_write_darray received real(r8) (float64).
+    PIO reads 4-byte chunks from 8-byte elements, producing interleaved
+    valid/garbage values in the output file. Visible as values in 1e9
+    range (fill-value bytes reinterpreted as float32).
+  - Fix: convert fld_out to real(4) before pio_write_darray in both
+    mpas_ocn_fme_horiz_remap.F and mpas_seaice_fme_horiz_remap.F.
+  - Cell ID mismatch fix (gcol_to_ocean_col) is in place but the map
+    file uses n_a = N_total (465044 = all cells), so the identity
+    mapping branch is taken. The map file was generated from the full
+    mesh including land cells, not a masked ocean-only SCRIP mesh.
+  - frac_b computed from CRS weight sums in build_comm (no PIO read).
+  - MPI_IN_PLACE replaced with explicit buffer for safety.
+  - ws_send_buf/ws_recv_buf allocated to max(1, needed) for MPI safety.
+  - Fill values (abs > 1e10) now zeroed in MPAS-O and MPAS-SI send
+    buffer packing before SpMV, matching the EAM pattern.
+
+NATIVE MPAS OUTPUT: WORKING (confirmed by verification)
+  - SST mean=18.3 degC, SSS mean=34.62 PSU (physically correct)
+  - temperatureCoarsened mean=10.38 (correct)
+  - iceAreaTotal mean=0.09 (reasonable)
+  - All 4 MPAS AMs produce correct native output
 
 ========================================================================
-KNOWN BUGS (in priority order)
+BUGS FOUND AND FIXED (chronological)
 ========================================================================
 
-1. MPAS REMAP PRODUCES ALL ZEROS FROM apply() [CRITICAL, DIAGNOSED]
-   - Send buffer is CORRECT: buf_max=26.6 for SST, 37.1 for salinity
-   - apply() output is ALL ZEROS: out_max=0.0 for every field, every timestep
-   - n_b_local=126 on rank 0 (64800/512 ranks)
-   - Root cause: CRS matrix has ZERO nonzero entries for all target rows
-     on rank 0. The SpMV inner loop hits the else branch (jbeg > jend)
-     for all 126 rows, producing fld_out = 0.
-   - This means build_comm is not constructing the CRS matrix correctly
-     for MPAS. The gcol_to_rank mapping (built from MPAS indexToCellID
-     via MPI_ALLREDUCE(MPI_MAX)) may have mismatched cell IDs vs what
-     the map file's col() array expects.
-   - NEXT STEP: Add debug logging to build_comm to check:
-     a) nnz_local (should be >0 on every rank that has target rows)
-     b) n_recv_total (should be >0; if 0, no source data is received)
-     c) Whether the gcol_to_rank values match the map file's col indices
-   - Hypothesis: the MPAS map file uses 1-based cell IDs but the
-     gcol_to_rank or the send_gcol_list indexing is off-by-one or
-     uses different numbering than the map file expects.
-   - Files: share/util/shr_horiz_remap_mod.F90 (build_comm, apply)
-            components/mpas-ocean/src/shared/mpas_ocn_fme_horiz_remap.F (init)
+1. MPAS REMAP CELL ID MISMATCH [FIXED, BUT IDENTITY PATH TAKEN]
+   - Fix: gcol_to_ocean_col prefix-sum mapping added.
+   - However, map file has n_a = N_total so identity branch is used.
+   - Fix is still correct as defensive code for masked SCRIP maps.
 
-2. frac_b PIO READ CORRUPTS SHARED MODULE STATE [FIXED, DISABLED]
-   - Reading frac_b from the map file inside read_pio_contents
-     corrupted the shr_horiz_remap_t state, producing garbage for ALL
-     components (EAM + MPAS). Confirmed by disabling the read.
-   - Currently DISABLED (commented out) in shr_horiz_remap_mod.F90
-   - Needs to be re-enabled with a different approach:
-     Option A: compute frac_b from weight sums (no PIO read needed)
-     Option B: read frac_b AFTER pio_closefile (separate reopen)
-     Option C: read frac_b in the component wrapper, not shared module
-   - frac_b is needed for correct coastal cell normalization (without it,
-     coastal values are diluted by ~34% on average for the ocean grid)
+2. frac_b PIO READ CORRUPTION [FIXED]
+   - Was: reading frac_b from map file via PIO corrupted shared state.
+   - Fix: compute frac_b as sum of CRS row weights in build_comm.
 
-3. DEPTH COARSENING FILL LEAKAGE [FIXED BUT UNTESTED WITH WORKING REMAP]
-   - Shallow ocean cells have fill values at deep coarsened levels
-   - Fixed: per-level validity mask from layerThicknessCoarsened
-   - File: mpas_ocn_fme_depth_coarsening.F
+3. MPI BUFFER SAFETY [FIXED]
+   - Was: land-only processors had n_send/n_recv=0, passing unallocated
+     arrays to MPI_Alltoallv.
+   - Fix: allocate buffers to max(1, needed) unconditionally.
+
+4. EAM FILL VALUE LEAKAGE THROUGH REMAP [FIXED]
+   - Was: vcoarsen fill values (1e+20) at high-elevation columns passed
+     through SpMV because fill_thresh was 1e+30 (too high to catch 1e+20).
+     Visible as T_1..T_8 min values of 37-110K (garbage from fill-value
+     contamination of the weighted average).
+   - Fix: lower fill_thresh from 1e+30 to 1e+10 in horiz_remap_mod.F90.
+     No geophysical quantity exceeds 1e+10.
+
+5. MPAS PIO TYPE MISMATCH [FIXED] — ROOT CAUSE OF ALL REMAPPED GARBAGE
+   - Was: pio_initdecomp(PIO_REAL) created a float32 decomposition, but
+     pio_write_darray received real(r8) (float64) data. PIO interpreted
+     8-byte elements as two 4-byte elements, interleaving valid values
+     with garbage throughout the output file.
+   - Diagnosis: debug log showed correct send buffer values (SST ~24C)
+     and zero SpMV output on rank 0 (expected — South Pole land).
+     Remapped file showed alternating valid/garbage float32 values:
+     [-1.42e+36, -1.906, 1.47e-30, -1.905, ...] — classic double-to-
+     single reinterpretation pattern.
+   - Fix: convert fld_out to real(4) before pio_write_darray in both
+     mpas_ocn_fme_horiz_remap.F and mpas_seaice_fme_horiz_remap.F.
+
+6. MPAS FILL VALUE LEAKAGE THROUGH SpMV [FIXED]
+   - Was: depth-coarsened fields have fill values (1e34) at deep levels
+     for shallow ocean cells. These leaked through the SpMV.
+   - Fix: added abs(val) > 1e10 zeroing in MPAS-O and MPAS-SI send
+     buffer packing, matching the EAM pattern.
+
+========================================================================
+MAP FILE DETAILS
+========================================================================
+
+Map file: map_IcoswISC30E3r5_to_gaussian_180by360_shifted.nc
+  n_a = 465044 (= N_total, all MPAS cells including land)
+  n_b = 64800 (180x360 lat-lon)
+  n_s = 843367 nonzeros
+  col range: 1..465044 (global cell IDs, NOT ocean-only)
+  row range: 4125..64800 (no entries for first 4124 rows = South Pole land)
+  Unique source cols: 463013 (2031 land cells have no weights)
+
+Since n_a == N_total, the gcol_to_ocean_col fix uses the identity branch.
+The map was generated from the full mesh, not a masked ocean-only mesh.
 
 ========================================================================
 HOW TO TEST
 ========================================================================
 
+  # Rebuild (incremental, only recompiles changed sources):
+  cd /pscratch/sd/m/mahf708/e3sm_scratch/pm-cpu/SMS_P512.ne30pg2_r05_IcoswISC30E3r5.WCYCL1850NS.pm-cpu_gnu.allactive-fme_output.20260404_084542_w2biv8
+  ./case.build -m && ./case.submit
+
+  # Or create fresh test:
   cd cime/scripts
   ./create_test SMS_P512.ne30pg2_r05_IcoswISC30E3r5.WCYCL1850NS.pm-cpu_gnu \
       --testmod allactive/fme_output
 
-  # After run:
+  # After run, verify:
   micromamba run -n xgns python verify_fme_output.py \
       --rundir $RUNDIR \
       --outdir /pscratch/sd/m/mahf708/aifigs_v3LRpiControlSamudrACE \
       --verbose
 
-  # Check ocean log for debug output:
-  zcat $RUNDIR/ocn.log.*.gz | grep 'DEBUG remap_field'
+  # View results:
+  # https://mahf708.github.io/aifigs_v3LRpiControlSamudrACE/fme_output.html
 
 Map files: /pscratch/sd/m/mahf708/fme_maps/
   map_ne30pg2_to_gaussian_180by360_shifted.nc          (EAM)
   map_IcoswISC30E3r5_to_gaussian_180by360_shifted.nc   (MPAS-O/SI)
+
+========================================================================
+PERFORMANCE (512 MPI tasks, ne30pg2_r05_IcoswISC30E3r5, WCYCL1850NS, 5 days)
+========================================================================
+
+Baseline (no FME):   485.47 s wallclock  (2.44 SYPD)
+FME-enabled:         493.03 s wallclock  (2.40 SYPD)
+FME overhead:        +7.56 s  (+1.6%)
+
+Per-component wallclock delta (wallmax):
+  CPL:ATM_RUN      280.32 → 286.60 s  (+2.2%)
+  CPL:OCN_RUN      132.41 → 135.63 s  (+2.4%)
+  CPL:ICE_RUN       34.64 →  35.55 s  (+2.6%)
+  CPL:LND_RUN       26.89 →  23.41 s  (-12.9%, noise)
+  CPL:ROF_RUN        1.50 →   1.41 s  (-6.4%, noise)
+
+FME-specific timer breakdown (init + compute, wallmax):
+  MPAS-O depth coarsening:  1.709 s  (dominant — 19 levels x 5 vars x remap)
+  MPAS-SI derived fields:   0.552 s  (7 vars + remap)
+  EAM derived/vcoarsen:     0.436 s  (TOTAL_WATER eval + 8-layer vcoarsen)
+  MPAS-O derived fields:    0.147 s  (SST/SSS/fluxes + remap)
+  MPAS-O vertical reduce:   0.145 s  (OHC/FWC/KE + remap)
+  MPAS finalize/IO:         0.061 s
+  Total FME-specific:       3.050 s  (0.63% of baseline)
+
+Note: total FME timer sum (3.05 s) < total overhead (7.56 s) because
+some overhead is in cam_history IO and remap send/recv not captured by
+named FME timers. The 1.6% overhead is well within the target for
+online processing replacing offline postprocessing.
+
+Runs compared:
+  Baseline: SMS_P512...WCYCL1850NS.pm-cpu_gnu.20260404_103438_12i0z1
+  FME:      SMS_P512...WCYCL1850NS.pm-cpu_gnu.allactive-fme_output.20260404_084542_w2biv8
 
 ========================================================================
 KEY ARCHITECTURE DECISIONS
@@ -109,6 +185,10 @@ KEY ARCHITECTURE DECISIONS
   dims. Remapped (lon,lat) output MUST bypass stream manager via direct
   PIO. This is by design, not a workaround.
 
+- PIO decomposition type MUST match the Fortran array type passed to
+  pio_write_darray. PIO_REAL requires real(4). PIO_DOUBLE requires
+  real(r8). Mismatch produces garbled output with no runtime error.
+
 - Remapped filenames derived from native stream's filename_template via
   MPAS_stream_mgr_get_property. Inserts ".remapped" before ".nc".
 
@@ -117,6 +197,31 @@ KEY ARCHITECTURE DECISIONS
 
 - EAM remap is transparent: horiz_remap_file(tape) replaces data in
   cam_history at write time. Same filename, same tape.
+
+- Fill values from any source (vcoarsen 1e+20, MPAS 1e+34, uninitialized)
+  MUST be zeroed before packing the SpMV send buffer. Threshold 1e+10
+  is safe — no geophysical quantity exceeds that value.
+
+========================================================================
+WHAT TO TEST NEXT
+========================================================================
+
+1. Rebuild and run to verify all fixes:
+   - MPAS remapped SST should be ~18C (was garbage 1e9 range)
+   - MPAS remapped salinity should be ~35 PSU
+   - MPAS remapped ice area should show Arctic/Antarctic pattern
+   - EAM T_1..T_8 should all have min > 150K (was 37-110K)
+   - All 171 MPAS remapped issues should be resolved
+   - All 8 EAM tape3 issues should be resolved
+
+2. Check new verification figures:
+   - Side-by-side native tripcolor vs remapped pcolormesh
+   - Multi-panel T_1..T_8 and Q_1..Q_8 (2x4 grid)
+   - Zonal mean profiles
+   - Click any figure in HTML to view full-size (lightbox)
+
+3. Check frac_b renormalization at coastlines — values should be
+   correct magnitude, not diluted by partial coverage.
 
 ========================================================================
 FILE INVENTORY
@@ -137,33 +242,3 @@ Testmod files:
   verify_fme_output.py -- verification + diagnostic figures + HTML viewer
 
 Output viewer: /pscratch/sd/m/mahf708/aifigs_v3LRpiControlSamudrACE/fme_output.html
-  Also at: https://mahf708.github.io/aifigs_v3LRpiControlSamudrACE/fme_output.html
-
-========================================================================
-WHAT TO INVESTIGATE NEXT
-========================================================================
-
-1. DIAGNOSED: buf_max is physical (~26 for SST), out_max is ZERO.
-   The CRS matrix in apply() has no nonzero entries for rank 0's
-   126 target rows. build_comm is not building the matrix correctly.
-   Add debug logging to shr_horiz_remap_build_comm to print:
-     - nnz_local per rank (should be >0)
-     - n_recv_total per rank (should be >0)
-     - Sample col() values from map file vs gcol_to_rank entries
-   Most likely: cell ID mismatch between map file and MPAS indexToCellID.
-
-2. Compare EAM vs MPAS call to apply() in detail:
-   - EAM: self%shared%apply(self%ws_send_buf, numlev, fld_out, mpicom, npes, ierr)
-     where ws_send_buf is a TYPE MEMBER (per-tape instance)
-   - MPAS: remap_data%apply(ws_send_buf, numlev, fld_out, comm, nprocs, err)
-     where ws_send_buf is MODULE-SCOPE (shared singleton)
-   - Could the module-scope ws_send_buf be getting clobbered between
-     the pack and the apply? Check if any other code modifies it.
-
-3. Check MPI communicator: EAM uses mpicom (atmosphere), MPAS uses
-   domain%dminfo%comm (ocean). Are they the same comm for the remap?
-   The shared module's build_comm and apply both use the passed comm.
-
-4. Re-enable frac_b properly once remap is fixed:
-   - Simplest: compute frac_b_local as sum of CRS row weights
-     (already available after build_comm, no PIO read needed)

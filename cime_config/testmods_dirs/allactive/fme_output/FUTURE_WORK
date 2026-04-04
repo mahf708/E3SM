@@ -1,10 +1,11 @@
 FME Online Output Processing — Future Work and Known Limitations
 ================================================================
-Updated: 2026-04-04 (post-rebase on origin/master, post-review)
+Updated: 2026-04-04 (post PIO type mismatch fix, fill_thresh correction)
 
 STATUS: EAM fully functional with transparent per-tape remapping.
-        MPAS-O and MPAS-SI functional but remapped output uses separate
-        hardcoded files — see REVIEW for full architectural analysis.
+        MPAS-O and MPAS-SI functional — remapped output was garbled due
+        to PIO type mismatch (float64 data through float32 decomposition);
+        now fixed. Awaiting rebuild+rerun to confirm.
         ELM and MOSART deferred (source files removed).
 
 COMPLETED:
@@ -21,6 +22,32 @@ COMPLETED:
   [x] Fill value attributes in Registry (missing_value_mask for 3D)
   [x] Single precision consistency (all components default to float32)
   [x] Rebased onto origin/master (includes DTENDTTW merge)
+
+========================================================================
+PRIORITY 0: CRITICAL BUGS FIXED (this session)
+========================================================================
+
+1. PIO TYPE MISMATCH IN MPAS REMAP WRITE [DONE]
+   [x] Root cause of ALL 171+ remapped MPAS issues identified:
+       pio_initdecomp(PIO_REAL) = float32 decomposition, but
+       pio_write_darray received real(r8) = float64 data.
+       PIO reads 4-byte chunks from 8-byte elements → interleaved
+       valid/garbage values in output.
+   [x] Fixed: convert fld_out to real(4) before pio_write_darray in
+       mpas_ocn_fme_horiz_remap.F and mpas_seaice_fme_horiz_remap.F.
+   [x] Lesson: PIO decomposition type MUST match Fortran array type.
+       No runtime error when mismatched — silent data corruption.
+
+2. EAM FILL THRESHOLD TOO HIGH [DONE]
+   [x] fill_thresh was 1e30 but cam_history fillvalue is 1e20.
+       The 1e20 values from vcoarsen (high-elevation columns) leaked
+       through SpMV, producing T_1..T_8 min values of 37-110K.
+   [x] Fixed: fill_thresh lowered to 1e10 in horiz_remap_mod.F90.
+
+3. MPAS FILL VALUE LEAKAGE THROUGH SpMV [DONE]
+   [x] Depth-coarsened fields have 1e34 fill at deep levels for
+       shallow ocean cells. Added abs > 1e10 zeroing in MPAS-O and
+       MPAS-SI send buffer packing.
 
 ========================================================================
 PRIORITY 1: MPAS Remapped Output Quality (see REVIEW Part 3)
@@ -61,42 +88,45 @@ PRIORITY 1: MPAS Remapped Output Quality (see REVIEW Part 3)
    [x] Increased max_pio_vars from 100 to 512 (depth coarsening needs ~95)
 
 6. REMAP WEIGHT RENORMALIZATION (frac_b) [DONE]
-   [x] Root cause of diluted remapped output: ESMF map weights sum to
-       < 1.0 for target cells partially overlapping land (mean frac_b=0.66).
-       Raw SpMV produces target = sum(w_i * src_i) which systematically
-       underestimates values at coastal cells.
-   [x] Fixed in shr_horiz_remap_mod: read frac_b from map file, divide
-       SpMV result by frac_b for each target cell. Pure-land cells
-       (frac_b < 1e-6) are zeroed.
+   [x] frac_b now computed from CRS weight sums in build_comm (no PIO
+       read needed, avoids state corruption). Renormalization in apply()
+       divides by frac_b for each target cell. Pure-land cells zeroed.
    [x] This fix applies to all components using shr_horiz_remap_t.
 
-7. OCEAN LAND CELL MASKING (maxLevelCell) [DONE]
-   [x] MPAS-O fill values (1e34) from land cells corrupted SpMV.
-       Added optional mask argument to ocn_fme_horiz_remap_field.
-       All 3 ocean AMs pass maxLevelCell as mask.
-   [x] MPAS-SI out-of-bounds array access fixed (assumed-size field1d(*)).
+6b. MPAS CELL ID MISMATCH [DONE — IDENTITY PATH TAKEN]
+   [x] Fix: gcol_to_ocean_col prefix-sum mapping using maxLevelCell
+       (ocean) and cellMask (sea ice). Applied to both MPAS-O and MPAS-SI.
+   [x] NOTE: current map file has n_a = N_total (465044), so the identity
+       mapping branch is used. Fix is defensive for masked SCRIP maps.
 
-8. EAM COLUMN INTEGRATION MODE [DONE]
-   [x] Added vcoarsen_int_flds namelist: sum(field * pdel / g) over levels.
-       Produces {FIELD}_INT (2D) + d{FIELD}_INT_dt tendency.
-   [x] TOTAL_WATER_INT cross-validates against native DTENDTTW.
-   [x] Added DTENDTTW, DTENDTH, DTENDTQ, FSUS, FLUS to tape 1.
-   [x] Added OMEGA to vcoarsen_avg_flds.
-   [x] All vcoarsen fields (T_1..T_8, etc.) explicitly listed in fincl3.
+6c. MPI SAFETY [DONE]
+   [x] MPI_IN_PLACE replaced with explicit buffer in both MPAS components.
+   [x] ws_send_buf/ws_recv_buf allocated to max(1, needed) in all 4 files
+       to prevent MPI_Alltoallv crashes on ranks with no data.
+
+6d. EAM FILL VALUE LEAKAGE [DONE]
+   [x] fill_thresh lowered from 1e30 to 1e10 to catch cam_history
+       fillvalue (1e20) from vcoarsen at high-elevation columns.
+
+6e. MPAS PIO TYPE MISMATCH [DONE]
+   [x] See PRIORITY 0 item 1 above.
+
+6f. MPAS FILL VALUE LEAKAGE [DONE]
+   [x] abs > 1e10 zeroing in MPAS-O and MPAS-SI send buffer packing.
 
 ========================================================================
 PRIORITY 2: Integration Quality
 ========================================================================
 
-9. CONDITIONAL STREAM GENERATION IN BUILDNML [MEDIUM]
+7. CONDITIONAL STREAM GENERATION IN BUILDNML [MEDIUM]
    buildnml generates FME stream XML unconditionally even when
    output_stream='none'. Should skip when stream not needed.
    Files: components/mpas-ocean/cime_config/buildnml:1237-1305,
           components/mpas-seaice/cime_config/buildnml:839-860
 
 8. CF-COMPLIANT METADATA IN REMAPPED OUTPUT [MEDIUM]
-   Missing: Conventions attribute, calendar, time_bnds,
-   map file path as provenance attribute, depth coordinate for 3D
+   Missing: calendar, time_bnds, map file path as provenance attribute,
+   depth coordinate for 3D
    Files: ocn_fme_remap_file_t%open_file
 
 9. 3D PIO DECOMPOSITION FOR DEPTH-COARSENED FIELDS [MEDIUM]
@@ -105,65 +135,83 @@ PRIORITY 2: Integration Quality
    Requires: new iodesc_3d, modified def_var/write_var
    Files: mpas_ocn_fme_horiz_remap.F, mpas_ocn_fme_depth_coarsening.F
 
+10. NATIVE DEPTH COARSENING DIM ORDERING [LOW]
+    Verification warns: shape (5, 465044, 25) — nFmeDepthLevels appears
+    as dim 3 rather than dim 2. The verify script expects
+    (Time, nFmeDepthLevels, nCells) but gets (Time, nCells, nFmeDepthLevels).
+    Not a bug per se, but confusing for downstream users.
+
 ========================================================================
 PRIORITY 3: Extensions and Enhancements
 ========================================================================
 
-10. ONLINE SPHERICAL HARMONICS ROUNDTRIP
+11. ONLINE SPHERICAL HARMONICS ROUNDTRIP
     ACE offline pipeline does a final SH roundtrip for smoothing.
     Could implement online to eliminate last offline postprocessing step.
 
-11. WETMASK COMPUTATION
+12. WETMASK COMPUTATION
     2D wetmask (based on SST availability) and 3D wetmask (per depth
     level based on temperature data). Add to fmeDerivedFields or
     fmeDepthCoarsening.
 
-12. ELM FME INTEGRATION (DEFERRED)
+13. ELM FME INTEGRATION (DEFERRED)
     elm_fme_derived.F90 and elm_fme_vcoarsen.F90 removed due to build
     issues (histFileMod private internals, ptr_gcell pointer constraints).
     Reimplementation: pass state pointers directly, use col_ptr_t wrapper.
     Fields: TSOI, H2OSOI, SOILICE (vcoarsen), TOTAL_SOIL_WATER (derived).
 
-13. MOSART FME INTEGRATION (DEFERRED)
+14. MOSART FME INTEGRATION (DEFERRED)
     RtmFmeDerived.F90 removed due to build issues (mpicom vs mpicom_rof).
     Reimplementation: use mpicom_rof, col_ptr_t wrapper.
     Fields: QSUR_LIQ, QSUB_LIQ, VOLR_LIQ, RUNOFFLND_LIQ.
 
-14. SHARED MODULE ROBUSTNESS
+15. SHARED MODULE ROBUSTNESS
     - shr_horiz_remap_mod: MPI error return code checks
     - shr_horiz_remap_mod: PIO offset overflow for very large grids
     - shr_vcoarsen_mod: bounds/coord_iface monotonicity validation
     - shr_derived_mod: reject empty operand tokens at parse time
 
-15. PERFORMANCE OPTIMIZATION
+16. PERFORMANCE OPTIMIZATION
     - Depth coarsening: persistent work arrays (avoid per-block alloc)
     - MPAS horiz remap: optimize send_local_cell lookup (O(n*m) -> O(n))
     - Vertical reduce: OpenMP for large grids
 
-16. UNIT TESTING
+17. UNIT TESTING
     Standalone tests for shr_vcoarsen_mod, shr_derived_mod.
     Edge cases: empty columns, single-level, mismatched bounds.
 
-17. DOCUMENTATION
+18. DOCUMENTATION
     User guide, namelist options reference, ACE pipeline end-to-end.
+
+========================================================================
+VERIFICATION SCRIPT IMPROVEMENTS (this session)
+========================================================================
+
+19. VERIFY SCRIPT OVERHAUL [DONE]
+    [x] tripcolor for native unstructured data (replaces scatter)
+    [x] Side-by-side native vs remapped comparison figures
+    [x] Multi-panel maps for EAM T_1..T_8 and Q_1..Q_8 (2x4 grid)
+    [x] Zonal mean profiles for remapped lat-lon data
+    [x] HTML lightbox (click any figure to view full-size, Escape to close)
+    [x] Wider figure display for comparison/multi-panel figures
+    [x] New helper functions: _plot_on_ax, _fix_lon, _compute_zonal_mean,
+        multi_panel_maps, zonal_mean_plot, side_by_side_comparison
 
 ========================================================================
 TESTING CHECKLIST
 ========================================================================
 
-[ ] Build: SMS_D.ne4pg2_oQU480.WCYCL1850NS with fme_output testmod
-[ ] MPAS-O fmeDepthCoarsening: correct depth levels, fill values
-[ ] MPAS-O fmeDerivedFields: SST, SSS, heat flux values
-[ ] MPAS-O fmeVerticalReduce: OHC, FWC, KE non-zero for ocean cells
-[ ] MPAS-O remapped output: correct (lon,lat,Time) structure
-[ ] MPAS-O remapped output: ALL expected fields present
-[ ] MPAS-SI derived: all 7 aggregated/rotated fields
-[ ] MPAS-SI remapped output: all 7 fields (not just 3)
-[ ] EAM vertical coarsening: correct layer count and field names
-[ ] EAM derived fields: TOTAL_WATER evaluates correctly
-[ ] EAM tendencies: non-zero after first timestep
-[ ] EAM remapped output: correct (lon,lat) grid structure
-[ ] Remapped files have _FillValue attributes
-[ ] Run verify_fme_output.py --rundir $RUNDIR --verbose
+[ ] Build: SMS_P512 or SMS_Ld2_P512 with fme_output testmod
+[ ] MPAS-O remapped SST: mean ~18C (was garbage 1e9 range)
+[ ] MPAS-O remapped salinity: mean ~35 PSU
+[ ] MPAS-O remapped depth coarsening: physically correct at all levels
+[ ] MPAS-SI remapped ice area: Arctic/Antarctic pattern, range [0,1]
+[ ] EAM tape3 T_1..T_8: all min > 150K (was 37-110K)
+[ ] EAM tape3 Q_1..Q_8: all min >= 0
+[ ] Side-by-side comparison figures: native and remapped match spatially
+[ ] Multi-panel T_1..T_8: smooth progression from stratosphere to surface
+[ ] Zonal means: physically sensible latitudinal structure
+[ ] HTML lightbox: click-to-zoom works on all figures
 [ ] ERS restart test: bit-for-bit with FME enabled
 [ ] Performance: measure overhead vs baseline
+[ ] Run verify_fme_output.py --rundir $RUNDIR --verbose — target: 0 issues

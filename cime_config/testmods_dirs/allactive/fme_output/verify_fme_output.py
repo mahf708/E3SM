@@ -339,37 +339,61 @@ def savefig(fig, outdir, name, subdir=None):
     return path
 
 
+def _fix_lon(lons):
+    """Shift longitudes from [0,360) to [-180,180) for plotting."""
+    return (lons + 180) % 360 - 180
+
+
+def _plot_on_ax(ax, data, lons, lats, cmap, vmin, vmax, is_cartopy):
+    """Plot data on an axis — tripcolor for 1D, pcolormesh for 2D."""
+    transform = ccrs.PlateCarree() if is_cartopy else None
+    if data.ndim == 2:
+        kw = dict(transform=transform) if is_cartopy else {}
+        im = ax.pcolormesh(lons, lats, data, cmap=cmap,
+                           vmin=vmin, vmax=vmax, shading="auto", **kw)
+    else:
+        # Unstructured: use tripcolor for filled triangulation.
+        # Subsample if > 50k points to keep triangulation fast.
+        lons_fix = _fix_lon(lons)
+        kw = dict(transform=ccrs.PlateCarree()) if is_cartopy else {}
+        max_pts = 50000
+        if data.size > max_pts:
+            idx = np.random.default_rng(42).choice(data.size, max_pts, replace=False)
+            lons_sub, lats_sub, data_sub = lons_fix[idx], lats[idx], data[idx]
+        else:
+            lons_sub, lats_sub, data_sub = lons_fix, lats, data
+        try:
+            im = ax.tripcolor(lons_sub, lats_sub, data_sub, cmap=cmap,
+                              vmin=vmin, vmax=vmax, **kw)
+        except Exception:
+            # Fallback to scatter if tripcolor fails (e.g. degenerate triangulation)
+            im = ax.scatter(lons_sub, lats_sub, c=data_sub, s=0.5, cmap=cmap,
+                            vmin=vmin, vmax=vmax, **kw)
+    return im
+
+
 def global_map(data, lons, lats, title, cmap="RdBu_r", vmin=None, vmax=None,
                outdir=None, fname=None, units="", subdir=None):
     """
     Plot a global filled map.  data is 2-D (lat x lon) or 1-D (nCells) on an
-    unstructured grid (scatter plot fallback).
+    unstructured grid (tripcolor with scatter fallback).
     """
     if not HAS_MPL:
         return None
 
     fig = plt.figure(figsize=(10, 5))
-    if HAS_CARTOPY:
-        ax = fig.add_subplot(1, 1, 1, projection=ccrs.Robinson())
+    is_cartopy = HAS_CARTOPY
+    if is_cartopy:
+        ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
         ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
         ax.set_global()
-        if data.ndim == 2:
-            im = ax.pcolormesh(lons, lats, data, transform=ccrs.PlateCarree(),
-                               cmap=cmap, vmin=vmin, vmax=vmax, shading="auto")
-            plt.colorbar(im, ax=ax, shrink=0.6, label=units)
-        else:  # unstructured
-            sc = ax.scatter(lons, lats, c=data, s=1, cmap=cmap,
-                            vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
-            plt.colorbar(sc, ax=ax, shrink=0.6, label=units)
     else:
         ax = fig.add_subplot(1, 1, 1)
-        if data.ndim == 2:
-            im = ax.pcolormesh(lons, lats, data, cmap=cmap,
-                               vmin=vmin, vmax=vmax, shading="auto")
-        else:
-            im = ax.scatter(lons, lats, c=data, s=1, cmap=cmap,
-                            vmin=vmin, vmax=vmax)
-        plt.colorbar(im, ax=ax, shrink=0.8, label=units)
+
+    im = _plot_on_ax(ax, data, lons, lats, cmap, vmin, vmax, is_cartopy)
+    plt.colorbar(im, ax=ax, shrink=0.6 if is_cartopy else 0.8, label=units)
+
+    if not is_cartopy:
         ax.set_xlabel("lon"); ax.set_ylabel("lat")
 
     ax.set_title(title, fontsize=11)
@@ -442,6 +466,134 @@ def time_series(values, times_label, title, ylabel, outdir, fname, subdir=None):
     ax.grid(True, alpha=0.4)
     plt.tight_layout()
     savefig(fig, outdir, fname, subdir=subdir)
+
+
+def multi_panel_maps(panels, suptitle, outdir, fname, ncols=4,
+                     cmap="RdBu_r", vmin=None, vmax=None, units=""):
+    """Plot a grid of small-multiple global maps.
+
+    Parameters
+    ----------
+    panels : list of (data, lons, lats, subtitle) tuples
+        data can be 2D (lat x lon) for pcolormesh or 1D (nCells) for tripcolor.
+    """
+    if not HAS_MPL or not panels:
+        return None
+
+    n = len(panels)
+    nrows = (n + ncols - 1) // ncols
+    fig_w = 5 * ncols
+    fig_h = 2.8 * nrows + 0.6
+    is_cartopy = HAS_CARTOPY
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    axes = []
+    for idx in range(n):
+        kw = dict(projection=ccrs.PlateCarree()) if is_cartopy else {}
+        ax = fig.add_subplot(nrows, ncols, idx + 1, **kw)
+        axes.append(ax)
+
+    im = None
+    for idx, (data, lons, lats, subtitle) in enumerate(panels):
+        ax = axes[idx]
+        if is_cartopy:
+            ax.add_feature(cfeature.COASTLINE, linewidth=0.3)
+            ax.set_global()
+        im = _plot_on_ax(ax, data, lons, lats, cmap, vmin, vmax, is_cartopy)
+        ax.set_title(subtitle, fontsize=9)
+
+    if im is not None:
+        fig.colorbar(im, ax=axes, shrink=0.5, label=units, pad=0.03, aspect=30)
+    fig.suptitle(suptitle, fontsize=12, y=1.01)
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    path = os.path.join(outdir, fname)
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
+def zonal_mean_plot(profiles, lat, title, outdir, fname, ylabel=""):
+    """Plot zonal mean profiles (latitude vs value) for multiple variables.
+
+    Parameters
+    ----------
+    profiles : list of (zmean_1d, label) tuples
+        zmean_1d is a 1D array of length nlat (zonal mean values).
+    lat : 1D array
+        Latitude values.
+    """
+    if not HAS_MPL or not profiles:
+        return None
+
+    fig, ax = plt.subplots(figsize=(7, 3.5))
+    has_data = False
+    for zmean, label in profiles:
+        if zmean is None:
+            continue
+        ax.plot(lat, zmean, label=label, linewidth=1.3)
+        has_data = True
+
+    if not has_data:
+        plt.close(fig)
+        return None
+
+    ax.set_xlabel("Latitude")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title, fontsize=11)
+    ax.legend(fontsize=8, loc="best")
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(-90, 90)
+    plt.tight_layout()
+    path = os.path.join(outdir, fname)
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
+def _compute_zonal_mean(arr, fill_thresh=1e10):
+    """Compute zonal mean from (lat, lon) array, masking fill values."""
+    if arr is None:
+        return None
+    if arr.ndim == 3:
+        data = arr[-1, :, :]
+    elif arr.ndim == 2:
+        data = arr
+    else:
+        return None
+    masked = np.where(np.abs(data) < fill_thresh, data, np.nan)
+    return np.nanmean(masked, axis=1)
+
+
+def side_by_side_comparison(data1, lons1, lats1, title1,
+                            data2, lons2, lats2, title2,
+                            suptitle, outdir, fname,
+                            cmap="RdBu_r", vmin=None, vmax=None, units=""):
+    """Two global maps side by side — native tripcolor on left, remapped pcolormesh on right."""
+    if not HAS_MPL:
+        return None
+
+    is_cartopy = HAS_CARTOPY
+    fig = plt.figure(figsize=(16, 4.5))
+    im = None
+    for idx, (data, lons, lats, title) in enumerate([
+        (data1, lons1, lats1, title1),
+        (data2, lons2, lats2, title2),
+    ]):
+        kw = dict(projection=ccrs.PlateCarree()) if is_cartopy else {}
+        ax = fig.add_subplot(1, 2, idx + 1, **kw)
+        if is_cartopy:
+            ax.add_feature(cfeature.COASTLINE, linewidth=0.4)
+            ax.set_global()
+        im = _plot_on_ax(ax, data, lons, lats, cmap, vmin, vmax, is_cartopy)
+        plt.colorbar(im, ax=ax, shrink=0.7, label=units)
+        ax.set_title(title, fontsize=10)
+
+    fig.suptitle(suptitle, fontsize=12, y=1.02)
+    plt.tight_layout()
+    path = os.path.join(outdir, fname)
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return path
 
 
 # -----------------------------------------------------------------------------
@@ -612,11 +764,11 @@ def check_eam(rundir, outdir, verbose):
                     else:
                         issues.append(f"  tape3 missing coarsened field: {base}_1..{base}_{N_ATM_LAYERS}")
 
-            # Plot T_1 (near-surface) and T_8 (near-top) at last timestep
+            # Plot T_1 (near-top stratosphere) and T_8 (near-surface BL) at last timestep
             if HAS_MPL and HAS_XR and isinstance(ds3, xr.Dataset):
                 lon_name = next((d for d in ["lon", "ncol", "longitude"] if d in ds3.dims), None)
                 lat_name = next((d for d in ["lat", "latitude"] if d in ds3.dims), None)
-                for vname, label_tag in [("T_1", "near-surface"), ("T_8", "near-top")]:
+                for vname, label_tag in [("T_1", "near-top"), ("T_8", "near-surface")]:
                     arr = get_var(ds3, vname)
                     if arr is None or arr.size == 0:
                         continue
@@ -1307,10 +1459,13 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
             continue
         anchor = comp.replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
         fig_sections += f'<h3 id="{anchor}">{comp}</h3>\n<div class="gallery">\n'
+        # Use wider display for comparison/multi-panel figures
+        is_comparison = (comp == "Comparisons")
         for p in plots:
             if p and os.path.exists(p):
                 rel = os.path.relpath(p, outdir)
-                fig_sections += (f'<div class="fig"><a href="{rel}">'
+                fig_cls = "fig wide" if is_comparison else "fig"
+                fig_sections += (f'<div class="{fig_cls}"><a href="{rel}">'
                                  f'<img src="{rel}"/></a>'
                                  f'<span>{os.path.basename(p)}</span></div>\n')
         fig_sections += '</div>\n'
@@ -1386,10 +1541,11 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
       .col {{ flex: 1; min-width: 420px; }}
       .gallery {{ display: flex; flex-wrap: wrap; gap: 12px; }}
       .fig {{ display: inline-block; margin: 4px; vertical-align: top; }}
-      .fig img {{ width: 420px; border: 1px solid #ccc; border-radius: 4px;
-                  transition: transform 0.2s; }}
+      .fig img {{ max-width: 520px; width: 100%; border: 1px solid #ccc; border-radius: 4px;
+                  transition: transform 0.2s; cursor: zoom-in; }}
       .fig img:hover {{ transform: scale(1.02); box-shadow: 0 2px 8px rgba(0,0,0,0.15); }}
       .fig span {{ display: block; font-size: 0.75em; color: #888; margin-top: 2px; }}
+      .fig.wide img {{ max-width: 900px; }}
       details {{ margin: 10px 0; background: #fff; border-radius: 4px;
                  box-shadow: 0 1px 3px rgba(0,0,0,0.08); }}
       summary {{ cursor: pointer; font-weight: 600; color: #1a2744; padding: 10px 14px; }}
@@ -1401,7 +1557,34 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
                           padding: 4px 10px; white-space: nowrap; }}
       footer {{ margin-top: 40px; padding: 16px 30px; border-top: 2px solid #1a2744;
                 color: #777; font-size: 0.8em; background: #fff; text-align: center; }}
+      /* Lightbox overlay */
+      .lightbox {{ display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+                   background:rgba(0,0,0,0.88); z-index:1000; cursor:zoom-out;
+                   align-items:center; justify-content:center; }}
+      .lightbox.active {{ display:flex; }}
+      .lightbox img {{ max-width:95%; max-height:95%; border-radius:6px;
+                       box-shadow: 0 4px 20px rgba(0,0,0,0.4); }}
     </style>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {{
+      var lb = document.createElement('div');
+      lb.className = 'lightbox';
+      var lbImg = document.createElement('img');
+      lb.appendChild(lbImg);
+      document.body.appendChild(lb);
+      lb.addEventListener('click', function() {{ lb.classList.remove('active'); }});
+      document.addEventListener('keydown', function(e) {{
+        if (e.key === 'Escape') lb.classList.remove('active');
+      }});
+      document.querySelectorAll('.fig a').forEach(function(a) {{
+        a.addEventListener('click', function(e) {{
+          e.preventDefault();
+          lbImg.src = this.href;
+          lb.classList.add('active');
+        }});
+      }});
+    }});
+    </script>
     </head><body>
     <header>
       <h1>FME Online Output Verification</h1>
@@ -1483,6 +1666,203 @@ def collect_file_inventory(rundir):
 
 
 # -----------------------------------------------------------------------------
+# Cross-component comparison figures (native vs remapped side-by-side)
+# -----------------------------------------------------------------------------
+
+def generate_comparison_figures(rundir, fig_root, all_plots_by_comp):
+    """Generate native-vs-remapped side-by-side comparison figures.
+
+    Opens both native and remapped files for each MPAS component and
+    produces tripcolor (native) vs pcolormesh (remapped) comparisons.
+    Also generates multi-panel layer views for EAM coarsened fields and
+    zonal mean profiles for remapped lat-lon data.
+    """
+    if not HAS_MPL:
+        return
+
+    comp_outdir = os.path.join(fig_root, "comparisons")
+    os.makedirs(comp_outdir, exist_ok=True)
+    comp_plots = []
+
+    # --- MPAS-O Derived: native vs remapped side-by-side ---
+    nat_files = find_files(rundir, "*.mpaso.hist.am.fmeDerivedFields.*.nc",
+                           exclude=".remapped.")
+    rem_files = find_files(rundir, "*.mpaso.hist.am.fmeDerivedFields.*.remapped.nc")
+    if nat_files and rem_files:
+        print("\n=== Generating native vs remapped comparisons ===")
+        ds_nat = safe_open(nat_files[0])
+        ds_rem = safe_open(rem_files[-1])  # latest remapped
+        if not has_time_zero(ds_nat) and not has_time_zero(ds_rem):
+            lon_nat = get_var(ds_nat, "lonCell")
+            lat_nat = get_var(ds_nat, "latCell")
+            lon_rem = get_var(ds_rem, "lon")
+            lat_rem = get_var(ds_rem, "lat")
+            if lon_nat is not None and lat_nat is not None and \
+               lon_rem is not None and lat_rem is not None:
+                lon_nat_deg = np.degrees(lon_nat)
+                lat_nat_deg = np.degrees(lat_nat)
+                if lon_rem.ndim == 1 and lat_rem.ndim == 1:
+                    lons_rem, lats_rem = np.meshgrid(lon_rem, lat_rem)
+                else:
+                    lons_rem, lats_rem = lon_rem, lat_rem
+
+                for var, cmap, vm, vx, units_str in [
+                    ("sst", "RdYlBu_r", -2, 30, "degC"),
+                    ("sss", "viridis", 30, 40, "PSU"),
+                    ("surfaceHeatFluxTotal", "RdBu_r", -300, 300, "W/m2"),
+                ]:
+                    arr_nat = get_var(ds_nat, var)
+                    arr_rem = get_var(ds_rem, var)
+                    if arr_nat is None or arr_rem is None:
+                        continue
+                    d_nat = arr_nat[-1] if arr_nat.ndim > 1 else arr_nat
+                    d_rem = arr_rem[-1] if arr_rem.ndim == 3 else arr_rem
+                    p = side_by_side_comparison(
+                        d_nat, lon_nat_deg, lat_nat_deg, f"Native ({var})",
+                        d_rem, lons_rem, lats_rem, f"Remapped ({var})",
+                        f"MPAS-O {var}: Native vs Remapped",
+                        comp_outdir, f"compare_mpaso_{var}.png",
+                        cmap=cmap, vmin=vm, vmax=vx, units=units_str)
+                    if p:
+                        comp_plots.append(p)
+                        print(f"  Wrote {os.path.basename(p)}")
+        close_ds(ds_nat)
+        close_ds(ds_rem)
+
+    # --- MPAS-SI Derived: native vs remapped side-by-side ---
+    nat_files = find_files(rundir, "*.mpassi.hist.am.fmeSeaiceDerivedFields.*.nc",
+                           exclude=".remapped.")
+    rem_files = find_files(rundir, "*.mpassi.hist.am.fmeSeaiceDerivedFields.*.remapped.nc")
+    if nat_files and rem_files:
+        ds_nat = safe_open(nat_files[0])
+        ds_rem = safe_open(rem_files[-1])
+        if not has_time_zero(ds_nat) and not has_time_zero(ds_rem):
+            lon_nat = get_var(ds_nat, "lonCell")
+            lat_nat = get_var(ds_nat, "latCell")
+            lon_rem = get_var(ds_rem, "lon")
+            lat_rem = get_var(ds_rem, "lat")
+            if lon_nat is not None and lat_nat is not None and \
+               lon_rem is not None and lat_rem is not None:
+                lon_nat_deg = np.degrees(lon_nat)
+                lat_nat_deg = np.degrees(lat_nat)
+                if lon_rem.ndim == 1 and lat_rem.ndim == 1:
+                    lons_rem, lats_rem = np.meshgrid(lon_rem, lat_rem)
+                else:
+                    lons_rem, lats_rem = lon_rem, lat_rem
+
+                for var, cmap, vm, vx, units_str in [
+                    ("iceAreaTotal", "Blues", 0, 1, "fraction"),
+                    ("iceVolumeTotal", "viridis", 0, 5, "m"),
+                    ("surfaceTemperatureMean", "RdBu_r", 210, 275, "K"),
+                ]:
+                    arr_nat = get_var(ds_nat, var)
+                    arr_rem = get_var(ds_rem, var)
+                    if arr_nat is None or arr_rem is None:
+                        continue
+                    d_nat = arr_nat[-1] if arr_nat.ndim > 1 else arr_nat
+                    d_rem = arr_rem[-1] if arr_rem.ndim == 3 else arr_rem
+                    p = side_by_side_comparison(
+                        d_nat, lon_nat_deg, lat_nat_deg, f"Native ({var})",
+                        d_rem, lons_rem, lats_rem, f"Remapped ({var})",
+                        f"MPAS-SI {var}: Native vs Remapped",
+                        comp_outdir, f"compare_mpassi_{var}.png",
+                        cmap=cmap, vmin=vm, vmax=vx, units=units_str)
+                    if p:
+                        comp_plots.append(p)
+                        print(f"  Wrote {os.path.basename(p)}")
+        close_ds(ds_nat)
+        close_ds(ds_rem)
+
+    # --- EAM tape3: multi-panel T_1..T_8 and Q_1..Q_8 ---
+    t3_files = find_files(rundir, "*.eam.h2.*.nc")
+    if t3_files:
+        ds3 = safe_open(t3_files[0])
+        if not has_time_zero(ds3) and HAS_XR and isinstance(ds3, xr.Dataset):
+            lon_name = next((d for d in ["lon", "ncol", "longitude"] if d in ds3.dims), None)
+            lat_name = next((d for d in ["lat", "latitude"] if d in ds3.dims), None)
+            if lon_name and lat_name:
+                lons = ds3[lon_name].values
+                lats = ds3[lat_name].values if lat_name != lon_name else None
+                if lats is not None:
+                    if lons.ndim == 1 and lat_name == "lat":
+                        lons, lats = np.meshgrid(lons, lats)
+
+                    for base, cmap, vm, vx, units_str in [
+                        ("T", "RdYlBu_r", 180, 310, "K"),
+                        ("Q", "YlGnBu", 0, 0.02, "kg/kg"),
+                    ]:
+                        panels = []
+                        for k in range(1, N_ATM_LAYERS + 1):
+                            vname = f"{base}_{k}"
+                            arr = get_var(ds3, vname)
+                            if arr is None or arr.size == 0:
+                                continue
+                            data = arr[-1] if arr.ndim >= 2 and arr.shape[0] > 0 else arr
+                            v = valid_data(data)
+                            stats = f"mean={v.mean():.1f}" if v is not None and v.size > 0 else ""
+                            panels.append((data, lons, lats,
+                                           f"{vname} ({stats})"))
+
+                        if panels:
+                            p = multi_panel_maps(
+                                panels,
+                                f"EAM Vertically Coarsened {base} "
+                                f"(all {N_ATM_LAYERS} layers, last t)",
+                                comp_outdir,
+                                f"eam_tape3_{base}_all_layers.png",
+                                ncols=4, cmap=cmap, vmin=vm, vmax=vx,
+                                units=units_str)
+                            if p:
+                                comp_plots.append(p)
+                                print(f"  Wrote {os.path.basename(p)}")
+
+                    # Zonal mean of T layers (only for lat-lon data)
+                    if lat_name == "lat":
+                        lat_1d = ds3["lat"].values
+                        profiles = []
+                        for k in range(1, N_ATM_LAYERS + 1):
+                            zm = _compute_zonal_mean(get_var(ds3, f"T_{k}"))
+                            if zm is not None:
+                                profiles.append((zm, f"T_{k}"))
+                        if profiles:
+                            p = zonal_mean_plot(
+                                profiles, lat_1d,
+                                "EAM Zonal Mean Temperature (all layers)",
+                                comp_outdir, "eam_tape3_T_zonal_mean.png",
+                                ylabel="K")
+                            if p:
+                                comp_plots.append(p)
+                                print(f"  Wrote {os.path.basename(p)}")
+        close_ds(ds3)
+
+    # --- Zonal means for remapped MPAS-O fields ---
+    rem_derived = find_files(rundir, "*.mpaso.hist.am.fmeDerivedFields.*.remapped.nc")
+    if rem_derived:
+        ds = safe_open(rem_derived[-1])
+        if not has_time_zero(ds):
+            lat = get_var(ds, "lat")
+            if lat is not None:
+                profiles = []
+                for var in ["sst", "sss"]:
+                    zm = _compute_zonal_mean(get_var(ds, var))
+                    if zm is not None:
+                        profiles.append((zm, var))
+                if profiles:
+                    p = zonal_mean_plot(
+                        profiles, lat,
+                        "MPAS-O Zonal Mean SST/SSS (remapped)",
+                        comp_outdir, "mpaso_zonal_mean_sst_sss.png",
+                        ylabel="degC / PSU")
+                    if p:
+                        comp_plots.append(p)
+                        print(f"  Wrote {os.path.basename(p)}")
+        close_ds(ds)
+
+    if comp_plots:
+        all_plots_by_comp["Comparisons"] = comp_plots
+
+
+# -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
 
@@ -1550,6 +1930,10 @@ def main():
               args.rundir, args.verbose)
     run_check("MPAS-SI Derived Fields (remapped)", check_mpassi_derived_remapped, "mpassi_remapped",
               args.rundir, args.verbose)
+
+    # Cross-component comparison figures (native vs remapped side-by-side,
+    # multi-panel layer views, zonal means)
+    generate_comparison_figures(args.rundir, fig_root, all_plots_by_comp)
 
     # Timing summary
     timing_summary = read_timing_summary(args.rundir)

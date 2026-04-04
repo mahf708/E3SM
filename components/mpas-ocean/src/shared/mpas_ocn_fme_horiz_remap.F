@@ -114,7 +114,7 @@ contains
 !***********************************************************************
 
    subroutine ocn_fme_horiz_remap_init(domain, mapfile, err)!{{{
-      use mpi, only: MPI_INTEGER, MPI_MAX, MPI_IN_PLACE
+      use mpi, only: MPI_INTEGER, MPI_MAX
 
       type(domain_type), intent(inout) :: domain
       character(len=*), intent(in) :: mapfile
@@ -125,10 +125,13 @@ contains
       integer, pointer :: nCellsSolve
       integer, dimension(:), pointer :: indexToCellID
       integer :: myrank, nprocs, comm, ierr
-      integer :: iCell, gcol
-      integer, allocatable :: gcol_to_rank(:)
+      integer :: iCell, gcol, map_col
+      integer, allocatable :: gcol_to_rank(:), gcol_to_rank_global(:)
       integer, allocatable :: send_gcol_list(:)
       integer :: i
+      integer :: N_total, ocean_count
+      integer, allocatable :: is_ocean(:), gcol_to_ocean_col(:)
+      integer, dimension(:), pointer :: maxLevelCell
 
       err = 0
 
@@ -153,7 +156,78 @@ contains
          return
       end if
 
-      ! Build gcol_to_rank mapping from MPAS cell decomposition
+      ! Resolve cell ID mismatch: map files generated from masked SCRIP
+      ! meshes use contiguous 1-based indexing over ocean-only cells
+      ! (1..N_ocean), whereas MPAS indexToCellID covers all cells
+      ! (1..N_total including land). Build a mapping from global cell ID
+      ! to ocean-only index so gcol_to_rank uses the map file's numbering.
+
+      ! Find global N_total (max indexToCellID across all ranks)
+      N_total = 0
+      block => domain % blocklist
+      do while (associated(block))
+         call mpas_pool_get_subpool(block % structs, 'mesh', meshPool)
+         call mpas_pool_get_dimension(block % dimensions, 'nCellsSolve', nCellsSolve)
+         call mpas_pool_get_array(meshPool, 'indexToCellID', indexToCellID)
+         do iCell = 1, nCellsSolve
+            if (indexToCellID(iCell) > N_total) N_total = indexToCellID(iCell)
+         end do
+         block => block % next
+      end do
+      call mpi_allreduce(N_total, iCell, 1, MPI_INTEGER, MPI_MAX, comm, ierr)
+      N_total = iCell
+
+      allocate(gcol_to_ocean_col(N_total))
+      if (remap_data%n_a == N_total) then
+         ! Map file covers all cells — identity mapping
+         do i = 1, N_total
+            gcol_to_ocean_col(i) = i
+         end do
+      else
+         ! Map file was generated from masked mesh (ocean only).
+         ! Build ocean mask via maxLevelCell and compute prefix-sum mapping.
+         allocate(is_ocean(N_total))
+         is_ocean(:) = 0
+         block => domain % blocklist
+         do while (associated(block))
+            call mpas_pool_get_subpool(block % structs, 'mesh', meshPool)
+            call mpas_pool_get_dimension(block % dimensions, 'nCellsSolve', nCellsSolve)
+            call mpas_pool_get_array(meshPool, 'indexToCellID', indexToCellID)
+            call mpas_pool_get_array(meshPool, 'maxLevelCell', maxLevelCell)
+            do iCell = 1, nCellsSolve
+               if (maxLevelCell(iCell) > 0) then
+                  is_ocean(indexToCellID(iCell)) = 1
+               end if
+            end do
+            block => block % next
+         end do
+
+         ! Gather ocean mask across all ranks
+         allocate(gcol_to_rank_global(N_total))
+         call mpi_allreduce(is_ocean, gcol_to_rank_global, N_total, &
+              MPI_INTEGER, MPI_MAX, comm, ierr)
+         is_ocean = gcol_to_rank_global
+         deallocate(gcol_to_rank_global)
+
+         ! Prefix sum: assign contiguous 1-based index to ocean cells
+         ocean_count = 0
+         do i = 1, N_total
+            if (is_ocean(i) == 1) then
+               ocean_count = ocean_count + 1
+               gcol_to_ocean_col(i) = ocean_count
+            else
+               gcol_to_ocean_col(i) = 0
+            end if
+         end do
+         deallocate(is_ocean)
+
+         if (myrank == 0) then
+            call mpas_log_write('ocn_fme_horiz_remap_init: N_total=$i, n_a=$i, ocean_count=$i', &
+                 intArgs=(/N_total, remap_data%n_a, ocean_count/))
+         end if
+      end if
+
+      ! Build gcol_to_rank mapping using map-file column indices
       allocate(gcol_to_rank(remap_data%n_a))
       gcol_to_rank(:) = -1
 
@@ -164,19 +238,21 @@ contains
          call mpas_pool_get_array(meshPool, 'indexToCellID', indexToCellID)
 
          do iCell = 1, nCellsSolve
-            gcol = indexToCellID(iCell)
-            if (gcol >= 1 .and. gcol <= remap_data%n_a) then
-               gcol_to_rank(gcol) = myrank
+            map_col = gcol_to_ocean_col(indexToCellID(iCell))
+            if (map_col >= 1 .and. map_col <= remap_data%n_a) then
+               gcol_to_rank(map_col) = myrank
             end if
          end do
 
          block => block % next
       end do
 
-      ! Gather full gcol_to_rank across all ranks: each rank only knows which
-      ! cells it owns locally; after MPI_MAX every entry holds the owning rank.
-      call mpi_allreduce(MPI_IN_PLACE, gcol_to_rank, remap_data%n_a, &
+      ! Gather full gcol_to_rank across all ranks
+      allocate(gcol_to_rank_global(remap_data%n_a))
+      call mpi_allreduce(gcol_to_rank, gcol_to_rank_global, remap_data%n_a, &
            MPI_INTEGER, MPI_MAX, comm, ierr)
+      gcol_to_rank = gcol_to_rank_global
+      deallocate(gcol_to_rank_global)
 
       ! Phase 2: Build MPI communication pattern
       call remap_data%build_comm(gcol_to_rank, comm, myrank, nprocs, &
@@ -202,7 +278,8 @@ contains
          do i = 1, remap_data%n_send_total
             if (send_local_cell(i) > 0) cycle  ! already found
             do iCell = 1, nCellsSolve
-               if (indexToCellID(iCell) == send_gcol_list(i)) then
+               map_col = gcol_to_ocean_col(indexToCellID(iCell))
+               if (map_col == send_gcol_list(i)) then
                   send_local_cell(i) = iCell
                   exit
                end if
@@ -213,6 +290,7 @@ contains
       end do
 
       if (allocated(send_gcol_list)) deallocate(send_gcol_list)
+      if (allocated(gcol_to_ocean_col)) deallocate(gcol_to_ocean_col)
 
       ! Validate: all send_local_cell entries must be > 0
       do i = 1, remap_data%n_send_total
@@ -294,12 +372,12 @@ contains
       comm   = domain % dminfo % comm
 
       needed = remap_data%n_send_total * numlev
-      if (needed > 0) then
-         if (.not. allocated(ws_send_buf) .or. size(ws_send_buf) < needed) then
-            if (allocated(ws_send_buf)) deallocate(ws_send_buf)
-            allocate(ws_send_buf(needed))
-         end if
+      if (.not. allocated(ws_send_buf) .or. size(ws_send_buf) < max(1, needed)) then
+         if (allocated(ws_send_buf)) deallocate(ws_send_buf)
+         allocate(ws_send_buf(max(1, needed)))
+      end if
 
+      if (needed > 0) then
          do i = 1, remap_data%n_send_total
             icell = send_local_cell(i)
             do k = 1, numlev
@@ -313,6 +391,11 @@ contains
                end if
                ws_send_buf((i-1)*numlev + k) = &
                     real(field2d(k, icell), r8)
+               ! Zero out fill values (MPAS uses 1e34) so they don't
+               ! corrupt the SpMV weighted average at nearby target cells.
+               if (abs(ws_send_buf((i-1)*numlev + k)) > 1.0e10_r8) then
+                  ws_send_buf((i-1)*numlev + k) = 0.0_r8
+               end if
             end do
          end do
       end if
@@ -425,7 +508,10 @@ contains
       integer, intent(in) :: numlev
       integer, intent(out) :: err
       integer :: iv, ierr
-      real(r8) :: fld_1d(remap_data%n_b_local)
+      ! Must match the PIO_REAL type used in pio_initdecomp for iodesc_2d.
+      ! Passing real(r8) to a PIO_REAL decomposition garbles the output
+      ! (PIO reads 4-byte chunks from 8-byte elements).
+      real(4) :: fld_1d_r4(remap_data%n_b_local)
 
       err = 0
       if (.not. self%file_is_open) then; err = 1; return; end if
@@ -434,9 +520,10 @@ contains
          if (trim(self%pio_var_names(iv)) == trim(varname)) then
             call pio_setframe(self%pio_file, self%pio_var_descs(iv), &
                  int(self%time_record, PIO_OFFSET_KIND))
-            fld_1d(1:remap_data%n_b_local) = real(fld_out(1:remap_data%n_b_local, 1), r8)
+            fld_1d_r4(1:remap_data%n_b_local) = &
+                 real(fld_out(1:remap_data%n_b_local, 1), 4)
             call pio_write_darray(self%pio_file, self%pio_var_descs(iv), &
-                 iodesc_2d, fld_1d, ierr)
+                 iodesc_2d, fld_1d_r4, ierr)
             return
          end if
       end do
@@ -478,12 +565,20 @@ contains
    subroutine remap_file_register_var(self, varname, units, long_name, err)!{{{
    !> Register a variable for output. Stores metadata so that def_var can
    !> be replayed automatically when a file is opened or rotated.
-   !> Call this once per variable during setup (before any writes).
+   !> Silently skips if the variable is already registered (MPAS framework
+   !> may call init twice: once for setup, once for compute_on_startup).
       class(ocn_fme_remap_file_t), intent(inout) :: self
       character(len=*), intent(in) :: varname, units, long_name
       integer, intent(out) :: err
+      integer :: iv
 
       err = 0
+
+      ! Skip if already registered (guard against double-init)
+      do iv = 1, self%n_registered_vars
+         if (trim(self%pio_var_names(iv)) == trim(varname)) return
+      end do
+
       self%n_registered_vars = self%n_registered_vars + 1
       if (self%n_registered_vars > max_pio_vars) then
          call mpas_log_write('ocn_fme_remap_file: exceeded max_pio_vars=$i for var: ' &

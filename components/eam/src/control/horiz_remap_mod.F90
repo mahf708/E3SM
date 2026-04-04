@@ -198,6 +198,11 @@ CONTAINS
     real(r8), allocatable, intent(out) :: fld_out(:,:)
 
     integer :: i, k, lchnk, icol, ierr, needed
+    real(r8) :: val
+    ! cam_history fillvalue is 1e+20, MPAS uses 1e+34.  No geophysical
+    ! quantity exceeds 1e10, so anything above that is a fill value that
+    ! must be zeroed before entering the SpMV weighted average.
+    real(r8), parameter :: fill_thresh = 1.0e10_r8
     character(len=*), parameter :: subname = 'horiz_remap_field'
 
     if (.not. self%shared%initialized) then
@@ -206,21 +211,26 @@ CONTAINS
 
     allocate(fld_out(self%shared%n_b_local, numlev))
 
-    ! Grow persistent send workspace if needed
+    ! Grow persistent send workspace if needed.
+    ! Always allocate at least size 1 so MPI_Alltoallv never receives
+    ! an unallocated array on ranks with no source cells.
     needed = self%shared%n_send_total * numlev
-    if (needed > 0) then
-      if (.not. allocated(self%ws_send_buf) .or. size(self%ws_send_buf) < needed) then
-        if (allocated(self%ws_send_buf)) deallocate(self%ws_send_buf)
-        allocate(self%ws_send_buf(needed))
-      end if
+    if (.not. allocated(self%ws_send_buf) .or. size(self%ws_send_buf) < max(1, needed)) then
+      if (allocated(self%ws_send_buf)) deallocate(self%ws_send_buf)
+      allocate(self%ws_send_buf(max(1, needed)))
     end if
 
-    ! Pack send buffer from EAM chunk layout
+    ! Pack send buffer from EAM chunk layout.
+    ! Zero out fill values (e.g. from vcoarsen at high-elevation columns
+    ! where surface pressure is below a coarsened layer's pressure range)
+    ! before SpMV so they don't corrupt the weighted average.
     do i = 1, self%shared%n_send_total
       lchnk = self%send_cols_chunk(i)
       icol  = self%send_cols_icol(i)
       do k = 1, numlev
-        self%ws_send_buf((i-1)*numlev + k) = hbuf(icol, k, lchnk - begchunk + 1)
+        val = hbuf(icol, k, lchnk - begchunk + 1)
+        if (abs(val) > fill_thresh) val = 0.0_r8
+        self%ws_send_buf((i-1)*numlev + k) = val
       end do
     end do
 

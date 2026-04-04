@@ -87,7 +87,7 @@ module seaice_fme_horiz_remap
 contains
 
    subroutine seaice_fme_horiz_remap_init(domain, mapfile, err)!{{{
-      use mpi, only: MPI_INTEGER, MPI_MAX, MPI_IN_PLACE
+      use mpi, only: MPI_INTEGER, MPI_MAX
 
       type(domain_type), intent(inout) :: domain
       character(len=*), intent(in) :: mapfile
@@ -97,9 +97,12 @@ contains
       type(mpas_pool_type), pointer :: meshPool
       integer, pointer :: nCellsSolve
       integer, dimension(:), pointer :: indexToCellID
-      integer :: myrank, nprocs, comm, ierr, iCell, gcol, i
-      integer, allocatable :: gcol_to_rank(:), send_gcol_list(:)
+      integer :: myrank, nprocs, comm, ierr, iCell, gcol, i, map_col
+      integer, allocatable :: gcol_to_rank(:), gcol_to_rank_global(:), send_gcol_list(:)
       integer(PIO_OFFSET_KIND), allocatable :: idof(:)
+      integer :: N_total, ocean_count
+      integer, allocatable :: is_ocean(:), gcol_to_ocean_col(:)
+      integer, dimension(:), pointer :: cellMask
 
       err = 0
       if (is_initialized) return
@@ -117,6 +120,70 @@ contains
          err = ierr; return
       end if
 
+      ! Resolve cell ID mismatch (same issue as MPAS-O): map files from
+      ! masked SCRIP meshes use contiguous 1-based ocean-only indexing.
+
+      ! Find global N_total
+      N_total = 0
+      block => domain % blocklist
+      do while (associated(block))
+         call mpas_pool_get_subpool(block % structs, 'mesh', meshPool)
+         call mpas_pool_get_dimension(block % dimensions, 'nCellsSolve', nCellsSolve)
+         call mpas_pool_get_array(meshPool, 'indexToCellID', indexToCellID)
+         do iCell = 1, nCellsSolve
+            if (indexToCellID(iCell) > N_total) N_total = indexToCellID(iCell)
+         end do
+         block => block % next
+      end do
+      call mpi_allreduce(N_total, iCell, 1, MPI_INTEGER, MPI_MAX, comm, ierr)
+      N_total = iCell
+
+      allocate(gcol_to_ocean_col(N_total))
+      if (remap_data%n_a == N_total) then
+         do i = 1, N_total
+            gcol_to_ocean_col(i) = i
+         end do
+      else
+         ! Build ocean mask via cellMask (sea ice equivalent of maxLevelCell)
+         allocate(is_ocean(N_total))
+         is_ocean(:) = 0
+         block => domain % blocklist
+         do while (associated(block))
+            call mpas_pool_get_subpool(block % structs, 'mesh', meshPool)
+            call mpas_pool_get_dimension(block % dimensions, 'nCellsSolve', nCellsSolve)
+            call mpas_pool_get_array(meshPool, 'indexToCellID', indexToCellID)
+            call mpas_pool_get_array(meshPool, 'cellMask', cellMask)
+            do iCell = 1, nCellsSolve
+               if (cellMask(iCell) > 0) then
+                  is_ocean(indexToCellID(iCell)) = 1
+               end if
+            end do
+            block => block % next
+         end do
+
+         allocate(gcol_to_rank_global(N_total))
+         call mpi_allreduce(is_ocean, gcol_to_rank_global, N_total, &
+              MPI_INTEGER, MPI_MAX, comm, ierr)
+         is_ocean = gcol_to_rank_global
+         deallocate(gcol_to_rank_global)
+
+         ocean_count = 0
+         do i = 1, N_total
+            if (is_ocean(i) == 1) then
+               ocean_count = ocean_count + 1
+               gcol_to_ocean_col(i) = ocean_count
+            else
+               gcol_to_ocean_col(i) = 0
+            end if
+         end do
+         deallocate(is_ocean)
+
+         if (myrank == 0) then
+            call mpas_log_write('seaice_fme_horiz_remap_init: N_total=$i, n_a=$i, ocean_count=$i', &
+                 intArgs=(/N_total, remap_data%n_a, ocean_count/))
+         end if
+      end if
+
       allocate(gcol_to_rank(remap_data%n_a))
       gcol_to_rank(:) = -1
       block => domain % blocklist
@@ -125,16 +192,18 @@ contains
          call mpas_pool_get_dimension(block % dimensions, 'nCellsSolve', nCellsSolve)
          call mpas_pool_get_array(meshPool, 'indexToCellID', indexToCellID)
          do iCell = 1, nCellsSolve
-            gcol = indexToCellID(iCell)
-            if (gcol >= 1 .and. gcol <= remap_data%n_a) gcol_to_rank(gcol) = myrank
+            map_col = gcol_to_ocean_col(indexToCellID(iCell))
+            if (map_col >= 1 .and. map_col <= remap_data%n_a) gcol_to_rank(map_col) = myrank
          end do
          block => block % next
       end do
 
-      ! Gather full gcol_to_rank across all ranks: each rank only knows which
-      ! cells it owns locally; after MPI_MAX every entry holds the owning rank.
-      call mpi_allreduce(MPI_IN_PLACE, gcol_to_rank, remap_data%n_a, &
+      ! Gather full gcol_to_rank across all ranks
+      allocate(gcol_to_rank_global(remap_data%n_a))
+      call mpi_allreduce(gcol_to_rank, gcol_to_rank_global, remap_data%n_a, &
            MPI_INTEGER, MPI_MAX, comm, ierr)
+      gcol_to_rank = gcol_to_rank_global
+      deallocate(gcol_to_rank_global)
 
       call remap_data%build_comm(gcol_to_rank, comm, myrank, nprocs, &
            send_gcol_list, ierr)
@@ -153,7 +222,8 @@ contains
          do i = 1, remap_data%n_send_total
             if (send_local_cell(i) > 0) cycle
             do iCell = 1, nCellsSolve
-               if (indexToCellID(iCell) == send_gcol_list(i)) then
+               map_col = gcol_to_ocean_col(indexToCellID(iCell))
+               if (map_col == send_gcol_list(i)) then
                   send_local_cell(i) = iCell; exit
                end if
             end do
@@ -161,6 +231,7 @@ contains
          block => block % next
       end do
       if (allocated(send_gcol_list)) deallocate(send_gcol_list)
+      if (allocated(gcol_to_ocean_col)) deallocate(gcol_to_ocean_col)
 
       ! Validate: all send_local_cell entries must be > 0
       do i = 1, remap_data%n_send_total
@@ -203,13 +274,19 @@ contains
       err = 0
       if (.not. is_initialized) then; err = 1; return; end if
 
+      if (.not. allocated(ws_send_buf) .or. size(ws_send_buf) < max(1, remap_data%n_send_total)) then
+         if (allocated(ws_send_buf)) deallocate(ws_send_buf)
+         allocate(ws_send_buf(max(1, remap_data%n_send_total)))
+      end if
+
       if (remap_data%n_send_total > 0) then
-         if (.not. allocated(ws_send_buf) .or. size(ws_send_buf) < remap_data%n_send_total) then
-            if (allocated(ws_send_buf)) deallocate(ws_send_buf)
-            allocate(ws_send_buf(remap_data%n_send_total))
-         end if
          do i = 1, remap_data%n_send_total
             ws_send_buf(i) = real(field1d(send_local_cell(i)), r8)
+            ! Zero out fill values so they don't corrupt the SpMV
+            ! weighted average at nearby target cells.
+            if (abs(ws_send_buf(i)) > 1.0e10_r8) then
+               ws_send_buf(i) = 0.0_r8
+            end if
          end do
       end if
 
@@ -281,13 +358,19 @@ contains
       integer, intent(in) :: numlev
       integer, intent(out) :: err
       integer :: iv, ierr
+      ! Must match the PIO_REAL type used in pio_initdecomp for iodesc_2d.
+      ! Passing real(r8) to a PIO_REAL decomposition garbles the output.
+      real(4) :: fld_out_r4(remap_data%n_b_local)
 
       err = 0
       do iv = 1, n_pio_vars
          if (trim(pio_var_names(iv)) == trim(varname)) then
             call pio_setframe(pio_file, pio_var_descs(iv), &
                  int(time_record, PIO_OFFSET_KIND))
-            call pio_write_darray(pio_file, pio_var_descs(iv), iodesc_2d, fld_out, ierr)
+            fld_out_r4(1:remap_data%n_b_local) = &
+                 real(fld_out(1:remap_data%n_b_local), 4)
+            call pio_write_darray(pio_file, pio_var_descs(iv), iodesc_2d, &
+                 fld_out_r4, ierr)
             return
          end if
       end do
@@ -320,10 +403,18 @@ contains
    end subroutine seaice_fme_horiz_remap_close_file!}}}
 
    subroutine seaice_fme_horiz_remap_register_var(varname, units, long_name, err)!{{{
+   !> Silently skips if already registered (MPAS may call init twice).
       character(len=*), intent(in) :: varname, units, long_name
       integer, intent(out) :: err
+      integer :: iv
 
       err = 0
+
+      ! Skip if already registered (guard against double-init)
+      do iv = 1, n_registered_vars
+         if (trim(pio_var_names(iv)) == trim(varname)) return
+      end do
+
       n_registered_vars = n_registered_vars + 1
       if (n_registered_vars > max_pio_vars) then
          call mpas_log_write('seaice_fme_horiz_remap: exceeded max_pio_vars=$i for var: ' &
