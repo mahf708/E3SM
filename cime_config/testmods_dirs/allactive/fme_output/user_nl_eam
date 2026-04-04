@@ -20,17 +20,22 @@ mfilt  = 120,120,120
 
 ! Tape 1: 6-hourly averaged 2D surface, flux, and radiation fields
 ! Includes PHIS (time-invariant surface geopotential, constant across timesteps).
+! FSUS/FLUS: upwelling surface shortwave/longwave.
+! DTENDTTW/DTENDTH/DTENDTQ: column-integrated dynamics tendencies of
+!   total water, static energy, and water vapor.
 fincl1 = 'PHIS',
          'PS','TS','PSL',
          'TAUX','TAUY',
          'LHFLX','SHFLX','QFLX',
          'PRECT','PRECSC','PRECSL',
          'FLDS','FSDS','FLNS','FSNS',
+         'FSUS','FLUS',
          'FSNTOA','FLUT','SOLIN',
          'LWCF','SWCF',
          'ICEFRAC','LANDFRAC','OCNFRAC',
          'TMQ','TGCLDLWP','TGCLDIWP',
-         'TREFHT','QREFHT','U10'
+         'TREFHT','QREFHT','U10',
+         'DTENDTTW','DTENDTH','DTENDTQ'
 
 ! Tape 2: 6-hourly instantaneous full-resolution 3D state
 ! ACE needs instantaneous snapshots of state variables; 3D fields here
@@ -52,7 +57,7 @@ fincl3 = 'PS','TS'
 !  52: 43998.3 Pa, 56: 59659.7 Pa, 61: 76854.2 Pa, 69: 90711.8 Pa, 80: 101325.0 Pa
 vcoarsen_pbounds = 10.0, 4803.81, 13913.06, 26856.34,
                    43998.31, 59659.67, 76854.15, 90711.83, 101325.0
-vcoarsen_avg_flds = 'T','Q','U','V','CLDLIQ','CLDICE','RAINQM','TOTAL_WATER'
+vcoarsen_avg_flds = 'T','Q','U','V','OMEGA','CLDLIQ','CLDICE','RAINQM','TOTAL_WATER'
 
 ! Derived fields (computed at full resolution before vcoarsen)
 ! TOTAL_WATER -> specific_total_water in ACE naming
