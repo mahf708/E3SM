@@ -58,20 +58,41 @@ PRIORITY 1: MPAS Remapped Output Quality (see REVIEW Part 3)
 5. BOUNDS CHECK ON max_pio_vars [DONE]
    [x] Added runtime check with error message in both MPAS-O and MPAS-SI
        def_var routines (graceful error instead of silent corruption)
+   [x] Increased max_pio_vars from 100 to 512 (depth coarsening needs ~95)
+
+6. REMAP WEIGHT RENORMALIZATION (frac_b) [DONE]
+   [x] Root cause of diluted remapped output: ESMF map weights sum to
+       < 1.0 for target cells partially overlapping land (mean frac_b=0.66).
+       Raw SpMV produces target = sum(w_i * src_i) which systematically
+       underestimates values at coastal cells.
+   [x] Fixed in shr_horiz_remap_mod: read frac_b from map file, divide
+       SpMV result by frac_b for each target cell. Pure-land cells
+       (frac_b < 1e-6) are zeroed.
+   [x] This fix applies to all components using shr_horiz_remap_t.
+
+7. OCEAN LAND CELL MASKING (maxLevelCell) [DONE]
+   [x] MPAS-O fill values (1e34) from land cells corrupted SpMV.
+       Added optional mask argument to ocn_fme_horiz_remap_field.
+       All 3 ocean AMs pass maxLevelCell as mask.
+   [x] MPAS-SI out-of-bounds array access fixed (assumed-size field1d(*)).
+
+8. EAM COLUMN INTEGRATION MODE [DONE]
+   [x] Added vcoarsen_int_flds namelist: sum(field * pdel / g) over levels.
+       Produces {FIELD}_INT (2D) + d{FIELD}_INT_dt tendency.
+   [x] TOTAL_WATER_INT cross-validates against native DTENDTTW.
+   [x] Added DTENDTTW, DTENDTH, DTENDTQ, FSUS, FLUS to tape 1.
+   [x] Added OMEGA to vcoarsen_avg_flds.
+   [x] All vcoarsen fields (T_1..T_8, etc.) explicitly listed in fincl3.
 
 ========================================================================
 PRIORITY 2: Integration Quality
 ========================================================================
 
-6. CONDITIONAL STREAM GENERATION IN BUILDNML [MEDIUM]
+9. CONDITIONAL STREAM GENERATION IN BUILDNML [MEDIUM]
    buildnml generates FME stream XML unconditionally even when
    output_stream='none'. Should skip when stream not needed.
    Files: components/mpas-ocean/cime_config/buildnml:1237-1305,
           components/mpas-seaice/cime_config/buildnml:839-860
-
-7. ASSOCIATED() GUARDS ON VELOCITY POINTERS [DONE]
-   [x] Added associated() checks in depth_coarsening (warns and skips)
-   [x] Added associated() check in vertical_reduce KE computation
 
 8. CF-COMPLIANT METADATA IN REMAPPED OUTPUT [MEDIUM]
    Missing: Conventions attribute, calendar, time_bnds,
