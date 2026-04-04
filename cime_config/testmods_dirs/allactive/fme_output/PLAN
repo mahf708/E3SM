@@ -90,26 +90,46 @@ possible: proper naming, date rotation, complete field sets, metadata.
 
 ---
 
-## Next Steps (see REVIEW for full analysis)
+## Completed (Phase 1 + Phase 2 partial)
 
-### Phase 1: Minimum Viable Remapped Output
-1. Fix filenames: case-aware, date-templated, instance-aware
-2. Complete MPAS-SI remapped field set (add 4 missing fields)
-3. Add _FillValue attributes to all remapped variables
-4. Add bounds check on max_pio_vars (100 limit)
-5. Add associated() guards on velocity pointers
+All Phase 1 items done:
+1. [DONE] Filenames derived from native stream template + date substitution
+2. [DONE] MPAS-SI remaps all 7 derived fields
+3. [DONE] _FillValue=1.0E34 on all remapped variables
+4. [DONE] Bounds check on max_pio_vars with error message
+5. [DONE] associated() guards on velocity pointers
+6. [DONE] Date-based file rotation via register_var/check_rotate
+7. [DONE] CF-1.8 Conventions attribute
 
-### Phase 2: Parity with Native Stream Output
-6. File rotation by date (match stream filename_interval)
-7. Conditional stream generation in buildnml
-8. CF-compliant metadata (Conventions, calendar, provenance)
-9. Depth coordinate in 3D remapped output
+## Remaining Work
 
-### Phase 3: Clean Architecture
-10. 3D PIO decomposition for depth-coarsened fields
-11. Per-AM remap instances (remove singleton constraint)
-12. Move file creation to init phase
-13. Remap all fields in native stream (not hardcoded subset)
+### Near-term
+- Conditional stream generation in buildnml (skip when output_stream='none')
+- Depth coordinate variable in remapped 3D output
+- Fix depth coarsening units (empty string for temperature/salinity/velocity)
+
+### Architecture
+- 3D PIO decomposition for depth-coarsened fields (single var instead of split)
+- Per-AM remap instances (remove singleton mapfile constraint)
+- Remap all fields in native stream (not hardcoded subset)
+
+## Performance
+
+Tested with SMS_P512.ne30pg2_r05_IcoswISC30E3r5.WCYCL1850NS (512 MPI tasks):
+  Total run: 495s for 5 simulated days (~99s/day)
+  ATM: 288s (58%), OCN: 137s (28%), ICE: 36s (7%), LND: 23s (5%)
+
+FME overhead is folded into component timing (no separate timer).
+Remapped output is small relative to native: e.g., derived fields
+remapped file is 775K vs 107M native (720x smaller). The SpMV
+remap + PIO write is cheap compared to the model physics.
+
+To quantify overhead precisely, run the same case without the
+fme_output testmod and compare OCN/ICE component times.
+
+Native-grid FME output is large for depth coarsening (1.1G/day at
+1-degree resolution). When using remapped output only, set
+output_stream='none' to suppress native output and save disk space.
 
 ---
 
