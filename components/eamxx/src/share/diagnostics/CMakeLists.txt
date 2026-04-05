@@ -30,6 +30,7 @@ add_library (eamxx_diagnostics
   conditional_sampling.cpp
   unary_ops.cpp
   expression_diag.cpp
+  compute_block_diag.cpp
 )
 
 target_link_libraries(eamxx_diagnostics PUBLIC eamxx_atm_process kokkos_diag_utils)

@@ -33,6 +33,7 @@
 #include "unary_ops.hpp"
 #include "expression_diag.hpp"
 #include "histogram.hpp"
+#include "compute_block_diag.hpp"
 
 namespace scream {
 
@@ -69,6 +70,7 @@ inline void register_diagnostics () {
   diag_factory.register_product("UnaryOpsDiag", &create_atmosphere_diagnostic<UnaryOpsDiag>);
   diag_factory.register_product("ExpressionDiag", &create_atmosphere_diagnostic<ExpressionDiag>);
   diag_factory.register_product("HistogramDiag",&create_atmosphere_diagnostic<HistogramDiag>);
+  diag_factory.register_product("ComputeBlockDiag", &create_atmosphere_diagnostic<ComputeBlockDiag>);
 }
 
 } // namespace scream

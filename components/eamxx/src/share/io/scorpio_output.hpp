@@ -236,6 +236,9 @@ protected:
   // Maps output name -> expression string (parsed from "name := expression" syntax)
   strmap_t<std::string> m_derived_exprs;
 
+  // Compute blocks: multi-statement definitions
+  strmap_t<std::string> m_compute_blocks;
+
   DefaultMetadata m_default_metadata;
 
   bool m_add_time_dim;

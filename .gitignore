@@ -63,3 +63,5 @@ components/eamxx/src/python/dist
 components/emulators/build
 **/Testing/**
 **/.cache/**
+components/eamxx/build
+test_parse

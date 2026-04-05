@@ -171,21 +171,33 @@ AtmosphereOutput::AtmosphereOutput(const ekat::Comm &comm, const ekat::Parameter
             // Simple single-expression: use as inline expression
             m_derived_exprs[name] = block.statements[0].expression;
           } else {
-            // Multi-statement or reduction: store the full compute block.
-            // For now, we flatten the last element-wise expression.
-            // Full compute block evaluation is a future extension.
-            // As a workaround, emit a warning and use the last expression.
-            const auto& last = block.statements.back();
-            m_derived_exprs[name] = last.expression;
-            if (block.statements.size() > 1) {
-              // TODO: Full compute block evaluation with intermediates and reductions.
-              // For now, we only support single-expression Python files in the
-              // Kokkos runtime path. Multi-statement files will need the compute
-              // block evaluator to be integrated into the output manager.
+            // Store the full compute block code
+            // Reconstruct the compute block string
+            std::string compute_str = "";
+            for (const auto& stmt : block.statements) {
+              compute_str += stmt.target_var + " = ";
+              if (stmt.type == diag_utils::StmtType::ColSum) compute_str += "col_sum(";
+              else if (stmt.type == diag_utils::StmtType::ColAvg) compute_str += "col_avg(";
+              else if (stmt.type == diag_utils::StmtType::HorizAvg) compute_str += "horiz_avg(";
+
+              compute_str += stmt.expression;
+
+              if (stmt.type != diag_utils::StmtType::Assign) compute_str += ")";
+              compute_str += "\n";
             }
+            m_compute_blocks[name] = compute_str;
           }
         } else {
-          m_derived_exprs[name] = rhs;
+          // Check if rhs is a multi-line compute block or contains reductions
+          if (rhs.find('\n') != std::string::npos ||
+              rhs.find("result =") != std::string::npos ||
+              rhs.find("col_sum(") != std::string::npos ||
+              rhs.find("col_avg(") != std::string::npos ||
+              rhs.find("horiz_avg(") != std::string::npos) {
+            m_compute_blocks[name] = rhs;
+          } else {
+            m_derived_exprs[name] = rhs;
+          }
         }
 
         m_fields_names.push_back(name);
@@ -1270,6 +1282,16 @@ process_requested_fields()
             params.set<std::string>("expression", m_derived_exprs.at(name));
             params.set<std::string>("diag_name", name);
             diag = AtmosphereDiagnosticFactory::instance().create("ExpressionDiag", comm, params);
+            auto gm = std::make_shared<LibraryGridsManager>(fm_model->get_grid());
+            diag->set_grids(gm);
+          } else if (m_compute_blocks.count(name) > 0) {
+            // Create ComputeBlockDiag with the multi-statement compute block
+            auto comm = fm_model->get_grid()->get_comm();
+            ekat::ParameterList params(name);
+            params.set("grid_name", fm_model->get_grid()->name());
+            params.set<std::string>("compute", m_compute_blocks.at(name));
+            params.set<std::string>("diag_name", name);
+            diag = AtmosphereDiagnosticFactory::instance().create("ComputeBlockDiag", comm, params);
             auto gm = std::make_shared<LibraryGridsManager>(fm_model->get_grid());
             diag->set_grids(gm);
           } else {
