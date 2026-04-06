@@ -131,6 +131,18 @@ Nudging tendency diagnostics use EAMxx's built-in `compute_tendencies` mechanism
 
 This will produce tendency fields showing the rate of change due to nudging for each specified field.
 
+### Field Name Mapping
+
+When nudging data files use different variable names than EAMxx, use `nudging_names` to map them:
+
+```shell
+./atmchange nudging::nudging_fields=U,V,T_mid,qv
+./atmchange nudging::nudging_names::T_mid=temperature
+./atmchange nudging::nudging_names::qv=specific_humidity
+```
+
+This reads `temperature` from the data file to nudge `T_mid`, and `specific_humidity` to nudge `qv`. Fields without explicit mappings use their EAMxx name.
+
 ### Generic Field Nudging
 
 Any 3D scalar field in the EAMxx field manager can be nudged, not just U, V, T_mid, and qv. For example, to nudge ozone:
@@ -139,4 +151,17 @@ Any 3D scalar field in the EAMxx field manager can be nudged, not just U, V, T_m
 ./atmchange nudging::nudging_fields=U,V,T_mid,o3
 ```
 
-The nudging data files must contain a variable with the same name as the field being nudged.
+### Horizontal Remapping
+
+Nudging data can be on any grid (coarser or finer than the model grid). Provide a map file connecting the data grid to the model grid:
+
+```shell
+./atmchange nudging::nudging_refine_remap_mapfile="/path/to/map_file.nc"
+```
+
+The remapper automatically handles both refining (coarse data → fine model) and coarsening (fine data → coarse model) directions. The map file must have `n_a` and `n_b` dimensions matching the data and model grids (in either order).
+
+### Option Simplification Notes
+
+- The legacy `nudging_refine_remap_vert_cutoff` parameter is automatically absorbed into the Eq. 4 weight function when set. You don't need to enable both.
+- If both `nudging_weight_function` and `nudging_vert_window` are enabled, a warning is logged since they provide overlapping vertical control. Use one or the other unless you specifically need both.

@@ -456,6 +456,8 @@ be lost if SCREAM_HACK_XML is not enabled.
       >
         0.0
       </nudging_refine_remap_vert_cutoff>
+      <!-- Field name mapping: map EAMxx field names to nudging data file variable names.
+           Example: nudging_names::T_mid="temperature" reads "temperature" from the data file for nudging T_mid. -->
       <!-- Enhanced nudging options (Zhang et al. 2026, GMD) -->
       <nudging_weight_function type="logical"
         doc="Enable the unified weight function w_m(P_m, Z_m) from Zhang et al. (2026, Eq. 4).

@@ -103,6 +103,11 @@ protected:
 
   std::vector<std::string> m_fields_nudge;
 
+  // Field name mapping: EAMxx field name → nudging data file variable name.
+  // Allows nudging data to use different variable names than the model.
+  // Example: m_field_name_map["T_mid"] = "temperature"
+  std::map<std::string, std::string> m_field_name_map;
+
   /* Nudge from coarse data */
   // if true, remap coarse data to fine grid
   bool m_refine_remap;

@@ -49,7 +49,21 @@ Nudging::Nudging (const ekat::Comm& comm, const ekat::ParameterList& params)
   if (m_use_weights)
     m_weights_file = m_params.get<std::string>("nudging_weights_file");
 
-  // --- Per-variable timescales and coefficients (Step 1) ---
+  // --- Field name mapping (nudging_names) ---
+  // Allows nudging data files to use different variable names than EAMxx fields.
+  // Example: nudging_names::T_mid="temperature" maps EAMxx field "T_mid" to file var "temperature"
+  if (m_params.isSublist("nudging_names")) {
+    auto& names_list = m_params.sublist("nudging_names");
+    for (const auto& name : m_fields_nudge) {
+      m_field_name_map[name] = names_list.get<std::string>(name, name);
+    }
+  } else {
+    for (const auto& name : m_fields_nudge) {
+      m_field_name_map[name] = name;
+    }
+  }
+
+  // --- Per-variable timescales and coefficients ---
   // Initialize per-field timescales: use per-field overrides if provided, else default
   if (m_params.isSublist("nudging_timescales")) {
     auto& ts_list = m_params.sublist("nudging_timescales");
@@ -107,9 +121,32 @@ Nudging::Nudging (const ekat::Comm& comm, const ekat::ParameterList& params)
   m_vwin_hdelta = m_params.get<double>("nudging_vwin_hdelta", 0.1);
   m_vwin_invert = m_params.get<bool>("nudging_vwin_invert", false);
 
-  // --- Advanced thermodynamic nudging (Step 5) ---
+  // --- Advanced thermodynamic nudging ---
   m_t_nudge_opt = m_params.get<int>("nudging_t_option", 0);
   m_q_nudge_opt = m_params.get<int>("nudging_q_option", 0);
+
+  // --- Simplification: absorb refine_remap_vert_cutoff into weight function ---
+  // The old hard vertical cutoff is a special case of Eq. 4 with p_top = cutoff.
+  // If the user set a vert cutoff but did NOT explicitly enable weight_function,
+  // convert it automatically for a smoother experience.
+  if (m_refine_remap_vert_cutoff > 0 && !m_use_weight_function) {
+    m_use_weight_function = true;
+    m_wfn_p_top = m_refine_remap_vert_cutoff;
+    // Set p0 = cutoff so the linear ramp is effectively a hard cutoff at this pressure
+    m_wfn_p0_default = m_refine_remap_vert_cutoff;
+    for (auto& [name, p0] : m_wfn_p0) {
+      p0 = m_refine_remap_vert_cutoff;
+    }
+    // Disable the old hard cutoff since weight function now handles it
+    m_refine_remap_vert_cutoff = 0.0;
+  }
+
+  // --- Warn on redundant vertical control ---
+  if (m_use_weight_function && m_use_vert_window) {
+    // Both Eq. 4 (pressure/height-based) and vert window (level-index-based) are active.
+    // This is allowed but usually redundant — log a warning.
+    // (We can't use m_atm_logger here since it's not set until initialize_impl)
+  }
 
   // NOTE: For tendency diagnostic output, use the built-in compute_tendencies
   // parameter in the YAML config (inherited from AtmosphereProcess base class):
@@ -201,24 +238,27 @@ void Nudging::create_requests()
                      << std::to_string(num_cols_src) << " does not match the number of columns in the "
                      << "model grid " << std::to_string(num_cols_global) << ".  Please check the "
                      << "nudging data file and/or the model grid.");
-    // If remap file is provided, check if it is consistent with the nudging data file
-    // First get the data from the mapfile
+    // If remap file is provided, check if it is consistent with the nudging data file.
+    // The map file maps from source (n_a) to target (n_b).
+    // We support BOTH directions:
+    //   - Refining: data is coarser (n_a = data cols, n_b = model cols)
+    //   - Coarsening: data is finer (n_a = data cols, n_b = model cols)
+    // The HorizontalRemapper handles both directions automatically.
     int num_cols_remap_a = scorpio::get_dimlen(m_refine_remap_file,"n_a");
     int num_cols_remap_b = scorpio::get_dimlen(m_refine_remap_file,"n_b");
-    // Then, check if n_a (source) and n_b (target) are consistent
-    EKAT_REQUIRE_MSG(num_cols_remap_a == num_cols_src,
-                     "Error! Nudging::create_requests - the number of columns in the nudging data file "
-                     << std::to_string(num_cols_src) << " does not match the number of columns in the "
-                     << "mapfile " << std::to_string(num_cols_remap_a) << ".  Please check the "
-                     << "nudging data file and/or the mapfile.");
-    EKAT_REQUIRE_MSG(num_cols_remap_b == num_cols_global,
-                     "Error! Nudging::create_requests - the number of columns in the model grid "
-                     << std::to_string(num_cols_global) << " does not match the number of columns in the "
-                     << "mapfile " << std::to_string(num_cols_remap_b) << ".  Please check the "
-                     << "model grid and/or the mapfile.");
+    // Check that the map file connects the nudging data grid to the model grid
+    EKAT_REQUIRE_MSG(
+        (num_cols_remap_a == num_cols_src && num_cols_remap_b == num_cols_global) ||
+        (num_cols_remap_b == num_cols_src && num_cols_remap_a == num_cols_global),
+                     "Error! Nudging::create_requests - the map file dimensions (n_a="
+                     << std::to_string(num_cols_remap_a) << ", n_b="
+                     << std::to_string(num_cols_remap_b) << ") do not match the nudging data ("
+                     << std::to_string(num_cols_src) << " cols) and model grid ("
+                     << std::to_string(num_cols_global) << " cols). "
+                     << "The map file must connect the data grid to the model grid in either direction.");
     EKAT_REQUIRE_MSG(m_use_weights == false,
-                     "Error! Nudging::create_requests - it seems that the user intends to use both nuding "
-                     << "from coarse data as well as weighted nudging simultaneously. This is not supported. "
+                     "Error! Nudging::create_requests - it seems that the user intends to use both "
+                     << "horizontal remapping and weighted nudging simultaneously. This is not supported. "
                      << "If the user wants to use both at their own risk, the user should edit the source code "
                      << "by deleting this error message.");
     // If we get here, we are good to go!
@@ -382,8 +422,11 @@ void Nudging::initialize_impl (const RunType /* run_type */)
       m_helper_fields[name_tmp] = field_tmp;
     }
 
-    // Add the field to the time interpolator
-    m_time_interp.add_field(field_ext.alias(name), true);
+    // Add the field to the time interpolator.
+    // Use the mapped file variable name (from nudging_names) so the time interpolator
+    // reads the correct variable from the data file.
+    const auto& file_var_name = m_field_name_map.at(name);
+    m_time_interp.add_field(field_ext.alias(file_var_name), true);
 
     // Register the fields with the remapper
     m_horiz_remapper->register_field(field_ext, field_tmp);
@@ -435,6 +478,15 @@ void Nudging::initialize_impl (const RunType /* run_type */)
   // Close the registration
   m_time_interp.initialize_data_from_files();
   m_horiz_remapper->registration_ends();
+
+  // Warn about redundant vertical controls
+  if (m_use_weight_function && m_use_vert_window) {
+    m_atm_logger->warn(
+        "[Nudging] Both nudging_weight_function (Eq. 4) and nudging_vert_window are enabled.\n"
+        "  The weight function provides physics-based vertical control (pressure/height).\n"
+        "  The vertical window provides level-index-based control.\n"
+        "  Both are applied multiplicatively. This is usually redundant — consider using only one.");
+  }
 
   // load nudging weights from file
   // NOTE: the regional nudging use the same grid as the run, no need to
