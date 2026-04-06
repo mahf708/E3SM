@@ -255,7 +255,6 @@ void Nudging::apply_tendency(const std::string& field_name,
   const Real dtend    = dt / static_cast<Real>(timescale);
 
   using cview_2d = decltype(state.get_view<const Real**>());
-  using cview_1d = decltype(m_horiz_weight);
 
   auto state_view = state.get_view<Real**>();
   auto nudge_view = nudge.get_view<Real**>();
@@ -717,8 +716,8 @@ void Nudging::compute_horiz_window_weights()
   // Get lat/lon from grid geometry data (in radians)
   auto lat_field = m_grid->get_geometry_data("lat");
   auto lon_field = m_grid->get_geometry_data("lon");
-  auto lat_h = lat_field.get_view<const Real*, Kokkos::HostSpace>();
-  auto lon_h = lon_field.get_view<const Real*, Kokkos::HostSpace>();
+  auto lat_h = lat_field.get_view<const Real*, Host>();
+  auto lon_h = lon_field.get_view<const Real*, Host>();
 
   const Real pi = M_PI;
   const Real rad2deg = 180.0 / pi;
