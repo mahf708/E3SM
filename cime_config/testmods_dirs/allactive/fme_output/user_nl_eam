@@ -35,6 +35,7 @@ fincl1 = 'PHIS',
          'ICEFRAC','LANDFRAC','OCNFRAC',
          'TMQ','TGCLDLWP','TGCLDIWP',
          'TREFHT','QREFHT','U10',
+         'FSUTOA',
          'DTENDTTW','DTENDTH','DTENDTQ',
          'TOTAL_WATER_INT','T_INT','Q_INT',
          'dTOTAL_WATER_INT_dt'
@@ -80,8 +81,11 @@ vcoarsen_int_flds = 'TOTAL_WATER','T','Q'
 
 ! Derived fields (computed at full resolution before vcoarsen)
 ! TOTAL_WATER -> specific_total_water in ACE naming
+! FSUTOA -> top_of_atmos_upward_shortwave_flux in ACE naming
 ! Note: PRECT is a native EAM field (no derived expression needed).
-derived_fld_defs = 'TOTAL_WATER=Q+CLDICE+CLDLIQ+RAINQM'
+! Note: FLUS/FSUS are native EAM upwelling flux fields.
+derived_fld_defs = 'TOTAL_WATER=Q+CLDICE+CLDLIQ+RAINQM',
+                   'FSUTOA=SOLIN-FSNTOA'
 
 ! Tendencies for total water (physics timestep, per-level)
 tend_flds = 'TOTAL_WATER','T','Q'
