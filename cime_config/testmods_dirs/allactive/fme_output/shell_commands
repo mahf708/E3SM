@@ -116,7 +116,7 @@ fincl1 = 'PHIS',
          'TAUX','TAUY',
          'LHFLX','SHFLX','QFLX',
          'PRECT','PRECSC','PRECSL',
-         'FLDS','FSDS','FLNS','FSNS',
+         'FLDS','FSDS','FLNS','FSNS','FLNT',
          'FSUS','FLUS',
          'FSNTOA','FLUT','SOLIN',
          'LWCF','SWCF',
@@ -130,11 +130,14 @@ fincl1 = 'PHIS',
 ! Tape 2: 6-hourly instantaneous full-resolution 3D state
 ! ACE needs instantaneous snapshots of state variables; 3D fields here
 ! retain full L80 vertical resolution for offline diagnostics/comparison.
-fincl2 = 'PS','TS',
+! Includes extra 2D fields from legacy config for completeness.
+fincl2 = 'PS','TS','PSL',
          'T','Q','U','V','OMEGA',
          'CLDLIQ','CLDICE','RAINQM',
+         'O3','TMQ','TGCLDLWP','TGCLDIWP',
          'ICEFRAC','LANDFRAC','OCNFRAC',
-         'TAUX','TAUY'
+         'TAUX','TAUY',
+         'TREFHT','QREFHT','U10'
 
 ! Tape 3: 6-hourly averaged vertically coarsened state (8 ACE pressure layers)
 ! vcoarsen_avg_flds output names: {FIELD}_{LAYER} where LAYER is 1-based index.

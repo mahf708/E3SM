@@ -74,5 +74,10 @@
 			<var name="surfaceTemperatureMean"/>
 			<var name="airStressZonal"/>
 			<var name="airStressMeridional"/>
+			<var name="iceAreaCell"/>
+			<var name="iceVolumeCell"/>
+			<var name="snowVolumeCell"/>
+			<var name="uVelocity"/>
+			<var name="vVelocity"/>
 		</stream>
 	</streams>

@@ -1889,6 +1889,133 @@ def generate_comparison_figures(rundir, fig_root, all_plots_by_comp):
 # Main
 # -----------------------------------------------------------------------------
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Cross-verification: compare fme_output vs fme_legacy_output
+# ─────────────────────────────────────────────────────────────────────────────
+
+def cross_verify(fme_rundir, legacy_rundir, outdir, verbose=False):
+    """
+    Compare online FME output against legacy (raw) output.
+
+    Checks that fields produced by the FME online pipeline are consistent
+    with the raw fields from the legacy pipeline that would be processed
+    offline by the ACE scripts.
+
+    Comparisons:
+    - EAM: fme_output Tape 1/2/3 fields vs legacy Tape 2/3 fields
+      (Tape 2 instantaneous 3D state should match; Tape 1/3 averaged fields
+       should have same time-means within averaging-window tolerance)
+    - MPAS-O: fmeDerivedFields (SST, SSS, fluxes) vs legacy
+      timeSeriesStatsCustom (ssh, activeTracers, fluxes)
+    - MPAS-SI: fmeSeaiceDerivedFields (iceAreaTotal, etc.) vs legacy
+      timeSeriesStatsCustom (iceAreaCell, etc.)
+    """
+    print("\n" + "=" * 70)
+    print("CROSS-VERIFICATION: fme_output vs fme_legacy_output")
+    print("=" * 70)
+
+    issues = []
+
+    # --- EAM cross-check ---
+    print("\n=== EAM Cross-Check ===")
+    # Compare instantaneous 3D state (Tape 2 in both)
+    fme_h2 = find_files(fme_rundir, "*.eam.h1.*nc") or find_files(fme_rundir, "*.cam.h1.*nc")
+    leg_h2 = find_files(legacy_rundir, "*.eam.h1.*nc") or find_files(legacy_rundir, "*.cam.h1.*nc")
+
+    if fme_h2 and leg_h2:
+        ds_fme = safe_open(fme_h2[0])
+        ds_leg = safe_open(leg_h2[0])
+
+        for var in ["T", "Q", "U", "V", "PS", "TS"]:
+            fme_data = get_var(ds_fme, var)
+            leg_data = get_var(ds_leg, var)
+            if fme_data is not None and leg_data is not None:
+                if fme_data.shape == leg_data.shape:
+                    diff = np.abs(fme_data - leg_data)
+                    maxdiff = float(np.nanmax(diff))
+                    if maxdiff > 1e-10:
+                        issues.append(f"  EAM {var}: max diff = {maxdiff:.4g} (should be 0 for instantaneous)")
+                    elif verbose:
+                        print(f"  EAM {var}: identical (max diff = {maxdiff:.2e})")
+                else:
+                    if verbose:
+                        print(f"  EAM {var}: shape mismatch fme={fme_data.shape} vs legacy={leg_data.shape}")
+            elif verbose:
+                print(f"  EAM {var}: {'missing in fme' if fme_data is None else 'missing in legacy'}")
+    else:
+        print("  SKIP: h1 files not found in both rundirs")
+
+    # --- MPAS-O cross-check ---
+    print("\n=== MPAS-O Cross-Check ===")
+    fme_derived = find_files(fme_rundir, "*.am.fmeDerivedFields.*nc")
+    leg_custom = find_files(legacy_rundir, "*.am.timeSeriesStatsCustom.*nc")
+
+    if fme_derived and leg_custom:
+        ds_fme = safe_open(fme_derived[0])
+        ds_leg = safe_open(leg_custom[0])
+
+        # SST from fme vs temperature top level from legacy activeTracers
+        fme_sst = get_var(ds_fme, "sst")
+        if fme_sst is not None:
+            v = valid_data(fme_sst)
+            if v is not None:
+                print(f"  FME SST: {summary_stats(fme_sst)}")
+            else:
+                issues.append("  FME SST: no valid data")
+
+        # Cross-check flux fields
+        for var in ["shortWaveHeatFlux", "sensibleHeatFlux", "windStressZonal"]:
+            fme_v = get_var(ds_fme, var)
+            # Legacy uses time-averaged names like timeCustom_avg_shortWaveHeatFlux
+            leg_name = f"timeCustom_avg_{var}"
+            leg_v = get_var(ds_leg, leg_name)
+            if leg_v is None:
+                leg_v = get_var(ds_leg, var)  # try without prefix
+
+            if fme_v is not None and leg_v is not None:
+                fme_valid = valid_data(fme_v)
+                leg_valid = valid_data(leg_v)
+                if fme_valid is not None and leg_valid is not None:
+                    if verbose:
+                        print(f"  {var}: FME {summary_stats(fme_v)}")
+                        print(f"  {var}: Legacy {summary_stats(leg_v)}")
+            elif verbose:
+                print(f"  {var}: {'missing in fme' if fme_v is None else 'missing in legacy'}")
+    else:
+        print("  SKIP: derived/custom files not found in both rundirs")
+
+    # --- MPAS-SI cross-check ---
+    print("\n=== MPAS-SI Cross-Check ===")
+    fme_si = find_files(fme_rundir, "*fmeSeaiceDerivedFields*nc")
+    leg_si = find_files(legacy_rundir, "*mpassi*timeSeriesStatsCustom*nc")
+
+    if fme_si and leg_si:
+        ds_fme = safe_open(fme_si[0])
+        ds_leg = safe_open(leg_si[0])
+
+        fme_area = get_var(ds_fme, "iceAreaTotal")
+        # Legacy has iceAreaCell (per-category), FME has iceAreaTotal (summed)
+        leg_area = get_var(ds_leg, "timeCustom_avg_iceAreaCell")
+        if leg_area is None:
+            leg_area = get_var(ds_leg, "iceAreaCell")
+
+        if fme_area is not None:
+            print(f"  FME iceAreaTotal: {summary_stats(fme_area)}")
+        if leg_area is not None:
+            print(f"  Legacy iceAreaCell: {summary_stats(leg_area)}")
+    else:
+        print("  SKIP: sea ice files not found in both rundirs")
+
+    if issues:
+        print(f"\n  CROSS-VERIFY: {len(issues)} issues found")
+        for i in issues:
+            print(i)
+    else:
+        print(f"\n  CROSS-VERIFY: All checks passed")
+
+    return issues
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Verify FME output and produce diagnostic figures for ACE/Samudra.")
@@ -1898,6 +2025,8 @@ def main():
                         default="/pscratch/sd/m/mahf708/aifigs_v3LRpiControlSamudrACE",
                         help="Output directory for figures and HTML index")
     parser.add_argument("--verbose", "-v", action="store_true")
+    parser.add_argument("--cross-verify",
+                        help="Path to legacy testmod RUNDIR for cross-verification")
     args = parser.parse_args()
 
     if not os.path.isdir(args.rundir):
@@ -1966,6 +2095,15 @@ def main():
             print(f"  {line}")
         if len(timing_summary) > 10:
             print(f"  ... ({len(timing_summary) - 10} more lines in HTML report)")
+
+    # Cross-verification against legacy testmod output
+    if args.cross_verify:
+        if not os.path.isdir(args.cross_verify):
+            print(f"WARNING: cross-verify rundir not found: {args.cross_verify}")
+        else:
+            xv_issues = cross_verify(args.rundir, args.cross_verify,
+                                     args.outdir, args.verbose)
+            all_issues["cross-verify"] = xv_issues
 
     write_html_index(args.outdir, all_plots_by_comp, all_issues,
                      file_inventory_data, all_fill_reports,

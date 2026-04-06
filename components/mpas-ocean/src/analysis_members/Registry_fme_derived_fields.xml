@@ -67,5 +67,11 @@
 			<var name="longWaveHeatFluxUp"/>
 			<var name="longWaveHeatFluxDown"/>
 			<var name="surfaceThicknessFlux"/>
+			<var name="rainFlux"/>
+			<var name="snowFlux"/>
+			<var name="evaporationFlux"/>
+			<var name="totalFreshWaterTemperatureFlux"/>
+			<var name="frazilIceFreshwaterFlux"/>
+			<var name="surfaceFrictionVelocity"/>
 		</stream>
 	</streams>
