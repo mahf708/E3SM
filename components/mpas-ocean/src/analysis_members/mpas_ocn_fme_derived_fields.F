@@ -103,6 +103,20 @@ contains
                        'Sea surface salinity', ierr)
                   call remap_outfile%register_var('surfaceHeatFluxTotal', 'W m^-2', &
                        'Total surface heat flux', ierr)
+                  call remap_outfile%register_var('ssh', 'm', &
+                       'Sea surface height', ierr)
+                  call remap_outfile%register_var('shortWaveHeatFlux', 'W m^-2', &
+                       'Shortwave heat flux into ocean', ierr)
+                  call remap_outfile%register_var('longWaveHeatFluxDown', 'W m^-2', &
+                       'Downward longwave heat flux', ierr)
+                  call remap_outfile%register_var('latentHeatFlux', 'W m^-2', &
+                       'Latent heat flux into ocean', ierr)
+                  call remap_outfile%register_var('sensibleHeatFlux', 'W m^-2', &
+                       'Sensible heat flux into ocean', ierr)
+                  call remap_outfile%register_var('windStressZonal', 'N m^-2', &
+                       'Zonal wind stress on ocean', ierr)
+                  call remap_outfile%register_var('windStressMeridional', 'N m^-2', &
+                       'Meridional wind stress on ocean', ierr)
                end if
             end if
          end if
@@ -136,6 +150,9 @@ contains
       real(kind=RKIND), dimension(:), pointer :: longWaveHeatFluxDown
       real(kind=RKIND), dimension(:), pointer :: latentHeatFlux
       real(kind=RKIND), dimension(:), pointer :: sensibleHeatFlux
+      real(kind=RKIND), dimension(:), pointer :: ssh_ptr
+      real(kind=RKIND), dimension(:), pointer :: windStressZonalPtr
+      real(kind=RKIND), dimension(:), pointer :: windStressMeridionalPtr
 
       ! Fill value for land cells (must match _FillValue in remapped output)
       real(kind=RKIND), parameter :: fillValue = 1.0E34_RKIND
@@ -168,6 +185,8 @@ contains
          call mpas_pool_get_array(forcingPool, 'longWaveHeatFluxDown', longWaveHeatFluxDown)
          call mpas_pool_get_array(forcingPool, 'latentHeatFlux', latentHeatFlux)
          call mpas_pool_get_array(forcingPool, 'sensibleHeatFlux', sensibleHeatFlux)
+         call mpas_pool_get_array(forcingPool, 'windStressZonal', windStressZonalPtr)
+         call mpas_pool_get_array(forcingPool, 'windStressMeridional', windStressMeridionalPtr)
 
          call mpas_pool_get_array(meshPool, 'maxLevelCell', maxLevelCell)
          do iCell = 1, nCellsSolve
@@ -224,6 +243,59 @@ contains
                call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
                     mask=maxLevelCell)
                call remap_outfile%write_var('surfaceHeatFluxTotal', fld_remap, 1, ierr)
+
+               ! ssh (from state pool)
+               call mpas_pool_get_array(statePool, 'ssh', ssh_ptr, 1)
+               if (associated(ssh_ptr)) then
+                  field_1lev(1, 1:nCells) = ssh_ptr(1:nCells)
+                  call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
+                       mask=maxLevelCell)
+                  call remap_outfile%write_var('ssh', fld_remap, 1, ierr)
+               end if
+
+               ! Flux fields (already fetched from forcingPool)
+               if (associated(shortWaveHeatFlux)) then
+                  field_1lev(1, 1:nCells) = shortWaveHeatFlux(1:nCells)
+                  call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
+                       mask=maxLevelCell)
+                  call remap_outfile%write_var('shortWaveHeatFlux', fld_remap, 1, ierr)
+               end if
+
+               if (associated(longWaveHeatFluxDown)) then
+                  field_1lev(1, 1:nCells) = longWaveHeatFluxDown(1:nCells)
+                  call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
+                       mask=maxLevelCell)
+                  call remap_outfile%write_var('longWaveHeatFluxDown', fld_remap, 1, ierr)
+               end if
+
+               if (associated(latentHeatFlux)) then
+                  field_1lev(1, 1:nCells) = latentHeatFlux(1:nCells)
+                  call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
+                       mask=maxLevelCell)
+                  call remap_outfile%write_var('latentHeatFlux', fld_remap, 1, ierr)
+               end if
+
+               if (associated(sensibleHeatFlux)) then
+                  field_1lev(1, 1:nCells) = sensibleHeatFlux(1:nCells)
+                  call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
+                       mask=maxLevelCell)
+                  call remap_outfile%write_var('sensibleHeatFlux', fld_remap, 1, ierr)
+               end if
+
+               ! Wind stress (from forcing pool)
+               if (associated(windStressZonalPtr)) then
+                  field_1lev(1, 1:nCells) = windStressZonalPtr(1:nCells)
+                  call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
+                       mask=maxLevelCell)
+                  call remap_outfile%write_var('windStressZonal', fld_remap, 1, ierr)
+               end if
+
+               if (associated(windStressMeridionalPtr)) then
+                  field_1lev(1, 1:nCells) = windStressMeridionalPtr(1:nCells)
+                  call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
+                       mask=maxLevelCell)
+                  call remap_outfile%write_var('windStressMeridional', fld_remap, 1, ierr)
+               end if
 
                deallocate(fld_remap, field_1lev)
             end if

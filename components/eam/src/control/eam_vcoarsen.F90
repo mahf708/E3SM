@@ -229,9 +229,9 @@ contains
       do i = 1, n_avg_flds
         call validate_field_name(vcoarsen_avg_flds(i))
         do k = 1, n_avg_levs
-          call make_avg_name(vcoarsen_avg_flds(i), k, fname)
+          call make_avg_name(vcoarsen_avg_flds(i), k-1, fname)  ! 0-indexed for ACE
           write(lname, '(A,A,I0,A,F0.1,A,F0.1,A)') &
-               trim(vcoarsen_avg_flds(i)), ' vcoarsen layer ', k, &
+               trim(vcoarsen_avg_flds(i)), ' vcoarsen layer ', k-1, &
                ' (', vcoarsen_pbounds(k)/100.0_r8, '-', &
                vcoarsen_pbounds(k+1)/100.0_r8, ' hPa)'
           call addfld(trim(fname), horiz_only, 'A', 'varies', trim(lname), &
@@ -346,7 +346,7 @@ contains
           ! Fill inactive columns
           coarsened(ncol+1:pcols, k) = fillvalue
 
-          call make_avg_name(vcoarsen_avg_flds(i), k, fname)
+          call make_avg_name(vcoarsen_avg_flds(i), k-1, fname)  ! 0-indexed
           call outfld(trim(fname), coarsened(:, k), pcols, lchnk)
         end do
       end do
