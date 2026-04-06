@@ -456,6 +456,38 @@ be lost if SCREAM_HACK_XML is not enabled.
       >
         0.0
       </nudging_refine_remap_vert_cutoff>
+      <!-- Enhanced nudging options (Zhang et al. 2026, GMD) -->
+      <nudging_weight_function type="logical"
+        doc="Enable the unified weight function w_m(P_m, Z_m) from Zhang et al. (2026, Eq. 4).
+    Smoothly ramps nudging to zero in upper atmosphere and near the surface.">false</nudging_weight_function>
+      <nudging_wfn_p_top type="real"
+        doc="Top pressure cutoff (Pa) for weight function. Nudging is zero above this level. Default 100 Pa = 1 hPa.">100.0</nudging_wfn_p_top>
+      <nudging_wfn_p0_default type="real"
+        doc="Default upper transition pressure (Pa) for weight function linear ramp. Default 3000 Pa = 30 hPa.">3000.0</nudging_wfn_p0_default>
+      <nudging_wfn_z_b type="real"
+        doc="PBL height threshold (m) for weight function near-surface tanh transition. Default 150 m.">150.0</nudging_wfn_z_b>
+      <nudging_horiz_window type="logical"
+        doc="Enable horizontal Heaviside window function for regional nudging (e.g., RRM).">false</nudging_horiz_window>
+      <nudging_hwin_lat0 type="real" doc="Latitude center of horizontal window (degrees).">0.0</nudging_hwin_lat0>
+      <nudging_hwin_lon0 type="real" doc="Longitude center of horizontal window (degrees).">180.0</nudging_hwin_lon0>
+      <nudging_hwin_latwidth type="real" doc="Latitude half-width of horizontal window (degrees). Large value = global.">9999.0</nudging_hwin_latwidth>
+      <nudging_hwin_lonwidth type="real" doc="Longitude half-width of horizontal window (degrees). Large value = global.">9999.0</nudging_hwin_lonwidth>
+      <nudging_hwin_latdelta type="real" doc="Latitude transition steepness (degrees).">1.0</nudging_hwin_latdelta>
+      <nudging_hwin_londelta type="real" doc="Longitude transition steepness (degrees).">1.0</nudging_hwin_londelta>
+      <nudging_hwin_invert type="logical" doc="If true, nudge OUTSIDE the window (complement). Useful for RRM.">false</nudging_hwin_invert>
+      <nudging_vert_window type="logical"
+        doc="Enable vertical Heaviside window function to restrict nudging to specified level range.">false</nudging_vert_window>
+      <nudging_vwin_lindex type="real" doc="Low vertical transition level index (1-based).">0.0</nudging_vwin_lindex>
+      <nudging_vwin_hindex type="real" doc="High vertical transition level index (1-based).">73.0</nudging_vwin_hindex>
+      <nudging_vwin_ldelta type="real" doc="Low transition steepness (model levels).">0.1</nudging_vwin_ldelta>
+      <nudging_vwin_hdelta type="real" doc="High transition steepness (model levels).">0.1</nudging_vwin_hdelta>
+      <nudging_vwin_invert type="logical" doc="If true, invert the vertical window.">false</nudging_vwin_invert>
+      <nudging_t_option type="integer"
+        doc="Temperature nudging strategy: 0=direct T, 1=virtual temperature Tv, 2=RH-based T adjustment.">0</nudging_t_option>
+      <nudging_q_option type="integer"
+        doc="Humidity nudging strategy: 0=direct q, 1=RH-based q adjustment.">0</nudging_q_option>
+      <!-- For tendency diagnostics, use the built-in compute_tendencies parameter:
+           compute_tendencies: [T_mid, qv, U, V] -->
     </nudging>
 
     <!-- IOPForcing -->

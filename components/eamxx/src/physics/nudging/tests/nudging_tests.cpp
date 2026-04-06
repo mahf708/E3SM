@@ -461,6 +461,140 @@ TEST_CASE("nudging_tests") {
     root_print (msg + (ok ? " PASS\n" : " FAIL\n"));
   }
 
+  // ===== Enhanced nudging feature tests =====
+
+  SECTION ("per-variable-timescales") {
+    std::string msg = " -> Testing per-variable timescales ......................";
+    root_print (msg + "\n");
+    bool ok = true;
+
+    ekat::ParameterList params;
+    params.set<strvec_t>("nudging_filenames_patterns",{nudging_data});
+    params.set<std::string>("source_pressure_type","TIME_DEPENDENT_3D_PROFILE");
+    params.set<strvec_t>("nudging_fields",{"U"});
+    params.set<int>("nudging_timescale", 1000);
+    params.get<std::string>("log_level","warn");
+
+    // Set per-variable timescale for U
+    auto& ts_sub = params.sublist("nudging_timescales");
+    ts_sub.set<int>("U", 500);  // Override: 500s instead of default 1000s
+
+    auto fm = create_fm(grid_data);
+    compute_field(fm->get_field("p_mid"),get_t0(),comm,0);
+
+    // Set initial U to zero
+    auto U = fm->get_field("U");
+    U.deep_copy(0.0);
+    U.sync_to_dev();
+
+    auto nudging = create_nudging(comm,params,fm,gm_data,get_t0());
+
+    auto time = get_t0();
+    time += dt_data;
+    nudging->run(dt_data);
+
+    // With timescale=500, dtend = dt/tau = 100/500 = 0.2
+    // U_new = U_old + 0.2 * (U_nudge - U_old) = 0 + 0.2 * U_nudge
+    // Check that U is not equal to nudge data (which would be timescale=0/direct replacement)
+    auto U_tgt = U.clone("U_tgt");
+    compute_field(U_tgt,time,comm,0);
+
+    // U should NOT equal the target (relaxation, not replacement)
+    CHECK_FALSE (views_are_equal(U,U_tgt));
+    ok &= catch_capture.lastAssertionPassed();
+
+    root_print (msg + (ok ? " PASS\n" : " FAIL\n"));
+  }
+
+  SECTION ("per-variable-coefficients") {
+    std::string msg = " -> Testing per-variable coefficients .....................";
+    root_print (msg + "\n");
+    bool ok = true;
+
+    ekat::ParameterList params;
+    params.set<strvec_t>("nudging_filenames_patterns",{nudging_data});
+    params.set<std::string>("source_pressure_type","TIME_DEPENDENT_3D_PROFILE");
+    params.set<strvec_t>("nudging_fields",{"U"});
+    params.set<int>("nudging_timescale", 1000);
+    params.get<std::string>("log_level","warn");
+
+    // Set coefficient for U to 0.0 (no nudging)
+    auto& coef_sub = params.sublist("nudging_coefficients");
+    coef_sub.set<double>("U", 0.0);
+
+    auto fm = create_fm(grid_data);
+    compute_field(fm->get_field("p_mid"),get_t0(),comm,0);
+
+    auto U = fm->get_field("U");
+    auto U_before = U.clone("U_before");
+    U.deep_copy(42.0);
+    U_before.deep_copy(42.0);
+    U.sync_to_dev();
+
+    auto nudging = create_nudging(comm,params,fm,gm_data,get_t0());
+
+    auto time = get_t0();
+    time += dt_data;
+    nudging->run(dt_data);
+
+    // With coef=0, U should remain unchanged
+    CHECK (views_are_equal(U,U_before));
+    ok &= catch_capture.lastAssertionPassed();
+
+    root_print (msg + (ok ? " PASS\n" : " FAIL\n"));
+  }
+
+  SECTION ("vert-window") {
+    std::string msg = " -> Testing vertical window function .....................";
+    root_print (msg + "\n");
+    bool ok = true;
+
+    ekat::ParameterList params;
+    params.set<strvec_t>("nudging_filenames_patterns",{nudging_data});
+    params.set<std::string>("source_pressure_type","TIME_DEPENDENT_3D_PROFILE");
+    params.set<strvec_t>("nudging_fields",{"U"});
+    params.set<int>("nudging_timescale", 1000);
+    params.get<std::string>("log_level","warn");
+
+    // Enable vertical window: nudge only levels 5-15 (1-based), sharp transitions
+    params.set<bool>("nudging_vert_window", true);
+    params.set<double>("nudging_vwin_lindex", 5.0);
+    params.set<double>("nudging_vwin_hindex", 15.0);
+    params.set<double>("nudging_vwin_ldelta", 0.1);
+    params.set<double>("nudging_vwin_hdelta", 0.1);
+
+    auto fm = create_fm(grid_data);
+    compute_field(fm->get_field("p_mid"),get_t0(),comm,0);
+
+    auto U = fm->get_field("U");
+    U.deep_copy(0.0);
+    U.sync_to_dev();
+
+    auto nudging = create_nudging(comm,params,fm,gm_data,get_t0());
+
+    auto time = get_t0();
+    time += dt_data;
+    nudging->run(dt_data);
+
+    // Check: levels outside [5,15] should have U ~ 0 (no nudging)
+    // levels inside [5,15] should have U != 0 (nudged)
+    U.sync_to_host();
+    auto U_h = U.get_view<Real**,Host>();
+    bool levels_ok = true;
+    for (int icol=0; icol<ncols_data; ++icol) {
+      // Level 0 (1-based: 1) should be outside window → near 0
+      if (std::abs(U_h(icol,0)) > 1e-10) levels_ok = false;
+      // Level 18 (1-based: 19) should be outside window → near 0
+      if (std::abs(U_h(icol,18)) > 1e-10) levels_ok = false;
+      // Level 9 (1-based: 10) should be inside window → nonzero
+      if (std::abs(U_h(icol,9)) < 1e-10) levels_ok = false;
+    }
+    CHECK(levels_ok);
+    ok &= catch_capture.lastAssertionPassed();
+
+    root_print (msg + (ok ? " PASS\n" : " FAIL\n"));
+  }
+
   // Clean up scorpio
   scorpio::finalize_subsystem();
 }

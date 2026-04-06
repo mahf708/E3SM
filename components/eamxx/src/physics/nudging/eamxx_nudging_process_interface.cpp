@@ -17,7 +17,7 @@ Nudging::Nudging (const ekat::Comm& comm, const ekat::ParameterList& params)
   : AtmosphereProcess(comm, params)
 {
   m_datafiles  = filename_glob(m_params.get<std::vector<std::string>>("nudging_filenames_patterns"));
-  m_timescale = m_params.get<int>("nudging_timescale",0);
+  m_default_timescale = m_params.get<int>("nudging_timescale",0);
 
   m_fields_nudge = m_params.get<std::vector<std::string>>("nudging_fields");
   m_use_weights   = m_params.get<bool>("use_nudging_weights",false);
@@ -49,9 +49,72 @@ Nudging::Nudging (const ekat::Comm& comm, const ekat::ParameterList& params)
   if (m_use_weights)
     m_weights_file = m_params.get<std::string>("nudging_weights_file");
 
-  // TODO: Add some warning messages here.
-  // 1. if m_timescale is <= 0 we will do direct replacement.
-  // 2. if m_fields_nudge is empty or =NONE then we will skip nudging altogether.
+  // --- Per-variable timescales and coefficients (Step 1) ---
+  // Initialize per-field timescales: use per-field overrides if provided, else default
+  if (m_params.isSublist("nudging_timescales")) {
+    auto& ts_list = m_params.sublist("nudging_timescales");
+    for (const auto& name : m_fields_nudge) {
+      m_timescales[name] = ts_list.get<int>(name, m_default_timescale);
+    }
+  } else {
+    for (const auto& name : m_fields_nudge) {
+      m_timescales[name] = m_default_timescale;
+    }
+  }
+  // Initialize per-field coefficients
+  if (m_params.isSublist("nudging_coefficients")) {
+    auto& coef_list = m_params.sublist("nudging_coefficients");
+    for (const auto& name : m_fields_nudge) {
+      m_nudge_coefs[name] = coef_list.get<double>(name, 1.0);
+    }
+  } else {
+    for (const auto& name : m_fields_nudge) {
+      m_nudge_coefs[name] = 1.0;
+    }
+  }
+
+  // --- Unified weight function w_m (Eq. 4, Step 2) ---
+  m_use_weight_function = m_params.get<bool>("nudging_weight_function", false);
+  m_wfn_p_top     = m_params.get<double>("nudging_wfn_p_top", 100.0);       // 1 hPa in Pa
+  m_wfn_p0_default = m_params.get<double>("nudging_wfn_p0_default", 3000.0); // 30 hPa in Pa
+  m_wfn_z_b       = m_params.get<double>("nudging_wfn_z_b", 150.0);          // 150 m
+  if (m_params.isSublist("nudging_wfn_p0")) {
+    auto& p0_list = m_params.sublist("nudging_wfn_p0");
+    for (const auto& name : m_fields_nudge) {
+      m_wfn_p0[name] = p0_list.get<double>(name, m_wfn_p0_default);
+    }
+  } else {
+    for (const auto& name : m_fields_nudge) {
+      m_wfn_p0[name] = m_wfn_p0_default;
+    }
+  }
+
+  // --- Horizontal window (Step 3) ---
+  m_use_horiz_window = m_params.get<bool>("nudging_horiz_window", false);
+  m_hwin_lat0     = m_params.get<double>("nudging_hwin_lat0", 0.0);
+  m_hwin_lon0     = m_params.get<double>("nudging_hwin_lon0", 180.0);
+  m_hwin_latwidth = m_params.get<double>("nudging_hwin_latwidth", 9999.0);
+  m_hwin_lonwidth = m_params.get<double>("nudging_hwin_lonwidth", 9999.0);
+  m_hwin_latdelta = m_params.get<double>("nudging_hwin_latdelta", 1.0);
+  m_hwin_londelta = m_params.get<double>("nudging_hwin_londelta", 1.0);
+  m_hwin_invert   = m_params.get<bool>("nudging_hwin_invert", false);
+
+  // --- Vertical window (Step 4) ---
+  m_use_vert_window = m_params.get<bool>("nudging_vert_window", false);
+  m_vwin_lindex = m_params.get<double>("nudging_vwin_lindex", 0.0);
+  m_vwin_hindex = m_params.get<double>("nudging_vwin_hindex", 73.0);
+  m_vwin_ldelta = m_params.get<double>("nudging_vwin_ldelta", 0.1);
+  m_vwin_hdelta = m_params.get<double>("nudging_vwin_hdelta", 0.1);
+  m_vwin_invert = m_params.get<bool>("nudging_vwin_invert", false);
+
+  // --- Advanced thermodynamic nudging (Step 5) ---
+  m_t_nudge_opt = m_params.get<int>("nudging_t_option", 0);
+  m_q_nudge_opt = m_params.get<int>("nudging_q_option", 0);
+
+  // NOTE: For tendency diagnostic output, use the built-in compute_tendencies
+  // parameter in the YAML config (inherited from AtmosphereProcess base class):
+  //   nudging:
+  //     compute_tendencies: [T_mid, qv]
 }
 
 // =========================================================================================
@@ -70,6 +133,11 @@ void Nudging::create_requests()
   constexpr int ps = 1;
   add_field<Required>("p_mid", scalar3d_layout_mid, Pa, grid_name, ps);
 
+  // If weight function (Eq. 4) is enabled, we need z_mid for the PBL transition
+  if (m_use_weight_function) {
+    add_field<Required>("z_mid", scalar3d_layout_mid, m, grid_name, ps);
+  }
+
   /* ----------------------- WARNING --------------------------------*/
   /* The following is a HACK to get things moving, we don't want to
    * add all fields as "updated" long-term.  A separate stream of work
@@ -87,6 +155,21 @@ void Nudging::create_requests()
   }
   if (ekat::contains(m_fields_nudge,"U") or ekat::contains(m_fields_nudge,"V")) {
     add_field<Updated>("horiz_winds",   horiz_wind_layout,   m/s,     grid_name, ps);
+  }
+
+  // If advanced T/Q nudging needs qv as input (even when not directly nudging it)
+  if ((m_t_nudge_opt > 0 || m_q_nudge_opt > 0) && !ekat::contains(m_fields_nudge,"qv")) {
+    add_field<Required>("qv", scalar3d_layout_mid, kg/kg, grid_name, ps);
+  }
+
+  // Register any non-standard nudged fields generically.
+  // Any 3D scalar field in the field manager can be nudged (e.g., o3, cloud variables).
+  // 2D field support is planned but not yet implemented due to the apply_tendency
+  // kernel requiring 2D-specific handling.
+  for (const auto& name : m_fields_nudge) {
+    if (name != "T_mid" && name != "qv" && name != "U" && name != "V") {
+      add_field<Updated>(name, scalar3d_layout_mid, Units::nondimensional(), grid_name, ps);
+    }
   }
 
   /* ----------------------- WARNING --------------------------------*/
@@ -163,37 +246,86 @@ void Nudging::create_requests()
   }
 }
 // =========================================================================================
-void Nudging::apply_tendency(Field& state, const Field& nudge, const Real dt) const
+void Nudging::apply_tendency(const std::string& field_name,
+                             Field& state, const Field& nudge, const Real dt) const
 {
-  // Calculate the weight to apply the tendency
-  const Real dtend = dt / m_timescale;
+  // Look up per-variable timescale and coefficient
+  const int timescale = m_timescales.at(field_name);
+  const Real coef     = m_nudge_coefs.at(field_name);
+  const Real dtend    = dt / static_cast<Real>(timescale);
 
   using cview_2d = decltype(state.get_view<const Real**>());
+  using cview_1d = decltype(m_horiz_weight);
 
   auto state_view = state.get_view<Real**>();
   auto nudge_view = nudge.get_view<Real**>();
-  cview_2d w_view, pmid_view;
+  cview_2d w_view, pmid_view, zmid_view;
 
   if (m_use_weights) {
     auto weights = get_helper_field("nudging_weights");
     w_view = weights.get_view<const Real**>();
   }
-  if (m_refine_remap_vert_cutoff>0) {
+  if (m_refine_remap_vert_cutoff>0 || m_use_weight_function) {
     pmid_view = get_field_in("p_mid").get_view<const Real**>();
   }
+  if (m_use_weight_function) {
+    zmid_view = get_field_in("z_mid").get_view<const Real**>();
+  }
 
-  auto use_weights = m_use_weights;
-  auto cutoff = m_refine_remap_vert_cutoff;
+  auto use_weights   = m_use_weights;
+  auto cutoff        = m_refine_remap_vert_cutoff;
+  auto use_wfn       = m_use_weight_function;
+  auto wfn_p_top     = m_wfn_p_top;
+  auto wfn_p0        = m_wfn_p0.at(field_name);
+  auto wfn_z_b       = m_wfn_z_b;
+  auto use_hwin      = m_use_horiz_window;
+  auto use_vwin      = m_use_vert_window;
+  auto horiz_w       = m_horiz_weight;
+  auto vert_w        = m_vert_weight;
+
   auto policy = Kokkos::MDRangePolicy<Kokkos::Rank<2>>({0, 0}, {m_num_cols, m_num_levs});
   auto update = KOKKOS_LAMBDA(const int& i, const int& j) {
+    // Existing vertical cutoff for refinement remapping
     if (cutoff>0 and pmid_view(i,j)>=cutoff) {
       return;
     }
 
-    auto tend = nudge_view(i,j) - state_view(i,j);
-    if (use_weights) {
-      tend *= w_view(i,j);
+    // Compute total weight W
+    Real W = coef;
+
+    // Unified weight function w_m(P_m, Z_m) — Eq. 4
+    if (use_wfn) {
+      Real p_m = pmid_view(i,j);
+      Real z_m = zmid_view(i,j);
+      Real wm;
+      if (p_m <= wfn_p_top) {
+        wm = 0.0;
+      } else if (p_m <= wfn_p0) {
+        wm = p_m / wfn_p0;
+      } else if (z_m <= wfn_z_b) {
+        wm = 0.5 * (1.0 + Kokkos::tanh((z_m - wfn_z_b) / (0.1 * wfn_z_b)));
+      } else {
+        wm = 1.0;
+      }
+      W *= wm;
     }
+
+    // Horizontal window weight
+    if (use_hwin) {
+      W *= horiz_w(i);
+    }
+
+    // Vertical window weight
+    if (use_vwin) {
+      W *= vert_w(j);
+    }
+
+    // File-based spatial weights
+    if (use_weights) {
+      W *= w_view(i,j);
+    }
+
+    auto tend = W * (nudge_view(i,j) - state_view(i,j));
     state_view(i,j) += dtend * tend;
   };
   Kokkos::parallel_for(policy,update);
@@ -257,7 +389,7 @@ void Nudging::initialize_impl (const RunType /* run_type */)
     // Register the fields with the remapper
     m_horiz_remapper->register_field(field_ext, field_tmp);
 
-    if (m_timescale>0) {
+    if (m_timescales.at(name)>0) {
       // Third copy of the field: after vert interpolation.
       // We cannot store directly in get_field_out(name),
       // since we need to back out tendencies
@@ -312,6 +444,14 @@ void Nudging::initialize_impl (const RunType /* run_type */)
     auto nudging_weights = create_helper_field("nudging_weights", layout_atm, m_grid->name());
     AtmosphereInput src_weights_input(m_weights_file, m_grid, {nudging_weights},true);
     src_weights_input.read_variables();
+  }
+
+  // Compute precomputed spatial window weights
+  if (m_use_horiz_window) {
+    compute_horiz_window_weights();
+  }
+  if (m_use_vert_window) {
+    compute_vert_window_weights();
   }
 }
 
@@ -388,9 +528,9 @@ void Nudging::run_impl (const double dt)
     for (const auto& name : m_fields_nudge) {
       auto tmp_state_field = get_helper_field(name+"_tmp");
 
-      if (m_timescale > 0) {
+      if (m_timescales.at(name) > 0) {
         auto atm_state_field = get_field_out_wrap(name);
-        apply_tendency(atm_state_field,tmp_state_field,dt);
+        apply_tendency(name, atm_state_field, tmp_state_field, dt);
       }
     }
     return;
@@ -520,9 +660,9 @@ void Nudging::run_impl (const double dt)
     // If timescale==0, the call get_helper_field(name) returns the same
     // fields as get_field_out_wrap(name) they are alias, so nothing to do.
     // If timescale>0, then we need to back out a tendency.
-    if (m_timescale > 0) {
+    if (m_timescales.at(name) > 0) {
       auto atm_state_field = get_field_out_wrap(name);
-      apply_tendency(atm_state_field,field_after_vinterp,dt);
+      apply_tendency(name, atm_state_field, field_after_vinterp, dt);
     }
   }
 }
@@ -565,6 +705,106 @@ Field Nudging::get_field_out_wrap(const std::string& field_name) {
   } else {
     return get_field_out(field_name);
   }
+}
+
+// =========================================================================================
+void Nudging::compute_horiz_window_weights()
+{
+  // Compute horizontal Heaviside window weights per column.
+  // Based on EAM nudging_set_profile() horizontal window.
+  const int ncols = m_num_cols;
+
+  // Get lat/lon from grid geometry data (in radians)
+  auto lat_field = m_grid->get_geometry_data("lat");
+  auto lon_field = m_grid->get_geometry_data("lon");
+  auto lat_h = lat_field.get_view<const Real*, Kokkos::HostSpace>();
+  auto lon_h = lon_field.get_view<const Real*, Kokkos::HostSpace>();
+
+  const Real pi = M_PI;
+  const Real rad2deg = 180.0 / pi;
+  const Real latWidthH = m_hwin_latwidth / 2.0;
+  const Real lonWidthH = m_hwin_lonwidth / 2.0;
+
+  // First pass: compute raw window to find min/max for scaling
+  std::vector<Real> raw(ncols);
+  Real raw_max = -1e30, raw_min = 1e30;
+  for (int i = 0; i < ncols; ++i) {
+    Real lat_deg = lat_h(i) * rad2deg;
+    Real lon_deg = lon_h(i) * rad2deg;
+    Real latx = lat_deg - m_hwin_lat0;
+    Real lonx = lon_deg - m_hwin_lon0;
+    if (lonx >  180.0) lonx -= 360.0;
+    if (lonx <= -180.0) lonx += 360.0;
+
+    Real lon_lo = (lonWidthH + lonx) / m_hwin_londelta;
+    Real lon_hi = (lonWidthH - lonx) / m_hwin_londelta;
+    Real lat_lo = (latWidthH + latx) / m_hwin_latdelta;
+    Real lat_hi = (latWidthH - latx) / m_hwin_latdelta;
+    raw[i] = ((1.0 + std::tanh(lon_lo)) / 2.0) * ((1.0 + std::tanh(lon_hi)) / 2.0)
+           * ((1.0 + std::tanh(lat_lo)) / 2.0) * ((1.0 + std::tanh(lat_hi)) / 2.0);
+    raw_max = std::max(raw_max, raw[i]);
+    raw_min = std::min(raw_min, raw[i]);
+  }
+
+  // Determine lo/hi based on invert flag
+  Real hwin_lo = m_hwin_invert ? 1.0 : 0.0;
+  Real hwin_hi = m_hwin_invert ? 0.0 : 1.0;
+
+  // Second pass: scale and store
+  view_1d_host horiz_h("horiz_weight_h", ncols);
+  if (raw_max <= raw_min) {
+    Real val = std::max(hwin_lo, hwin_hi);
+    for (int i = 0; i < ncols; ++i) horiz_h(i) = val;
+  } else {
+    for (int i = 0; i < ncols; ++i) {
+      Real scaled = (raw[i] - raw_min) / (raw_max - raw_min);
+      horiz_h(i) = (1.0 - scaled) * hwin_lo + scaled * hwin_hi;
+    }
+  }
+
+  // Copy to device
+  m_horiz_weight = view_1d_dev("horiz_weight", ncols);
+  Kokkos::deep_copy(m_horiz_weight, horiz_h);
+}
+
+// =========================================================================================
+void Nudging::compute_vert_window_weights()
+{
+  // Compute vertical Heaviside window weights per level.
+  // Based on EAM nudging_set_profile() vertical window.
+  const int nlevs = m_num_levs;
+
+  // Determine lo/hi based on invert flag
+  Real vwin_lo = m_vwin_invert ? 1.0 : 0.0;
+  Real vwin_hi = m_vwin_invert ? 0.0 : 1.0;
+
+  // Compute raw vertical window
+  view_1d_host vert_h("vert_weight_h", nlevs);
+  Real raw_max = -1e30, raw_min = 1e30;
+  for (int k = 0; k < nlevs; ++k) {
+    Real lev = static_cast<Real>(k + 1);  // 1-based level index (matching Fortran convention)
+    Real lev_lo = (lev - m_vwin_lindex) / m_vwin_ldelta;
+    Real lev_hi = (m_vwin_hindex - lev) / m_vwin_hdelta;
+    Real raw = ((1.0 + std::tanh(lev_lo)) / 2.0) * ((1.0 + std::tanh(lev_hi)) / 2.0);
+    vert_h(k) = raw;
+    raw_max = std::max(raw_max, raw);
+    raw_min = std::min(raw_min, raw);
+  }
+
+  // Scale to [vwin_lo, vwin_hi]
+  if (raw_max <= raw_min) {
+    Real val = std::max(vwin_lo, vwin_hi);
+    for (int k = 0; k < nlevs; ++k) vert_h(k) = val;
+  } else {
+    for (int k = 0; k < nlevs; ++k) {
+      Real scaled = (vert_h(k) - raw_min) / (raw_max - raw_min);
+      vert_h(k) = vwin_lo + scaled * (vwin_hi - vwin_lo);
+    }
+  }
+
+  // Copy to device
+  m_vert_weight = view_1d_dev("vert_weight", nlevs);
+  Kokkos::deep_copy(m_vert_weight, vert_h);
 }
 
 } // namespace scream
