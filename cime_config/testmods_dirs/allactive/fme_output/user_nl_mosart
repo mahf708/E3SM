@@ -1,3 +1,0 @@
-! FME MOSART integration deferred -- no output configuration for now.
-! Fields of interest: QSUR_LIQ, QSUB_LIQ, VOLR_LIQ, RUNOFFLND_LIQ
-! See FUTURE_WORK item 4 for reimplementation plan.

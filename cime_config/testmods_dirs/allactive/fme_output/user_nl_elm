@@ -1,5 +1,0 @@
-! FME ELM integration deferred -- suppress default output only.
-! Fields of interest: TSOI, H2OSOI, SOILICE (vcoarsen), TOTAL_SOIL_WATER (derived)
-! See FUTURE_WORK item 3 for reimplementation plan.
-
-hist_empty_htapes = .true.
