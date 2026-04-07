@@ -89,7 +89,7 @@ module eam_vcoarsen
   logical :: has_sel_pres = .false.
   logical :: has_int      = .false.
 
-  ! Column integration tendency: previous timestep values (begchunk:endchunk, pcols, max_flds)
+  ! Column integration tendency: previous timestep values (pcols, max_flds, begchunk:endchunk)
   real(r8), allocatable :: int_prev(:,:,:)
   logical :: int_prev_valid = .false.
 

@@ -1,13 +1,43 @@
 Testmod for FME (Full Model Emulation) online output processing.
 
-Enables horizontal remapping, vertical coarsening, derived diagnostics,
-and vertical reduction for EAM, MPAS-Ocean, MPAS-Sea-Ice, ELM, and MOSART.
+Enables horizontal remapping, vertical coarsening, and derived diagnostics
+for EAM, MPAS-Ocean, and MPAS-Sea-Ice.
 
 Designed for ACE/Samudra coupled model emulation training data generation.
 See shell_commands for map file generation instructions.
 
-Test with WCYCL1850NS compset at ne4pg2_oQU480 resolution:
-  ./create_test SMS_D_Ln5.ne4pg2_oQU480.WCYCL1850NS --testmod allactive/fme_output
+## Running tests
+
+  cd cime/scripts
+  ./create_test SMS_Ld2_P512.ne30pg2_r05_IcoswISC30E3r5.WCYCL1850 --testmod allactive/fme_output
+  ./create_test SMS_Ld2_P512.ne30pg2_r05_IcoswISC30E3r5.WCYCL1850 --testmod allactive/fme_legacy_output
+
+## Verification
+
+Run from the repo root. Requires micromamba env with xarray, matplotlib, cartopy, netCDF4.
+
+  # EAM verification (standalone)
+  micromamba run -n xgns python \
+    cime_config/testmods_dirs/allactive/fme_output/verify_eam.py \
+    --rundir /path/to/fme_output_case/run \
+    --outdir /path/to/output_figs
+
+  # EAM cross-verification (FME vs legacy)
+  micromamba run -n xgns python \
+    cime_config/testmods_dirs/allactive/fme_output/verify_eam.py \
+    --rundir /path/to/fme_output_case/run \
+    --legacy-rundir /path/to/fme_legacy_output_case/run \
+    --outdir /path/to/output_figs
+
+  # MPAS-Ocean and MPAS-SeaIce verification
+  micromamba run -n xgns python \
+    /pscratch/sd/m/mahf708/e3sm-repo/mahf708-e3sm/cime_config/testmods_dirs/allactive/fme_output/verify_mpas.py \
+    --rundir /path/to/fme_output_case/run \
+    --outdir /pscratch/sd/m/mahf708/aifigs_v3LRpiControlSamudrACE
+
+Dashboards are written to:
+  <outdir>/verify_eam.html
+  <outdir>/verify_mpas.html
 
 
 ## ATMOSPHERE

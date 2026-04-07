@@ -24,7 +24,7 @@ avgflag_pertape = 'I'
 nhtfrq = -6
 mfilt  = 4
 
-fincl1 =  'T','Q','U','V','PS','PHIS'
+fincl1 =  'T','Q','U','V','PS','PHIS',
           'CLDLIQ','CLDICE','RAINQM',
           'TMQ','TGCLDLWP','TGCLDIWP',
           'TEFIX','TS','QREFHT','U10','TREFHT',
@@ -50,39 +50,20 @@ EOF
 
 # ---------------------------------------------------------------------------
 # MPAS-Ocean namelist — enable timeSeriesStatsCustom for 5-daily raw output
+# Stream variables are defined in Registry_time_series_stats_custom.xml
 # ---------------------------------------------------------------------------
 cat >> user_nl_mpaso << 'EOF'
 config_am_timeseriesstatscustom_enable = .true.
+config_am_timeseriesstatscustom_reset_intervals = '00-00-05_00:00:00'
 EOF
 
 # ---------------------------------------------------------------------------
 # MPAS-SeaIce namelist — enable timeSeriesStatsCustom for 5-daily raw output
+# Stream variables are defined in Registry_seaice_time_series_stats_custom.xml
 # ---------------------------------------------------------------------------
 cat >> user_nl_mpassi << 'EOF'
 config_am_timeseriesstatscustom_enable = .true.
+config_am_timeseriesstatscustom_reset_intervals = '00-00-05_00:00:00'
 EOF
 
-# ---------------------------------------------------------------------------
-# MPAS stream patches: configure timeSeriesStatsCustom streams
-# ---------------------------------------------------------------------------
-# These patches add FME-specific variables to the timeSeriesStatsCustom
-# output streams for both MPAS-O and MPAS-SI.
-
-CASENAME=$(./xmlquery --value CASE)
-RUNDIR=$(./xmlquery --value RUNDIR)
-
-# We need to patch streams after case.setup generates them.
-# Create SourceMods scripts that will be applied.
-mkdir -p SourceMods/src.mpaso
-mkdir -p SourceMods/src.mpassi
-
-# MPAS-SI code patch: add timeSeriesStatsCustom to analysis member list
-# (Required because the default sea ice driver doesn't register this AM)
-cat > SourceMods/src.mpassi/patch_seaice_driver.sh << 'PATCHEOF'
-#!/bin/bash
-# This patch is applied by the user after case.setup if needed.
-# The FME branch already registers timeSeriesStatsCustom in the
-# mpas_seaice_analysis_driver.F, so this may not be needed.
-echo "MPAS-SI timeSeriesStatsCustom: check if already registered in driver."
-PATCHEOF
 

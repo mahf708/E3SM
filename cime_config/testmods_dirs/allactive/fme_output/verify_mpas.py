@@ -1,23 +1,11 @@
 #!/usr/bin/env python3
 """
-Verify and visualize FME online output against ACE/Samudra requirements.
-
-Checks that all fields required by ACE (github.com/ai2cm/ace, branch exp/e3sm)
-are present and physically reasonable, then produces diagnostic figures saved
-to an output directory for online browsing.
-
-Verifies both native (unstructured MPAS) and remapped (lat-lon) output files.
-
-ACE variable mapping reference:
-  configs/experiments/2025-11-05-e3smv3-piControl-100yr/atmosphere/config-train.yaml
-  configs/experiments/2025-11-05-e3smv3-piControl-100yr/ocean/config-train.yaml
-  scripts/data_process/configs/e3smv3-coupled-atm-1deg.yaml
-  scripts/data_process/configs/e3smv3-ocean-1deg.yaml
+Verify MPAS-Ocean and MPAS-SeaIce FME online output (depth coarsening,
+derived fields, sea ice diagnostics). Produces HTML dashboard with field
+presence checks, range checks, and diagnostic figures.
 
 Usage:
-    micromamba run -n xgns python verify_fme_output.py \\
-        --rundir /path/to/RUNDIR \\
-        --outdir /pscratch/sd/m/mahf708/aifigs_v3LRpiControlSamudrACE
+    python verify_mpas.py --rundir /path/to/RUNDIR --outdir /path/to/figs
 """
 
 import argparse
@@ -60,33 +48,7 @@ try:
 except ImportError:
     HAS_NC4 = False
 
-# -- ACE variable requirements ------------------------------------------------
-# Fields ACE atmosphere model needs from EAM (after offline renaming).
-# key = EAM output name,  value = ACE canonical name
-ACE_ATM_FIELDS = {
-    "PHIS": "PHIS",
-    "PS": "PS",
-    "TS": "TS",
-    "TAUX": "TAUX",
-    "TAUY": "TAUY",
-    "LHFLX": "LHFLX",
-    "SHFLX": "SHFLX",
-    "PRECT": "surface_precipitation_rate",  # derived: PRECC+PRECL
-    "FLDS": "FLDS",
-    "FSDS": "FSDS",
-    "FLNS": "FLNS",   # -> surface_upward_longwave_flux = FLDS - FLNS
-    "FSNS": "FSNS",   # -> surface_upward_shortwave_flux = FSDS - FSNS
-    "FSNTOA": "FSNTOA",  # -> top_of_atmos_upward_shortwave_flux = SOLIN - FSNTOA
-    "FLUT": "FLUT",
-    "SOLIN": "SOLIN",
-    "ICEFRAC": "sea_ice_fraction",
-    "LANDFRAC": "land_fraction",
-    "OCNFRAC": "ocean_fraction",
-    # 3D coarsened (tape 3): T_0..T_7, Q_0..Q_7, U_0..U_7, V_0..V_7,
-    #                         TOTAL_WATER_0..7 -> specific_total_water_0..7
-}
-ACE_ATM_3D_COARSENED = ["T", "Q", "U", "V", "OMEGA", "CLDLIQ", "CLDICE", "RAINQM", "TOTAL_WATER"]
-N_ATM_LAYERS = 8  # ACE uses 8 pressure layers (1-based: T_1..T_8)
+# -- MPAS variable requirements -----------------------------------------------
 
 # Fields ACE ocean model needs from MPAS-O fmeDepthCoarsening (19 layers).
 ACE_OCN_COARSENED = {
@@ -158,11 +120,6 @@ RANGE_CHECKS = {
     "oceanHeatContent": (None, None),
     "freshwaterContent": (-1000, 1000),
     "kineticEnergy": (0, None),
-    "T": (150, 350),
-    "Q": (0, 0.05),
-    "PS": (40000, 110000),
-    "TS": (200, 340),
-    "PHIS": (-1000, 60000),
 }
 
 # Expected lat-lon grid dimensions for remapped output
@@ -346,7 +303,7 @@ def _fix_lon(lons):
 
 
 def _plot_on_ax(ax, data, lons, lats, cmap, vmin, vmax, is_cartopy):
-    """Plot data on an axis — tripcolor for 1D, pcolormesh for 2D."""
+    """Plot data on an axis -- tripcolor for 1D, pcolormesh for 2D."""
     transform = ccrs.PlateCarree() if is_cartopy else None
     if data.ndim == 2:
         kw = dict(transform=transform) if is_cartopy else {}
@@ -579,7 +536,7 @@ def side_by_side_comparison(data1, lons1, lats1, title1,
                             data2, lons2, lats2, title2,
                             suptitle, outdir, fname,
                             cmap="RdBu_r", vmin=None, vmax=None, units=""):
-    """Two global maps side by side — native tripcolor on left, remapped pcolormesh on right."""
+    """Two global maps side by side -- native tripcolor on left, remapped pcolormesh on right."""
     if not HAS_MPL:
         return None
 
@@ -663,143 +620,6 @@ def check_remapped_vars(ds, expected_vars, label):
 # -----------------------------------------------------------------------------
 # Per-component verification + visualization
 # -----------------------------------------------------------------------------
-
-def check_eam(rundir, outdir, verbose):
-    print("\n=== EAM ===")
-    issues = []
-    plots = []
-    fill_reports = []
-
-    # -- tape 1 (h0): averaged 2D fields -----------------------------------
-    t1_files = find_files(rundir, "*.eam.h0.*.nc")
-    if not t1_files:
-        print("  SKIP tape 1: no *.eam.h0.*.nc files found")
-    else:
-        print(f"  tape1: found {len(t1_files)} h0 file(s)")
-        ds = safe_open(t1_files[0])
-        if has_time_zero(ds):
-            print("  tape1: time dimension has size 0 -- skipping")
-            close_ds(ds)
-        else:
-            for var in ["PHIS", "PS", "TS", "LHFLX", "SHFLX", "FLDS", "FSDS",
-                        "FLNS", "FSNS", "FSNTOA", "FLUT", "SOLIN",
-                        "ICEFRAC", "LANDFRAC", "OCNFRAC", "TAUX", "TAUY"]:
-                arr = get_var(ds, var)
-                if arr is None:
-                    issues.append(f"  tape1 missing: {var}")
-                else:
-                    vmin, vmax = RANGE_CHECKS.get(var, (None, None))
-                    issues += check_range(arr, f"tape1/{var}", vmin, vmax)
-                    fill_reports.append(fill_nan_report(arr, f"tape1/{var}"))
-                    if verbose:
-                        print(f"  tape1/{var}: {summary_stats(arr)}")
-
-            # Maps of key 2D fields on lat-lon grid -- use LAST timestep
-            if HAS_MPL and HAS_XR and isinstance(ds, xr.Dataset):
-                lon_name = next((d for d in ["lon", "ncol", "longitude"] if d in ds.dims), None)
-                lat_name = next((d for d in ["lat", "latitude"] if d in ds.dims), None)
-                for var, cmap, vm, vx, units in [
-                    ("TS",      "RdBu_r",  220, 320, "K"),
-                    ("LHFLX",   "viridis",   0, 300, "W/m2"),
-                    ("PRECT",   "Blues",     0, 1e-3, "kg/m2/s"),
-                    ("ICEFRAC", "Blues",      0,   1, "fraction"),
-                    ("FLUT",    "inferno",  100, 320, "W/m2"),
-                    ("FSDS",    "YlOrRd",     0, 500, "W/m2"),
-                ]:
-                    arr = get_var(ds, var)
-                    if arr is None or arr.size == 0:
-                        continue
-                    # Last timestep
-                    data = arr[-1] if arr.ndim >= 2 and arr.shape[0] > 0 else arr
-                    if lat_name and lon_name and data.ndim == 2:
-                        lons = ds[lon_name].values
-                        lats = ds[lat_name].values
-                        if lons.ndim == 1:
-                            lons, lats = np.meshgrid(lons, lats)
-                        p = global_map(data, lons, lats, f"EAM {var} (tape1, last t)",
-                                       cmap=cmap, vmin=vm, vmax=vx,
-                                       outdir=outdir, fname=f"eam_tape1_{var}.png",
-                                       units=units)
-                        if p: plots.append(p)
-            close_ds(ds)
-
-    # -- tape 2 (h1): additional 2D fields ---------------------------------
-    t2_files = find_files(rundir, "*.eam.h1.*.nc")
-    if not t2_files:
-        print("  SKIP tape 2: no *.eam.h1.*.nc files found")
-    else:
-        print(f"  tape2: found {len(t2_files)} h1 file(s)")
-        ds2 = safe_open(t2_files[0])
-        if has_time_zero(ds2):
-            print("  tape2: time dimension has size 0 -- skipping")
-        else:
-            varnames = get_varnames(ds2)
-            print(f"  tape2: {len(varnames)} variables in file")
-            if verbose:
-                print(f"  tape2 variables: {varnames[:30]}{'...' if len(varnames)>30 else ''}")
-        close_ds(ds2)
-
-    # -- tape 3 (h2): vertically coarsened 3D state -------------------------
-    t3_files = find_files(rundir, "*.eam.h2.*.nc")
-    if not t3_files:
-        print("  SKIP tape 3: no *.eam.h2.*.nc files found")
-    else:
-        print(f"  tape3: found {len(t3_files)} h2 file(s)")
-        ds3 = safe_open(t3_files[0])
-        if has_time_zero(ds3):
-            print("  tape3: time dimension has size 0 -- skipping")
-            close_ds(ds3)
-        else:
-            for base in ACE_ATM_3D_COARSENED:
-                found_layers = []
-                for k in range(1, N_ATM_LAYERS + 1):  # 1-based: T_1..T_8
-                    vname = f"{base}_{k}"
-                    arr = get_var(ds3, vname)
-                    if arr is not None:
-                        found_layers.append(k)
-                        vmin, vmax = RANGE_CHECKS.get(base, (None, None))
-                        issues += check_range(arr, f"tape3/{vname}", vmin, vmax)
-                        fill_reports.append(fill_nan_report(arr, f"tape3/{vname}"))
-                if len(found_layers) == N_ATM_LAYERS:
-                    print(f"  tape3/{base}: all {N_ATM_LAYERS} layers present")
-                elif found_layers:
-                    print(f"  tape3/{base}: {len(found_layers)}/{N_ATM_LAYERS} layers found "
-                          f"(indices {found_layers})")
-                    issues.append(f"  tape3/{base}: only {len(found_layers)}/{N_ATM_LAYERS} layers")
-                else:
-                    # EAM may name them differently; check alternate patterns
-                    alts = [v for v in get_varnames(ds3)
-                            if v.startswith(base + "_") or v.startswith(base.upper() + "_")]
-                    if alts:
-                        print(f"  tape3/{base}: found alternate names: {alts[:5]}")
-                    else:
-                        issues.append(f"  tape3 missing coarsened field: {base}_1..{base}_{N_ATM_LAYERS}")
-
-            # Plot T_1 (near-top stratosphere) and T_8 (near-surface BL) at last timestep
-            if HAS_MPL and HAS_XR and isinstance(ds3, xr.Dataset):
-                lon_name = next((d for d in ["lon", "ncol", "longitude"] if d in ds3.dims), None)
-                lat_name = next((d for d in ["lat", "latitude"] if d in ds3.dims), None)
-                for vname, label_tag in [("T_1", "near-top"), ("T_8", "near-surface")]:
-                    arr = get_var(ds3, vname)
-                    if arr is None or arr.size == 0:
-                        continue
-                    data = arr[-1] if arr.ndim >= 2 and arr.shape[0] > 0 else arr
-                    if lat_name and lon_name and data.ndim == 2:
-                        lons = ds3[lon_name].values
-                        lats = ds3[lat_name].values
-                        if lons.ndim == 1:
-                            lons, lats = np.meshgrid(lons, lats)
-                        p = global_map(data, lons, lats,
-                                       f"EAM {vname} ({label_tag}, tape3, last t)",
-                                       cmap="RdBu_r", vmin=150, vmax=320,
-                                       outdir=outdir, fname=f"eam_tape3_{vname}.png",
-                                       units="K")
-                        if p: plots.append(p)
-            close_ds(ds3)
-
-    _report("EAM", issues)
-    return issues, plots, fill_reports
-
 
 def check_mpaso_depth_coarsening(rundir, outdir, verbose):
     print("\n=== MPAS-O Depth Coarsening (native) ===")
@@ -1388,308 +1208,7 @@ def read_timing_summary(rundir):
 
 
 # -----------------------------------------------------------------------------
-# HTML index
-# -----------------------------------------------------------------------------
-
-def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
-                     all_fill_reports, timing_summary=None):
-    index = os.path.join(outdir, "fme_output.html")
-    n_issues = sum(len(v) for v in all_issues.values())
-    n_pass = sum(1 for v in all_issues.values() if not v)
-    n_total = len(all_issues)
-    status = "ALL PASS" if n_issues == 0 else f"{n_issues} issues in {n_total - n_pass}/{n_total} components"
-    status_color = "#2a7d2a" if n_issues == 0 else "#c33"
-
-    # Summary table
-    summary_rows = ""
-    for comp, issues in all_issues.items():
-        if not issues:
-            summary_rows += (f'<tr><td>{comp}</td><td class="pass">PASS</td>'
-                             f'<td>0</td></tr>\n')
-        else:
-            summary_rows += (f'<tr><td>{comp}</td><td class="fail">FAIL</td>'
-                             f'<td>{len(issues)}</td></tr>\n')
-
-    # Detailed issues (collapsible)
-    detail_rows = ""
-    for comp, issues in all_issues.items():
-        for msg in issues:
-            detail_rows += f'<tr><td>{comp}</td><td>{msg.strip()}</td></tr>\n'
-
-    # File inventory table
-    inventory_rows = ""
-    for label, count, flist in file_inventory_data:
-        status_cls = "pass" if count > 0 else "fail"
-        inventory_rows += (f'<tr><td>{label}</td>'
-                           f'<td class="{status_cls}">{count}</td></tr>\n')
-
-    # Fill/NaN report table
-    fill_rows = ""
-    for comp, reports in all_fill_reports.items():
-        for r in reports:
-            pct_cls = "pass" if r["pct"] < 50 else "fail"
-            fill_rows += (f'<tr><td>{comp}</td><td>{r["name"]}</td>'
-                          f'<td>{r["total"]:,}</td><td>{r["valid"]:,}</td>'
-                          f'<td>{r["fill_nan"]:,}</td>'
-                          f'<td class="{pct_cls}">{r["pct"]:.1f}%</td></tr>\n')
-
-    # Group plots: pair native/remapped side by side where possible
-    fig_sections = ""
-    # Identify paired components
-    paired = [
-        ("MPAS-O Depth Coarsening", "native", "remapped"),
-        ("MPAS-O Derived Fields", "native", "remapped"),
-        ("MPAS-O Vertical Reduce", "native", "remapped"),
-        ("MPAS-SI Derived Fields", "native", "remapped"),
-    ]
-    shown_comps = set()
-
-    for base_name, native_suffix, remap_suffix in paired:
-        native_key = f"{base_name} ({native_suffix})"
-        remap_key = f"{base_name} ({remap_suffix})"
-        native_plots = all_plots_by_comp.get(native_key, [])
-        remap_plots = all_plots_by_comp.get(remap_key, [])
-        if not native_plots and not remap_plots:
-            continue
-        anchor = base_name.replace(" ", "_").replace("-", "_")
-        fig_sections += f'<h3 id="{anchor}">{base_name}</h3>\n'
-        fig_sections += '<div class="comparison">\n'
-        if native_plots:
-            fig_sections += '<div class="col"><h4>Native Grid</h4>\n'
-            for p in native_plots:
-                if p and os.path.exists(p):
-                    rel = os.path.relpath(p, outdir)
-                    fig_sections += (f'<div class="fig"><a href="{rel}">'
-                                     f'<img src="{rel}"/></a>'
-                                     f'<span>{os.path.basename(p)}</span></div>\n')
-            fig_sections += '</div>\n'
-        if remap_plots:
-            fig_sections += '<div class="col"><h4>Remapped (lat-lon)</h4>\n'
-            for p in remap_plots:
-                if p and os.path.exists(p):
-                    rel = os.path.relpath(p, outdir)
-                    fig_sections += (f'<div class="fig"><a href="{rel}">'
-                                     f'<img src="{rel}"/></a>'
-                                     f'<span>{os.path.basename(p)}</span></div>\n')
-            fig_sections += '</div>\n'
-        fig_sections += '</div>\n'
-        shown_comps.add(native_key)
-        shown_comps.add(remap_key)
-
-    # Show remaining (unpaired) components
-    for comp, plots in all_plots_by_comp.items():
-        if comp in shown_comps or not plots:
-            continue
-        anchor = comp.replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
-        fig_sections += f'<h3 id="{anchor}">{comp}</h3>\n<div class="gallery">\n'
-        # Use wider display for comparison/multi-panel figures
-        is_comparison = (comp == "Comparisons")
-        for p in plots:
-            if p and os.path.exists(p):
-                rel = os.path.relpath(p, outdir)
-                fig_cls = "fig wide" if is_comparison else "fig"
-                fig_sections += (f'<div class="{fig_cls}"><a href="{rel}">'
-                                 f'<img src="{rel}"/></a>'
-                                 f'<span>{os.path.basename(p)}</span></div>\n')
-        fig_sections += '</div>\n'
-
-    # Navigation
-    nav_links = ""
-    nav_items = ["Summary", "File_Inventory", "Fill_NaN_Report"]
-    for base_name, _, _ in paired:
-        nav_items.append(base_name)
-    for comp in all_plots_by_comp:
-        if comp not in shown_comps and all_plots_by_comp[comp]:
-            nav_items.append(comp)
-    if timing_summary:
-        nav_items.append("Timing")
-    for item in nav_items:
-        anchor = item.replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
-        display = item.replace("_", " ")
-        nav_links += f'<a href="#{anchor}">{display}</a>\n'
-
-    timing_html = ""
-    if timing_summary:
-        timing_rows = ""
-        for line in timing_summary[:30]:
-            parts = line.split()
-            if len(parts) >= 2:
-                timing_rows += "<tr>" + "".join(f"<td>{p}</td>" for p in parts) + "</tr>\n"
-            else:
-                timing_rows += f"<tr><td colspan='6'>{line}</td></tr>\n"
-        timing_html = f'''
-    <h2 id="Timing">Performance Timing</h2>
-    <div class="timing-container">
-    <table class="timing-table">
-    {timing_rows}
-    </table>
-    </div>
-'''
-
-    gen_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    html = textwrap.dedent(f"""\
-    <!DOCTYPE html><html><head>
-    <meta charset="utf-8"/>
-    <title>FME Output Verification</title>
-    <style>
-      * {{ box-sizing: border-box; }}
-      body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-             margin: 0; padding: 0; background: #f0f2f5; color: #333; }}
-      .container {{ max-width: 1600px; margin: 0 auto; padding: 20px 30px; }}
-      header {{ background: #1a2744; color: #fff; padding: 20px 30px; }}
-      header h1 {{ margin: 0 0 6px 0; font-size: 1.6em; }}
-      header .status {{ font-size: 1.2em; font-weight: bold;
-                        color: {"#6fcf6f" if n_issues == 0 else "#ff8888"}; }}
-      h2 {{ color: #1a2744; margin-top: 35px; border-bottom: 2px solid #1a2744;
-            padding-bottom: 6px; font-size: 1.3em; }}
-      h3 {{ color: #2c3e50; margin-top: 25px; }}
-      h4 {{ color: #555; margin: 8px 0 4px; font-size: 0.95em; }}
-      nav {{ background: #fff; padding: 12px 16px; border-radius: 6px;
-             box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin: 15px 0;
-             display: flex; flex-wrap: wrap; gap: 8px; position: sticky;
-             top: 0; z-index: 100; }}
-      nav a {{ color: #1a2744; text-decoration: none; padding: 5px 12px;
-               background: #e8eef4; border-radius: 4px; font-size: 0.85em;
-               font-weight: 500; transition: all 0.15s; }}
-      nav a:hover {{ background: #1a2744; color: #fff; }}
-      table {{ border-collapse: collapse; width: 100%; background: #fff;
-               box-shadow: 0 1px 3px rgba(0,0,0,0.08); border-radius: 4px;
-               overflow: hidden; margin-bottom: 16px; }}
-      td, th {{ border: 1px solid #e0e0e0; padding: 8px 14px; text-align: left; }}
-      th {{ background: #1a2744; color: #fff; font-weight: 600; font-size: 0.9em; }}
-      .pass {{ color: #2a7d2a; font-weight: bold; }}
-      .fail {{ color: #c33; font-weight: bold; }}
-      .comparison {{ display: flex; gap: 24px; flex-wrap: wrap; }}
-      .col {{ flex: 1; min-width: 420px; }}
-      .gallery {{ display: flex; flex-wrap: wrap; gap: 12px; }}
-      .fig {{ display: inline-block; margin: 4px; vertical-align: top; }}
-      .fig img {{ max-width: 520px; width: 100%; border: 1px solid #ccc; border-radius: 4px;
-                  transition: transform 0.2s; cursor: zoom-in; }}
-      .fig img:hover {{ transform: scale(1.02); box-shadow: 0 2px 8px rgba(0,0,0,0.15); }}
-      .fig span {{ display: block; font-size: 0.75em; color: #888; margin-top: 2px; }}
-      .fig.wide img {{ max-width: 900px; }}
-      details {{ margin: 10px 0; background: #fff; border-radius: 4px;
-                 box-shadow: 0 1px 3px rgba(0,0,0,0.08); }}
-      summary {{ cursor: pointer; font-weight: 600; color: #1a2744; padding: 10px 14px; }}
-      summary:hover {{ background: #f5f7fa; }}
-      .timing-container {{ background: #fff; padding: 16px; border-radius: 4px;
-                           box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-                           overflow-x: auto; max-height: 500px; overflow-y: auto; }}
-      .timing-table td {{ font-family: 'Courier New', monospace; font-size: 0.85em;
-                          padding: 4px 10px; white-space: nowrap; }}
-      footer {{ margin-top: 40px; padding: 16px 30px; border-top: 2px solid #1a2744;
-                color: #777; font-size: 0.8em; background: #fff; text-align: center; }}
-      /* Lightbox overlay */
-      .lightbox {{ display:none; position:fixed; top:0; left:0; width:100%; height:100%;
-                   background:rgba(0,0,0,0.88); z-index:1000; cursor:zoom-out;
-                   align-items:center; justify-content:center; }}
-      .lightbox.active {{ display:flex; }}
-      .lightbox img {{ max-width:95%; max-height:95%; border-radius:6px;
-                       box-shadow: 0 4px 20px rgba(0,0,0,0.4); }}
-    </style>
-    <script>
-    document.addEventListener('DOMContentLoaded', function() {{
-      var lb = document.createElement('div');
-      lb.className = 'lightbox';
-      var lbImg = document.createElement('img');
-      lb.appendChild(lbImg);
-      document.body.appendChild(lb);
-      lb.addEventListener('click', function() {{ lb.classList.remove('active'); }});
-      document.addEventListener('keydown', function(e) {{
-        if (e.key === 'Escape') lb.classList.remove('active');
-      }});
-      document.querySelectorAll('.fig a').forEach(function(a) {{
-        a.addEventListener('click', function(e) {{
-          e.preventDefault();
-          lbImg.src = this.href;
-          lb.classList.add('active');
-        }});
-      }});
-    }});
-    </script>
-    </head><body>
-    <header>
-      <h1>FME Online Output Verification</h1>
-      <span class="status">{status}</span>
-    </header>
-    <div class="container">
-
-    <nav>{nav_links}</nav>
-
-    <h2 id="Summary">Component Summary</h2>
-    <table>
-    <tr><th>Component</th><th>Status</th><th>Issues</th></tr>
-    {summary_rows}
-    </table>
-
-    {"<details><summary>Show all " + str(n_issues) + " issues</summary><table><tr><th>Component</th><th>Issue</th></tr>" + detail_rows + "</table></details>" if detail_rows else ""}
-
-    <h2 id="File_Inventory">File Inventory</h2>
-    <table>
-    <tr><th>Category</th><th>File Count</th></tr>
-    {inventory_rows}
-    </table>
-
-    <h2 id="Fill_NaN_Report">Fill / NaN Report</h2>
-    <details><summary>Variable-level fill fraction details</summary>
-    <table>
-    <tr><th>Component</th><th>Variable</th><th>Total Cells</th><th>Valid</th><th>Fill/NaN</th><th>Fill %</th></tr>
-    {fill_rows if fill_rows else '<tr><td colspan="6">No data collected.</td></tr>'}
-    </table>
-    </details>
-
-    <h2>Diagnostic Figures</h2>
-    {fig_sections if fig_sections else '<p>No figures generated.</p>'}
-
-    {timing_html}
-    </div>
-    <footer>Generated by verify_fme_output.py &mdash; FME Online Output Processing for E3SM &mdash; {gen_timestamp}</footer>
-    </body></html>
-    """)
-    with open(index, "w") as fh:
-        fh.write(html)
-    print(f"\nIndex written: {index}")
-    return index
-
-
-# -----------------------------------------------------------------------------
-# File inventory
-# -----------------------------------------------------------------------------
-
-def collect_file_inventory(rundir):
-    """Collect file inventory data and print summary.
-
-    Returns list of (label, count, file_list) tuples for HTML rendering.
-    """
-    print("\n=== File Inventory ===")
-    categories = [
-        ("EAM h0 (tape1)",             "*.eam.h0.*.nc",    None),
-        ("EAM h1 (tape2)",             "*.eam.h1.*.nc",    None),
-        ("EAM h2 (tape3)",             "*.eam.h2.*.nc",    None),
-        ("MPAS-O depth coarsening",    "*.mpaso.hist.am.fmeDepthCoarsening.*.nc",      ".remapped."),
-        ("MPAS-O depth coarsening (R)","*.mpaso.hist.am.fmeDepthCoarsening.*.remapped.nc", None),
-        ("MPAS-O derived fields",      "*.mpaso.hist.am.fmeDerivedFields.*.nc",        ".remapped."),
-        ("MPAS-O derived fields (R)",  "*.mpaso.hist.am.fmeDerivedFields.*.remapped.nc", None),
-        ("MPAS-O vertical reduce",     "*.mpaso.hist.am.fmeVerticalReduce.*.nc",       ".remapped."),
-        ("MPAS-O vertical reduce (R)", "*.mpaso.hist.am.fmeVerticalReduce.*.remapped.nc", None),
-        ("MPAS-SI derived fields",     "*.mpassi.hist.am.fmeSeaiceDerivedFields.*.nc", ".remapped."),
-        ("MPAS-SI derived fields (R)", "*.mpassi.hist.am.fmeSeaiceDerivedFields.*.remapped.nc", None),
-    ]
-    total = 0
-    inventory_data = []
-    for label, pattern, exclude in categories:
-        hits = find_files(rundir, pattern, exclude=exclude)
-        total += len(hits)
-        status = f"{len(hits)} file(s)" if hits else "NONE"
-        print(f"  {label:38s} {status}")
-        inventory_data.append((label, len(hits), hits))
-    print(f"  {'TOTAL':38s} {total} FME-related file(s)")
-    return inventory_data
-
-
-# -----------------------------------------------------------------------------
-# Cross-component comparison figures (native vs remapped side-by-side)
+# MPAS comparison figures (native vs remapped side-by-side, zonal means)
 # -----------------------------------------------------------------------------
 
 def generate_comparison_figures(rundir, fig_root, all_plots_by_comp):
@@ -1697,8 +1216,7 @@ def generate_comparison_figures(rundir, fig_root, all_plots_by_comp):
 
     Opens both native and remapped files for each MPAS component and
     produces tripcolor (native) vs pcolormesh (remapped) comparisons.
-    Also generates multi-panel layer views for EAM coarsened fields and
-    zonal mean profiles for remapped lat-lon data.
+    Also generates zonal mean profiles for remapped lat-lon data.
     """
     if not HAS_MPL:
         return
@@ -1796,68 +1314,6 @@ def generate_comparison_figures(rundir, fig_root, all_plots_by_comp):
         close_ds(ds_nat)
         close_ds(ds_rem)
 
-    # --- EAM tape3: multi-panel T_1..T_8 and Q_1..Q_8 ---
-    t3_files = find_files(rundir, "*.eam.h2.*.nc")
-    if t3_files:
-        ds3 = safe_open(t3_files[0])
-        if not has_time_zero(ds3) and HAS_XR and isinstance(ds3, xr.Dataset):
-            lon_name = next((d for d in ["lon", "ncol", "longitude"] if d in ds3.dims), None)
-            lat_name = next((d for d in ["lat", "latitude"] if d in ds3.dims), None)
-            if lon_name and lat_name:
-                lons = ds3[lon_name].values
-                lats = ds3[lat_name].values if lat_name != lon_name else None
-                if lats is not None:
-                    if lons.ndim == 1 and lat_name == "lat":
-                        lons, lats = np.meshgrid(lons, lats)
-
-                    for base, cmap, vm, vx, units_str in [
-                        ("T", "RdYlBu_r", 180, 310, "K"),
-                        ("Q", "YlGnBu", 0, 0.02, "kg/kg"),
-                    ]:
-                        panels = []
-                        for k in range(1, N_ATM_LAYERS + 1):
-                            vname = f"{base}_{k}"
-                            arr = get_var(ds3, vname)
-                            if arr is None or arr.size == 0:
-                                continue
-                            data = arr[-1] if arr.ndim >= 2 and arr.shape[0] > 0 else arr
-                            v = valid_data(data)
-                            stats = f"mean={v.mean():.1f}" if v is not None and v.size > 0 else ""
-                            panels.append((data, lons, lats,
-                                           f"{vname} ({stats})"))
-
-                        if panels:
-                            p = multi_panel_maps(
-                                panels,
-                                f"EAM Vertically Coarsened {base} "
-                                f"(all {N_ATM_LAYERS} layers, last t)",
-                                comp_outdir,
-                                f"eam_tape3_{base}_all_layers.png",
-                                ncols=4, cmap=cmap, vmin=vm, vmax=vx,
-                                units=units_str)
-                            if p:
-                                comp_plots.append(p)
-                                print(f"  Wrote {os.path.basename(p)}")
-
-                    # Zonal mean of T layers (only for lat-lon data)
-                    if lat_name == "lat":
-                        lat_1d = ds3["lat"].values
-                        profiles = []
-                        for k in range(1, N_ATM_LAYERS + 1):
-                            zm = _compute_zonal_mean(get_var(ds3, f"T_{k}"))
-                            if zm is not None:
-                                profiles.append((zm, f"T_{k}"))
-                        if profiles:
-                            p = zonal_mean_plot(
-                                profiles, lat_1d,
-                                "EAM Zonal Mean Temperature (all layers)",
-                                comp_outdir, "eam_tape3_T_zonal_mean.png",
-                                ylabel="K")
-                            if p:
-                                comp_plots.append(p)
-                                print(f"  Wrote {os.path.basename(p)}")
-        close_ds(ds3)
-
     # --- Zonal means for remapped MPAS-O fields ---
     rem_derived = find_files(rundir, "*.mpaso.hist.am.fmeDerivedFields.*.remapped.nc")
     if rem_derived:
@@ -1886,155 +1342,329 @@ def generate_comparison_figures(rundir, fig_root, all_plots_by_comp):
 
 
 # -----------------------------------------------------------------------------
+# File inventory
+# -----------------------------------------------------------------------------
+
+def collect_file_inventory(rundir):
+    """Collect file inventory data and print summary.
+
+    Returns list of (label, count, file_list) tuples for HTML rendering.
+    """
+    print("\n=== File Inventory ===")
+    categories = [
+        ("MPAS-O depth coarsening",    "*.mpaso.hist.am.fmeDepthCoarsening.*.nc",      ".remapped."),
+        ("MPAS-O depth coarsening (R)","*.mpaso.hist.am.fmeDepthCoarsening.*.remapped.nc", None),
+        ("MPAS-O derived fields",      "*.mpaso.hist.am.fmeDerivedFields.*.nc",        ".remapped."),
+        ("MPAS-O derived fields (R)",  "*.mpaso.hist.am.fmeDerivedFields.*.remapped.nc", None),
+        ("MPAS-O vertical reduce",     "*.mpaso.hist.am.fmeVerticalReduce.*.nc",       ".remapped."),
+        ("MPAS-O vertical reduce (R)", "*.mpaso.hist.am.fmeVerticalReduce.*.remapped.nc", None),
+        ("MPAS-SI derived fields",     "*.mpassi.hist.am.fmeSeaiceDerivedFields.*.nc", ".remapped."),
+        ("MPAS-SI derived fields (R)", "*.mpassi.hist.am.fmeSeaiceDerivedFields.*.remapped.nc", None),
+    ]
+    total = 0
+    inventory_data = []
+    for label, pattern, exclude in categories:
+        hits = find_files(rundir, pattern, exclude=exclude)
+        total += len(hits)
+        status = f"{len(hits)} file(s)" if hits else "NONE"
+        print(f"  {label:38s} {status}")
+        inventory_data.append((label, len(hits), hits))
+    print(f"  {'TOTAL':38s} {total} FME-related file(s)")
+    return inventory_data
+
+
+# -----------------------------------------------------------------------------
+# HTML index
+# -----------------------------------------------------------------------------
+
+def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
+                     all_fill_reports, timing_summary=None, extra_html=""):
+    index = os.path.join(outdir, "verify_mpas.html")
+    n_issues = sum(len(v) for v in all_issues.values())
+    n_pass = sum(1 for v in all_issues.values() if not v)
+    n_total = len(all_issues)
+    status = "ALL PASS" if n_issues == 0 else f"{n_issues} issues in {n_total - n_pass}/{n_total} components"
+    status_color = "#2a7d2a" if n_issues == 0 else "#c33"
+
+    # Summary table
+    summary_rows = ""
+    for comp, issues in all_issues.items():
+        if not issues:
+            summary_rows += (f'<tr><td>{comp}</td><td class="pass">PASS</td>'
+                             f'<td>0</td></tr>\n')
+        else:
+            summary_rows += (f'<tr><td>{comp}</td><td class="fail">FAIL</td>'
+                             f'<td>{len(issues)}</td></tr>\n')
+
+    # Detailed issues (collapsible)
+    detail_rows = ""
+    for comp, issues in all_issues.items():
+        for msg in issues:
+            detail_rows += f'<tr><td>{comp}</td><td>{msg.strip()}</td></tr>\n'
+
+    # File inventory table
+    inventory_rows = ""
+    for label, count, flist in file_inventory_data:
+        status_cls = "pass" if count > 0 else "fail"
+        inventory_rows += (f'<tr><td>{label}</td>'
+                           f'<td class="{status_cls}">{count}</td></tr>\n')
+
+    # Fill/NaN report table
+    fill_rows = ""
+    for comp, reports in all_fill_reports.items():
+        for r in reports:
+            pct_cls = "pass" if r["pct"] < 50 else "fail"
+            fill_rows += (f'<tr><td>{comp}</td><td>{r["name"]}</td>'
+                          f'<td>{r["total"]:,}</td><td>{r["valid"]:,}</td>'
+                          f'<td>{r["fill_nan"]:,}</td>'
+                          f'<td class="{pct_cls}">{r["pct"]:.1f}%</td></tr>\n')
+
+    # Group plots: pair native/remapped side by side where possible
+    fig_sections = ""
+    # Identify paired components
+    paired = [
+        ("MPAS-O Depth Coarsening", "native", "remapped"),
+        ("MPAS-O Derived Fields", "native", "remapped"),
+        ("MPAS-O Vertical Reduction", "native", "remapped"),
+        ("MPAS-SI Derived Fields", "native", "remapped"),
+    ]
+    shown_comps = set()
+
+    for base_name, native_suffix, remap_suffix in paired:
+        native_key = f"{base_name} ({native_suffix})"
+        remap_key = f"{base_name} ({remap_suffix})"
+        native_plots = all_plots_by_comp.get(native_key, [])
+        remap_plots = all_plots_by_comp.get(remap_key, [])
+        if not native_plots and not remap_plots:
+            continue
+        anchor = base_name.replace(" ", "_").replace("-", "_")
+        fig_sections += f'<h3 id="{anchor}">{base_name}</h3>\n'
+        fig_sections += '<div class="comparison">\n'
+        if native_plots:
+            fig_sections += '<div class="col"><h4>Native Grid</h4>\n'
+            for p in native_plots:
+                if p and os.path.exists(p):
+                    rel = os.path.relpath(p, outdir)
+                    fig_sections += (f'<div class="fig"><a href="{rel}">'
+                                     f'<img src="{rel}"/></a>'
+                                     f'<span>{os.path.basename(p)}</span></div>\n')
+            fig_sections += '</div>\n'
+        if remap_plots:
+            fig_sections += '<div class="col"><h4>Remapped (lat-lon)</h4>\n'
+            for p in remap_plots:
+                if p and os.path.exists(p):
+                    rel = os.path.relpath(p, outdir)
+                    fig_sections += (f'<div class="fig"><a href="{rel}">'
+                                     f'<img src="{rel}"/></a>'
+                                     f'<span>{os.path.basename(p)}</span></div>\n')
+            fig_sections += '</div>\n'
+        fig_sections += '</div>\n'
+        shown_comps.add(native_key)
+        shown_comps.add(remap_key)
+
+    # Show remaining (unpaired) components
+    for comp, plots in all_plots_by_comp.items():
+        if comp in shown_comps or not plots:
+            continue
+        anchor = comp.replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
+        fig_sections += f'<h3 id="{anchor}">{comp}</h3>\n<div class="gallery">\n'
+        # Use wider display for comparison/multi-panel figures
+        is_comparison = (comp == "Comparisons")
+        for p in plots:
+            if p and os.path.exists(p):
+                rel = os.path.relpath(p, outdir)
+                fig_cls = "fig wide" if is_comparison else "fig"
+                fig_sections += (f'<div class="{fig_cls}"><a href="{rel}">'
+                                 f'<img src="{rel}"/></a>'
+                                 f'<span>{os.path.basename(p)}</span></div>\n')
+        fig_sections += '</div>\n'
+
+    # Navigation
+    nav_links = ""
+    nav_items = ["Summary", "File_Inventory", "Fill_NaN_Report"]
+    if extra_html:
+        nav_items.append("Cross_Verify")
+    for base_name, _, _ in paired:
+        nav_items.append(base_name)
+    for comp in all_plots_by_comp:
+        if comp not in shown_comps and all_plots_by_comp[comp]:
+            nav_items.append(comp)
+    if timing_summary:
+        nav_items.append("Timing")
+    for item in nav_items:
+        anchor = item.replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
+        display = item.replace("_", " ")
+        nav_links += f'<a href="#{anchor}">{display}</a>\n'
+
+    timing_html = ""
+    if timing_summary:
+        timing_rows = ""
+        for line in timing_summary[:30]:
+            parts = line.split()
+            if len(parts) >= 2:
+                timing_rows += "<tr>" + "".join(f"<td>{p}</td>" for p in parts) + "</tr>\n"
+            else:
+                timing_rows += f"<tr><td colspan='6'>{line}</td></tr>\n"
+        timing_html = f'''
+    <h2 id="Timing">Performance Timing</h2>
+    <div class="timing-container">
+    <table class="timing-table">
+    {timing_rows}
+    </table>
+    </div>
+'''
+
+    gen_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    html = textwrap.dedent(f"""\
+    <!DOCTYPE html><html><head>
+    <meta charset="utf-8"/>
+    <title>FME MPAS Output Verification</title>
+    <style>
+      * {{ box-sizing: border-box; }}
+      body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+             margin: 0; padding: 0; background: #f0f2f5; color: #333; }}
+      .container {{ max-width: 1600px; margin: 0 auto; padding: 20px 30px; }}
+      header {{ background: #1a2744; color: #fff; padding: 20px 30px; }}
+      header h1 {{ margin: 0 0 6px 0; font-size: 1.6em; }}
+      header .status {{ font-size: 1.2em; font-weight: bold;
+                        color: {"#6fcf6f" if n_issues == 0 else "#ff8888"}; }}
+      h2 {{ color: #1a2744; margin-top: 35px; border-bottom: 2px solid #1a2744;
+            padding-bottom: 6px; font-size: 1.3em; }}
+      h3 {{ color: #2c3e50; margin-top: 25px; }}
+      h4 {{ color: #555; margin: 8px 0 4px; font-size: 0.95em; }}
+      nav {{ background: #fff; padding: 12px 16px; border-radius: 6px;
+             box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin: 15px 0;
+             display: flex; flex-wrap: wrap; gap: 8px; position: sticky;
+             top: 0; z-index: 100; }}
+      nav a {{ color: #1a2744; text-decoration: none; padding: 5px 12px;
+               background: #e8eef4; border-radius: 4px; font-size: 0.85em;
+               font-weight: 500; transition: all 0.15s; }}
+      nav a:hover {{ background: #1a2744; color: #fff; }}
+      table {{ border-collapse: collapse; width: 100%; background: #fff;
+               box-shadow: 0 1px 3px rgba(0,0,0,0.08); border-radius: 4px;
+               overflow: hidden; margin-bottom: 16px; }}
+      td, th {{ border: 1px solid #e0e0e0; padding: 8px 14px; text-align: left; }}
+      th {{ background: #1a2744; color: #fff; font-weight: 600; font-size: 0.9em; }}
+      .pass {{ color: #2a7d2a; font-weight: bold; }}
+      .fail {{ color: #c33; font-weight: bold; }}
+      .comparison {{ display: flex; gap: 24px; flex-wrap: wrap; }}
+      .col {{ flex: 1; min-width: 420px; }}
+      .gallery {{ display: flex; flex-wrap: wrap; gap: 12px; }}
+      .fig {{ display: inline-block; margin: 4px; vertical-align: top; }}
+      .fig img {{ max-width: 520px; width: 100%; border: 1px solid #ccc; border-radius: 4px;
+                  transition: transform 0.2s; cursor: zoom-in; }}
+      .fig img:hover {{ transform: scale(1.02); box-shadow: 0 2px 8px rgba(0,0,0,0.15); }}
+      .fig span {{ display: block; font-size: 0.75em; color: #888; margin-top: 2px; }}
+      .fig.wide img {{ max-width: 900px; }}
+      details {{ margin: 10px 0; background: #fff; border-radius: 4px;
+                 box-shadow: 0 1px 3px rgba(0,0,0,0.08); }}
+      summary {{ cursor: pointer; font-weight: 600; color: #1a2744; padding: 10px 14px; }}
+      summary:hover {{ background: #f5f7fa; }}
+      .timing-container {{ background: #fff; padding: 16px; border-radius: 4px;
+                           box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+                           overflow-x: auto; max-height: 500px; overflow-y: auto; }}
+      .timing-table td {{ font-family: 'Courier New', monospace; font-size: 0.85em;
+                          padding: 4px 10px; white-space: nowrap; }}
+      footer {{ margin-top: 40px; padding: 16px 30px; border-top: 2px solid #1a2744;
+                color: #777; font-size: 0.8em; background: #fff; text-align: center; }}
+      /* Lightbox overlay */
+      .lightbox {{ display:none; position:fixed; top:0; left:0; width:100%; height:100%;
+                   background:rgba(0,0,0,0.88); z-index:1000; cursor:zoom-out;
+                   align-items:center; justify-content:center; }}
+      .lightbox.active {{ display:flex; }}
+      .lightbox img {{ max-width:95%; max-height:95%; border-radius:6px;
+                       box-shadow: 0 4px 20px rgba(0,0,0,0.4); }}
+    </style>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {{
+      var lb = document.createElement('div');
+      lb.className = 'lightbox';
+      var lbImg = document.createElement('img');
+      lb.appendChild(lbImg);
+      document.body.appendChild(lb);
+      lb.addEventListener('click', function() {{ lb.classList.remove('active'); }});
+      document.addEventListener('keydown', function(e) {{
+        if (e.key === 'Escape') lb.classList.remove('active');
+      }});
+      document.querySelectorAll('.fig a').forEach(function(a) {{
+        a.addEventListener('click', function(e) {{
+          e.preventDefault();
+          lbImg.src = this.href;
+          lb.classList.add('active');
+        }});
+      }});
+    }});
+    </script>
+    </head><body>
+    <header>
+      <h1>FME MPAS Online Output Verification</h1>
+      <span class="status">{status}</span>
+    </header>
+    <div class="container">
+
+    <nav>{nav_links}</nav>
+
+    <h2 id="Summary">Component Summary</h2>
+    <table>
+    <tr><th>Component</th><th>Status</th><th>Issues</th></tr>
+    {summary_rows}
+    </table>
+
+    {"<details><summary>Show all " + str(n_issues) + " issues</summary><table><tr><th>Component</th><th>Issue</th></tr>" + detail_rows + "</table></details>" if detail_rows else ""}
+
+    <h2 id="File_Inventory">File Inventory</h2>
+    <table>
+    <tr><th>Category</th><th>File Count</th></tr>
+    {inventory_rows}
+    </table>
+
+    <h2 id="Fill_NaN_Report">Fill / NaN Report</h2>
+    <details><summary>Variable-level fill fraction details</summary>
+    <table>
+    <tr><th>Component</th><th>Variable</th><th>Total Cells</th><th>Valid</th><th>Fill/NaN</th><th>Fill %</th></tr>
+    {fill_rows if fill_rows else '<tr><td colspan="6">No data collected.</td></tr>'}
+    </table>
+    </details>
+
+    {extra_html}
+
+    <h2>Diagnostic Figures</h2>
+    {fig_sections if fig_sections else '<p>No figures generated.</p>'}
+
+    {timing_html}
+    </div>
+    <footer>Generated by verify_mpas.py &mdash; FME MPAS Online Output Processing for E3SM &mdash; {gen_timestamp}</footer>
+    </body></html>
+    """)
+    with open(index, "w") as fh:
+        fh.write(html)
+    print(f"\nIndex written: {index}")
+    return index
+
+
+# -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Cross-verification: compare fme_output vs fme_legacy_output
-# ─────────────────────────────────────────────────────────────────────────────
-
-def cross_verify(fme_rundir, legacy_rundir, outdir, verbose=False):
-    """
-    Compare online FME output against legacy (raw) output.
-
-    Checks that fields produced by the FME online pipeline are consistent
-    with the raw fields from the legacy pipeline that would be processed
-    offline by the ACE scripts.
-
-    Comparisons:
-    - EAM: fme_output Tape 1/2/3 fields vs legacy Tape 2/3 fields
-      (Tape 2 instantaneous 3D state should match; Tape 1/3 averaged fields
-       should have same time-means within averaging-window tolerance)
-    - MPAS-O: fmeDerivedFields (SST, SSS, fluxes) vs legacy
-      timeSeriesStatsCustom (ssh, activeTracers, fluxes)
-    - MPAS-SI: fmeSeaiceDerivedFields (iceAreaTotal, etc.) vs legacy
-      timeSeriesStatsCustom (iceAreaCell, etc.)
-    """
-    print("\n" + "=" * 70)
-    print("CROSS-VERIFICATION: fme_output vs fme_legacy_output")
-    print("=" * 70)
-
-    issues = []
-
-    # --- EAM cross-check ---
-    print("\n=== EAM Cross-Check ===")
-    # Compare instantaneous 3D state (Tape 2 in both)
-    fme_h2 = find_files(fme_rundir, "*.eam.h1.*nc") or find_files(fme_rundir, "*.cam.h1.*nc")
-    leg_h2 = find_files(legacy_rundir, "*.eam.h1.*nc") or find_files(legacy_rundir, "*.cam.h1.*nc")
-
-    if fme_h2 and leg_h2:
-        ds_fme = safe_open(fme_h2[0])
-        ds_leg = safe_open(leg_h2[0])
-
-        for var in ["T", "Q", "U", "V", "PS", "TS"]:
-            fme_data = get_var(ds_fme, var)
-            leg_data = get_var(ds_leg, var)
-            if fme_data is not None and leg_data is not None:
-                if fme_data.shape == leg_data.shape:
-                    diff = np.abs(fme_data - leg_data)
-                    maxdiff = float(np.nanmax(diff))
-                    if maxdiff > 1e-10:
-                        issues.append(f"  EAM {var}: max diff = {maxdiff:.4g} (should be 0 for instantaneous)")
-                    elif verbose:
-                        print(f"  EAM {var}: identical (max diff = {maxdiff:.2e})")
-                else:
-                    if verbose:
-                        print(f"  EAM {var}: shape mismatch fme={fme_data.shape} vs legacy={leg_data.shape}")
-            elif verbose:
-                print(f"  EAM {var}: {'missing in fme' if fme_data is None else 'missing in legacy'}")
-    else:
-        print("  SKIP: h1 files not found in both rundirs")
-
-    # --- MPAS-O cross-check ---
-    print("\n=== MPAS-O Cross-Check ===")
-    fme_derived = find_files(fme_rundir, "*.am.fmeDerivedFields.*nc")
-    leg_custom = find_files(legacy_rundir, "*.am.timeSeriesStatsCustom.*nc")
-
-    if fme_derived and leg_custom:
-        ds_fme = safe_open(fme_derived[0])
-        ds_leg = safe_open(leg_custom[0])
-
-        # SST from fme vs temperature top level from legacy activeTracers
-        fme_sst = get_var(ds_fme, "sst")
-        if fme_sst is not None:
-            v = valid_data(fme_sst)
-            if v is not None:
-                print(f"  FME SST: {summary_stats(fme_sst)}")
-            else:
-                issues.append("  FME SST: no valid data")
-
-        # Cross-check flux fields
-        for var in ["shortWaveHeatFlux", "sensibleHeatFlux", "windStressZonal"]:
-            fme_v = get_var(ds_fme, var)
-            # Legacy uses time-averaged names like timeCustom_avg_shortWaveHeatFlux
-            leg_name = f"timeCustom_avg_{var}"
-            leg_v = get_var(ds_leg, leg_name)
-            if leg_v is None:
-                leg_v = get_var(ds_leg, var)  # try without prefix
-
-            if fme_v is not None and leg_v is not None:
-                fme_valid = valid_data(fme_v)
-                leg_valid = valid_data(leg_v)
-                if fme_valid is not None and leg_valid is not None:
-                    if verbose:
-                        print(f"  {var}: FME {summary_stats(fme_v)}")
-                        print(f"  {var}: Legacy {summary_stats(leg_v)}")
-            elif verbose:
-                print(f"  {var}: {'missing in fme' if fme_v is None else 'missing in legacy'}")
-    else:
-        print("  SKIP: derived/custom files not found in both rundirs")
-
-    # --- MPAS-SI cross-check ---
-    print("\n=== MPAS-SI Cross-Check ===")
-    fme_si = find_files(fme_rundir, "*fmeSeaiceDerivedFields*nc")
-    leg_si = find_files(legacy_rundir, "*mpassi*timeSeriesStatsCustom*nc")
-
-    if fme_si and leg_si:
-        ds_fme = safe_open(fme_si[0])
-        ds_leg = safe_open(leg_si[0])
-
-        fme_area = get_var(ds_fme, "iceAreaTotal")
-        # Legacy has iceAreaCell (per-category), FME has iceAreaTotal (summed)
-        leg_area = get_var(ds_leg, "timeCustom_avg_iceAreaCell")
-        if leg_area is None:
-            leg_area = get_var(ds_leg, "iceAreaCell")
-
-        if fme_area is not None:
-            print(f"  FME iceAreaTotal: {summary_stats(fme_area)}")
-        if leg_area is not None:
-            print(f"  Legacy iceAreaCell: {summary_stats(leg_area)}")
-    else:
-        print("  SKIP: sea ice files not found in both rundirs")
-
-    if issues:
-        print(f"\n  CROSS-VERIFY: {len(issues)} issues found")
-        for i in issues:
-            print(i)
-    else:
-        print(f"\n  CROSS-VERIFY: All checks passed")
-
-    return issues
-
-
 def main():
     parser = argparse.ArgumentParser(
-        description="Verify FME output and produce diagnostic figures for ACE/Samudra.")
+        description="Verify MPAS-Ocean and MPAS-SeaIce FME online output "
+                    "and produce diagnostic figures.")
     parser.add_argument("--rundir", required=True,
-                        help="CIME RUNDIR (or archive/ocn/hist directory)")
+                        help="CIME RUNDIR containing MPAS FME output files")
     parser.add_argument("--outdir",
-                        default="/pscratch/sd/m/mahf708/aifigs_v3LRpiControlSamudrACE",
+                        default="./mpas_fme_figs",
                         help="Output directory for figures and HTML index")
     parser.add_argument("--verbose", "-v", action="store_true")
-    parser.add_argument("--cross-verify",
-                        help="Path to legacy testmod RUNDIR for cross-verification")
     args = parser.parse_args()
 
     if not os.path.isdir(args.rundir):
         sys.exit(f"ERROR: rundir not found: {args.rundir}")
 
     os.makedirs(args.outdir, exist_ok=True)
-    print(f"FME Verification  |  rundir: {args.rundir}")
-    print(f"Output directory  :  {args.outdir}")
+    print(f"MPAS FME Verification  |  rundir: {args.rundir}")
+    print(f"Output directory       :  {args.outdir}")
     print("=" * 70)
 
     if not HAS_MPL:
@@ -2059,13 +1689,11 @@ def main():
         comp_outdir = os.path.join(fig_root, subdir)
         os.makedirs(comp_outdir, exist_ok=True)
         result = func(*a[:1], comp_outdir, *a[1:])
-        issues, plots, fill_reports = result
-        all_issues[name] = issues
+        comp_issues, plots, fill_reports = result
+        all_issues[name] = comp_issues
         all_plots_by_comp[name] = plots
         all_fill_reports[name] = fill_reports
 
-    run_check("EAM", check_eam, "eam",
-              args.rundir, args.verbose)
     run_check("MPAS-O Depth Coarsening (native)", check_mpaso_depth_coarsening, "mpaso_native",
               args.rundir, args.verbose)
     run_check("MPAS-O Depth Coarsening (remapped)", check_mpaso_depth_coarsening_remapped, "mpaso_remapped",
@@ -2074,9 +1702,9 @@ def main():
               args.rundir, args.verbose)
     run_check("MPAS-O Derived Fields (remapped)", check_mpaso_derived_remapped, "mpaso_remapped",
               args.rundir, args.verbose)
-    run_check("MPAS-O Vertical Reduce (native)", check_mpaso_vertical_reduce, "mpaso_native",
+    run_check("MPAS-O Vertical Reduction (native)", check_mpaso_vertical_reduce, "mpaso_native",
               args.rundir, args.verbose)
-    run_check("MPAS-O Vertical Reduce (remapped)", check_mpaso_vertical_reduce_remapped, "mpaso_remapped",
+    run_check("MPAS-O Vertical Reduction (remapped)", check_mpaso_vertical_reduce_remapped, "mpaso_remapped",
               args.rundir, args.verbose)
     run_check("MPAS-SI Derived Fields (native)", check_mpassi_derived, "mpassi_native",
               args.rundir, args.verbose)
@@ -2084,7 +1712,7 @@ def main():
               args.rundir, args.verbose)
 
     # Cross-component comparison figures (native vs remapped side-by-side,
-    # multi-panel layer views, zonal means)
+    # zonal means)
     generate_comparison_figures(args.rundir, fig_root, all_plots_by_comp)
 
     # Timing summary
@@ -2095,15 +1723,6 @@ def main():
             print(f"  {line}")
         if len(timing_summary) > 10:
             print(f"  ... ({len(timing_summary) - 10} more lines in HTML report)")
-
-    # Cross-verification against legacy testmod output
-    if args.cross_verify:
-        if not os.path.isdir(args.cross_verify):
-            print(f"WARNING: cross-verify rundir not found: {args.cross_verify}")
-        else:
-            xv_issues = cross_verify(args.rundir, args.cross_verify,
-                                     args.outdir, args.verbose)
-            all_issues["cross-verify"] = xv_issues
 
     write_html_index(args.outdir, all_plots_by_comp, all_issues,
                      file_inventory_data, all_fill_reports,
