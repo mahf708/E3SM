@@ -85,6 +85,8 @@ contains
         overlap = max(0.0_r8, min(c_hi, b_hi) - max(c_lo, b_lo))
 
         if (overlap > 0.0_r8) then
+          ! Skip NaN values (NaN /= NaN) and fill values
+          if (field(k) /= field(k) .or. field(k) == fillval) cycle
           numerator   = numerator   + field(k) * overlap
           denominator = denominator + overlap
         end if
@@ -139,6 +141,8 @@ contains
                                 max(coord_iface(i, k),   b_lo))
 
           if (overlap > 0.0_r8) then
+            ! Skip NaN values (NaN /= NaN) and fill values
+            if (field(i, k) /= field(i, k) .or. field(i, k) == fillval) cycle
             numerator(i)   = numerator(i)   + field(i, k) * overlap
             denominator(i) = denominator(i) + overlap
           end if
@@ -197,10 +201,15 @@ contains
                                           target_val, nlev_max, fillval, &
                                           field_out)
     !--------------------------------------------------------------------------
-    ! Extract the field value at the level nearest to a target coordinate value.
+    ! Linearly interpolate the field to a target coordinate value.
     !
-    ! For each column, finds the level k (within 1..nlev_max(i)) where
-    ! |coord_mid(i,k) - target_val| is minimized, and returns field(i,k).
+    ! For each column, finds the two adjacent levels that bracket target_val
+    ! and linearly interpolates between them. If the target is outside the
+    ! coordinate range, the nearest boundary level value is returned (no
+    ! extrapolation). Works for any monotonic coordinate direction.
+    !
+    ! If one bracketing level has a fill/NaN value, the other valid level
+    ! is used. If both are invalid, fillval is returned.
     !
     ! Output naming convention: base_at_P{target} (e.g., "U_at_P850")
     ! The P prefix is component-specific (P for pressure, D for depth, etc.)
@@ -214,8 +223,9 @@ contains
     real(r8), intent(in)  :: fillval               ! fill value for invalid columns
     real(r8), intent(out) :: field_out(ncol)       ! output selected values
 
-    integer  :: i, k, k_best
-    real(r8) :: dist, dist_best
+    integer  :: i, k, k_lo
+    real(r8) :: d_total, w, f_lo, f_hi
+    logical  :: lo_valid, hi_valid
 
     do i = 1, ncol
       if (nlev_max(i) < 1) then
@@ -223,18 +233,64 @@ contains
         cycle
       end if
 
-      k_best = 1
-      dist_best = abs(coord_mid(i, 1) - target_val)
+      ! Single valid level: no interpolation possible
+      if (nlev_max(i) == 1) then
+        f_lo = field(i, 1)
+        if (f_lo /= f_lo .or. f_lo == fillval) then
+          field_out(i) = fillval
+        else
+          field_out(i) = f_lo
+        end if
+        cycle
+      end if
 
-      do k = 2, nlev_max(i)
-        dist = abs(coord_mid(i, k) - target_val)
-        if (dist < dist_best) then
-          dist_best = dist
-          k_best = k
+      ! Find bracket: k_lo such that target is between coord(k_lo) and coord(k_lo+1).
+      ! The sign-product test works for both increasing and decreasing coordinates.
+      k_lo = 0
+      do k = 1, nlev_max(i) - 1
+        if ((coord_mid(i, k) - target_val) * &
+            (coord_mid(i, k+1) - target_val) <= 0.0_r8) then
+          k_lo = k
+          exit
         end if
       end do
 
-      field_out(i) = field(i, k_best)
+      if (k_lo < 1) then
+        ! Target outside coordinate range — use nearest boundary (no extrapolation)
+        if (abs(coord_mid(i, 1) - target_val) <= &
+            abs(coord_mid(i, nlev_max(i)) - target_val)) then
+          f_lo = field(i, 1)
+        else
+          f_lo = field(i, nlev_max(i))
+        end if
+        if (f_lo /= f_lo .or. f_lo == fillval) then
+          field_out(i) = fillval
+        else
+          field_out(i) = f_lo
+        end if
+      else
+        ! Linear interpolation between k_lo and k_lo+1
+        f_lo = field(i, k_lo)
+        f_hi = field(i, k_lo + 1)
+        lo_valid = (f_lo == f_lo .and. f_lo /= fillval)
+        hi_valid = (f_hi == f_hi .and. f_hi /= fillval)
+
+        if (lo_valid .and. hi_valid) then
+          d_total = coord_mid(i, k_lo+1) - coord_mid(i, k_lo)
+          if (abs(d_total) > 0.0_r8) then
+            w = (target_val - coord_mid(i, k_lo)) / d_total
+            field_out(i) = f_lo * (1.0_r8 - w) + f_hi * w
+          else
+            field_out(i) = f_lo
+          end if
+        else if (lo_valid) then
+          field_out(i) = f_lo
+        else if (hi_valid) then
+          field_out(i) = f_hi
+        else
+          field_out(i) = fillval
+        end if
+      end if
     end do
 
   end subroutine shr_vcoarsen_select_nearest

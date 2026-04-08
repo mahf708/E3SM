@@ -49,33 +49,91 @@ try:
 except ImportError:
     HAS_NC4 = False
 
-# -- ACE variable requirements ------------------------------------------------
-# Fields ACE atmosphere model needs from EAM (after offline renaming).
-# key = EAM output name,  value = ACE canonical name
-ACE_ATM_FIELDS = {
+# -- ACE atmosphere variable requirements ------------------------------------
+# Single source of truth for the ACE-to-EAM variable mapping.
+# Drives verification, HTML coverage table, and reproducibility tracking.
+#
+# The lists below mirror the ACE YAML specification exactly.
+# EAM field names differ from ACE canonical names in several cases;
+# ace_to_eam() handles the mapping.
+
+N_ATM_LAYERS = 8  # ACE uses 8 pressure layers (0-based: T_0..T_7)
+
+# 3D vertically coarsened fields: ACE base name -> EAM base name
+ACE_3D_BASE_MAP = {
+    "T": "T",
+    "specific_total_water": "STW",
+    "U": "U",
+    "V": "V",
+}
+
+# EAM coarsened base names (used by check_eam and comparison figures)
+ACE_ATM_3D_COARSENED = list(ACE_3D_BASE_MAP.values())  # ["T", "STW", "U", "V"]
+
+# 2D / scalar field mapping: ACE canonical name -> EAM FME output name
+ACE_2D_MAP = {
+    "land_fraction": "LANDFRAC",
+    "ocean_fraction": "OCNFRAC",
+    "sea_ice_fraction": "ICEFRAC",
     "PHIS": "PHIS",
+    "SOLIN": "SOLIN",
     "PS": "PS",
     "TS": "TS",
-    "TAUX": "TAUX",
-    "TAUY": "TAUY",
     "LHFLX": "LHFLX",
     "SHFLX": "SHFLX",
-    "PRECT": "surface_precipitation_rate",  # derived: PRECC+PRECL
+    "surface_precipitation_rate": "PRECT",
+    "surface_upward_longwave_flux": "FLUS",
+    "FLUT": "FLUT",
     "FLDS": "FLDS",
     "FSDS": "FSDS",
-    "FLNS": "FLNS",   # -> surface_upward_longwave_flux = FLDS - FLNS
-    "FSNS": "FSNS",   # -> surface_upward_shortwave_flux = FSDS - FSNS
-    "FSNTOA": "FSNTOA",  # -> top_of_atmos_upward_shortwave_flux = SOLIN - FSNTOA
-    "FLUT": "FLUT",
-    "SOLIN": "SOLIN",
-    "ICEFRAC": "sea_ice_fraction",
-    "LANDFRAC": "land_fraction",
-    "OCNFRAC": "ocean_fraction",
-    # 3D coarsened (all on tape 1): T_0..T_7, U_0..U_7, V_0..V_7,
-    #   STW_0..7 -> specific_total_water_0..7 (derived: Q+CLDICE+CLDLIQ+RAINQM)
+    "surface_upward_shortwave_flux": "FSUS",
+    "top_of_atmos_upward_shortwave_flux": "FSUTOA",
+    "tendency_of_total_water_path_due_to_advection": "DTENDTTW",
+    "TAUX": "TAUX",
+    "TAUY": "TAUY",
 }
-ACE_ATM_3D_COARSENED = ["T", "U", "V", "STW"]
-N_ATM_LAYERS = 8  # ACE uses 8 pressure layers (0-based: T_0..T_7)
+
+# ACE variable lists (mirror the YAML specification)
+ACE_FORCING_NAMES = ["SOLIN"]
+
+ACE_IN_NAMES = ([
+    "land_fraction", "ocean_fraction", "sea_ice_fraction",
+    "PHIS", "SOLIN", "PS", "TS",
+] + [f"T_{k}" for k in range(N_ATM_LAYERS)]
+  + [f"specific_total_water_{k}" for k in range(N_ATM_LAYERS)]
+  + [f"U_{k}" for k in range(N_ATM_LAYERS)]
+  + [f"V_{k}" for k in range(N_ATM_LAYERS)])
+
+ACE_OUT_NAMES = ([
+    "PS", "TS",
+] + [f"T_{k}" for k in range(N_ATM_LAYERS)]
+  + [f"specific_total_water_{k}" for k in range(N_ATM_LAYERS)]
+  + [f"U_{k}" for k in range(N_ATM_LAYERS)]
+  + [f"V_{k}" for k in range(N_ATM_LAYERS)]
+  + [
+    "LHFLX", "SHFLX",
+    "surface_precipitation_rate",
+    "surface_upward_longwave_flux",
+    "FLUT", "FLDS", "FSDS",
+    "surface_upward_shortwave_flux",
+    "top_of_atmos_upward_shortwave_flux",
+    "tendency_of_total_water_path_due_to_advection",
+    "TAUX", "TAUY",
+])
+
+
+def ace_to_eam(ace_name):
+    """Map an ACE canonical variable name to its EAM FME output name."""
+    if ace_name in ACE_2D_MAP:
+        return ACE_2D_MAP[ace_name]
+    # 3D indexed variables (e.g. specific_total_water_3 -> STW_3)
+    for ace_base in sorted(ACE_3D_BASE_MAP, key=len, reverse=True):
+        prefix = ace_base + "_"
+        if ace_name.startswith(prefix):
+            suffix = ace_name[len(ace_base):]
+            return ACE_3D_BASE_MAP[ace_base] + suffix
+    return ace_name
+
 
 # Physical range checks: (vmin, vmax)
 # Ranges are deliberately generous to avoid false positives during spinup.
@@ -102,9 +160,6 @@ BFB_INST_FIELDS = ["PS", "TS", "PHIS", "LANDFRAC", "OCNFRAC", "ICEFRAC"]
 # Averaged (:A suffix in both cases)
 BFB_AVG_FIELDS = ["SOLIN", "FSNTOA", "FLUT", "FLDS", "FSDS",
                    "LHFLX", "SHFLX", "TAUX", "TAUY", "PRECT"]
-
-# Raw 3D fields in legacy output that can be vcoarsened offline for comparison
-LEGACY_RAW_3D = ["T", "Q", "U", "V", "CLDLIQ", "CLDICE", "RAINQM"]
 
 # FME vcoarsen fields -> legacy raw source (for offline recomputation)
 # FME name -> (legacy fields to sum for derived, then vcoarsen)
@@ -181,7 +236,6 @@ def offline_vcoarsen_avg(field, pint, pbounds=None):
     for layer in range(nlayers):
         pb_top = pbounds[layer]
         pb_bot = pbounds[layer + 1]
-        layer_dp = pb_bot - pb_top
 
         weight_sum = np.zeros(ncol)
         for k in range(nlev):
@@ -190,10 +244,13 @@ def offline_vcoarsen_avg(field, pint, pbounds=None):
             overlap_bot = np.minimum(pb_bot, pint[:, k + 1])
             overlap = np.maximum(0.0, overlap_bot - overlap_top)
 
-            coarsened[:, layer] += field[:, k] * overlap
-            weight_sum += overlap
+            # Skip NaN and fill values — only average valid data
+            fk = field[:, k]
+            ok = np.isfinite(fk) & (overlap > 0)
+            coarsened[ok, layer] += fk[ok] * overlap[ok]
+            weight_sum[ok] += overlap[ok]
 
-        # Normalize by total overlap (should equal layer_dp for well-formed grids)
+        # Normalize by total overlap of valid levels
         valid = weight_sum > 0
         coarsened[valid, layer] /= weight_sum[valid]
         coarsened[~valid, layer] = np.nan
@@ -676,7 +733,7 @@ def check_eam(rundir, outdir, verbose):
             close_ds(ds)
         else:
             for var in ["PHIS", "PS", "TS", "LHFLX", "SHFLX", "FLDS", "FSDS",
-                        "FSNTOA", "FLUT", "SOLIN", "FSUS", "FLUS",
+                        "FSNTOA", "FSUTOA", "FLUT", "SOLIN", "FSUS", "FLUS",
                         "ICEFRAC", "LANDFRAC", "OCNFRAC", "TAUX", "TAUY",
                         "PRECT", "DTENDTTW"]:
                 arr = get_var(ds, var)
@@ -1531,12 +1588,264 @@ def collect_file_inventory(rundir):
 
 
 # -----------------------------------------------------------------------------
+# ACE variable coverage
+# -----------------------------------------------------------------------------
+
+def check_variable_coverage(rundir):
+    """Check which ACE-required variables are present in the FME output.
+
+    Returns list of (ace_name, eam_name, category_str, found_bool) tuples.
+    """
+    h0_files = find_files(rundir, "*.eam.h0.*.nc")
+    if not h0_files:
+        return []
+
+    ds = safe_open(h0_files[0])
+    varnames_in_file = set(get_varnames(ds))
+    close_ds(ds)
+
+    forcing_set = set(ACE_FORCING_NAMES)
+    in_set = set(ACE_IN_NAMES)
+    out_set = set(ACE_OUT_NAMES)
+
+    coverage = []
+    seen = set()
+    for ace_name in ACE_FORCING_NAMES + ACE_IN_NAMES + ACE_OUT_NAMES:
+        if ace_name in seen:
+            continue
+        seen.add(ace_name)
+        eam_name = ace_to_eam(ace_name)
+        cats = []
+        if ace_name in forcing_set:
+            cats.append("forcing")
+        if ace_name in in_set:
+            cats.append("in")
+        if ace_name in out_set:
+            cats.append("out")
+        category = ", ".join(cats)
+        found = eam_name in varnames_in_file
+        coverage.append((ace_name, eam_name, category, found))
+
+    return coverage
+
+
+def generate_yaml_text():
+    """Generate YAML-formatted text of the ACE atmosphere variable spec."""
+    lines = ["## ATMOSPHERE", "next_step_forcing_names:"]
+    for name in ACE_FORCING_NAMES:
+        lines.append(f"  - {name}")
+    lines.append("in_names:")
+    for name in ACE_IN_NAMES:
+        lines.append(f"  - {name}")
+    lines.append("out_names:")
+    for name in ACE_OUT_NAMES:
+        lines.append(f"  - {name}")
+    return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------------
+# Reproducibility info
+# -----------------------------------------------------------------------------
+
+def _find_user_nl_eam(rundir):
+    """Search for user_nl_eam in likely locations relative to rundir."""
+    candidates = [
+        os.path.join(rundir, "user_nl_eam"),
+        os.path.join(os.path.dirname(rundir.rstrip("/")), "user_nl_eam"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def collect_repro_info(args):
+    """Collect reproducibility information for the HTML dashboard."""
+    import subprocess
+
+    info = {
+        "command": " ".join(sys.argv),
+        "script_path": os.path.abspath(__file__),
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "hostname": os.uname().nodename,
+        "user": os.environ.get("USER", "unknown"),
+        "rundir": os.path.abspath(args.rundir),
+    }
+
+    if args.legacy_rundir:
+        info["legacy_rundir"] = os.path.abspath(args.legacy_rundir)
+
+    # Git hash of the script's repo
+    script_dir = os.path.dirname(info["script_path"])
+    try:
+        result = subprocess.run(
+            ["git", "-C", script_dir, "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            info["git_hash"] = result.stdout.strip()
+        result2 = subprocess.run(
+            ["git", "-C", script_dir, "diff", "--stat", "--", info["script_path"]],
+            capture_output=True, text=True, timeout=5)
+        if result2.stdout.strip():
+            info["git_dirty"] = True
+    except Exception:
+        pass
+
+    # Read user_nl_eam from the FME case
+    nl_path = _find_user_nl_eam(args.rundir)
+    if nl_path:
+        try:
+            with open(nl_path) as f:
+                info["user_nl_eam"] = f.read()
+            info["user_nl_eam_path"] = nl_path
+        except Exception:
+            pass
+
+    # Read user_nl_eam from the legacy case
+    if args.legacy_rundir:
+        leg_nl = _find_user_nl_eam(args.legacy_rundir)
+        if leg_nl:
+            try:
+                with open(leg_nl) as f:
+                    info["legacy_user_nl_eam"] = f.read()
+                info["legacy_user_nl_eam_path"] = leg_nl
+            except Exception:
+                pass
+
+    # Embed the script source for reproducibility
+    try:
+        with open(info["script_path"]) as f:
+            info["script_source"] = f.read()
+    except Exception:
+        pass
+
+    return info
+
+
+# -----------------------------------------------------------------------------
+# HTML helpers for new sections
+# -----------------------------------------------------------------------------
+
+def write_variable_coverage_html(coverage):
+    """Generate HTML for the ACE Variable Requirements section."""
+    if not coverage:
+        return ""
+
+    n_found = sum(1 for _, _, _, f in coverage if f)
+    n_total = len(coverage)
+    n_missing = n_total - n_found
+    pct = 100 * n_found / n_total if n_total else 0
+
+    html = '<h2 id="ACE_Variables">ACE Atmosphere Variable Requirements</h2>\n'
+
+    # Summary with progress bar
+    badge_cls = "badge-pass" if n_missing == 0 else "badge-fail"
+    html += '<div class="card">\n'
+    html += f'<p style="font-size:1.05em"><strong>{n_found}/{n_total}</strong> variables found '
+    if n_missing:
+        html += f'<span class="badge-fail">{n_missing} missing</span>'
+    else:
+        html += '<span class="badge-pass">all present</span>'
+    html += '</p>\n'
+    html += f'<div class="progress-bar"><div class="progress-fill" style="width:{pct:.0f}%"></div></div>\n'
+    html += '</div>\n'
+
+    # YAML spec in a collapsible block
+    yaml_text = generate_yaml_text()
+    html += '<details><summary>YAML Variable Specification (ACE canonical names)</summary>\n'
+    html += '<pre class="yaml-block">'
+    html += yaml_text
+    html += '</pre>\n</details>\n'
+
+    # Name mapping table with filter
+    html += '<details open><summary>Variable Coverage</summary>\n'
+    html += '<input class="filter-input" type="text" placeholder="Filter variables..." '
+    html += 'oninput="filterTable(this,\'coverage-table\')">\n'
+    html += '<table class="sortable" id="coverage-table"><thead><tr>'
+    html += '<th onclick="sortTable(this,0)">ACE Name</th>'
+    html += '<th onclick="sortTable(this,1)">EAM Name</th>'
+    html += '<th onclick="sortTable(this,2)">Category</th>'
+    html += '<th onclick="sortTable(this,3)">Status</th>'
+    html += '</tr></thead><tbody>\n'
+
+    for ace_name, eam_name, category, found in coverage:
+        cls = "pass" if found else "fail"
+        status = "FOUND" if found else "MISSING"
+        html += (f'<tr><td><code>{ace_name}</code></td>'
+                 f'<td><code>{eam_name}</code></td>'
+                 f'<td>{category}</td>'
+                 f'<td class="{cls}">{status}</td></tr>\n')
+
+    html += '</tbody></table>\n</details>\n'
+    return html
+
+
+def write_repro_html(repro_info):
+    """Generate HTML for the Reproducibility section."""
+    if not repro_info:
+        return ""
+
+    html = '<h2 id="Reproducibility">Reproducibility</h2>\n'
+    html += '<div class="repro-block"><dl>\n'
+
+    html += f'<dt>Command</dt><dd><code>{repro_info["command"]}</code></dd>\n'
+    html += f'<dt>Script</dt><dd><code>{repro_info["script_path"]}</code>'
+    if repro_info.get("git_hash"):
+        dirty = " (dirty)" if repro_info.get("git_dirty") else ""
+        html += f' &mdash; git: <code>{repro_info["git_hash"]}{dirty}</code>'
+    html += '</dd>\n'
+    html += f'<dt>Run directory</dt><dd><code>{repro_info["rundir"]}</code></dd>\n'
+    if repro_info.get("legacy_rundir"):
+        html += f'<dt>Legacy run directory</dt><dd><code>{repro_info["legacy_rundir"]}</code></dd>\n'
+    html += f'<dt>Host</dt><dd><code>{repro_info.get("user", "")}@{repro_info.get("hostname", "")}</code></dd>\n'
+    html += f'<dt>Generated</dt><dd>{repro_info["timestamp"]}</dd>\n'
+
+    html += '</dl>\n'
+
+    # user_nl_eam contents
+    if repro_info.get("user_nl_eam"):
+        html += '<details><summary>user_nl_eam (FME)</summary>\n'
+        html += f'<pre class="yaml-block">{repro_info["user_nl_eam"]}</pre>\n</details>\n'
+
+    if repro_info.get("legacy_user_nl_eam"):
+        html += '<details><summary>user_nl_eam (Legacy)</summary>\n'
+        html += f'<pre class="yaml-block">{repro_info["legacy_user_nl_eam"]}</pre>\n</details>\n'
+
+    # Full script source with line numbers
+    if repro_info.get("script_source"):
+        import html as html_mod
+        src = repro_info["script_source"]
+        lines = src.split("\n")
+        # Build line-numbered source with anchors
+        numbered = []
+        pad = len(str(len(lines)))
+        for i, line in enumerate(lines, 1):
+            escaped = html_mod.escape(line)
+            numbered.append(
+                f'<span id="L{i}" class="src-line">'
+                f'<span class="src-ln">{i:>{pad}}</span>  {escaped}</span>'
+            )
+        src_html = "\n".join(numbered)
+        script_name = os.path.basename(repro_info["script_path"])
+        html += (
+            f'<details><summary>{script_name} '
+            f'({len(lines)} lines)</summary>\n'
+            f'<pre class="src-block">{src_html}</pre>\n'
+            f'</details>\n'
+        )
+
+    html += '</div>\n'
+    return html
+
+
+# -----------------------------------------------------------------------------
 # HTML index
 # -----------------------------------------------------------------------------
 
 def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
-                     all_fill_reports, timing_summary=None, extra_html=""):
-    index = os.path.join(outdir, "verify_eam.html")
+                     all_fill_reports, timing_summary=None, extra_html="",
+                     coverage=None, repro_info=None):
+    index = os.path.join(outdir, "index.html")
     n_issues = sum(len(v) for v in all_issues.values())
     n_pass = sum(1 for v in all_issues.values() if not v)
     n_total = len(all_issues)
@@ -1596,7 +1905,7 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
 
     # Navigation
     nav_links = ""
-    nav_items = ["Summary", "File_Inventory", "Fill_NaN_Report"]
+    nav_items = ["Summary", "ACE_Variables", "File_Inventory", "Fill_NaN_Report"]
     if extra_html:
         nav_items.append("Cross_Verify")
     for comp in all_plots_by_comp:
@@ -1604,6 +1913,8 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
             nav_items.append(comp)
     if timing_summary:
         nav_items.append("Timing")
+    if repro_info:
+        nav_items.append("Reproducibility")
     for item in nav_items:
         anchor = item.replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
         display = item.replace("_", " ")
@@ -1627,100 +1938,321 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
     </div>
 '''
 
+    # ACE variable coverage section
+    coverage_html = write_variable_coverage_html(coverage) if coverage else ""
+
+    # Reproducibility section
+    repro_html = write_repro_html(repro_info) if repro_info else ""
+
     gen_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     html = textwrap.dedent(f"""\
-    <!DOCTYPE html><html><head>
+    <!DOCTYPE html><html data-theme="light"><head>
     <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>EAM FME Output Verification</title>
     <style>
-      * {{ box-sizing: border-box; }}
-      body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-             margin: 0; padding: 0; background: #f0f2f5; color: #333; }}
-      .container {{ max-width: 1600px; margin: 0 auto; padding: 20px 30px; }}
-      header {{ background: #1a2744; color: #fff; padding: 20px 30px; }}
-      header h1 {{ margin: 0 0 6px 0; font-size: 1.6em; }}
-      header .status {{ font-size: 1.2em; font-weight: bold;
-                        color: {"#6fcf6f" if n_issues == 0 else "#ff8888"}; }}
-      h2 {{ color: #1a2744; margin-top: 35px; border-bottom: 2px solid #1a2744;
-            padding-bottom: 6px; font-size: 1.3em; }}
-      h3 {{ color: #2c3e50; margin-top: 25px; }}
-      h4 {{ color: #555; margin: 8px 0 4px; font-size: 0.95em; }}
-      nav {{ background: #fff; padding: 12px 16px; border-radius: 6px;
-             box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin: 15px 0;
-             display: flex; flex-wrap: wrap; gap: 8px; position: sticky;
-             top: 0; z-index: 100; }}
-      nav a {{ color: #1a2744; text-decoration: none; padding: 5px 12px;
-               background: #e8eef4; border-radius: 4px; font-size: 0.85em;
-               font-weight: 500; transition: all 0.15s; }}
-      nav a:hover {{ background: #1a2744; color: #fff; }}
-      table {{ border-collapse: collapse; width: 100%; background: #fff;
-               box-shadow: 0 1px 3px rgba(0,0,0,0.08); border-radius: 4px;
-               overflow: hidden; margin-bottom: 16px; }}
-      td, th {{ border: 1px solid #e0e0e0; padding: 8px 14px; text-align: left; }}
-      th {{ background: #1a2744; color: #fff; font-weight: 600; font-size: 0.9em; }}
-      .pass {{ color: #2a7d2a; font-weight: bold; }}
-      .fail {{ color: #c33; font-weight: bold; }}
-      .gallery {{ display: flex; flex-wrap: wrap; gap: 12px; }}
-      .fig {{ display: inline-block; margin: 4px; vertical-align: top; }}
-      .fig img {{ max-width: 520px; width: 100%; border: 1px solid #ccc; border-radius: 4px;
-                  transition: transform 0.2s; cursor: zoom-in; }}
-      .fig img:hover {{ transform: scale(1.02); box-shadow: 0 2px 8px rgba(0,0,0,0.15); }}
-      .fig span {{ display: block; font-size: 0.75em; color: #888; margin-top: 2px; }}
-      .fig.wide img {{ max-width: 900px; }}
-      details {{ margin: 10px 0; background: #fff; border-radius: 4px;
-                 box-shadow: 0 1px 3px rgba(0,0,0,0.08); }}
-      summary {{ cursor: pointer; font-weight: 600; color: #1a2744; padding: 10px 14px; }}
-      summary:hover {{ background: #f5f7fa; }}
-      .timing-container {{ background: #fff; padding: 16px; border-radius: 4px;
-                           box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      :root {{
+        --bg: #f0f2f5; --text: #2c3e50; --text-muted: #6c757d;
+        --card: #ffffff; --card-border: #e2e8f0;
+        --card-shadow: 0 2px 6px rgba(0,0,0,0.06);
+        --header-bg: linear-gradient(135deg, #1a2744 0%, #2c3e6b 100%);
+        --nav-bg: #ffffff; --nav-border: #e2e8f0;
+        --nav-link-bg: #e8eef4; --nav-link-text: #1a2744;
+        --th-bg: #1a2744; --th-text: #fff; --th-hover: #2a3d5c;
+        --accent: #1a2744; --accent-light: #e8eef4;
+        --pass: #16a34a; --pass-bg: #dcfce7;
+        --fail: #dc2626; --fail-bg: #fee2e2;
+        --skip-bg: #fef9c3; --skip: #a16207;
+        --code-bg: #f1f5f9; --hover-bg: #f8fafc;
+        --yaml-bg: #1e293b; --yaml-text: #94a3b8;
+        --stripe: #f8fafc; --border-radius: 8px;
+        --ring-track: #e2e8f0; --ring-fill: #16a34a;
+        --toggle-bg: #e2e8f0; --toggle-knob: #1a2744;
+      }}
+      [data-theme="dark"] {{
+        --bg: #0d1117; --text: #c9d1d9; --text-muted: #8b949e;
+        --card: #161b22; --card-border: #30363d;
+        --card-shadow: 0 2px 6px rgba(0,0,0,0.4);
+        --header-bg: linear-gradient(135deg, #010409 0%, #0d1117 100%);
+        --nav-bg: #161b22; --nav-border: #30363d;
+        --nav-link-bg: #21262d; --nav-link-text: #c9d1d9;
+        --th-bg: #21262d; --th-text: #c9d1d9; --th-hover: #30363d;
+        --accent: #58a6ff; --accent-light: #1c2d41;
+        --pass: #3fb950; --pass-bg: #0d2818;
+        --fail: #f85149; --fail-bg: #3d1418;
+        --skip-bg: #3d2e00; --skip: #d29922;
+        --code-bg: #0d1117; --hover-bg: #1c2128;
+        --yaml-bg: #010409; --yaml-text: #7d8590;
+        --stripe: #1c2128; --border-radius: 8px;
+        --ring-track: #30363d; --ring-fill: #3fb950;
+        --toggle-bg: #30363d; --toggle-knob: #58a6ff;
+      }}
+      * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+      html {{ scroll-behavior: smooth; }}
+      body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+                           'Helvetica Neue', Arial, sans-serif;
+             background: var(--bg); color: var(--text);
+             line-height: 1.6; transition: background 0.3s, color 0.3s; }}
+      .container {{ max-width: 1400px; margin: 0 auto; padding: 24px 32px; }}
+
+      /* Header */
+      header {{ background: var(--header-bg); color: #fff; padding: 28px 32px;
+                display: flex; justify-content: space-between; align-items: center;
+                flex-wrap: wrap; gap: 12px; }}
+      header .hdr-left h1 {{ font-size: 1.5em; font-weight: 700; letter-spacing: -0.02em; }}
+      header .hdr-left .subtitle {{ font-size: 0.85em; opacity: 0.7; margin-top: 2px; }}
+      header .status-pill {{ display: inline-block; padding: 6px 16px; border-radius: 20px;
+                             font-weight: 700; font-size: 0.95em; letter-spacing: 0.02em; }}
+      .status-pass {{ background: rgba(22,163,74,0.2); color: #4ade80; }}
+      .status-fail {{ background: rgba(220,38,38,0.2); color: #fca5a5; }}
+      .hdr-right {{ display: flex; align-items: center; gap: 16px; }}
+
+      /* Theme toggle */
+      .theme-toggle {{ background: none; border: 2px solid rgba(255,255,255,0.3);
+                       color: #fff; padding: 6px 14px; border-radius: 20px;
+                       cursor: pointer; font-size: 0.85em; font-weight: 500;
+                       transition: all 0.2s; display: flex; align-items: center; gap: 6px; }}
+      .theme-toggle:hover {{ border-color: #fff; background: rgba(255,255,255,0.1); }}
+      .theme-toggle .icon {{ font-size: 1.1em; }}
+
+      /* Navigation */
+      nav {{ background: var(--nav-bg); padding: 10px 16px; border-radius: var(--border-radius);
+             box-shadow: var(--card-shadow); border: 1px solid var(--nav-border);
+             margin: 20px 0; display: flex; flex-wrap: wrap; gap: 6px;
+             position: sticky; top: 0; z-index: 100;
+             transition: background 0.3s, border-color 0.3s; }}
+      nav a {{ color: var(--nav-link-text); text-decoration: none; padding: 6px 14px;
+               background: var(--nav-link-bg); border-radius: 6px; font-size: 0.82em;
+               font-weight: 500; transition: all 0.15s; white-space: nowrap; }}
+      nav a:hover, nav a.active {{ background: var(--accent); color: #fff; }}
+
+      /* Section headings */
+      h2 {{ color: var(--accent); margin-top: 36px; font-size: 1.25em; font-weight: 700;
+            padding-bottom: 8px; border-bottom: 2px solid var(--accent);
+            transition: color 0.3s; }}
+      h3 {{ color: var(--text); margin-top: 24px; font-size: 1.05em; }}
+
+      /* Cards */
+      .card {{ background: var(--card); border: 1px solid var(--card-border);
+               border-radius: var(--border-radius); box-shadow: var(--card-shadow);
+               padding: 20px; margin-bottom: 16px; transition: all 0.3s; }}
+
+      /* Tables */
+      table {{ border-collapse: collapse; width: 100%; background: var(--card);
+               border: 1px solid var(--card-border); border-radius: var(--border-radius);
+               overflow: hidden; margin-bottom: 16px; transition: all 0.3s; }}
+      td, th {{ border: 1px solid var(--card-border); padding: 10px 14px; text-align: left;
+                transition: all 0.3s; }}
+      th {{ background: var(--th-bg); color: var(--th-text); font-weight: 600;
+            font-size: 0.88em; text-transform: uppercase; letter-spacing: 0.04em; }}
+      tbody tr:nth-child(even) {{ background: var(--stripe); }}
+      tbody tr:hover {{ background: var(--hover-bg); }}
+      .pass {{ color: var(--pass); font-weight: 700; }}
+      .fail {{ color: var(--fail); font-weight: 700; }}
+      td.pass {{ background: var(--pass-bg); }}
+      td.fail {{ background: var(--fail-bg); }}
+      code {{ font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+              font-size: 0.88em; background: var(--code-bg); padding: 2px 6px;
+              border-radius: 4px; transition: background 0.3s; }}
+
+      /* Figure gallery */
+      .gallery {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+                  gap: 16px; margin-top: 12px; }}
+      .fig {{ background: var(--card); border: 1px solid var(--card-border);
+              border-radius: var(--border-radius); overflow: hidden;
+              transition: all 0.25s; }}
+      .fig:hover {{ box-shadow: 0 4px 16px rgba(0,0,0,0.12); transform: translateY(-2px); }}
+      .fig img {{ width: 100%; display: block; cursor: zoom-in; }}
+      .fig span {{ display: block; font-size: 0.75em; color: var(--text-muted);
+                   padding: 8px 12px; border-top: 1px solid var(--card-border);
+                   font-family: monospace; }}
+      .fig.wide {{ grid-column: span 2; }}
+      @media (max-width: 900px) {{ .fig.wide {{ grid-column: span 1; }} }}
+
+      /* Details / collapsible */
+      details {{ margin: 12px 0; background: var(--card); border-radius: var(--border-radius);
+                 border: 1px solid var(--card-border); transition: all 0.3s; }}
+      details[open] {{ box-shadow: var(--card-shadow); }}
+      summary {{ cursor: pointer; font-weight: 600; color: var(--accent);
+                 padding: 12px 16px; list-style: none; display: flex;
+                 align-items: center; gap: 8px; transition: all 0.2s; }}
+      summary::-webkit-details-marker {{ display: none; }}
+      summary::before {{ content: '\\25B6'; font-size: 0.7em; transition: transform 0.2s;
+                         display: inline-block; }}
+      details[open] > summary::before {{ transform: rotate(90deg); }}
+      summary:hover {{ background: var(--hover-bg); }}
+      details > :not(summary) {{ padding: 0 16px 16px; }}
+
+      /* Timing */
+      .timing-container {{ background: var(--card); padding: 16px;
+                           border-radius: var(--border-radius);
+                           border: 1px solid var(--card-border);
                            overflow-x: auto; max-height: 500px; overflow-y: auto; }}
-      .timing-table td {{ font-family: 'Courier New', monospace; font-size: 0.85em;
+      .timing-table td {{ font-family: monospace; font-size: 0.83em;
                           padding: 4px 10px; white-space: nowrap; }}
-      footer {{ margin-top: 40px; padding: 16px 30px; border-top: 2px solid #1a2744;
-                color: #777; font-size: 0.8em; background: #fff; text-align: center; }}
-      /* Lightbox overlay */
+
+      /* YAML / code blocks */
+      .yaml-block {{ background: var(--yaml-bg); color: var(--yaml-text);
+                     padding: 16px 20px; border-radius: var(--border-radius);
+                     font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.83em;
+                     overflow-x: auto; max-height: 400px; overflow-y: auto;
+                     white-space: pre; line-height: 1.5; border: 1px solid var(--card-border);
+                     transition: all 0.3s; }}
+
+      /* Repro block */
+      .repro-block {{ background: var(--card); padding: 20px 24px;
+                      border-radius: var(--border-radius);
+                      border: 1px solid var(--card-border);
+                      box-shadow: var(--card-shadow); transition: all 0.3s; }}
+      .repro-block dl {{ margin: 0; display: grid; grid-template-columns: auto 1fr;
+                         gap: 4px 16px; align-items: baseline; }}
+      .repro-block dt {{ font-weight: 600; color: var(--accent); font-size: 0.88em;
+                         white-space: nowrap; }}
+      .repro-block dd {{ margin: 0; font-family: monospace; font-size: 0.83em;
+                         color: var(--text-muted); word-break: break-all; }}
+
+      /* Progress bar */
+      .progress-bar {{ height: 8px; background: var(--ring-track);
+                       border-radius: 4px; overflow: hidden; margin: 8px 0 16px; }}
+      .progress-fill {{ height: 100%; border-radius: 4px; transition: width 0.6s ease;
+                        background: linear-gradient(90deg, var(--ring-fill), #22d3ee); }}
+
+      /* Status badges */
+      .badge-pass {{ display: inline-block; padding: 2px 10px; border-radius: 12px;
+                     background: var(--pass-bg); color: var(--pass);
+                     font-weight: 600; font-size: 0.82em; }}
+      .badge-fail {{ display: inline-block; padding: 2px 10px; border-radius: 12px;
+                     background: var(--fail-bg); color: var(--fail);
+                     font-weight: 600; font-size: 0.82em; }}
+      .badge-skip {{ display: inline-block; padding: 2px 10px; border-radius: 12px;
+                     background: var(--skip-bg); color: var(--skip);
+                     font-weight: 600; font-size: 0.82em; }}
+
+      /* Footer */
+      footer {{ margin-top: 48px; padding: 20px 32px;
+                border-top: 1px solid var(--card-border);
+                color: var(--text-muted); font-size: 0.8em;
+                background: var(--card); text-align: center;
+                transition: all 0.3s; }}
+
+      /* Lightbox */
       .lightbox {{ display:none; position:fixed; top:0; left:0; width:100%; height:100%;
-                   background:rgba(0,0,0,0.88); z-index:1000; cursor:zoom-out;
-                   align-items:center; justify-content:center; }}
+                   background:rgba(0,0,0,0.92); z-index:1000; cursor:zoom-out;
+                   align-items:center; justify-content:center;
+                   backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }}
       .lightbox.active {{ display:flex; }}
-      .lightbox img {{ max-width:95%; max-height:95%; border-radius:6px;
-                       box-shadow: 0 4px 20px rgba(0,0,0,0.4); }}
+      .lightbox img {{ max-width:94%; max-height:94%; border-radius: 8px;
+                       box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+                       animation: lbFadeIn 0.2s ease; }}
+      @keyframes lbFadeIn {{ from {{ opacity:0; transform:scale(0.95); }}
+                             to   {{ opacity:1; transform:scale(1); }} }}
+      .lightbox .lb-nav {{ position:absolute; top:50%; transform:translateY(-50%);
+                           color:#fff; font-size:2.5em; cursor:pointer;
+                           padding:20px; opacity:0.5; transition:opacity 0.2s;
+                           user-select:none; }}
+      .lightbox .lb-nav:hover {{ opacity:1; }}
+      .lightbox .lb-prev {{ left:10px; }}
+      .lightbox .lb-next {{ right:10px; }}
+      .lightbox .lb-close {{ position:absolute; top:16px; right:24px; color:#fff;
+                             font-size:1.8em; cursor:pointer; opacity:0.6;
+                             transition:opacity 0.2s; }}
+      .lightbox .lb-close:hover {{ opacity:1; }}
+
       /* Tabs */
       .tabs {{ display:flex; flex-wrap:wrap; gap:4px; margin:16px 0 0; }}
-      .tab {{ padding:8px 18px; border:none; background:#e0e4ea; color:#1a2744;
-              cursor:pointer; font-weight:600; font-size:0.9em; border-radius:6px 6px 0 0;
+      .tab {{ padding:8px 18px; border:none; background: var(--nav-link-bg);
+              color: var(--nav-link-text); cursor:pointer; font-weight:600;
+              font-size:0.88em; border-radius: 8px 8px 0 0;
               transition: all 0.15s; }}
-      .tab:hover {{ background:#c8d0dc; }}
-      .tab.active {{ background:#1a2744; color:#fff; }}
-      .badge {{ background:rgba(255,255,255,0.25); padding:2px 7px; border-radius:10px;
-                font-size:0.8em; margin-left:4px; }}
-      .tab-content {{ background:#fff; padding:18px; border-radius:0 6px 6px 6px;
-                      box-shadow:0 1px 3px rgba(0,0,0,0.08); margin-bottom:16px; }}
-      /* Sortable table header */
-      .sortable th {{ cursor:pointer; user-select:none; position:relative; padding-right:20px; }}
-      .sortable th:after {{ content:''; position:absolute; right:6px; top:50%;
-                            transform:translateY(-50%); opacity:0.3; }}
-      .sortable th:hover {{ background:#2a3d5c; }}
+      .tab:hover {{ background: var(--hover-bg); }}
+      .tab.active {{ background: var(--accent); color:#fff; }}
+      .badge {{ background:rgba(255,255,255,0.2); padding:2px 8px; border-radius:10px;
+                font-size:0.8em; margin-left:6px; }}
+      .tab-content {{ background: var(--card); padding:20px;
+                      border-radius:0 var(--border-radius) var(--border-radius) var(--border-radius);
+                      border: 1px solid var(--card-border);
+                      margin-bottom:16px; transition: all 0.3s; }}
+
+      /* Sortable headers */
+      .sortable th {{ cursor:pointer; user-select:none; position:relative;
+                      padding-right:22px; }}
+      .sortable th::after {{ content:'\\2195'; position:absolute; right:6px; top:50%;
+                             transform:translateY(-50%); opacity:0.4; font-size:0.85em; }}
+      .sortable th:hover {{ background: var(--th-hover); }}
+
+      /* Filter input */
+      .filter-input {{ width: 100%; max-width: 400px; padding: 8px 14px;
+                       border: 1px solid var(--card-border); border-radius: 6px;
+                       background: var(--card); color: var(--text);
+                       font-size: 0.9em; margin-bottom: 12px;
+                       transition: all 0.2s; outline: none; }}
+      .filter-input:focus {{ border-color: var(--accent);
+                             box-shadow: 0 0 0 3px rgba(88,166,255,0.15); }}
+      .filter-input::placeholder {{ color: var(--text-muted); }}
+
+      /* Embedded source */
+      .src-block {{ background: var(--yaml-bg); color: var(--yaml-text);
+                    padding: 0; border-radius: var(--border-radius);
+                    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+                    font-size: 0.8em; overflow-x: auto; max-height: 600px;
+                    overflow-y: auto; white-space: pre; line-height: 1.55;
+                    border: 1px solid var(--card-border); counter-reset: line;
+                    tab-size: 4; }}
+      .src-line {{ display: block; padding: 0 16px 0 0; }}
+      .src-line:hover {{ background: rgba(88,166,255,0.08); }}
+      .src-line:target {{ background: rgba(88,166,255,0.18); }}
+      .src-ln {{ display: inline-block; width: 4.5em; text-align: right;
+                 color: rgba(139,148,158,0.4); padding: 0 12px 0 12px;
+                 user-select: none; border-right: 1px solid var(--card-border);
+                 margin-right: 12px; }}
+
+      /* Animations */
+      @keyframes fadeIn {{ from {{ opacity:0; transform:translateY(8px); }}
+                           to   {{ opacity:1; transform:translateY(0); }} }}
+      .card, table, details {{ animation: fadeIn 0.3s ease; }}
     </style>
     <script>
+    /* Theme toggle */
+    (function() {{
+      var saved = localStorage.getItem('eam-theme');
+      if (saved) document.documentElement.setAttribute('data-theme', saved);
+      else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
+        document.documentElement.setAttribute('data-theme', 'dark');
+    }})();
+    function toggleTheme() {{
+      var html = document.documentElement;
+      var next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      html.setAttribute('data-theme', next);
+      localStorage.setItem('eam-theme', next);
+      var btn = document.querySelector('.theme-toggle .icon');
+      if (btn) btn.textContent = next === 'dark' ? '\\u2600' : '\\u263E';
+    }}
+
+    /* Tabs */
     function showTab(id) {{
       document.querySelectorAll('.tab-content').forEach(function(el) {{ el.style.display='none'; }});
       document.querySelectorAll('.tab').forEach(function(el) {{ el.classList.remove('active'); }});
       var tab = document.getElementById('tab_' + id);
       if (tab) tab.style.display = '';
-      // Find the button for this tab
       document.querySelectorAll('.tab').forEach(function(btn) {{
-        if (btn.textContent.indexOf(id) >= 0 || btn.getAttribute('onclick').indexOf(id) >= 0)
+        if (btn.getAttribute('onclick') && btn.getAttribute('onclick').indexOf(id) >= 0)
           btn.classList.add('active');
       }});
     }}
+
+    /* Sortable tables */
     function sortTable(th, col) {{
       var table = th.closest('table');
       var tbody = table.querySelector('tbody');
+      if (!tbody) return;
       var rows = Array.from(tbody.querySelectorAll('tr'));
       var asc = th.dataset.sort !== 'asc';
       th.dataset.sort = asc ? 'asc' : 'desc';
+      // Reset other headers
+      th.closest('tr').querySelectorAll('th').forEach(function(h) {{
+        if (h !== th) delete h.dataset.sort;
+      }});
       rows.sort(function(a, b) {{
         var va = a.cells[col].textContent.trim();
         var vb = b.cells[col].textContent.trim();
@@ -1730,29 +2262,95 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
       }});
       rows.forEach(function(r) {{ tbody.appendChild(r); }});
     }}
+
+    /* Table filter */
+    function filterTable(input, tableId) {{
+      var filter = input.value.toLowerCase();
+      var table = document.getElementById(tableId);
+      if (!table) return;
+      var rows = table.querySelectorAll('tbody tr');
+      rows.forEach(function(row) {{
+        var text = row.textContent.toLowerCase();
+        row.style.display = text.indexOf(filter) > -1 ? '' : 'none';
+      }});
+    }}
+
     document.addEventListener('DOMContentLoaded', function() {{
+      /* Theme button label */
+      var theme = document.documentElement.getAttribute('data-theme');
+      var icon = document.querySelector('.theme-toggle .icon');
+      if (icon) icon.textContent = theme === 'dark' ? '\\u2600' : '\\u263E';
+
+      /* Lightbox with navigation */
       var lb = document.createElement('div');
       lb.className = 'lightbox';
-      var lbImg = document.createElement('img');
-      lb.appendChild(lbImg);
+      lb.innerHTML = '<span class="lb-close">\\u00D7</span>'
+                   + '<span class="lb-nav lb-prev">\\u276E</span>'
+                   + '<img/>'
+                   + '<span class="lb-nav lb-next">\\u276F</span>';
       document.body.appendChild(lb);
-      lb.addEventListener('click', function() {{ lb.classList.remove('active'); }});
-      document.addEventListener('keydown', function(e) {{
-        if (e.key === 'Escape') lb.classList.remove('active');
-      }});
-      document.querySelectorAll('.fig a').forEach(function(a) {{
+      var lbImg = lb.querySelector('img');
+      var allFigs = [];
+      var curIdx = 0;
+
+      function openLB(idx) {{
+        curIdx = idx;
+        lbImg.src = allFigs[idx];
+        lb.classList.add('active');
+      }}
+      function closeLB() {{ lb.classList.remove('active'); }}
+      function navLB(dir) {{
+        curIdx = (curIdx + dir + allFigs.length) % allFigs.length;
+        lbImg.src = allFigs[curIdx];
+      }}
+
+      document.querySelectorAll('.fig a').forEach(function(a, i) {{
+        allFigs.push(a.href);
         a.addEventListener('click', function(e) {{
           e.preventDefault();
-          lbImg.src = this.href;
-          lb.classList.add('active');
+          openLB(i);
         }});
       }});
+
+      lb.querySelector('.lb-close').addEventListener('click', closeLB);
+      lb.querySelector('.lb-prev').addEventListener('click', function(e) {{ e.stopPropagation(); navLB(-1); }});
+      lb.querySelector('.lb-next').addEventListener('click', function(e) {{ e.stopPropagation(); navLB(1); }});
+      lb.addEventListener('click', function(e) {{ if (e.target === lb) closeLB(); }});
+      document.addEventListener('keydown', function(e) {{
+        if (!lb.classList.contains('active')) return;
+        if (e.key === 'Escape') closeLB();
+        if (e.key === 'ArrowLeft') navLB(-1);
+        if (e.key === 'ArrowRight') navLB(1);
+      }});
+
+      /* Active nav highlighting on scroll */
+      var sections = document.querySelectorAll('h2[id]');
+      var navLinks = document.querySelectorAll('nav a');
+      if (sections.length && navLinks.length) {{
+        var observer = new IntersectionObserver(function(entries) {{
+          entries.forEach(function(entry) {{
+            if (entry.isIntersecting) {{
+              var id = entry.target.getAttribute('id');
+              navLinks.forEach(function(link) {{
+                link.classList.toggle('active', link.getAttribute('href') === '#' + id);
+              }});
+            }}
+          }});
+        }}, {{ rootMargin: '-20% 0px -70% 0px' }});
+        sections.forEach(function(s) {{ observer.observe(s); }});
+      }}
     }});
     </script>
     </head><body>
     <header>
-      <h1>EAM FME Online Output Verification</h1>
-      <span class="status">{status}</span>
+      <div class="hdr-left">
+        <h1>EAM FME Online Output Verification</h1>
+        <div class="subtitle">E3SM Atmosphere Model &mdash; Full Model Emulation Diagnostics</div>
+      </div>
+      <div class="hdr-right">
+        <span class="status-pill {"status-pass" if n_issues == 0 else "status-fail"}">{status}</span>
+        <button class="theme-toggle" onclick="toggleTheme()"><span class="icon"></span> Theme</button>
+      </div>
     </header>
     <div class="container">
 
@@ -1765,6 +2363,8 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
     </table>
 
     {"<details><summary>Show all " + str(n_issues) + " issues</summary><table><tr><th>Component</th><th>Issue</th></tr>" + detail_rows + "</table></details>" if detail_rows else ""}
+
+    {coverage_html}
 
     <h2 id="File_Inventory">File Inventory</h2>
     <table>
@@ -1786,8 +2386,13 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
     {fig_sections if fig_sections else '<p>No figures generated.</p>'}
 
     {timing_html}
+
+    {repro_html}
     </div>
-    <footer>Generated by verify_eam.py &mdash; EAM FME Online Output Verification for E3SM &mdash; {gen_timestamp}</footer>
+    <footer>
+      <strong>verify_eam.py</strong> &mdash; EAM FME Online Output Verification for E3SM
+      &mdash; Generated {gen_timestamp}
+    </footer>
     </body></html>
     """)
     with open(index, "w") as fh:
@@ -1806,8 +2411,7 @@ def main():
                     "produce diagnostic figures with optional cross-verification.")
     parser.add_argument("--rundir", required=True,
                         help="CIME RUNDIR for the FME case (fme_output testmod)")
-    parser.add_argument("--outdir",
-                        default="/pscratch/sd/m/mahf708/aifigs_eam_fme",
+    parser.add_argument("--outdir", required=True,
                         help="Output directory for figures and HTML index")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--legacy-rundir",
@@ -1867,6 +2471,21 @@ def main():
         if len(timing_summary) > 10:
             print(f"  ... ({len(timing_summary) - 10} more lines in HTML report)")
 
+    # ACE variable coverage
+    print("\n=== ACE Variable Coverage ===")
+    coverage = check_variable_coverage(args.rundir)
+    if coverage:
+        n_found = sum(1 for _, _, _, f in coverage if f)
+        n_missing = len(coverage) - n_found
+        print(f"  {n_found}/{len(coverage)} ACE variables found in output")
+        if n_missing:
+            for ace_name, eam_name, _, found in coverage:
+                if not found:
+                    print(f"  MISSING: {ace_name} (EAM: {eam_name})")
+
+    # Reproducibility info
+    repro_info = collect_repro_info(args)
+
     # Cross-verification against legacy testmod output
     xv_html = ""
     if args.legacy_rundir:
@@ -1883,7 +2502,9 @@ def main():
     write_html_index(args.outdir, all_plots_by_comp, all_issues,
                      file_inventory_data, all_fill_reports,
                      timing_summary=timing_summary,
-                     extra_html=xv_html)
+                     extra_html=xv_html,
+                     coverage=coverage,
+                     repro_info=repro_info)
 
     n_total = sum(len(v) for v in all_issues.values())
     print("\n" + "=" * 70)
