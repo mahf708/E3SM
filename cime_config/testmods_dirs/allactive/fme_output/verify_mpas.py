@@ -180,7 +180,12 @@ ACE_ICE_DERIVED = {
 }
 
 # Expected variables in remapped files (lat-lon 360x180 output)
-REMAPPED_DERIVED_VARS = ["sst", "sss", "surfaceHeatFluxTotal"]
+REMAPPED_DERIVED_VARS = [
+    "sst", "sss", "surfaceHeatFluxTotal",
+    "ssh", "shortWaveHeatFlux", "longWaveHeatFluxDown",
+    "latentHeatFlux", "sensibleHeatFlux",
+    "windStressZonal", "windStressMeridional",
+]
 REMAPPED_SEAICE_VARS = [
     "iceAreaTotal", "iceVolumeTotal", "snowVolumeTotal",
     "iceThicknessMean", "surfaceTemperatureMean",
@@ -214,7 +219,18 @@ RANGE_CHECKS = {
     "oceanHeatContent": (None, None),
     "freshwaterContent": (-1000, 1000),
     "kineticEnergy": (0, None),
+    "ssh": (-5, 5),
+    "shortWaveHeatFlux": (0, 500),
+    "longWaveHeatFluxDown": (0, 500),
+    "latentHeatFlux": (-500, 500),
+    "sensibleHeatFlux": (-300, 300),
+    "windStressZonal": (-2, 2),
+    "windStressMeridional": (-2, 2),
 }
+
+# Depth bounds for depth-latitude cross-section plots (metres)
+DEPTH_BOUNDS = [0, 20, 30, 40, 50, 80, 110, 140, 170, 230, 410, 530,
+                1020, 1080, 1720, 1980, 2820, 3380, 4620, 6380]
 
 # Expected lat-lon grid dimensions for remapped output
 EXPECTED_NLON = 360
@@ -626,6 +642,65 @@ def _compute_zonal_mean(arr, fill_thresh=1e10):
     return np.nanmean(masked, axis=1)
 
 
+def depth_latitude_section(ds, base_varname, n_levels, title, outdir, fname,
+                           cmap="RdBu_r", vmin=None, vmax=None, units=""):
+    """Plot a depth-latitude cross-section from per-level remapped variables.
+
+    For each level k (0 to n_levels-1) reads {base_varname}_{k}, extracts the
+    last timestep, computes zonal mean, and stacks into a (n_levels, nlat) array.
+    Depth midpoints are computed from DEPTH_BOUNDS.
+    """
+    if not HAS_MPL:
+        return None
+
+    lat = get_var(ds, "lat")
+    if lat is None:
+        return None
+
+    data = []
+    for k in range(n_levels):
+        vname = f"{base_varname}_{k}"
+        arr = get_var(ds, vname)
+        zm = _compute_zonal_mean(arr)
+        if zm is None:
+            return None
+        data.append(zm)
+
+    data = np.array(data)  # (n_levels, nlat)
+    n_bounds = min(n_levels + 1, len(DEPTH_BOUNDS))
+    depth_mid = np.array([(DEPTH_BOUNDS[k] + DEPTH_BOUNDS[k + 1]) / 2.0
+                          for k in range(n_bounds - 1)])
+    # Trim data to match available depth bounds
+    n_plot = min(len(depth_mid), data.shape[0])
+    depth_mid = depth_mid[:n_plot]
+    data = data[:n_plot, :]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    im = ax.pcolormesh(lat, depth_mid, data, cmap=cmap,
+                       vmin=vmin, vmax=vmax, shading="auto")
+    ax.invert_yaxis()
+    ax.set_xlabel("Latitude")
+    ax.set_ylabel("Depth (m)")
+    ax.set_title(title, fontsize=11)
+    plt.colorbar(im, ax=ax, label=units)
+    plt.tight_layout()
+    return savefig(fig, outdir, fname)
+
+
+def fill_mask_map(data, lons, lats, title, outdir, fname):
+    """Plot a binary valid/fill mask map.
+
+    1 = valid (|data| < 1e10 and finite), 0 = fill/NaN.
+    """
+    if not HAS_MPL:
+        return None
+
+    mask = np.where((np.abs(data) < 1e10) & np.isfinite(data), 1.0, 0.0)
+    cmap = mcolors.ListedColormap(["#d4e6f1", "#1b4f72"])
+    return global_map(mask, lons, lats, title, cmap=cmap, vmin=0, vmax=1,
+                      outdir=outdir, fname=fname, units="valid=1")
+
+
 def side_by_side_comparison(data1, lons1, lats1, title1,
                             data2, lons2, lats2, title2,
                             suptitle, outdir, fname,
@@ -884,6 +959,21 @@ def check_mpaso_depth_coarsening_remapped(rundir, outdir, verbose):
                 p = savefig(fig, outdir, f"mpaso_depth_profile_{base}_remapped.png")
                 if p: plots.append(p)
 
+        # Depth-latitude cross-sections
+        for base, cmap, vm, vx, units in [
+            ("temperatureCoarsened", "RdYlBu_r", -2, 30, "degC"),
+            ("salinityCoarsened", "viridis", 33, 37, "PSU"),
+            ("velocityZonalCoarsened", "RdBu_r", -0.5, 0.5, "m/s"),
+            ("velocityMeridionalCoarsened", "RdBu_r", -0.2, 0.2, "m/s"),
+        ]:
+            p = depth_latitude_section(
+                ds, base, n_remap_levels,
+                f"Depth-Latitude: {base} (remapped)",
+                outdir, f"mpaso_depth_lat_{base}.png",
+                cmap=cmap, vmin=vm, vmax=vx, units=units)
+            if p:
+                plots.append(p)
+
     close_ds(ds)
 
     _report("MPAS-O depth coarsening (remapped)", issues)
@@ -995,6 +1085,13 @@ def check_mpaso_derived_remapped(rundir, outdir, verbose):
             ("sst", "RdBu_r", -2, 30, "degC"),
             ("sss", "viridis", 30, 40, "PSU"),
             ("surfaceHeatFluxTotal", "RdBu_r", -300, 300, "W/m2"),
+            ("ssh", "RdBu_r", -2, 2, "m"),
+            ("shortWaveHeatFlux", "YlOrRd", 0, 400, "W/m2"),
+            ("longWaveHeatFluxDown", "inferno", 200, 450, "W/m2"),
+            ("latentHeatFlux", "RdBu_r", -300, 300, "W/m2"),
+            ("sensibleHeatFlux", "RdBu_r", -100, 100, "W/m2"),
+            ("windStressZonal", "RdBu_r", -0.3, 0.3, "N/m2"),
+            ("windStressMeridional", "RdBu_r", -0.2, 0.2, "N/m2"),
         ]:
             p = latlon_map(ds, var,
                            f"MPAS-O {var} (remapped, last t)",
@@ -1431,6 +1528,112 @@ def generate_comparison_figures(rundir, fig_root, all_plots_by_comp):
                         print(f"  Wrote {os.path.basename(p)}")
         close_ds(ds)
 
+    # --- Multi-panel heat flux summary ---
+    rem_derived2 = find_files(rundir, "*.mpaso.hist.am.fmeDerivedFields.*.remapped.nc")
+    if rem_derived2:
+        ds = safe_open(rem_derived2[-1])
+        if not has_time_zero(ds):
+            lon = get_var(ds, "lon")
+            lat = get_var(ds, "lat")
+            if lon is not None and lat is not None:
+                if lon.ndim == 1 and lat.ndim == 1:
+                    lons_g, lats_g = np.meshgrid(lon, lat)
+                else:
+                    lons_g, lats_g = lon, lat
+                flux_vars = [
+                    ("shortWaveHeatFlux", "SW Down"),
+                    ("longWaveHeatFluxDown", "LW Down"),
+                    ("latentHeatFlux", "Latent"),
+                    ("sensibleHeatFlux", "Sensible"),
+                    ("surfaceHeatFluxTotal", "Total"),
+                ]
+                panels = []
+                for vname, label in flux_vars:
+                    arr = get_var(ds, vname)
+                    if arr is None:
+                        continue
+                    data = arr[-1] if arr.ndim == 3 else arr
+                    panels.append((data, lons_g, lats_g, label))
+                if panels:
+                    p = multi_panel_maps(
+                        panels, "Surface Heat Flux Components (remapped)",
+                        comp_outdir, "mpaso_heat_flux_multipanel.png",
+                        ncols=3, cmap="RdBu_r", vmin=-400, vmax=400,
+                        units="W/m2")
+                    if p:
+                        comp_plots.append(p)
+                        print(f"  Wrote {os.path.basename(p)}")
+
+                # --- Fill value mask maps ---
+                for vname, label in [
+                    ("sst", "SST ocean coverage"),
+                    ("iceAreaTotal", "Ice extent mask"),
+                    ("temperatureCoarsened_0", "Near-surface ocean mask"),
+                ]:
+                    arr = get_var(ds, vname)
+                    if arr is None:
+                        continue
+                    data = arr[-1] if arr.ndim == 3 else arr
+                    if data.ndim == 2:
+                        p = fill_mask_map(data, lons_g, lats_g,
+                                          f"Fill Mask: {label}",
+                                          comp_outdir,
+                                          f"fill_mask_{vname}.png")
+                        if p:
+                            comp_plots.append(p)
+                            print(f"  Wrote {os.path.basename(p)}")
+        close_ds(ds)
+
+    # Fill mask for temperatureCoarsened_0 from depth coarsening file
+    rem_depth = find_files(rundir, "*.mpaso.hist.am.fmeDepthCoarsening.*.remapped.nc")
+    if rem_depth:
+        ds = safe_open(rem_depth[-1])
+        if not has_time_zero(ds):
+            lon = get_var(ds, "lon")
+            lat = get_var(ds, "lat")
+            if lon is not None and lat is not None:
+                if lon.ndim == 1 and lat.ndim == 1:
+                    lons_g, lats_g = np.meshgrid(lon, lat)
+                else:
+                    lons_g, lats_g = lon, lat
+                arr = get_var(ds, "temperatureCoarsened_0")
+                if arr is not None:
+                    data = arr[-1] if arr.ndim == 3 else arr
+                    if data.ndim == 2:
+                        p = fill_mask_map(data, lons_g, lats_g,
+                                          "Fill Mask: Near-surface ocean (depth coarsening)",
+                                          comp_outdir,
+                                          "fill_mask_temperatureCoarsened_0.png")
+                        if p:
+                            comp_plots.append(p)
+                            print(f"  Wrote {os.path.basename(p)}")
+        close_ds(ds)
+
+    # Fill mask for iceAreaTotal from sea ice file
+    rem_ice = find_files(rundir, "*.mpassi.hist.am.fmeSeaiceDerivedFields.*.remapped.nc")
+    if rem_ice:
+        ds = safe_open(rem_ice[-1])
+        if not has_time_zero(ds):
+            lon = get_var(ds, "lon")
+            lat = get_var(ds, "lat")
+            if lon is not None and lat is not None:
+                if lon.ndim == 1 and lat.ndim == 1:
+                    lons_g, lats_g = np.meshgrid(lon, lat)
+                else:
+                    lons_g, lats_g = lon, lat
+                arr = get_var(ds, "iceAreaTotal")
+                if arr is not None:
+                    data = arr[-1] if arr.ndim == 3 else arr
+                    if data.ndim == 2:
+                        p = fill_mask_map(data, lons_g, lats_g,
+                                          "Fill Mask: Ice extent (sea ice)",
+                                          comp_outdir,
+                                          "fill_mask_iceAreaTotal_seaice.png")
+                        if p:
+                            comp_plots.append(p)
+                            print(f"  Wrote {os.path.basename(p)}")
+        close_ds(ds)
+
     if comp_plots:
         all_plots_by_comp["Comparisons"] = comp_plots
 
@@ -1708,12 +1911,100 @@ def write_repro_html(repro_info):
 
 
 # -----------------------------------------------------------------------------
+# Executive summary
+# -----------------------------------------------------------------------------
+
+def build_executive_summary(all_issues, coverage, file_inventory_data):
+    """Compute executive summary metrics for the HTML dashboard.
+
+    Returns a dict with n_checks_passed, n_checks_total, n_vars_found,
+    n_vars_total, total_files, total_mb, n_components.
+    """
+    n_checks_total = len(all_issues)
+    n_checks_passed = sum(1 for v in all_issues.values() if not v)
+
+    # Count only MPAS-sourced variables (not EAM forcings)
+    n_vars_found = 0
+    n_vars_total = 0
+    if coverage:
+        mpas_vars = [(a, f, c, found, s) for a, f, c, found, s in coverage
+                     if s == "MPAS"]
+        n_vars_found = sum(1 for _, _, _, f, _ in mpas_vars if f)
+        n_vars_total = len(mpas_vars)
+
+    total_files = 0
+    total_bytes = 0
+    for label, count, flist in file_inventory_data:
+        total_files += count
+        for fpath in flist:
+            try:
+                total_bytes += os.path.getsize(fpath)
+            except OSError:
+                pass
+    total_mb = total_bytes / (1024 * 1024)
+
+    n_components = n_checks_total
+
+    return {
+        "n_checks_passed": n_checks_passed,
+        "n_checks_total": n_checks_total,
+        "n_vars_found": n_vars_found,
+        "n_vars_total": n_vars_total,
+        "total_files": total_files,
+        "total_mb": total_mb,
+        "n_components": n_components,
+    }
+
+
+def write_executive_summary_html(summary):
+    """Return HTML string with a grid of 4 metric cards."""
+    if summary is None:
+        return ""
+
+    vars_detail = "All ACE MPAS variables found" if summary["n_vars_found"] == summary["n_vars_total"] \
+        else f'{summary["n_vars_total"] - summary["n_vars_found"]} variable(s) missing'
+    checks_detail = "All checks passed" if summary["n_checks_passed"] == summary["n_checks_total"] \
+        else f'{summary["n_checks_total"] - summary["n_checks_passed"]} component(s) with issues'
+    storage_detail = f'{summary["total_files"]} FME output files'
+    comp_detail = "Components verified"
+
+    html = '<div class="exec-summary">\n'
+
+    html += ('  <div class="metric-card">\n'
+             f'    <div class="metric-value">{summary["n_vars_found"]}/{summary["n_vars_total"]}</div>\n'
+             f'    <div class="metric-label">Variable Coverage</div>\n'
+             f'    <div class="metric-detail">{vars_detail}</div>\n'
+             '  </div>\n')
+
+    html += ('  <div class="metric-card">\n'
+             f'    <div class="metric-value">{summary["n_checks_passed"]}/{summary["n_checks_total"]}</div>\n'
+             f'    <div class="metric-label">Checks Passed</div>\n'
+             f'    <div class="metric-detail">{checks_detail}</div>\n'
+             '  </div>\n')
+
+    html += ('  <div class="metric-card">\n'
+             f'    <div class="metric-value">{summary["total_mb"]:.0f} MB</div>\n'
+             f'    <div class="metric-label">Storage</div>\n'
+             f'    <div class="metric-detail">{storage_detail}</div>\n'
+             '  </div>\n')
+
+    html += ('  <div class="metric-card">\n'
+             f'    <div class="metric-value">{summary["n_components"]}</div>\n'
+             f'    <div class="metric-label">Components</div>\n'
+             f'    <div class="metric-detail">{comp_detail}</div>\n'
+             '  </div>\n')
+
+    html += '</div>\n'
+    return html
+
+
+# -----------------------------------------------------------------------------
 # HTML index
 # -----------------------------------------------------------------------------
 
 def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
                      all_fill_reports, timing_summary=None, extra_html="",
-                     repro_info=None, coverage=None):
+                     repro_info=None, coverage=None, exec_summary=None):
     index = os.path.join(outdir, "index.html")
     n_issues = sum(len(v) for v in all_issues.values())
     n_pass = sum(1 for v in all_issues.values() if not v)
@@ -1816,7 +2107,7 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
 
     # Navigation
     nav_links = ""
-    nav_items = ["Summary", "ACE_Variables", "File_Inventory", "Fill_NaN_Report"]
+    nav_items = ["Overview", "Summary", "ACE_Variables", "File_Inventory", "Fill_NaN_Report"]
     if extra_html:
         nav_items.append("Cross_Verify")
     for base_name, _, _ in paired:
@@ -1838,6 +2129,9 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
 
     # ACE variable coverage section
     coverage_html = write_variable_coverage_html(coverage) if coverage else ""
+
+    # Executive summary
+    exec_summary_html = write_executive_summary_html(exec_summary) if exec_summary else ""
 
     timing_html = ""
     if timing_summary:
@@ -2055,6 +2349,14 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
       .sortable th::after {{ content:'\\2195'; position:absolute; right:6px; top:50%;
                              transform:translateY(-50%); opacity:0.4; font-size:0.85em; }}
       .sortable th:hover {{ background: var(--th-hover); }}
+      .exec-summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                       gap: 16px; margin: 20px 0; }}
+      .metric-card {{ background: var(--card); border: 1px solid var(--card-border);
+                      border-radius: var(--border-radius); padding: 20px; text-align: center;
+                      box-shadow: var(--card-shadow); transition: all 0.3s; }}
+      .metric-value {{ font-size: 2em; font-weight: 800; color: var(--accent); }}
+      .metric-label {{ font-size: 0.9em; font-weight: 600; color: var(--text); margin-top: 4px; }}
+      .metric-detail {{ font-size: 0.78em; color: var(--text-muted); margin-top: 4px; }}
       @keyframes fadeIn {{ from {{ opacity:0; transform:translateY(8px); }}
                            to   {{ opacity:1; transform:translateY(0); }} }}
       table, details {{ animation: fadeIn 0.3s ease; }}
@@ -2171,6 +2473,9 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
     <div class="container">
 
     <nav>{nav_links}</nav>
+
+    <h2 id="Overview">Overview</h2>
+    {exec_summary_html}
 
     <h2 id="Summary">Component Summary</h2>
     <table>
@@ -2313,11 +2618,16 @@ def main():
     # Reproducibility info
     repro_info = collect_repro_info(args)
 
+    # Executive summary
+    exec_summary = build_executive_summary(all_issues, coverage,
+                                           file_inventory_data)
+
     write_html_index(args.outdir, all_plots_by_comp, all_issues,
                      file_inventory_data, all_fill_reports,
                      timing_summary=timing_summary,
                      repro_info=repro_info,
-                     coverage=coverage)
+                     coverage=coverage,
+                     exec_summary=exec_summary)
 
     n_total = sum(len(v) for v in all_issues.values())
     print("\n" + "=" * 70)

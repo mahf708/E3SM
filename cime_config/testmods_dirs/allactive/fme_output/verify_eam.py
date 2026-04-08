@@ -679,6 +679,36 @@ def _compute_zonal_mean(arr, fill_thresh=1e10):
     return np.nanmean(masked, axis=1)
 
 
+def fill_mask_map(data, lons, lats, title, outdir, fname):
+    """Plot a binary map showing valid (blue) vs fill/NaN (red) cells."""
+    if not HAS_MPL:
+        return None
+    mask = ((np.abs(data) >= 1e10) | ~np.isfinite(data)).astype(float)
+    cmap = mcolors.ListedColormap(["#3b82f6", "#ef4444"])
+    bounds = [-0.5, 0.5, 1.5]
+    norm = mcolors.BoundaryNorm(bounds, cmap.N)
+    fig = plt.figure(figsize=(10, 5))
+    is_cartopy = HAS_CARTOPY
+    if is_cartopy:
+        ax = fig.add_subplot(1, 1, 1, projection=ccrs.PlateCarree())
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
+        ax.set_global()
+    else:
+        ax = fig.add_subplot(1, 1, 1)
+    transform = ccrs.PlateCarree() if is_cartopy else None
+    if data.ndim == 2:
+        kw = dict(transform=transform) if is_cartopy else {}
+        im = ax.pcolormesh(lons, lats, mask, cmap=cmap, norm=norm, shading="auto", **kw)
+    else:
+        kw = dict(transform=ccrs.PlateCarree()) if is_cartopy else {}
+        lons_fix = _fix_lon(lons)
+        im = ax.scatter(lons_fix, lats, c=mask, s=0.5, cmap=cmap, norm=norm, **kw)
+    cbar = plt.colorbar(im, ax=ax, shrink=0.6 if is_cartopy else 0.8, ticks=[0, 1])
+    cbar.ax.set_yticklabels(["Valid", "Fill/NaN"])
+    ax.set_title(title, fontsize=11)
+    return savefig(fig, outdir, fname)
+
+
 def side_by_side_comparison(data1, lons1, lats1, title1,
                             data2, lons2, lats2, title2,
                             suptitle, outdir, fname,
@@ -757,6 +787,10 @@ def check_eam(rundir, outdir, verbose):
                     ("ICEFRAC", "Blues",      0,   1, "fraction"),
                     ("FLUT",    "inferno",  100, 320, "W/m2"),
                     ("FSDS",    "YlOrRd",     0, 500, "W/m2"),
+                    ("FSUTOA", "YlOrRd", 0, 500, "W/m2"),
+                    ("FLUS", "inferno", 200, 500, "W/m2"),
+                    ("FSUS", "YlOrRd", 0, 300, "W/m2"),
+                    ("DTENDTTW", "RdBu_r", -5e-4, 5e-4, "kg/m2/s"),
                 ]:
                     arr = get_var(ds, var)
                     if arr is None or arr.size == 0:
@@ -773,6 +807,20 @@ def check_eam(rundir, outdir, verbose):
                                        outdir=outdir, fname=f"eam_h0_{var}.png",
                                        units=units)
                         if p: plots.append(p)
+
+                # Fill value mask maps for key fields
+                for fvar in ["T_7", "ICEFRAC"]:
+                    farr = get_var(ds, fvar)
+                    if farr is None or farr.size == 0:
+                        continue
+                    fdata = farr[-1] if farr.ndim >= 2 and farr.shape[0] > 0 else farr
+                    if lat_name and lon_name and fdata.ndim == 2:
+                        p = fill_mask_map(fdata, lons, lats,
+                                          f"Fill Mask: {fvar} (h0, last t)",
+                                          outdir, f"eam_h0_{fvar}_fill_mask.png")
+                        if p:
+                            plots.append(p)
+
             close_ds(ds)
 
     # -- vcoarsen layers (on h0 in single-tape config) -----------------------
@@ -878,6 +926,83 @@ def read_timing_summary(rundir):
 
 
 # -----------------------------------------------------------------------------
+# Radiation budget
+# -----------------------------------------------------------------------------
+
+def compute_radiation_budget(ds, outdir, comp_plots):
+    """Compute and plot TOA/surface radiation budget diagnostics."""
+    if not HAS_MPL:
+        return
+
+    budget_vars = ["SOLIN", "FSUTOA", "FLUT", "FSDS", "FSUS", "FLDS", "FLUS",
+                   "LHFLX", "SHFLX"]
+    gmeans = {}
+    for vn in budget_vars:
+        arr = get_var(ds, vn)
+        if arr is None:
+            return  # need all variables
+        data = arr[-1] if arr.ndim >= 2 and arr.shape[0] > 0 else arr
+        v = valid_data(data)
+        if v is None or v.size == 0:
+            return
+        gmeans[vn] = float(v.mean())
+
+    toa_net = gmeans["SOLIN"] - gmeans["FSUTOA"] - gmeans["FLUT"]
+    sfc_net = (gmeans["FSDS"] - gmeans["FSUS"] + gmeans["FLDS"] - gmeans["FLUS"]
+               - gmeans["LHFLX"] - gmeans["SHFLX"])
+
+    # Bar chart of components and net imbalances
+    labels = list(budget_vars) + ["TOA net", "SFC net"]
+    values = [gmeans[v] for v in budget_vars] + [toa_net, sfc_net]
+    colors = ["#f59e0b" if v > 0 else "#3b82f6" for v in values]
+    colors[-2] = "#16a34a"  # TOA net
+    colors[-1] = "#16a34a"  # SFC net
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    x = np.arange(len(labels))
+    ax.bar(x, values, color=colors, edgecolor="white", linewidth=0.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=9)
+    ax.set_ylabel("W/m2")
+    ax.set_title("Radiation Budget: Global-Mean Components")
+    ax.axhline(0, color="gray", linewidth=0.5)
+    ax.grid(axis="y", alpha=0.3)
+    for i, val in enumerate(values):
+        ax.text(i, val + (5 if val >= 0 else -12), f"{val:.1f}",
+                ha="center", fontsize=7, color="black")
+    plt.tight_layout()
+    path = os.path.join(outdir, "eam_radiation_budget.png")
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    comp_plots.append(path)
+    print(f"  Wrote eam_radiation_budget.png")
+
+    # Global map of TOA net radiation (pixel-by-pixel, last timestep)
+    lon_name = next((d for d in ["lon", "ncol", "longitude"] if d in ds.dims), None)
+    lat_name = next((d for d in ["lat", "latitude"] if d in ds.dims), None)
+    if lon_name and lat_name:
+        solin = get_var(ds, "SOLIN")
+        fsutoa = get_var(ds, "FSUTOA")
+        flut = get_var(ds, "FLUT")
+        s_last = solin[-1] if solin.ndim >= 2 else solin
+        fu_last = fsutoa[-1] if fsutoa.ndim >= 2 else fsutoa
+        fl_last = flut[-1] if flut.ndim >= 2 else flut
+        toa_map = s_last - fu_last - fl_last
+        lons = ds[lon_name].values
+        lats = ds[lat_name].values
+        if lons.ndim == 1 and lat_name == "lat":
+            lons, lats = np.meshgrid(lons, lats)
+        p = global_map(toa_map, lons, lats,
+                       "TOA Net Radiation (SOLIN - FSUTOA - FLUT, last t)",
+                       cmap="RdBu_r", vmin=-200, vmax=200,
+                       outdir=outdir, fname="eam_toa_net_radiation.png",
+                       units="W/m2")
+        if p:
+            comp_plots.append(p)
+            print(f"  Wrote eam_toa_net_radiation.png")
+
+
+# -----------------------------------------------------------------------------
 # EAM comparison figures (multi-panel and zonal mean)
 # -----------------------------------------------------------------------------
 
@@ -907,6 +1032,8 @@ def generate_comparison_figures(rundir, fig_root, all_plots_by_comp):
                     for base, cmap, vm, vx, units_str in [
                         ("T", "RdYlBu_r", 180, 310, "K"),
                         ("STW", "YlGnBu", 0, 0.02, "kg/kg"),
+                        ("U", "RdBu_r", -40, 40, "m/s"),
+                        ("V", "RdBu_r", -20, 20, "m/s"),
                     ]:
                         panels = []
                         for k in range(N_ATM_LAYERS):  # 0-based
@@ -950,6 +1077,39 @@ def generate_comparison_figures(rundir, fig_root, all_plots_by_comp):
                             if p:
                                 comp_plots.append(p)
                                 print(f"  Wrote {os.path.basename(p)}")
+
+                        # Zonal mean of U layers
+                        u_profiles = []
+                        for k in range(N_ATM_LAYERS):
+                            zm = _compute_zonal_mean(get_var(ds3, f"U_{k}"))
+                            if zm is not None:
+                                u_profiles.append((zm, f"U_{k}"))
+                        if u_profiles:
+                            p = zonal_mean_plot(
+                                u_profiles, lat_1d,
+                                "EAM Zonal Mean U Wind (all layers)",
+                                comp_outdir, "eam_h0_U_zonal_mean.png",
+                                ylabel="m/s")
+                            if p:
+                                comp_plots.append(p)
+                                print(f"  Wrote {os.path.basename(p)}")
+
+                        # Zonal mean of V layers
+                        v_profiles = []
+                        for k in range(N_ATM_LAYERS):
+                            zm = _compute_zonal_mean(get_var(ds3, f"V_{k}"))
+                            if zm is not None:
+                                v_profiles.append((zm, f"V_{k}"))
+                        if v_profiles:
+                            p = zonal_mean_plot(
+                                v_profiles, lat_1d,
+                                "EAM Zonal Mean V Wind (all layers)",
+                                comp_outdir, "eam_h0_V_zonal_mean.png",
+                                ylabel="m/s")
+                            if p:
+                                comp_plots.append(p)
+                                print(f"  Wrote {os.path.basename(p)}")
+
         close_ds(ds3)
 
     # --- Topographic fill validation: PS vs vcoarsen fill mask ---
@@ -1065,6 +1225,48 @@ def generate_comparison_figures(rundir, fig_root, all_plots_by_comp):
                         print(f"  Wrote eam_fill_fraction_validation.png")
 
         close_ds(ds_ps)
+
+    # --- Radiation budget ---
+    if h0_files:
+        ds_rad = safe_open(h0_files[0])
+        if not has_time_zero(ds_rad) and HAS_XR and isinstance(ds_rad, xr.Dataset):
+            compute_radiation_budget(ds_rad, comp_outdir, comp_plots)
+        close_ds(ds_rad)
+
+    # --- Time series of key variables across all h0 files ---
+    if h0_files and HAS_MPL and len(h0_files) >= 1:
+        ts_vars = ["TS", "PS", "PRECT", "FLUT", "T_7", "STW_7"]
+        ts_data = {vn: [] for vn in ts_vars}
+        for fpath in sorted(h0_files):
+            ds_ts = safe_open(fpath)
+            if has_time_zero(ds_ts):
+                close_ds(ds_ts)
+                continue
+            for vn in ts_vars:
+                arr = get_var(ds_ts, vn)
+                if arr is None:
+                    continue
+                # iterate over all timesteps in this file
+                if arr.ndim >= 2:
+                    for tidx in range(arr.shape[0]):
+                        v = valid_data(arr[tidx])
+                        if v is not None and v.size > 0:
+                            ts_data[vn].append(float(v.mean()))
+                else:
+                    v = valid_data(arr)
+                    if v is not None and v.size > 0:
+                        ts_data[vn].append(float(v.mean()))
+            close_ds(ds_ts)
+
+        for vn in ts_vars:
+            vals = ts_data[vn]
+            if len(vals) >= 2:
+                time_series(vals, "Timestep index", f"Global Mean {vn}",
+                            vn, comp_outdir, f"eam_timeseries_{vn}.png")
+                path = os.path.join(comp_outdir, f"eam_timeseries_{vn}.png")
+                if os.path.exists(path):
+                    comp_plots.append(path)
+                    print(f"  Wrote eam_timeseries_{vn}.png")
 
     if comp_plots:
         all_plots_by_comp["Comparisons"] = comp_plots
@@ -2011,12 +2213,126 @@ def write_repro_html(repro_info):
 
 
 # -----------------------------------------------------------------------------
+# Executive summary
+# -----------------------------------------------------------------------------
+
+def build_executive_summary(all_issues, coverage, xv_results=None):
+    """Compute executive summary metrics from verification results."""
+    summary = {}
+
+    # Checks passed / total
+    n_checks_total = 0
+    n_checks_passed = 0
+    for comp, issues in all_issues.items():
+        n_checks_total += 1
+        if not issues:
+            n_checks_passed += 1
+    summary["n_checks_passed"] = n_checks_passed
+    summary["n_checks_total"] = n_checks_total
+
+    # Variable coverage
+    if coverage:
+        n_vars_found = sum(1 for _, _, _, f in coverage if f)
+        n_vars_total = len(coverage)
+    else:
+        n_vars_found = 0
+        n_vars_total = 0
+    summary["n_vars_found"] = n_vars_found
+    summary["n_vars_total"] = n_vars_total
+
+    # Storage and timing from cross-verification results
+    summary["storage_fme_gb"] = None
+    summary["storage_leg_gb"] = None
+    summary["storage_ratio"] = None
+    summary["timing_overhead"] = None
+
+    if xv_results:
+        for r in xv_results:
+            if r.get("test") == "STORAGE":
+                detail = r.get("detail", "")
+                # Parse "FME: N files / X.XX GB, Legacy: M files / Y.YY GB, ratio: Z.ZZx"
+                import re
+                m_fme = re.search(r"FME:.*?(\d+\.\d+)\s*GB", detail)
+                m_leg = re.search(r"Legacy:.*?(\d+\.\d+)\s*GB", detail)
+                m_rat = re.search(r"ratio:\s*(\d+\.\d+)x", detail)
+                if m_fme:
+                    summary["storage_fme_gb"] = float(m_fme.group(1))
+                if m_leg:
+                    summary["storage_leg_gb"] = float(m_leg.group(1))
+                if m_rat:
+                    summary["storage_ratio"] = float(m_rat.group(1))
+            elif r.get("test") == "TIMING":
+                detail = r.get("detail", "")
+                import re
+                m_oh = re.search(r"overhead:\s*([+-]?\d+\.?\d*)%", detail)
+                if m_oh:
+                    summary["timing_overhead"] = float(m_oh.group(1))
+
+    return summary
+
+
+def write_executive_summary_html(summary):
+    """Return HTML string with a grid of 4 metric cards."""
+    if not summary:
+        return ""
+
+    vars_val = f'{summary["n_vars_found"]}/{summary["n_vars_total"]}'
+    vars_detail = ("All ACE atmosphere variables found"
+                   if summary["n_vars_found"] == summary["n_vars_total"]
+                   else f'{summary["n_vars_total"] - summary["n_vars_found"]} variables missing')
+
+    checks_val = f'{summary["n_checks_passed"]}/{summary["n_checks_total"]}'
+    checks_detail = ("All component checks passed"
+                     if summary["n_checks_passed"] == summary["n_checks_total"]
+                     else f'{summary["n_checks_total"] - summary["n_checks_passed"]} components with issues')
+
+    if summary.get("storage_ratio") is not None:
+        storage_val = f'{summary["storage_ratio"]:.2f}x'
+        storage_detail = (f'FME {summary["storage_fme_gb"]:.2f} GB vs '
+                          f'Legacy {summary["storage_leg_gb"]:.2f} GB')
+    else:
+        storage_val = "N/A"
+        storage_detail = "No cross-verification data"
+
+    if summary.get("timing_overhead") is not None:
+        timing_val = f'{summary["timing_overhead"]:+.1f}%'
+        timing_detail = "FME overhead vs legacy run"
+    else:
+        timing_val = "N/A"
+        timing_detail = "No timing data available"
+
+    html = '<div class="exec-summary">\n'
+    html += ('  <div class="metric-card">\n'
+             f'    <div class="metric-value">{vars_val}</div>\n'
+             '    <div class="metric-label">Variable Coverage</div>\n'
+             f'    <div class="metric-detail">{vars_detail}</div>\n'
+             '  </div>\n')
+    html += ('  <div class="metric-card">\n'
+             f'    <div class="metric-value">{checks_val}</div>\n'
+             '    <div class="metric-label">Checks Passed</div>\n'
+             f'    <div class="metric-detail">{checks_detail}</div>\n'
+             '  </div>\n')
+    html += ('  <div class="metric-card">\n'
+             f'    <div class="metric-value">{storage_val}</div>\n'
+             '    <div class="metric-label">Storage Ratio</div>\n'
+             f'    <div class="metric-detail">{storage_detail}</div>\n'
+             '  </div>\n')
+    html += ('  <div class="metric-card">\n'
+             f'    <div class="metric-value">{timing_val}</div>\n'
+             '    <div class="metric-label">Timing Overhead</div>\n'
+             f'    <div class="metric-detail">{timing_detail}</div>\n'
+             '  </div>\n')
+    html += '</div>\n'
+    return html
+
+
+# -----------------------------------------------------------------------------
 # HTML index
 # -----------------------------------------------------------------------------
 
 def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
                      all_fill_reports, timing_summary=None, extra_html="",
-                     coverage=None, repro_info=None):
+                     coverage=None, repro_info=None, exec_summary=None):
     index = os.path.join(outdir, "index.html")
     n_issues = sum(len(v) for v in all_issues.values())
     n_pass = sum(1 for v in all_issues.values() if not v)
@@ -2077,7 +2393,7 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
 
     # Navigation
     nav_links = ""
-    nav_items = ["Summary", "ACE_Variables", "File_Inventory", "Fill_NaN_Report"]
+    nav_items = ["Overview", "Summary", "ACE_Variables", "File_Inventory", "Fill_NaN_Report"]
     if extra_html:
         nav_items.append("Cross_Verify")
     for comp in all_plots_by_comp:
@@ -2115,6 +2431,9 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
 
     # Reproducibility section
     repro_html = write_repro_html(repro_info) if repro_info else ""
+
+    # Executive summary section
+    exec_summary_html = write_executive_summary_html(exec_summary) if exec_summary else ""
 
     gen_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -2300,6 +2619,23 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
       .badge-skip {{ display: inline-block; padding: 2px 10px; border-radius: 12px;
                      background: var(--skip-bg); color: var(--skip);
                      font-weight: 600; font-size: 0.82em; }}
+
+      /* Executive summary */
+      .exec-summary {{ display: grid; grid-template-columns: repeat(4, 1fr);
+                       gap: 16px; margin: 20px 0; }}
+      .metric-card {{ background: var(--card); border: 1px solid var(--card-border);
+                      border-radius: var(--border-radius); padding: 20px 24px;
+                      box-shadow: var(--card-shadow); text-align: center;
+                      transition: all 0.3s; }}
+      .metric-card:hover {{ box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+                            transform: translateY(-2px); }}
+      .metric-value {{ font-size: 2em; font-weight: 800; color: var(--accent);
+                       line-height: 1.2; }}
+      .metric-label {{ font-size: 0.9em; color: var(--text-muted); font-weight: 600;
+                       margin-top: 4px; }}
+      .metric-detail {{ font-size: 0.78em; color: var(--text-muted); margin-top: 6px;
+                        opacity: 0.8; }}
+      @media (max-width: 900px) {{ .exec-summary {{ grid-template-columns: repeat(2, 1fr); }} }}
 
       /* Footer */
       footer {{ margin-top: 48px; padding: 20px 32px;
@@ -2528,6 +2864,9 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, file_inventory_data,
 
     <nav>{nav_links}</nav>
 
+    <h2 id="Overview">Overview</h2>
+    {exec_summary_html}
+
     <h2 id="Summary">Component Summary</h2>
     <table>
     <tr><th>Component</th><th>Status</th><th>Issues</th></tr>
@@ -2660,6 +2999,7 @@ def main():
 
     # Cross-verification against legacy testmod output
     xv_html = ""
+    xv_results = None
     if args.legacy_rundir:
         if not os.path.isdir(args.legacy_rundir):
             print(f"WARNING: legacy-rundir not found: {args.legacy_rundir}")
@@ -2671,12 +3011,17 @@ def main():
                 all_plots_by_comp["Cross-Verify"] = xv_plots
             xv_html = write_cross_verify_html(args.outdir, xv_results, xv_plots)
 
+    # Build executive summary
+    exec_summary = build_executive_summary(all_issues, coverage,
+                                           xv_results=xv_results)
+
     write_html_index(args.outdir, all_plots_by_comp, all_issues,
                      file_inventory_data, all_fill_reports,
                      timing_summary=timing_summary,
                      extra_html=xv_html,
                      coverage=coverage,
-                     repro_info=repro_info)
+                     repro_info=repro_info,
+                     exec_summary=exec_summary)
 
     n_total = sum(len(v) for v in all_issues.values())
     print("\n" + "=" * 70)
