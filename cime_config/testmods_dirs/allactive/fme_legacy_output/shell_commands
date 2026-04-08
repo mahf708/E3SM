@@ -65,5 +65,3 @@ cat >> user_nl_mpassi << 'EOF'
 config_am_timeseriesstatscustom_enable = .true.
 config_am_timeseriesstatscustom_reset_intervals = '00-00-05_00:00:00'
 EOF
-
-
