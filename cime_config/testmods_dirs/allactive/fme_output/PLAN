@@ -1,0 +1,181 @@
+# FME Online Output Processing — Implementation Plan
+
+## Updated: 2026-04-09
+
+---
+
+## Current State
+
+### Shared Infrastructure (in share/util/)
+- `shr_horiz_remap_mod.F90` — Type-bound CRS SpMV + source-gather MPI. 3-phase:
+  read_mapfile -> build_comm -> apply. Reads ESMF weight files.
+  Also: apply_masked variant that packs validity mask as extra level.
+- `shr_vcoarsen_mod.F90` — Coordinate-agnostic overlap-weighted averaging
+  (atmosphere pressure, ocean depth). Also: level selection (nearest-neighbor
+  interpolation with FP-safe weight clamping), category sum/wgtavg for sea ice.
+- `shr_derived_mod.F90` — Expression parser for "OUTPUT=A+B*2.0" syntax.
+  Left-to-right evaluation with +,-,*,/ and numeric constants.
+
+### EAM Wrappers (in components/eam/src/control/)
+- `horiz_remap_mod.F90` — Per-tape remap via PIO with cam_grid registration
+- `eam_vcoarsen.F90` — 3 modes: overlap avg, level select, column integration
+- `eam_derived.F90` — Chained expressions, tendencies, stage-aware phys/dyn split
+- Integration: cam_history.F90, physpkg.F90, runtime_opts.F90, cam_comp.F90
+- STATUS: Mature. Transparent remapping within cam_history. No changes needed.
+
+### MPAS-Ocean (in components/mpas-ocean/src/)
+Analysis members (analysis_members/):
+- `mpas_ocn_fme_depth_coarsening.F` — Layer-thickness-weighted vertical averaging
+  onto configurable depth levels. SSH ice-shelf mask threshold for coastal masking.
+  Level-index coarsening mode. Date-based file rotation for remapped output.
+- `mpas_ocn_fme_derived_fields.F` — SST, SSS, combined surface heat flux.
+  Remaps to lat-lon via PIO with proper time strings.
+- `mpas_ocn_fme_vertical_reduce.F` — Column-integrated OHC, FWC, KE plus
+  generic slots for user-configured reductions. Date-based file rotation.
+Shared (shared/):
+- `mpas_ocn_fme_horiz_remap.F` — Wraps shr_horiz_remap_t for MPAS cell
+  decomposition. Per-file PIO output via ocn_fme_remap_file_t type.
+- STATUS: Functional and feature-complete for current needs.
+
+### MPAS-Sea-Ice (in components/mpas-seaice/src/)
+- `mpas_seaice_fme_derived_fields.F` — Category aggregation (ice area/volume/snow
+  totals, area-weighted means) + air stress rotation. All 7 fields remapped.
+- `mpas_seaice_fme_horiz_remap.F` — Module-scope PIO pattern (single file).
+  Date-based file rotation. Proper time strings.
+- STATUS: Functional and feature-complete for current needs.
+
+### EAMxx (in components/eamxx/)
+- New diagnostics: field_over_dt (time derivatives), field_prev (previous step cache)
+- Removed: atm_backtend (replaced by more flexible field_over_dt)
+- Updated: IO infrastructure, horizontal/vertical remappers, grid abstractions
+- STATUS: Complete. Independent from Fortran FME feature.
+
+### ELM and MOSART
+- Were prototyped (commits 1-5) but removed due to build issues.
+- Reimplementation deferred (see FUTURE_WORK).
+
+---
+
+## Key Design Decisions
+
+1. **MPAS uses Analysis Members** (not CIME history tapes). Each AM has
+   init/compute/restart/finalize. Variables defined in Registry XML.
+   Output via MPAS stream manager (native grid) or PIO (remapped grid).
+
+2. **Remapped output bypasses MPAS streams** because the stream manager
+   only recognizes nCells/nEdges/nVertices as decomposed dimensions
+   (hard-coded in mpas_stream_manager.F:is_decomposed_dim). There is
+   no mechanism to register regular lat-lon grids as stream output grids.
+   PIO writes directly to (lon, lat, Time) NetCDF files.
+
+3. **Shared modules are pure computation** — no I/O, MPI, or component
+   dependencies. Each component provides a thin wrapper.
+
+4. **FME naming** instead of ACE — reflects full-model-emulation intent.
+
+5. **Separate files are architecturally necessary** for MPAS remapped
+   output. These files use case-derived filenames, date-based rotation,
+   and CF-1.8 metadata — as close to stream manager behavior as possible.
+
+---
+
+## Architecture Comparison: EAM vs MPAS
+
+EAM:
+  horiz_remap_file(tape) -> cam_history accumulates on native grid
+  -> dump_field applies remap at write time -> PIO writes to (lon,lat)
+  -> SAME filename, SAME tape, transparent to user
+
+MPAS:
+  horiz_remap_file(AM) -> AM computes on native grid -> stores in pool
+  -> stream manager writes native file (or skips if output_stream='none')
+  -> SEPARATELY: AM remaps fields -> PIO writes to SEPARATE file
+
+The difference is structural (stream manager limitation), not a bug.
+
+---
+
+## Completed Work
+
+All Phase 1 and most Phase 2 items done:
+1. [DONE] Filenames derived from native stream template + date substitution
+2. [DONE] MPAS-SI remaps all 7 derived fields
+3. [DONE] _FillValue on all remapped variables
+4. [DONE] Bounds check on max_pio_vars (512) with error message
+5. [DONE] associated() guards on velocity pointers
+6. [DONE] Date-based file rotation via register_var/check_rotate
+7. [DONE] CF-1.8 Conventions attribute
+8. [DONE] SSH ice-shelf mask threshold
+9. [DONE] Level-index vertical coarsening mode
+10. [DONE] FSUTOA derived field
+11. [DONE] fme_legacy_output testmod for cross-verification
+12. [DONE] 0-indexed layer naming convention
+13. [DONE] Time string fix in MPAS remapped output
+14. [DONE] Interpolation weight clamping in shr_vcoarsen_mod
+15. [DONE] Token whitespace handling in shr_derived_mod
+
+## Remaining Work
+
+### Near-term
+- Conditional stream generation in buildnml (skip when output_stream='none')
+- Depth coordinate variable in remapped 3D output
+- Additional CF metadata (calendar, time_bnds, map file provenance)
+
+### Architecture
+- 3D PIO decomposition for depth-coarsened fields (single var instead of split)
+- Per-AM remap instances (remove singleton mapfile constraint)
+- ELM/MOSART FME reimplementation
+
+## Performance
+
+Tested with SMS_P512.ne30pg2_r05_IcoswISC30E3r5.WCYCL1850NS (512 MPI tasks):
+  Total run: 495s for 5 simulated days (~99s/day)
+  ATM: 288s (58%), OCN: 137s (28%), ICE: 36s (7%), LND: 23s (5%)
+
+FME overhead: +1.6% wallclock (+7.56s on 485s baseline).
+Remapped output is small: e.g., derived fields 775K vs 107M native (720x smaller).
+
+---
+
+## How to Add a New Field to FME Output
+
+### MPAS-O: Add a new derived surface field
+1. Add `<var>` to Registry_fme_derived_fields.xml (var_struct + stream)
+2. In mpas_ocn_fme_derived_fields.F compute: get from pool, compute, store
+3. If remapped output desired: add remap_field + write_var calls
+
+### MPAS-O: Add a new depth-coarsened field
+1. Add `<var>` to Registry_fme_depth_coarsening.xml
+2. In mpas_ocn_fme_depth_coarsening.F: add to field dispatch logic
+
+### EAM: Add a new derived field
+Just add to user_nl_eam: `derived_fld_defs = 'NEW_FIELD=A+B*C'`
+No code changes needed — the expression parser handles it dynamically.
+
+---
+
+## How to Test
+
+```bash
+cd cime/scripts
+./create_test SMS_D_Ln5.ne4pg2_oQU480.WCYCL1850NS \
+    --testmod allactive/fme_output
+
+# After run completes:
+cd $RUNDIR
+python verify_eam.py --rundir . --verbose
+python verify_mpas.py --rundir . --verbose
+```
+
+---
+
+## Documents in This Directory
+
+- PLAN (this file) — Architecture overview and implementation roadmap
+- REVIEW — Detailed code review with findings and recommendations
+- CONTEXT — Handoff context: status, architecture notes, bug fixes
+- FUTURE_WORK — Prioritized remaining work items
+- README — Quick-start description and variable inventory
+- shell_commands — Case setup; dynamically generates user_nl_* files
+- verify_eam.py — EAM verification script + HTML dashboard
+- verify_mpas.py — MPAS verification script + HTML dashboard
