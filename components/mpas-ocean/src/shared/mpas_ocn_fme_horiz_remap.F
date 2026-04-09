@@ -214,6 +214,19 @@ contains
 
       if (allocated(send_gcol_list)) deallocate(send_gcol_list)
 
+      ! Validate that all needed source cells were found locally.
+      ! A zero entry means the global cell ID was not in any local block,
+      ! which would cause out-of-bounds array access during remapping.
+      do i = 1, remap_data%n_send_total
+         if (send_local_cell(i) == 0) then
+            call mpas_log_write('ocn_fme_horiz_remap_init: FATAL - source cell $i '// &
+                 'not found in local blocks. Map file may be incompatible with mesh.', &
+                 messageType=MPAS_LOG_CRIT, intArgs=(/i/))
+            err = 1
+            return
+         end if
+      end do
+
       ! Store PIO system reference for later file creation
       pio_sys => domain % ioContext % pio_iosystem
 

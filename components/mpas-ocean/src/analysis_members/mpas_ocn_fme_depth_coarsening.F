@@ -105,7 +105,7 @@ contains
       if (allocated(depthBounds)) deallocate(depthBounds)
       allocate(depthBounds(nBounds))
 
-      ! Parse comma-separated values
+      ! Parse comma-separated values with error handling
       iStart = 1
       do i = 1, nBounds
          iEnd = index(tempStr(iStart:strLen), ',')
@@ -114,8 +114,32 @@ contains
          else
             iEnd = iEnd + iStart - 1
          end if
-         read(tempStr(iStart:iEnd-1), *) depthBounds(i)
+         read(tempStr(iStart:iEnd-1), *, iostat=iErr) depthBounds(i)
+         if (iErr /= 0) then
+            call mpas_log_write('fmeDepthCoarsening: failed to parse depth bound '// &
+                 'value at position $i from string: ' // trim(tempStr), &
+                 messageType=MPAS_LOG_CRIT, intArgs=(/i/))
+            err = 1; return
+         end if
          iStart = iEnd + 1
+      end do
+
+      ! Validate: bounds must be non-negative and strictly increasing
+      do i = 1, nBounds
+         if (depthBounds(i) < 0.0_r8) then
+            call mpas_log_write('fmeDepthCoarsening: depth bound $i is negative: $r', &
+                 messageType=MPAS_LOG_CRIT, intArgs=(/i/), &
+                 realArgs=(/depthBounds(i)/))
+            err = 1; return
+         end if
+         if (i > 1) then
+            if (depthBounds(i) <= depthBounds(i-1)) then
+               call mpas_log_write('fmeDepthCoarsening: depth bounds not strictly '// &
+                    'increasing at position $i', &
+                    messageType=MPAS_LOG_CRIT, intArgs=(/i/))
+               err = 1; return
+            end if
+         end if
       end do
 
       nCoarsenLevels = nBounds - 1
