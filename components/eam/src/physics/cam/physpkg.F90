@@ -42,6 +42,8 @@ module physpkg
   use perf_mod
   use cam_logfile,     only: iulog
   use camsrfexch,      only: cam_export
+  use eam_vcoarsen,    only: eam_vcoarsen_register, eam_vcoarsen_write
+  use eam_derived,     only: eam_derived_register, eam_derived_write
 
   use modal_aero_calcsize,    only: modal_aero_calcsize_init, &
                                     modal_aero_calcsize_reg
@@ -68,6 +70,7 @@ module physpkg
   integer ::  cldiceini_idx      = 0 
   integer ::  static_ener_ac_idx = 0
   integer ::  water_vap_ac_idx   = 0
+  integer ::  total_water_ac_idx = 0
 
   integer ::  prec_str_idx       = 0
   integer ::  snow_str_idx       = 0
@@ -228,6 +231,7 @@ subroutine phys_register
     call pbuf_add_field('CLDICEINI', 'physpkg', dtype_r8, (/pcols,pver/), cldiceini_idx)
     call pbuf_add_field('static_ener_ac', 'global', dtype_r8, (/pcols/), static_ener_ac_idx)
     call pbuf_add_field('water_vap_ac',   'global', dtype_r8, (/pcols/), water_vap_ac_idx)
+    call pbuf_add_field('total_water_ac', 'global', dtype_r8, (/pcols/), total_water_ac_idx)
 
 
     ! check energy package
@@ -368,7 +372,10 @@ subroutine phys_register
        if (.not. do_clubb_sgs .and. .not. do_shoc_sgs) call vd_register()
 
        if (do_aerocom_ind3) call output_aerocom_aie_register()
-    
+
+       call eam_vcoarsen_register()
+       call eam_derived_register()
+
     end if
 
     ! Register diagnostics PBUF
@@ -1023,7 +1030,7 @@ subroutine phys_init( phys_state, phys_tend, pbuf2d, cam_out )
     ! Initialize Transformed Eularian Mean (TEM) diagnostics
     call phys_grid_ctem_init()
 
-    
+
    !BSINGH -  addfld and adddefault calls for perturb growth testing    
     if(pergro_test_active)call add_fld_default_calls()
 
@@ -1448,6 +1455,12 @@ subroutine phys_run2(phys_state, ztodt, phys_tend, pbuf2d,  cam_out, &
             phys_state(c), phys_tend(c), phys_buffer_chunk, phys_diag(c),  &
             fsds(1,c))
 
+       call eam_derived_write(phys_state(c), pbuf2d)
+       ! eam_vcoarsen_write must run after eam_derived_write so that derived
+       ! fields (e.g. TOTAL_WATER) are in the cache and accessible via
+       ! eam_derived_get_cache inside eam_vcoarsen's get_state_field.
+       call eam_vcoarsen_write(phys_state(c), phys_buffer_chunk)
+
        call system_clock(count=end_chnk_cnt, count_rate=sysclock_rate, count_max=sysclock_max)
        if ( end_chnk_cnt < beg_chnk_cnt ) end_chnk_cnt = end_chnk_cnt + sysclock_max
        chunk_cost = real( (end_chnk_cnt-beg_chnk_cnt), r8)/real(sysclock_rate, r8)
@@ -1653,6 +1666,8 @@ subroutine tphysac (ztodt,   cam_in,  &
     real(r8) :: ftem      (pcols,pver) ! tmp space
     real(r8), pointer, dimension(:) :: static_ener_ac_2d ! Vertically integrated static energy
     real(r8), pointer, dimension(:) :: water_vap_ac_2d   ! Vertically integrated water vapor
+    real(r8), pointer, dimension(:) :: total_water_ac_2d ! Vertically integrated total water
+    integer :: ixcldliq_ac, ixcldice_ac, ixrainqm_ac     ! constituent indices for total water
 
     ! physics buffer fields for total energy and mass adjustment
     integer itim_old, ifld
@@ -2079,6 +2094,8 @@ end if ! l_ac_energy_chk
     call pbuf_get_field(pbuf, static_ener_ac_idx, static_ener_ac_2d )
     water_vap_ac_idx   = pbuf_get_index('water_vap_ac')
     call pbuf_get_field(pbuf, water_vap_ac_idx, water_vap_ac_2d )
+    total_water_ac_idx = pbuf_get_index('total_water_ac')
+    call pbuf_get_field(pbuf, total_water_ac_idx, total_water_ac_2d )
 
     !Integrate column static energy
     ftem(:ncol,:) = (state%s(:ncol,:) + latvap*state%q(:ncol,:,1)) * state%pdel(:ncol,:)*rga
@@ -2093,6 +2110,20 @@ end if ! l_ac_energy_chk
        ftem(:ncol,1) = ftem(:ncol,1) + ftem(:ncol,k)
     end do
     water_vap_ac_2d(:ncol) = ftem(:ncol,1)
+
+    !Integrate total water (Q + CLDLIQ + CLDICE + RAINQM)
+    call cnst_get_ind('CLDLIQ', ixcldliq_ac)
+    call cnst_get_ind('CLDICE', ixcldice_ac)
+    call cnst_get_ind('RAINQM', ixrainqm_ac, abrtf=.false.)
+    ftem(:ncol,:) = (state%q(:ncol,:,1) + state%q(:ncol,:,ixcldliq_ac) &
+                   + state%q(:ncol,:,ixcldice_ac)) * state%pdel(:ncol,:)*rga
+    if (ixrainqm_ac > 0) then
+       ftem(:ncol,:) = ftem(:ncol,:) + state%q(:ncol,:,ixrainqm_ac)*state%pdel(:ncol,:)*rga
+    end if
+    do k=2,pver
+       ftem(:ncol,1) = ftem(:ncol,1) + ftem(:ncol,k)
+    end do
+    total_water_ac_2d(:ncol) = ftem(:ncol,1)
 
     call check_tracers_fini(tracerint)
     call cnd_diag_checkpoint( diag, 'PACEND', state, pbuf, cam_in, cam_out )
@@ -2414,7 +2445,9 @@ subroutine tphysbc (ztodt,               &
     real(r8) :: ftem(pcols,pver)         ! tmp space
     real(r8), pointer, dimension(:) :: static_ener_ac_2d ! Vertically integrated static energy
     real(r8), pointer, dimension(:) :: water_vap_ac_2d   ! Vertically integrated water vapor
+    real(r8), pointer, dimension(:) :: total_water_ac_2d  ! Vertically integrated total water
     real(r8) :: CIDiff(pcols)            ! Difference in vertically integrated static energy
+    integer :: ixcldliq_bc, ixcldice_bc, ixrainqm_bc  ! constituent indices for total water
 
     !HuiWan (2014/15): added for a short-term time step convergence test ++ 
     logical :: l_bc_energy_fix
@@ -2480,6 +2513,8 @@ subroutine tphysbc (ztodt,               &
     call pbuf_get_field(pbuf, static_ener_ac_idx, static_ener_ac_2d )
     water_vap_ac_idx   = pbuf_get_index('water_vap_ac')
     call pbuf_get_field(pbuf, water_vap_ac_idx, water_vap_ac_2d )
+    total_water_ac_idx = pbuf_get_index('total_water_ac')
+    call pbuf_get_field(pbuf, total_water_ac_idx, total_water_ac_2d )
 
     ! Integrate and compute the difference
     ! CIDiff = difference of column integrated values
@@ -2487,6 +2522,7 @@ subroutine tphysbc (ztodt,               &
        CIDiff(:ncol) = 0.0_r8
        call outfld('DTENDTH', CIDiff, pcols, lchnk )
        call outfld('DTENDTQ', CIDiff, pcols, lchnk )
+       call outfld('DTENDTTW',CIDiff, pcols, lchnk )
     else
        ! MSE first
        ftem(:ncol,:) = (state%s(:ncol,:) + latvap*state%q(:ncol,:,1)) * state%pdel(:ncol,:)*rga
@@ -2504,6 +2540,22 @@ subroutine tphysbc (ztodt,               &
        CIDiff(:ncol) = (ftem(:ncol,1) - water_vap_ac_2d(:ncol))*rtdt
 
        call outfld('DTENDTQ', CIDiff, pcols, lchnk )
+
+       ! Total water (Q + CLDLIQ + CLDICE + RAINQM) tendency
+       call cnst_get_ind('CLDLIQ', ixcldliq_bc)
+       call cnst_get_ind('CLDICE', ixcldice_bc)
+       call cnst_get_ind('RAINQM', ixrainqm_bc, abrtf=.false.)
+       ftem(:ncol,:) = (state%q(:ncol,:,1) + state%q(:ncol,:,ixcldliq_bc) &
+                      + state%q(:ncol,:,ixcldice_bc)) * state%pdel(:ncol,:)*rga
+       if (ixrainqm_bc > 0) then
+          ftem(:ncol,:) = ftem(:ncol,:) + state%q(:ncol,:,ixrainqm_bc)*state%pdel(:ncol,:)*rga
+       end if
+       do k=2,pver
+          ftem(:ncol,1) = ftem(:ncol,1) + ftem(:ncol,k)
+       end do
+       CIDiff(:ncol) = (ftem(:ncol,1) - total_water_ac_2d(:ncol))*rtdt
+
+       call outfld('DTENDTTW', CIDiff, pcols, lchnk )
     end if
 
     ! Associate pointers with physics buffer fields
