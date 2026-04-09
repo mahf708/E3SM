@@ -59,6 +59,9 @@ module ocn_fme_vertical_reduce
    type(ocn_fme_remap_file_t) :: remap_outfile
    integer :: remap_nlat = 0, remap_nlon = 0, remap_nb_local = 0
 
+   ! Ice shelf SSH mask threshold (m)
+   real(kind=RKIND) :: ssh_mask_threshold = -4.0_RKIND
+
    !> Number of user-configured generic reduction fields (parsed from config)
    integer :: nReduceFields = 0
 
@@ -81,6 +84,7 @@ contains
       integer, intent(out) :: err
 
       real(kind=RKIND), pointer :: config_AM_fmeVerticalReduce_reference_salinity
+      real(kind=RKIND), pointer :: config_AM_fmeVerticalReduce_ssh_mask_threshold
       character(len=StrKIND), pointer :: config_AM_fmeVerticalReduce_fields
       character(len=StrKIND), pointer :: config_AM_fmeVerticalReduce_methods
       character(len=StrKIND), pointer :: config_AM_fmeVerticalReduce_horiz_remap_file
@@ -90,6 +94,14 @@ contains
       integer :: ierr, iGeneric
 
       err = 0
+
+      ! Read SSH mask threshold
+      call mpas_pool_get_config(domain % configs, &
+           'config_AM_fmeVerticalReduce_ssh_mask_threshold', &
+           config_AM_fmeVerticalReduce_ssh_mask_threshold)
+      if (associated(config_AM_fmeVerticalReduce_ssh_mask_threshold)) then
+         ssh_mask_threshold = config_AM_fmeVerticalReduce_ssh_mask_threshold
+      end if
 
       call mpas_pool_get_config(domain % configs, &
            'config_AM_fmeVerticalReduce_reference_salinity', &
@@ -255,6 +267,7 @@ contains
       real(kind=RKIND), dimension(:), pointer :: oceanHeatContent
       real(kind=RKIND), dimension(:), pointer :: freshwaterContent
       real(kind=RKIND), dimension(:), pointer :: kineticEnergy
+      real(kind=RKIND), dimension(:), pointer :: ssh_ptr
 
       ! Generic reduction output slots
       real(kind=RKIND), dimension(:), pointer :: genSlot
@@ -288,6 +301,7 @@ contains
          call mpas_pool_get_array(tracersPool, 'activeTracers', tracers, timeLevel)
          call mpas_pool_get_array(statePool, 'layerThickness', layerThickness, timeLevel)
          call mpas_pool_get_array(meshPool, 'maxLevelCell', maxLevelCell)
+         call mpas_pool_get_array(statePool, 'ssh', ssh_ptr, 1)
 
          call mpas_pool_get_array(amPool, 'oceanHeatContent', oceanHeatContent)
          call mpas_pool_get_array(amPool, 'freshwaterContent', freshwaterContent)
@@ -301,6 +315,16 @@ contains
                freshwaterContent(iCell) = fillValue
                kineticEnergy(iCell) = fillValue
                cycle
+            end if
+
+            ! Apply ice shelf mask: skip cells with ssh below threshold
+            if (associated(ssh_ptr)) then
+               if (ssh_ptr(iCell) < ssh_mask_threshold) then
+                  oceanHeatContent(iCell) = fillValue
+                  freshwaterContent(iCell) = fillValue
+                  kineticEnergy(iCell) = fillValue
+                  cycle
+               end if
             end if
 
             ohc_sum = 0.0_RKIND
@@ -359,6 +383,14 @@ contains
                if (maxLevelCell(iCell) == 0) then
                   genSlot(iCell) = fillValue
                   cycle
+               end if
+
+               ! Apply ice shelf mask
+               if (associated(ssh_ptr)) then
+                  if (ssh_ptr(iCell) < ssh_mask_threshold) then
+                     genSlot(iCell) = fillValue
+                     cycle
+                  end if
                end if
 
                gen_sum = 0.0_RKIND

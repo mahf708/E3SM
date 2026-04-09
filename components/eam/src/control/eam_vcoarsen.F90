@@ -67,6 +67,7 @@ module eam_vcoarsen
 
   ! Namelist variables
   real(r8) :: vcoarsen_pbounds(max_pbounds)
+  integer :: vcoarsen_levbounds(max_pbounds)  ! level index boundaries (0-based)
   character(len=max_name_len) :: vcoarsen_avg_flds(max_flds)
   integer  :: vcoarsen_select_levs(max_select_vals)
   character(len=max_name_len) :: vcoarsen_select_lev_flds(max_flds)
@@ -88,6 +89,7 @@ module eam_vcoarsen
   logical :: has_sel_lev  = .false.
   logical :: has_sel_pres = .false.
   logical :: has_int      = .false.
+  logical :: use_levbounds = .false.
 
   ! Column integration tendency: previous timestep values (pcols, max_flds, begchunk:endchunk)
   real(r8), allocatable :: int_prev(:,:,:)
@@ -108,10 +110,11 @@ contains
     namelist /eam_vcoarsen_nl/ vcoarsen_pbounds, vcoarsen_avg_flds, &
          vcoarsen_select_levs, vcoarsen_select_lev_flds, &
          vcoarsen_select_pres, vcoarsen_select_pres_flds, &
-         vcoarsen_int_flds
+         vcoarsen_int_flds, vcoarsen_levbounds
 
     ! Initialize defaults
     vcoarsen_pbounds(:)         = -1.0_r8
+    vcoarsen_levbounds(:)       = -1
     vcoarsen_avg_flds(:)        = ''
     vcoarsen_select_levs(:)     = -1
     vcoarsen_select_lev_flds(:) = ''
@@ -135,6 +138,7 @@ contains
 
     ! Broadcast
     call mpi_bcast(vcoarsen_pbounds, max_pbounds, mpi_real8, masterprocid, mpicom, ierr)
+    call mpi_bcast(vcoarsen_levbounds, max_pbounds, mpi_integer, masterprocid, mpicom, ierr)
     call mpi_bcast(vcoarsen_avg_flds, max_name_len*max_flds, mpi_character, masterprocid, mpicom, ierr)
     call mpi_bcast(vcoarsen_select_levs, max_select_vals, mpi_integer, masterprocid, mpicom, ierr)
     call mpi_bcast(vcoarsen_select_lev_flds, max_name_len*max_flds, mpi_character, masterprocid, mpicom, ierr)
@@ -159,6 +163,23 @@ contains
           call endrun('eam_vcoarsen_readnl: vcoarsen_pbounds must be strictly increasing')
         end if
       end do
+    end if
+
+    ! Check if level-index bounds are specified instead of pressure bounds
+    if (.not. has_avg .and. vcoarsen_levbounds(1) >= 0) then
+      n_avg_levs = 0
+      do i = 2, max_pbounds
+        if (vcoarsen_levbounds(i) < 0) exit
+        n_avg_levs = n_avg_levs + 1
+      end do
+      has_avg = (n_avg_levs > 0)
+      use_levbounds = has_avg
+      if (masterproc .and. has_avg) then
+        write(iulog,*) 'eam_vcoarsen: using level-index bounds, ', n_avg_levs, ' layers'
+        do i = 1, n_avg_levs + 1
+          write(iulog,*) '  level bound ', i-1, ': L', vcoarsen_levbounds(i)
+        end do
+      end if
     end if
 
     ! Count averaging fields; expand 'all'
@@ -230,10 +251,17 @@ contains
         call validate_field_name(vcoarsen_avg_flds(i))
         do k = 1, n_avg_levs
           call make_avg_name(vcoarsen_avg_flds(i), k-1, fname)  ! 0-indexed for ACE
-          write(lname, '(A,A,I0,A,F0.1,A,F0.1,A)') &
-               trim(vcoarsen_avg_flds(i)), ' vcoarsen layer ', k-1, &
-               ' (', vcoarsen_pbounds(k)/100.0_r8, '-', &
-               vcoarsen_pbounds(k+1)/100.0_r8, ' hPa)'
+          if (use_levbounds) then
+            write(lname, '(A,A,I0,A,I0,A,I0,A)') &
+                 trim(vcoarsen_avg_flds(i)), ' vcoarsen layer ', k-1, &
+                 ' (L', vcoarsen_levbounds(k), '-L', &
+                 vcoarsen_levbounds(k+1), ')'
+          else
+            write(lname, '(A,A,I0,A,F0.1,A,F0.1,A)') &
+                 trim(vcoarsen_avg_flds(i)), ' vcoarsen layer ', k-1, &
+                 ' (', vcoarsen_pbounds(k)/100.0_r8, '-', &
+                 vcoarsen_pbounds(k+1)/100.0_r8, ' hPa)'
+          end if
           call addfld(trim(fname), horiz_only, 'A', 'varies', trim(lname), &
                flag_xyfill=.true.)
         end do
@@ -298,7 +326,8 @@ contains
     use physics_types,  only: physics_state
     use physics_buffer, only: physics_buffer_desc
     use cam_history,    only: outfld
-    use shr_vcoarsen_mod, only: shr_vcoarsen_avg_cols, shr_vcoarsen_select_index, &
+    use shr_vcoarsen_mod, only: shr_vcoarsen_avg_cols, shr_vcoarsen_avg, &
+                                shr_vcoarsen_select_index, &
                                 shr_vcoarsen_select_nearest
     use physconst,      only: gravit
     use time_manager,   only: get_step_size
@@ -312,9 +341,10 @@ contains
     real(r8) :: integrated(pcols)
     real(r8) :: coord_iface(pcols, pverp)
     real(r8) :: coord_mid(pcols, pver)
+    real(r8) :: col_pbounds(max_pbounds)
     real(r8) :: dt
     integer  :: nlev_max(pcols)
-    integer  :: i, k, ncol, lchnk
+    integer  :: i, k, ncol, lchnk, icol
     character(len=max_fname_len) :: fname
 
     if (.not. has_avg .and. .not. has_sel_lev .and. .not. has_sel_pres .and. .not. has_int) return
@@ -327,29 +357,52 @@ contains
 
     ! --- Overlap-weighted averaging ---
     if (has_avg) then
-      ! Build interface pressure array
-      coord_iface(1:ncol, 1:pverp) = state%pint(1:ncol, 1:pverp)
-
-      do i = 1, n_avg_flds
-        call get_state_field(state, pbuf_chunk, vcoarsen_avg_flds(i), src_field, ncol)
-
-        ! Pass array sections (1:ncol, :) so that Fortran creates contiguous
-        ! copies matching the declared shape (ncol, nlev) in shr_vcoarsen_avg_cols.
-        ! Without this, when ncol < pcols the dummy array's stride doesn't
-        ! match the actual array's stride, causing levels k>1 to read from
-        ! wrong memory offsets (padding columns of the previous level).
-        call shr_vcoarsen_avg_cols(src_field(1:ncol, :), coord_iface(1:ncol, :), &
-             ncol, pver, vcoarsen_pbounds(1:n_avg_levs+1), n_avg_levs, &
-             fillvalue, coarsened(1:ncol, :))
-
-        do k = 1, n_avg_levs
+      if (use_levbounds) then
+        ! Level-index bounds: convert to per-column pressure interfaces at runtime
+        do i = 1, n_avg_flds
+          call get_state_field(state, pbuf_chunk, vcoarsen_avg_flds(i), src_field, ncol)
+          do icol = 1, ncol
+            ! Build column-specific pressure bounds from level indices
+            do k = 1, n_avg_levs + 1
+              col_pbounds(k) = state%pint(icol, vcoarsen_levbounds(k) + 1)
+            end do
+            call shr_vcoarsen_avg(src_field(icol, 1:pver), state%pint(icol, 1:pverp), &
+                 pver, col_pbounds(1:n_avg_levs+1), n_avg_levs, fillvalue, &
+                 coarsened(icol, 1:n_avg_levs))
+          end do
           ! Fill inactive columns
-          coarsened(ncol+1:pcols, k) = fillvalue
-
-          call make_avg_name(vcoarsen_avg_flds(i), k-1, fname)  ! 0-indexed
-          call outfld(trim(fname), coarsened(:, k), pcols, lchnk)
+          coarsened(ncol+1:pcols, :) = fillvalue
+          do k = 1, n_avg_levs
+            call make_avg_name(vcoarsen_avg_flds(i), k-1, fname)
+            call outfld(trim(fname), coarsened(:, k), pcols, lchnk)
+          end do
         end do
-      end do
+      else
+        ! Existing pressure-based path
+        ! Build interface pressure array
+        coord_iface(1:ncol, 1:pverp) = state%pint(1:ncol, 1:pverp)
+
+        do i = 1, n_avg_flds
+          call get_state_field(state, pbuf_chunk, vcoarsen_avg_flds(i), src_field, ncol)
+
+          ! Pass array sections (1:ncol, :) so that Fortran creates contiguous
+          ! copies matching the declared shape (ncol, nlev) in shr_vcoarsen_avg_cols.
+          ! Without this, when ncol < pcols the dummy array's stride doesn't
+          ! match the actual array's stride, causing levels k>1 to read from
+          ! wrong memory offsets (padding columns of the previous level).
+          call shr_vcoarsen_avg_cols(src_field(1:ncol, :), coord_iface(1:ncol, :), &
+               ncol, pver, vcoarsen_pbounds(1:n_avg_levs+1), n_avg_levs, &
+               fillvalue, coarsened(1:ncol, :))
+
+          do k = 1, n_avg_levs
+            ! Fill inactive columns
+            coarsened(ncol+1:pcols, k) = fillvalue
+
+            call make_avg_name(vcoarsen_avg_flds(i), k-1, fname)  ! 0-indexed
+            call outfld(trim(fname), coarsened(:, k), pcols, lchnk)
+          end do
+        end do
+      end if
     end if
 
     ! --- Level index selection ---

@@ -57,6 +57,9 @@ module ocn_fme_derived_fields
    integer :: remap_nlat = 0, remap_nlon = 0, remap_nb_local = 0
    type(ocn_fme_remap_file_t) :: remap_outfile
 
+   ! Ice shelf SSH mask threshold (m)
+   real(kind=RKIND) :: ssh_mask_threshold = -4.0_RKIND
+
 !***********************************************************************
 
 contains
@@ -69,9 +72,18 @@ contains
       integer, intent(out) :: err
 
       character(len=StrKIND), pointer :: config_AM_fmeDerivedFields_horiz_remap_file
+      real(kind=RKIND), pointer :: config_AM_fmeDerivedFields_ssh_mask_threshold
       integer :: ierr
 
       err = 0
+
+      ! Read SSH mask threshold
+      call mpas_pool_get_config(domain % configs, &
+           'config_AM_fmeDerivedFields_ssh_mask_threshold', &
+           config_AM_fmeDerivedFields_ssh_mask_threshold)
+      if (associated(config_AM_fmeDerivedFields_ssh_mask_threshold)) then
+         ssh_mask_threshold = config_AM_fmeDerivedFields_ssh_mask_threshold
+      end if
 
       ! Check if horizontal remapping is requested
       call mpas_pool_get_config(domain % configs, &
@@ -159,6 +171,7 @@ contains
       ! Remap workspace
       real(r8), allocatable :: fld_remap(:,:)
       real(kind=RKIND), allocatable :: field_1lev(:,:)
+      integer, allocatable :: levelMask(:)
       character(len=StrKIND) :: timeStr
       type(MPAS_Time_Type) :: currTime
 
@@ -189,6 +202,7 @@ contains
          call mpas_pool_get_array(forcingPool, 'windStressMeridional', windStressMeridionalPtr)
 
          call mpas_pool_get_array(meshPool, 'maxLevelCell', maxLevelCell)
+         call mpas_pool_get_array(statePool, 'ssh', ssh_ptr, 1)
          do iCell = 1, nCellsSolve
             ! Land cells (maxLevelCell==0) get fillValue so the remap
             ! correctly excludes them from weighted averages.
@@ -197,6 +211,16 @@ contains
                sss(iCell) = fillValue
                surfaceHeatFluxTotal(iCell) = fillValue
                cycle
+            end if
+
+            ! Apply ice shelf mask: skip cells with ssh below threshold
+            if (associated(ssh_ptr)) then
+               if (ssh_ptr(iCell) < ssh_mask_threshold) then
+                  sst(iCell) = fillValue
+                  sss(iCell) = fillValue
+                  surfaceHeatFluxTotal(iCell) = fillValue
+                  cycle
+               end if
             end if
 
             sst(iCell) = tracers(index_temperature, 1, iCell)
@@ -227,29 +251,41 @@ contains
                allocate(fld_remap(remap_nb_local, 1))
                allocate(field_1lev(1, nCells))
 
+               ! Build SSH-aware mask: valid ocean cells with ssh >= threshold
+               allocate(levelMask(nCells))
+               do iCell = 1, nCells
+                  if (maxLevelCell(iCell) == 0) then
+                     levelMask(iCell) = 0
+                  else if (associated(ssh_ptr) .and. &
+                           ssh_ptr(iCell) < ssh_mask_threshold) then
+                     levelMask(iCell) = 0
+                  else
+                     levelMask(iCell) = maxLevelCell(iCell)
+                  end if
+               end do
+
                call remap_outfile%write_time('', ierr)
 
                field_1lev(1, 1:nCells) = sst(1:nCells)
                call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
-                    mask=maxLevelCell)
+                    mask=levelMask)
                call remap_outfile%write_var('sst', fld_remap, 1, ierr)
 
                field_1lev(1, 1:nCells) = sss(1:nCells)
                call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
-                    mask=maxLevelCell)
+                    mask=levelMask)
                call remap_outfile%write_var('sss', fld_remap, 1, ierr)
 
                field_1lev(1, 1:nCells) = surfaceHeatFluxTotal(1:nCells)
                call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
-                    mask=maxLevelCell)
+                    mask=levelMask)
                call remap_outfile%write_var('surfaceHeatFluxTotal', fld_remap, 1, ierr)
 
-               ! ssh (from state pool)
-               call mpas_pool_get_array(statePool, 'ssh', ssh_ptr, 1)
+               ! ssh (from state pool, already fetched)
                if (associated(ssh_ptr)) then
                   field_1lev(1, 1:nCells) = ssh_ptr(1:nCells)
                   call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
-                       mask=maxLevelCell)
+                       mask=levelMask)
                   call remap_outfile%write_var('ssh', fld_remap, 1, ierr)
                end if
 
@@ -257,28 +293,28 @@ contains
                if (associated(shortWaveHeatFlux)) then
                   field_1lev(1, 1:nCells) = shortWaveHeatFlux(1:nCells)
                   call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
-                       mask=maxLevelCell)
+                       mask=levelMask)
                   call remap_outfile%write_var('shortWaveHeatFlux', fld_remap, 1, ierr)
                end if
 
                if (associated(longWaveHeatFluxDown)) then
                   field_1lev(1, 1:nCells) = longWaveHeatFluxDown(1:nCells)
                   call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
-                       mask=maxLevelCell)
+                       mask=levelMask)
                   call remap_outfile%write_var('longWaveHeatFluxDown', fld_remap, 1, ierr)
                end if
 
                if (associated(latentHeatFlux)) then
                   field_1lev(1, 1:nCells) = latentHeatFlux(1:nCells)
                   call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
-                       mask=maxLevelCell)
+                       mask=levelMask)
                   call remap_outfile%write_var('latentHeatFlux', fld_remap, 1, ierr)
                end if
 
                if (associated(sensibleHeatFlux)) then
                   field_1lev(1, 1:nCells) = sensibleHeatFlux(1:nCells)
                   call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
-                       mask=maxLevelCell)
+                       mask=levelMask)
                   call remap_outfile%write_var('sensibleHeatFlux', fld_remap, 1, ierr)
                end if
 
@@ -286,18 +322,18 @@ contains
                if (associated(windStressZonalPtr)) then
                   field_1lev(1, 1:nCells) = windStressZonalPtr(1:nCells)
                   call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
-                       mask=maxLevelCell)
+                       mask=levelMask)
                   call remap_outfile%write_var('windStressZonal', fld_remap, 1, ierr)
                end if
 
                if (associated(windStressMeridionalPtr)) then
                   field_1lev(1, 1:nCells) = windStressMeridionalPtr(1:nCells)
                   call ocn_fme_horiz_remap_field(domain, field_1lev, 1, fld_remap, ierr, &
-                       mask=maxLevelCell)
+                       mask=levelMask)
                   call remap_outfile%write_var('windStressMeridional', fld_remap, 1, ierr)
                end if
 
-               deallocate(fld_remap, field_1lev)
+               deallocate(fld_remap, field_1lev, levelMask)
             end if
          end if
 

@@ -6910,6 +6910,15 @@ Valid values: Any valid MPAS time interval string
 Default: Defined in namelist_defaults.xml
 </entry>
 
+<entry id="config_AM_fmeDepthCoarsening_ssh_mask_threshold" type="real"
+	category="AM_fmeDepthCoarsening" group="AM_fmeDepthCoarsening">
+SSH threshold (m) for masking ice shelf cells. Cells with ssh below this value are masked out.
+Set to a very large negative value (e.g., -1e10) to disable.
+
+Valid values: Any real value in meters
+Default: Defined in namelist_defaults.xml
+</entry>
+
 <!-- AM_fmeDerivedFields -->
 
 <entry id="config_AM_fmeDerivedFields_enable" type="logical"
@@ -6965,6 +6974,15 @@ Default: Defined in namelist_defaults.xml
 Path to ESMF/TempestRemap weight file for horizontal remapping to lat-lon grid.
 
 Valid values: Any valid file path or 'none'
+Default: Defined in namelist_defaults.xml
+</entry>
+
+<entry id="config_AM_fmeDerivedFields_ssh_mask_threshold" type="real"
+	category="AM_fmeDerivedFields" group="AM_fmeDerivedFields">
+SSH threshold (m) for masking ice shelf cells. Cells with ssh below this value are masked out.
+Set to a very large negative value (e.g., -1e10) to disable.
+
+Valid values: Any real value in meters
 Default: Defined in namelist_defaults.xml
 </entry>
 
@@ -7047,6 +7065,15 @@ Default: Defined in namelist_defaults.xml
 Output interval for the fmeVerticalReduce stream. Format: YY-MM-DD_HH:MM:SS
 
 Valid values: Any valid MPAS time interval string
+Default: Defined in namelist_defaults.xml
+</entry>
+
+<entry id="config_AM_fmeVerticalReduce_ssh_mask_threshold" type="real"
+	category="AM_fmeVerticalReduce" group="AM_fmeVerticalReduce">
+SSH threshold (m) for masking ice shelf cells. Cells with ssh below this value are masked out.
+Set to a very large negative value (e.g., -1e10) to disable.
+
+Valid values: Any real value in meters
 Default: Defined in namelist_defaults.xml
 </entry>
 

@@ -35,6 +35,10 @@
 			description="Path to ESMF/TempestRemap weight file for horizontal remapping vertically reduced fields to lat-lon grid."
 			possible_values="Any valid file path or 'none'"
 		/>
+		<nml_option name="config_AM_fmeVerticalReduce_ssh_mask_threshold" type="real" default_value="-4.0"
+			description="SSH threshold (m) for masking ice shelf cells. Cells with ssh below this value are masked out. Set to a very large negative value (e.g., -1e10) to disable."
+			possible_values="Any real value in meters"
+		/>
 		<nml_option name="config_AM_fmeVerticalReduce_stream_output_interval" type="character" default_value="00-00-01_00:00:00"
 			description="Output interval for the fmeVerticalReduce stream. Format: YY-MM-DD_HH:MM:SS"
 			possible_values="Any valid MPAS time interval string"

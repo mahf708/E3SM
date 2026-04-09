@@ -59,6 +59,9 @@ module ocn_fme_depth_coarsening
 
    real(kind=RKIND), parameter :: fillValue = 1.0E34_RKIND
 
+   ! Ice shelf SSH mask threshold (m)
+   real(kind=RKIND) :: ssh_mask_threshold = -4.0_RKIND
+
    !> Horizontal remapping state
    logical :: do_horiz_remap = .false.
    type(ocn_fme_remap_file_t) :: remap_outfile
@@ -78,11 +81,20 @@ contains
       character(len=StrKIND), pointer :: config_AM_fmeDepthCoarsening_depth_bounds
       character(len=StrKIND), pointer :: config_AM_fmeDepthCoarsening_fields
       character(len=StrKIND), pointer :: config_AM_fmeDepthCoarsening_horiz_remap_file
+      real(kind=RKIND), pointer :: config_AM_fmeDepthCoarsening_ssh_mask_threshold
       character(len=StrKIND) :: tempStr
       character(len=128) :: varName, longName
       integer :: nBounds, i, iStart, iEnd, strLen, ierr, iField, kOut
 
       err = 0
+
+      ! Read SSH mask threshold
+      call mpas_pool_get_config(domain % configs, &
+           'config_AM_fmeDepthCoarsening_ssh_mask_threshold', &
+           config_AM_fmeDepthCoarsening_ssh_mask_threshold)
+      if (associated(config_AM_fmeDepthCoarsening_ssh_mask_threshold)) then
+         ssh_mask_threshold = config_AM_fmeDepthCoarsening_ssh_mask_threshold
+      end if
 
       ! --- Parse depth bounds ---
       call mpas_pool_get_config(domain % configs, &
@@ -231,6 +243,7 @@ contains
       integer :: iCell, k, iField
       integer, dimension(:), pointer :: maxLevelCell
 
+      real(kind=RKIND), dimension(:), pointer :: ssh_ptr
       real(kind=RKIND), dimension(:, :, :), pointer :: tracers
       real(kind=RKIND), dimension(:, :), pointer :: layerThickness
       real(kind=RKIND), dimension(:, :), pointer :: temperatureCoarsened
@@ -309,6 +322,7 @@ contains
          call mpas_pool_get_array(tracersPool, 'activeTracers', tracers, timeLevel)
          call mpas_pool_get_array(statePool, 'layerThickness', layerThickness, timeLevel)
          call mpas_pool_get_array(meshPool, 'maxLevelCell', maxLevelCell)
+         call mpas_pool_get_array(statePool, 'ssh', ssh_ptr, 1)
 
          call mpas_pool_get_array(amPool, 'temperatureCoarsened', temperatureCoarsened)
          call mpas_pool_get_array(amPool, 'salinityCoarsened', salinityCoarsened)
@@ -329,6 +343,11 @@ contains
          allocate(field_out(nCoarsenLevels))
 
          do iCell = 1, nCellsSolve
+
+            ! Apply ice shelf mask: skip cells with ssh below threshold
+            if (associated(ssh_ptr)) then
+               if (ssh_ptr(iCell) < ssh_mask_threshold) cycle
+            end if
 
             ! Build depth interface array from layer thicknesses
             coord_iface(1) = 0.0_r8
