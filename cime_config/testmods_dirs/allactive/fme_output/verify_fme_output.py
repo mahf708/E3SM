@@ -155,6 +155,8 @@ RANGE_CHECKS = {
     "oceanHeatContent": (None, None),
     "freshwaterContent": (-1000, 1000),
     "kineticEnergy": (0, None),
+    "airStressZonal": (-2, 2),
+    "airStressMeridional": (-2, 2),
     "T": (150, 350),
     "Q": (0, 0.05),
     "PS": (40000, 110000),
@@ -262,13 +264,21 @@ def valid_data(arr, fill=1e15):
 
 
 def check_range(arr, name, vmin=None, vmax=None):
-    v = valid_data(arr)
     issues = []
-    if v is None or v.size == 0:
+    if arr is None:
         issues.append(f"  {name}: no valid data")
         return issues
-    if not np.isfinite(v).all():
-        issues.append(f"  {name}: NaN/Inf present")
+    flat = arr.ravel().astype(float)
+    nan_count = np.count_nonzero(np.isnan(flat))
+    if nan_count > 0:
+        issues.append(f"  {name}: {nan_count} NaN values ({nan_count/flat.size:.1%} of cells)")
+    inf_count = np.count_nonzero(np.isinf(flat))
+    if inf_count > 0:
+        issues.append(f"  {name}: {inf_count} Inf values")
+    v = valid_data(arr)
+    if v is None or v.size == 0:
+        issues.append(f"  {name}: no valid (non-fill) data")
+        return issues
     if vmin is not None and v.min() < vmin:
         issues.append(f"  {name}: min={v.min():.4g} below {vmin}")
     if vmax is not None and v.max() > vmax:
@@ -281,6 +291,91 @@ def summary_stats(arr):
     if v is None or v.size == 0:
         return "no valid data"
     return f"mean={v.mean():.4g}  min={v.min():.4g}  max={v.max():.4g}  n={v.size}"
+
+
+def get_fillvalue(ds, varname):
+    """Return _FillValue attribute for a variable, or None."""
+    if HAS_XR and isinstance(ds, xr.Dataset):
+        if varname in ds:
+            return ds[varname].encoding.get("_FillValue",
+                   ds[varname].attrs.get("_FillValue"))
+        return None
+    if HAS_NC4 and isinstance(ds, NC4Dataset):
+        if varname in ds.variables:
+            v = ds.variables[varname]
+            if hasattr(v, '_FillValue'):
+                return float(v._FillValue)
+            if '_FillValue' in v.ncattrs():
+                return float(v.getncattr('_FillValue'))
+        return None
+    return None
+
+
+def check_fillvalue_attrs(ds, varnames, label):
+    """Check _FillValue and missing_value attributes on remapped variables."""
+    issues = []
+    for var in varnames:
+        fv = get_fillvalue(ds, var)
+        if fv is None:
+            issues.append(f"  {label}/{var}: missing _FillValue attribute")
+    return issues
+
+
+def check_fill_fraction(ds, varnames, label, verbose=False):
+    """Report fill-value fraction for remapped output (sanity check)."""
+    issues = []
+    for var in varnames:
+        arr = get_var(ds, var)
+        if arr is None:
+            continue
+        flat = arr.ravel().astype(float)
+        n_fill = np.count_nonzero(np.abs(flat) >= 1e15)
+        frac = n_fill / flat.size if flat.size > 0 else 0
+        if verbose:
+            print(f"  {label}/{var}: fill fraction = {frac:.1%} "
+                  f"({n_fill}/{flat.size})")
+        if frac == 0 and "eam" not in label.lower():
+            issues.append(f"  {label}/{var}: 0% fill — expected some land masking")
+        if frac > 0.95:
+            issues.append(f"  {label}/{var}: {frac:.1%} fill — almost all masked")
+    return issues
+
+
+def check_coord_sanity(ds, label):
+    """Verify lon/lat/time coordinate variables in a remapped dataset."""
+    issues = []
+    lon = get_var(ds, "lon")
+    lat = get_var(ds, "lat")
+    if lon is not None:
+        if lon.ndim == 1:
+            if not np.all(np.diff(lon) > 0):
+                issues.append(f"  {label}: lon not monotonically increasing")
+            if lon.min() < -180.5 or lon.max() > 360.5:
+                issues.append(f"  {label}: lon range [{lon.min():.1f}, {lon.max():.1f}] unexpected")
+    if lat is not None:
+        if lat.ndim == 1:
+            if not np.all(np.diff(lat) > 0):
+                issues.append(f"  {label}: lat not monotonically increasing")
+            if lat.min() < -90.5 or lat.max() > 90.5:
+                issues.append(f"  {label}: lat range [{lat.min():.1f}, {lat.max():.1f}] out of bounds")
+    return issues
+
+
+def check_cf_metadata(ds, label):
+    """Check for CF-convention attributes on a remapped file."""
+    issues = []
+    if HAS_XR and isinstance(ds, xr.Dataset):
+        conv = ds.attrs.get("Conventions", ds.attrs.get("conventions", ""))
+    elif HAS_NC4 and isinstance(ds, NC4Dataset):
+        try:
+            conv = ds.getncattr("Conventions")
+        except AttributeError:
+            conv = ""
+    else:
+        conv = ""
+    if "CF" not in str(conv):
+        issues.append(f"  {label}: missing CF Conventions attribute")
+    return issues
 
 
 # -----------------------------------------------------------------------------
@@ -642,6 +737,8 @@ def check_mpaso_depth_coarsening_remapped(rundir, outdir, verbose):
 
     # Verify lat-lon grid
     issues += check_remapped_grid(ds, "depth coarsening remapped")
+    issues += check_coord_sanity(ds, "depth coarsening remapped")
+    issues += check_cf_metadata(ds, "depth coarsening remapped")
 
     # Check for per-level variables: temperatureCoarsened_0..18, etc.
     expected_vars = []
@@ -649,6 +746,7 @@ def check_mpaso_depth_coarsening_remapped(rundir, outdir, verbose):
         for k in range(N_OCN_LAYERS):
             expected_vars.append(f"{base}_{k}")
     issues += check_remapped_vars(ds, expected_vars, "depth coarsening remapped")
+    issues += check_fillvalue_attrs(ds, expected_vars[:5], "depth coarsening remapped")
 
     # Range checks on per-level variables
     varnames = get_varnames(ds)
@@ -784,6 +882,12 @@ def check_mpaso_derived_remapped(rundir, outdir, verbose):
     # Check expected variables
     issues += check_remapped_vars(ds, REMAPPED_DERIVED_VARS, "derived fields remapped")
 
+    # Attribute and metadata checks
+    issues += check_fillvalue_attrs(ds, REMAPPED_DERIVED_VARS, "derived remapped")
+    issues += check_coord_sanity(ds, "derived remapped")
+    issues += check_cf_metadata(ds, "derived remapped")
+    issues += check_fill_fraction(ds, REMAPPED_DERIVED_VARS, "derived remapped", verbose)
+
     # Range checks
     for var in REMAPPED_DERIVED_VARS:
         arr = get_var(ds, var)
@@ -870,9 +974,13 @@ def check_mpaso_vertical_reduce_remapped(rundir, outdir, verbose):
 
     # Verify lat-lon grid
     issues += check_remapped_grid(ds, "vertical reduce remapped")
+    issues += check_coord_sanity(ds, "vertical reduce remapped")
+    issues += check_cf_metadata(ds, "vertical reduce remapped")
 
     # Check expected variables
     issues += check_remapped_vars(ds, REMAPPED_VERTREDUCE_VARS, "vertical reduce remapped")
+    issues += check_fillvalue_attrs(ds, REMAPPED_VERTREDUCE_VARS, "vert reduce remapped")
+    issues += check_fill_fraction(ds, REMAPPED_VERTREDUCE_VARS, "vert reduce remapped", verbose)
 
     # Range checks
     for var in REMAPPED_VERTREDUCE_VARS:
@@ -972,9 +1080,13 @@ def check_mpassi_derived_remapped(rundir, outdir, verbose):
 
     # Verify lat-lon grid
     issues += check_remapped_grid(ds, "sea ice derived remapped")
+    issues += check_coord_sanity(ds, "sea ice derived remapped")
+    issues += check_cf_metadata(ds, "sea ice derived remapped")
 
     # Check expected variables
     issues += check_remapped_vars(ds, REMAPPED_SEAICE_VARS, "sea ice derived remapped")
+    issues += check_fillvalue_attrs(ds, REMAPPED_SEAICE_VARS, "sea ice remapped")
+    issues += check_fill_fraction(ds, REMAPPED_SEAICE_VARS, "sea ice remapped", verbose)
 
     # Range checks
     for var in REMAPPED_SEAICE_VARS:
@@ -1081,7 +1193,8 @@ def write_html_index(outdir, all_plots_by_comp, all_issues, timing_summary=None)
     for comp, plots in all_plots_by_comp.items():
         if not plots:
             continue
-        fig_sections += f"<h3>{comp}</h3>\n<div>\n"
+        anchor = comp.replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
+        fig_sections += f'<h3 id="{anchor}">{comp}</h3>\n<div>\n'
         for p in plots:
             if p and os.path.exists(p):
                 rel = os.path.relpath(p, outdir)
@@ -1207,7 +1320,10 @@ def main():
         sys.exit("ERROR: need xarray or netCDF4")
 
     # File inventory
-    print_file_inventory(args.rundir)
+    n_fme_files = print_file_inventory(args.rundir)
+    if n_fme_files == 0:
+        sys.exit("ERROR: no FME output files found in rundir — check that "
+                 "the case ran with the fme_output testmod")
 
     all_issues = {}
     all_plots_by_comp = {}

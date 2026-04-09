@@ -307,7 +307,8 @@ contains
          end do
       end if
 
-      call remap_data%apply(ws_send_buf, numlev, fld_out, comm, nprocs, err)
+      call remap_data%apply(ws_send_buf, numlev, fld_out, comm, nprocs, err, &
+           fillval=real(1.0E34, r8))
 
    end subroutine ocn_fme_horiz_remap_field!}}}
 
@@ -389,6 +390,8 @@ contains
       fill_val = 1.0E34
       ierr = pio_put_att(self%pio_file, self%pio_var_descs(self%n_pio_vars), &
            '_FillValue', fill_val)
+      ierr = pio_put_att(self%pio_file, self%pio_var_descs(self%n_pio_vars), &
+           'missing_value', fill_val)
 
    end subroutine remap_file_def_var!}}}
 

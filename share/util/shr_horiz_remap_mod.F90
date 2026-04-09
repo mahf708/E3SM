@@ -416,7 +416,8 @@ CONTAINS
   end subroutine shr_horiz_remap_build_comm
 
   !-------------------------------------------------------------------------------------------
-  subroutine shr_horiz_remap_apply(rd, send_buf, numlev, fld_out, comm, nprocs, ierr)
+  subroutine shr_horiz_remap_apply(rd, send_buf, numlev, fld_out, comm, nprocs, ierr, &
+                                    fillval)
     !--------------------------------------------------------------------------
     ! Phase 3 (runtime): Source-gather remap.
     !   1. Alltoallv gathers needed source column data
@@ -424,6 +425,7 @@ CONTAINS
     !
     ! Input:  send_buf(n_send_total * numlev) - packed source data
     ! Output: fld_out(n_b_local, numlev)
+    ! Optional: fillval - value for pure-land target cells (default 0.0)
     !--------------------------------------------------------------------------
     use mpi, only: MPI_DOUBLE_PRECISION
 
@@ -433,12 +435,16 @@ CONTAINS
     real(r8), intent(out)   :: fld_out(:,:)
     integer,  intent(in)    :: comm, nprocs
     integer,  intent(out)   :: ierr
+    real(r8), intent(in), optional :: fillval
 
     integer :: needed, i, k, j, src_idx, jbeg, jend
+    real(r8) :: land_fill
     integer :: send_counts_lev(0:nprocs-1), send_displs_lev(0:nprocs-1)
     integer :: recv_counts_lev(0:nprocs-1), recv_displs_lev(0:nprocs-1)
 
     ierr = 0
+    land_fill = 0.0_r8
+    if (present(fillval)) land_fill = fillval
 
     ! Grow persistent recv workspace if needed
     needed = rd%n_recv_total * numlev
@@ -496,9 +502,9 @@ CONTAINS
             fld_out(i, k) = fld_out(i, k) / rd%frac_b_local(i)
           end do
         else
-          ! Pure land cell: zero out
+          ! Pure land cell: fill with land_fill (default 0, or _FillValue)
           do k = 1, numlev
-            fld_out(i, k) = 0.0_r8
+            fld_out(i, k) = land_fill
           end do
         end if
       end do

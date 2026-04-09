@@ -253,6 +253,7 @@ contains
       integer :: ifld, kOut, ierr
       real(r8), allocatable :: fld_remap(:,:)
       real(kind=RKIND), allocatable :: field_1lev(:,:)
+      integer, allocatable :: levelMask(:)
       character(len=StrKIND) :: timeStr
       character(len=128) :: varName, longName
       type(MPAS_Time_Type) :: currTime
@@ -401,13 +402,18 @@ contains
             if (remap_outfile%file_is_open) then
                allocate(fld_remap(remap_nb_local, 1))
                allocate(field_1lev(1, nCells))
+               allocate(levelMask(nCells))
 
                ! Write time record
                currTime = mpas_get_clock_time(domain % clock, MPAS_NOW, ierr)
                call mpas_get_time(currTime, dateTimeString=timeStr)
                call remap_outfile%write_time(trim(timeStr), ierr)
 
-               ! Remap each coarsened field, one depth level at a time
+               ! Remap each coarsened field, one depth level at a time.
+               ! Use per-level mask: a cell is valid at this coarsened level
+               ! only if its layerThicknessCoarsened is not fillValue (i.e.,
+               ! the ocean is deep enough for this bin).  Without this,
+               ! fillValue (1e34) from shallow cells leaks into the SpMV.
                do ifld = 1, nCoarsenFields
                   ! Point to the correct coarsened array
                   select case (trim(coarsenFieldNames(ifld)))
@@ -425,8 +431,18 @@ contains
 
                   do kOut = 0, nCoarsenLevels - 1
                      field_1lev(1, 1:nCells) = coarsenedPtr(kOut + 1, 1:nCells)
+                     ! Build per-level mask: 1 = valid data, 0 = fill/land
+                     do iCell = 1, nCells
+                        if (layerThicknessCoarsened(kOut + 1, iCell) < &
+                             fillValue * 0.5_RKIND) then
+                           levelMask(iCell) = 1
+                        else
+                           levelMask(iCell) = 0
+                           field_1lev(1, iCell) = 0.0_RKIND
+                        end if
+                     end do
                      call ocn_fme_horiz_remap_field(domain, field_1lev, 1, &
-                          fld_remap, ierr, mask=maxLevelCell)
+                          fld_remap, ierr, mask=levelMask)
                      write(varName, '(A,A,I0)') &
                           trim(coarsenFieldNames(ifld)), 'Coarsened_', kOut
                      call remap_outfile%write_var(trim(varName), &
@@ -437,14 +453,24 @@ contains
                ! Remap layerThicknessCoarsened split levels
                do kOut = 0, nCoarsenLevels - 1
                   field_1lev(1, 1:nCells) = layerThicknessCoarsened(kOut + 1, 1:nCells)
+                  ! Same per-level mask for thickness
+                  do iCell = 1, nCells
+                     if (layerThicknessCoarsened(kOut + 1, iCell) < &
+                          fillValue * 0.5_RKIND) then
+                        levelMask(iCell) = 1
+                     else
+                        levelMask(iCell) = 0
+                        field_1lev(1, iCell) = 0.0_RKIND
+                     end if
+                  end do
                   call ocn_fme_horiz_remap_field(domain, field_1lev, 1, &
-                       fld_remap, ierr, mask=maxLevelCell)
+                       fld_remap, ierr, mask=levelMask)
                   write(varName, '(A,I0)') 'layerThicknessCoarsened_', kOut
                   call remap_outfile%write_var(trim(varName), &
                        fld_remap, 1, ierr)
                end do
 
-               deallocate(fld_remap, field_1lev)
+               deallocate(fld_remap, field_1lev, levelMask)
             end if
          end if
 
