@@ -170,13 +170,7 @@ setup (const std::shared_ptr<fm_type>& field_mgr,
         }
       }
 
-      // See comment above for ncol naming with 2+ grids
-      auto grid_nonconst = grid->clone(gname,true);
-      if (gname == "physics_gll" && pg2_grid_in_io_streams) {
-        grid_nonconst->reset_field_tag_name(ShortFieldTagsNames::COL,"ncol_d");
-      }
-
-      auto output = std::make_shared<output_type>(m_io_comm,fields,grid_nonconst);
+      auto output = std::make_shared<output_type>(m_io_comm,fields,grid);
       m_geo_data_streams.push_back(output);
     }
   }
@@ -859,6 +853,17 @@ setup_file (      IOFileSpecs& filespecs,
     }
     scorpio::set_attribute(filename,"GLOBAL","fp_precision",fp_precision);
     set_file_header(filespecs);
+
+    // Collect intermediate-only aliases from all output streams and write them
+    // as a global attribute for documentation purposes.
+    std::vector<std::string> all_aliases;
+    for (const auto& s : m_output_streams) {
+      for (const auto& a : s->get_intermediate_aliases()) {
+        all_aliases.push_back(a);
+      }
+    }
+    scorpio::set_attribute(filename,"GLOBAL","aliases",
+                           all_aliases.empty() ? "None" : ekat::join(all_aliases,", "));
 
     const auto& pc_names = m_params.get<std::vector<std::string>>("constants",{});
     const auto& pc_dict = physics::Constants<Real>::dictionary();
