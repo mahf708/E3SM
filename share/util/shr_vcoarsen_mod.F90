@@ -61,10 +61,10 @@ contains
     ! For land: coord_iface = soil depth interfaces (m), bounds = depth bounds
     !--------------------------------------------------------------------------
     integer,  intent(in)  :: nlev              ! number of input vertical levels
+    integer,  intent(in)  :: n_out             ! number of output layers
     real(r8), intent(in)  :: field(nlev)       ! input field values
     real(r8), intent(in)  :: coord_iface(nlev+1) ! interface coordinates
     real(r8), intent(in)  :: bounds(n_out+1)   ! target layer boundaries
-    integer,  intent(in)  :: n_out             ! number of output layers
     real(r8), intent(in)  :: fillval           ! fill value for empty layers
     real(r8), intent(out) :: field_out(n_out)  ! output coarsened values
 
@@ -116,10 +116,10 @@ contains
     !--------------------------------------------------------------------------
     integer,  intent(in)  :: ncol                      ! number of columns
     integer,  intent(in)  :: nlev                      ! number of input levels
+    integer,  intent(in)  :: n_out                     ! number of output layers
     real(r8), intent(in)  :: field(ncol, nlev)         ! input field values
     real(r8), intent(in)  :: coord_iface(ncol, nlev+1) ! interface coordinates
     real(r8), intent(in)  :: bounds(n_out+1)           ! target layer boundaries
-    integer,  intent(in)  :: n_out                     ! number of output layers
     real(r8), intent(in)  :: fillval                   ! fill value for empty layers
     real(r8), intent(out) :: field_out(ncol, n_out)    ! output coarsened values
 

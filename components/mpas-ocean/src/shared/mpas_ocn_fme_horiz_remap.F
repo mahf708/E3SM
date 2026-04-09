@@ -427,6 +427,7 @@ contains
             fld_1d(1:remap_data%n_b_local) = real(fld_out(1:remap_data%n_b_local, 1), r8)
             call pio_write_darray(self%pio_file, self%pio_var_descs(iv), &
                  iodesc_2d, fld_1d, ierr)
+            err = ierr
             return
          end if
       end do

@@ -162,6 +162,17 @@ contains
       end do
       if (allocated(send_gcol_list)) deallocate(send_gcol_list)
 
+      ! Validate that all needed source cells were found locally.
+      do i = 1, remap_data%n_send_total
+         if (send_local_cell(i) == 0) then
+            call mpas_log_write('seaice_fme_horiz_remap_init: FATAL - source cell $i '// &
+                 'not found in local blocks. Map file may be incompatible with mesh.', &
+                 messageType=MPAS_LOG_CRIT, intArgs=(/i/))
+            err = 1
+            return
+         end if
+      end do
+
       pio_sys => domain % ioContext % pio_iosystem
 
       ! Build 2D PIO decomposition
@@ -280,6 +291,7 @@ contains
             call pio_setframe(pio_file, pio_var_descs(iv), &
                  int(time_record, PIO_OFFSET_KIND))
             call pio_write_darray(pio_file, pio_var_descs(iv), iodesc_2d, fld_out, ierr)
+            err = ierr
             return
          end if
       end do

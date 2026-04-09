@@ -330,6 +330,15 @@ contains
          call mpas_pool_get_dimension(block % dimensions, 'nVertLevels', nVertLevels)
          call mpas_pool_get_dimension(block % dimensions, 'nFmeDepthLevels', nFmeDepthLevels)
 
+         ! Guard: nCoarsenLevels must fit in the Registry dimension
+         if (nCoarsenLevels > nFmeDepthLevels) then
+            call mpas_log_write('fmeDepthCoarsening: nCoarsenLevels ($i) exceeds ' // &
+                 'nFmeDepthLevels ($i) — reduce depth_bounds entries', &
+                 messageType=MPAS_LOG_CRIT, &
+                 intArgs=(/nCoarsenLevels, nFmeDepthLevels/))
+            err = 1; return
+         end if
+
          call mpas_pool_get_array(tracersPool, 'activeTracers', tracers, timeLevel)
          call mpas_pool_get_array(statePool, 'layerThickness', layerThickness, timeLevel)
          call mpas_pool_get_array(meshPool, 'maxLevelCell', maxLevelCell)
