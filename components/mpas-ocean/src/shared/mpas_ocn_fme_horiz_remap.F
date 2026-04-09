@@ -298,10 +298,13 @@ contains
       ! Validate: all send_local_cell entries must be > 0
       do i = 1, remap_data%n_send_total
          if (send_local_cell(i) <= 0) then
-            call mpas_log_write('ocn_fme_horiz_remap_init: WARNING send_local_cell($i)=0, ' &
-                 // 'cell not found in local block', intArgs=(/i/), &
-                 messageType=MPAS_LOG_WARN)
-            send_local_cell(i) = 1  ! fallback: use cell 1 to avoid out-of-bounds
+            call mpas_log_write('ocn_fme_horiz_remap_init: send_local_cell($i)=0, ' &
+                 // 'global cell ID not found in local block. ' &
+                 // 'Map file may be incompatible with mesh.', &
+                 intArgs=(/i/), messageType=MPAS_LOG_ERR)
+            err = 1
+            is_initialized = .false.
+            return
          end if
       end do
 
@@ -370,6 +373,13 @@ contains
       real(r8) :: val
       logical :: cell_valid
 
+      ! NOTE: When numlev>1, the below-bottom check (mask < k) zeros deep
+      ! levels but the cell-level mask remains 1.0. This means shallow cells
+      ! contribute zeros to the weighted average at deep levels. For correct
+      ! 3D masking, callers MUST remap level-by-level with a per-level mask
+      ! (as done by fmeDepthCoarsening). Do NOT call with numlev>1 and a
+      ! single maxLevelCell mask — use split-level remapping instead.
+      !
       ! Fill detection threshold: 10% of MPAS fill value.
       ! Catches 1e34 fills and any floating-point variants while staying
       ! far above any physical value (geophysical quantities < 1e10).
