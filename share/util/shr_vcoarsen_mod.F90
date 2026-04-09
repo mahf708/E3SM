@@ -12,9 +12,11 @@ module shr_vcoarsen_mod
   ! dependencies. Each component provides a thin wrapper that builds the
   ! coordinate arrays from its own data structures and calls these routines.
   !
-  ! The overlap-weighted averaging algorithm works for any monotonic vertical
-  ! coordinate (pressure, depth, etc.) as long as coord_iface and bounds use
-  ! the same convention (both increasing or both decreasing).
+  ! IMPORTANT: The overlap formula min(c_hi,b_hi)-max(c_lo,b_lo) requires
+  ! INCREASING coordinates: coord_iface(k+1) > coord_iface(k), and
+  ! bounds(k+1) > bounds(k). This covers pressure (top-to-surface in Pa),
+  ! ocean depth (0 to bottom in m), and soil depth (0 to bottom in m).
+  ! Callers must ensure both coord_iface and bounds are strictly increasing.
   !
   !-------------------------------------------------------------------------------------------
 

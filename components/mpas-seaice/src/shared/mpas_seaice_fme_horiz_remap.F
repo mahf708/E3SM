@@ -239,9 +239,12 @@ contains
       ! Validate: all send_local_cell entries must be > 0
       do i = 1, remap_data%n_send_total
          if (send_local_cell(i) <= 0) then
-            call mpas_log_write('seaice_fme_horiz_remap_init: WARNING send_local_cell($i)=0', &
-                 intArgs=(/i/), messageType=MPAS_LOG_WARN)
-            send_local_cell(i) = 1
+            call mpas_log_write('seaice_fme_horiz_remap_init: send_local_cell($i)=0, ' &
+                 // 'global cell ID not found. Map file may be incompatible.', &
+                 intArgs=(/i/), messageType=MPAS_LOG_ERR)
+            err = 1
+            is_initialized = .false.
+            return
          end if
       end do
 
@@ -387,6 +390,7 @@ contains
                  real(fld_out(1:remap_data%n_b_local), 4)
             call pio_write_darray(pio_file, pio_var_descs(iv), iodesc_2d, &
                  fld_out_r4, ierr)
+            err = ierr
             return
          end if
       end do

@@ -117,7 +117,7 @@ contains
       if (allocated(depthBounds)) deallocate(depthBounds)
       allocate(depthBounds(nBounds))
 
-      ! Parse comma-separated values
+      ! Parse comma-separated values with error handling
       iStart = 1
       do i = 1, nBounds
          iEnd = index(tempStr(iStart:strLen), ',')
@@ -126,11 +126,25 @@ contains
          else
             iEnd = iEnd + iStart - 1
          end if
-         read(tempStr(iStart:iEnd-1), *) depthBounds(i)
+         read(tempStr(iStart:iEnd-1), *, iostat=ierr) depthBounds(i)
+         if (ierr /= 0) then
+            call mpas_log_write('fmeDepthCoarsening: invalid numeric value ' &
+                 // 'in depth_bounds config at position $i', &
+                 intArgs=(/i/), messageType=MPAS_LOG_ERR)
+            err = 1; return
+         end if
          iStart = iEnd + 1
       end do
 
       nCoarsenLevels = nBounds - 1
+
+      ! Validate nCoarsenLevels fits in the Registry dimension nFmeDepthLevels
+      if (nCoarsenLevels > 25) then
+         call mpas_log_write('fmeDepthCoarsening: nCoarsenLevels ($i) exceeds ' &
+              // 'nFmeDepthLevels (25). Reduce depth_bounds entries.', &
+              intArgs=(/nCoarsenLevels/), messageType=MPAS_LOG_ERR)
+         err = 1; return
+      end if
 
       ! --- Parse field names for generic dispatch ---
       call mpas_pool_get_config(domain % configs, &
