@@ -138,6 +138,22 @@ contains
 
       nCoarsenLevels = nBounds - 1
 
+      ! Validate depth bounds: non-negative and strictly increasing
+      do i = 1, nBounds
+         if (depthBounds(i) < 0.0_r8) then
+            call mpas_log_write('fmeDepthCoarsening: depth_bounds must be ' &
+                 // 'non-negative; invalid value at position $i', &
+                 intArgs=(/i/), messageType=MPAS_LOG_ERR)
+            err = 1; return
+         end if
+         if (i > 1 .and. depthBounds(i) <= depthBounds(i-1)) then
+            call mpas_log_write('fmeDepthCoarsening: depth_bounds must be ' &
+                 // 'strictly increasing; invalid ordering at position $i', &
+                 intArgs=(/i/), messageType=MPAS_LOG_ERR)
+            err = 1; return
+         end if
+      end do
+
       ! Validate nCoarsenLevels fits in the Registry dimension nFmeDepthLevels
       if (nCoarsenLevels > 25) then
          call mpas_log_write('fmeDepthCoarsening: nCoarsenLevels ($i) exceeds ' &

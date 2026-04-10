@@ -364,8 +364,9 @@ contains
            areaSum, &
            tempSum
 
-      ! Fill value for intensive quantities at ice-free cells.
-      ! Must match the _FillValue attribute in remapped output files.
+      ! Internal fill value for masking ice-free cells. The remap layer
+      ! converts this to SHR_FILL_VALUE (1e20) in the output file via
+      ! apply_masked, so this does NOT need to match the file _FillValue.
       real(kind=RKIND), parameter :: fillValue = 1.0E34_RKIND
 
       err = 0
