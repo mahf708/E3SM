@@ -1,0 +1,251 @@
+#!/bin/bash
+# FME (Full Model Emulation) online output processing testmod
+#
+# Production configuration for ACE/Samudra coupled model emulation training
+# data generation. Enables online horizontal remapping, vertical coarsening,
+# derived diagnostics, and column-integrated fields.
+#
+# ---------------------------------------------------------------------------
+# Runtime-configurable parameters (override via environment variables)
+# ---------------------------------------------------------------------------
+# EAM output frequency in hours (negative = hours in EAM convention)
+FME_EAM_OUTPUT_HOURS=${FME_EAM_OUTPUT_HOURS:-6}
+# EAM averaging flag: 'I' = instantaneous (default), fluxes use per-field :A
+FME_EAM_AVGFLAG=${FME_EAM_AVGFLAG:-I}
+# Number of EAM time samples per output file
+FME_EAM_MFILT=${FME_EAM_MFILT:-4}
+# MPAS compute/output interval (MPAS time interval string)
+FME_MPAS_INTERVAL=${FME_MPAS_INTERVAL:-00-00-01_00:00:00}
+
+echo "FME output configuration:"
+echo "  EAM: ${FME_EAM_OUTPUT_HOURS}-hourly, avgflag=${FME_EAM_AVGFLAG}, mfilt=${FME_EAM_MFILT}"
+echo "  MPAS: interval=${FME_MPAS_INTERVAL}"
+#
+# ---------------------------------------------------------------------------
+# Map file generation (run once per grid combination, outside the case):
+#
+# Maps for ne30pg2_r05_IcoswISC30E3r5 -> shifted Gaussian 1-degree (180x360)
+# are stored at: /pscratch/sd/m/mahf708/fme_maps/
+#
+# To regenerate them:
+#
+#   OUTDIR=/pscratch/sd/m/mahf708/fme_maps
+#   mkdir -p $OUTDIR && cd $OUTDIR
+#
+#   # 1. Generate Gaussian 180x360 grid
+#   ncremap -g ncremap_gaussian_grid_180_by_360.nc -G latlon=180,360#lat_typ=gss
+#
+#   # 2. Shift by 0.5 deg in longitude to match offline FV3-side grid
+#   python3 - <<'PYEOF'
+#   import netCDF4 as nc, shutil
+#   shutil.copy2("ncremap_gaussian_grid_180_by_360.nc",
+#                "ncremap_shifted_gaussian_grid_180_by_360.nc")
+#   with nc.Dataset("ncremap_shifted_gaussian_grid_180_by_360.nc", "r+") as ds:
+#       ds["grid_center_lon"][:] += 0.5
+#       ds["grid_corner_lon"][:] += 0.5
+#   PYEOF
+#
+#   # 3. Generate remapping weights for each source grid
+#   GAUSS=$OUTDIR/ncremap_shifted_gaussian_grid_180_by_360.nc
+#
+#   # EAM (ne30pg2); ATM_GRID xmlquery returns ne30np4.pg2, normalized to ne30pg2
+#   ncremap \
+#     -s /global/cfs/cdirs/e3sm/inputdata/share/meshes/homme/ne30pg2_scrip_20200209.nc \
+#     -g $GAUSS \
+#     -m $OUTDIR/map_ne30pg2_to_gaussian_180by360_shifted.nc
+#
+#   # ELM and MOSART (r05 = 0.5x0.5 regular lat-lon)
+#   ncremap \
+#     -s /global/cfs/cdirs/e3sm/inputdata/lnd/clm2/mappingdata/grids/SCRIPgrid_0.5x0.5_nomask_c110308.nc \
+#     -g $GAUSS \
+#     -m $OUTDIR/map_r05_to_gaussian_180by360_shifted.nc
+#
+#   # MPAS-O and MPAS-SI (IcoswISC30E3r5 unstructured mesh)
+#   ncremap \
+#     -s /global/cfs/cdirs/e3sm/inputdata/ocn/mpas-o/IcoswISC30E3r5/ocean.IcoswISC30E3r5.mask.scrip.20231120.nc \
+#     -g $GAUSS \
+#     -m $OUTDIR/map_IcoswISC30E3r5_to_gaussian_180by360_shifted.nc
+#
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Detect map files for this case's resolution
+# ---------------------------------------------------------------------------
+FME_MAPS_DIR=/pscratch/sd/m/mahf708/fme_maps
+
+# Read grid names from the case XML
+ATM_GRID=$(./xmlquery --value ATM_GRID)
+OCN_GRID=$(./xmlquery --value OCN_GRID)
+
+# Normalize ATM_GRID: CIME reports ne30np4.pg2; map files use ne30pg2 convention.
+# Rule: strip npN. (e.g. np4.) from the middle of the name.
+ATM_GRID_NORM=$(echo "$ATM_GRID" | sed 's/np[0-9]*\.//')
+
+EAM_MAP="${FME_MAPS_DIR}/map_${ATM_GRID_NORM}_to_gaussian_180by360_shifted.nc"
+OCN_MAP="${FME_MAPS_DIR}/map_${OCN_GRID}_to_gaussian_180by360_shifted.nc"
+
+echo "FME map detection:"
+echo "  ATM_GRID=${ATM_GRID} -> normalized: ${ATM_GRID_NORM}"
+echo "  OCN_GRID=${OCN_GRID}"
+echo "  EAM map : ${EAM_MAP} $([ -f "${EAM_MAP}" ] && echo '[found]' || echo '[NOT FOUND - remap disabled]')"
+echo "  OCN map : ${OCN_MAP} $([ -f "${OCN_MAP}" ] && echo '[found]' || echo '[NOT FOUND - remap disabled]')"
+
+# ---------------------------------------------------------------------------
+# EAM namelist
+# ---------------------------------------------------------------------------
+cat >> user_nl_eam << EOF
+! FME (Full Model Emulation) online output processing -- EAM
+!
+! Production configuration for ACE/Samudra training data generation.
+!
+! Vertical coarsening by level index ranges, dp-weighted within each range.
+! ACE L80 coarsening indices (0-based level boundaries, 8 output layers):
+!   layer 0: levels [0, 25)    -- upper stratosphere/mesosphere
+!   layer 1: levels [25, 38)   -- lower stratosphere
+!   layer 2: levels [38, 46)   -- tropopause region
+!   layer 3: levels [46, 52)   -- upper troposphere
+!   layer 4: levels [52, 56)   -- mid troposphere
+!   layer 5: levels [56, 61)   -- lower-mid troposphere
+!   layer 6: levels [61, 69)   -- lower troposphere
+!   layer 7: levels [69, 80)   -- boundary layer
+! (see: github.com/ai2cm/ace/blob/exp/e3sm/scripts/data_process/configs/
+!   e3smv3-coupled-atm-1deg.yaml)
+
+empty_htapes = .true.
+avgflag_pertape = '${FME_EAM_AVGFLAG}'
+nhtfrq = -${FME_EAM_OUTPUT_HOURS}
+mfilt  = ${FME_EAM_MFILT}
+
+! Derived fields (computed at full resolution before vcoarsen)
+! STW -> specific_total_water in ACE naming
+derived_fld_defs = 'STW=Q+CLDICE+CLDLIQ+RAINQM'
+
+! Vertical coarsening: 8 dp-weighted layers by level index boundaries.
+! 9 boundaries define 8 layers (0-based EAM level indices, top to bottom).
+vcoarsen_level_bounds = 0, 25, 38, 46, 52, 56, 61, 69, 80
+vcoarsen_avg_flds = 'T','U','V','STW'
+
+! Height-above-surface linear interpolation (m AGL) for ACE 2 m / 10 m fields.
+! state%zm is height-above-surface at level midpoints; targets below the
+! lowest midpoint collapse to the lowest level (no extrapolation).
+vcoarsen_select_heights = 2.0, 10.0
+vcoarsen_select_height_flds = 'T','U','V','STW'
+
+! Tape 1: ${FME_EAM_OUTPUT_HOURS}-hourly output.
+! State variables are instantaneous; fluxes/tendencies use :A (time-averaged).
+! 10 m wind speed and direction are derived offline from U_at_z10 and V_at_z10.
+fincl1 = 'SOLIN:A', 'PHIS',
+          'LANDFRAC', 'OCNFRAC', 'ICEFRAC',
+          'PS', 'TS',
+          'T_0','T_1','T_2','T_3','T_4','T_5','T_6','T_7',
+          'STW_0', 'STW_1','STW_2','STW_3','STW_4','STW_5','STW_6','STW_7',
+          'U_0','U_1','U_2','U_3','U_4','U_5','U_6','U_7',
+          'V_0','V_1','V_2','V_3','V_4','V_5','V_6','V_7',
+          'T_at_z2', 'STW_at_z2',
+          'U_at_z10', 'V_at_z10',
+          'FLUT:A', 'FLNT:A', 'FSNTOA:A', 'FSUTOA:A',
+          'FLDS:A', 'FLUS:A', 'FSDS:A', 'FSUS:A', 'FSNS:A', 'FLNS:A',
+          'LHFLX:A','SHFLX:A',
+          'TAUX:A', 'TAUY:A',
+          'PRECT:A',
+          'DTENDTTW:A'
+
+EOF
+
+if [ -f "${EAM_MAP}" ]; then
+    cat >> user_nl_eam << EOF
+! Horizontal remapping to shifted Gaussian 180x360
+horiz_remap_file(1) = '${EAM_MAP}'
+EOF
+fi
+
+# ---------------------------------------------------------------------------
+# ELM namelist: stub for now
+# ---------------------------------------------------------------------------
+cat >> user_nl_elm << 'EOF'
+hist_empty_htapes = .true.
+
+EOF
+
+# ---------------------------------------------------------------------------
+# MOSART namelist: stub for now
+# ---------------------------------------------------------------------------
+cat >> user_nl_mosart << 'EOF'
+
+EOF
+
+# ---------------------------------------------------------------------------
+# MPAS-Ocean namelist
+# ---------------------------------------------------------------------------
+cat >> user_nl_mpaso << EOF
+!----------------------------------------------------------------------------------
+! FME online output -- MPAS-Ocean
+!
+! ACE needs: sst, ssh (zos), and depth-coarsened temperature (thetao),
+! salinity (so), velocityZonal (uo), velocityMeridional (vo) at 19 layers.
+!----------------------------------------------------------------------------------
+
+config_AM_fmeDepthCoarsening_enable = .true.
+config_AM_fmeDepthCoarsening_compute_interval = 'dt'
+config_AM_fmeDepthCoarsening_time_averaging = .true.
+! Samudra training data needs both 1D-avg and 1D-instant at the same cadence;
+! when both flags are true, instantaneous _inst companions are written into
+! the same remapped output file as the time-averaged variables.
+config_AM_fmeDepthCoarsening_write_instantaneous_companion = .true.
+config_AM_fmeDepthCoarsening_stream_output_interval = '${FME_MPAS_INTERVAL}'
+! 19 depth layers matching ACE ocean interface levels
+config_AM_fmeDepthCoarsening_depth_bounds = '0,20,30,40,50,80,110,140,170,230,410,530,1020,1080,1720,1980,2820,3380,4620,6380'
+config_AM_fmeDepthCoarsening_fields = 'temperature,salinity,velocityZonal,velocityMeridional'
+
+config_AM_fmeDerivedFields_enable = .true.
+config_AM_fmeDerivedFields_compute_interval = 'dt'
+config_AM_fmeDerivedFields_time_averaging = .true.
+config_AM_fmeDerivedFields_stream_output_interval = '${FME_MPAS_INTERVAL}'
+
+config_AM_fmeVerticalReduce_enable = .true.
+config_AM_fmeVerticalReduce_compute_interval = 'dt'
+config_AM_fmeVerticalReduce_time_averaging = .true.
+config_AM_fmeVerticalReduce_stream_output_interval = '${FME_MPAS_INTERVAL}'
+config_AM_fmeVerticalReduce_fields = 'oceanHeatContent,freshwaterContent,kineticEnergy'
+EOF
+
+if [ -f "${OCN_MAP}" ]; then
+    cat >> user_nl_mpaso << EOF
+config_AM_fmeDepthCoarsening_output_stream = 'none'
+config_AM_fmeDepthCoarsening_horiz_remap_file = '${OCN_MAP}'
+config_AM_fmeDerivedFields_output_stream = 'none'
+config_AM_fmeDerivedFields_horiz_remap_file = '${OCN_MAP}'
+config_AM_fmeVerticalReduce_output_stream = 'none'
+config_AM_fmeVerticalReduce_horiz_remap_file = '${OCN_MAP}'
+! NOTE: The native MPAS FME streams still fire at their default output_interval
+! (see Registry_fme_*.xml).  Native output contains instantaneous forcing-pool
+! snapshots; the remapped output is the authoritative time-averaged product.
+! For comparison, use remapped FME output vs legacy timeSeriesStatsCustom.
+config_AM_fmeDepthCoarsening_write_on_startup = .false.
+config_AM_fmeDerivedFields_write_on_startup = .false.
+config_AM_fmeVerticalReduce_write_on_startup = .false.
+EOF
+fi
+
+# ---------------------------------------------------------------------------
+# MPAS-SeaIce namelist
+# ---------------------------------------------------------------------------
+cat >> user_nl_mpassi << EOF
+!----------------------------------------------------------------------------------
+! FME online output -- MPAS-Sea-Ice
+!
+! ACE needs: iceAreaTotal (ocean_sea_ice_fraction), iceVolumeTotal (sea_ice_volume).
+!----------------------------------------------------------------------------------
+
+config_AM_fmeSeaiceDerivedFields_enable = .true.
+config_AM_fmeSeaiceDerivedFields_compute_interval = 'dt'
+config_AM_fmeSeaiceDerivedFields_time_averaging = .true.
+config_AM_fmeSeaiceDerivedFields_stream_output_interval = '${FME_MPAS_INTERVAL}'
+EOF
+
+if [ -f "${OCN_MAP}" ]; then
+    cat >> user_nl_mpassi << EOF
+config_AM_fmeSeaiceDerivedFields_output_stream = 'none'
+config_AM_fmeSeaiceDerivedFields_horiz_remap_file = '${OCN_MAP}'
+EOF
+fi
