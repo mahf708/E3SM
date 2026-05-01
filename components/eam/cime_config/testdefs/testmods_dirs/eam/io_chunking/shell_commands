@@ -10,9 +10,10 @@
 # 2D fields (no lev) are chunked only along the time dimension.
 #
 # NOTE: chunking via PIO_CONFIG_OPTS requires a SCORPIO build that exposes
-# the SPIO_DIM_CHUNK_INFO / SPIO_ENABLE_CHUNKING_REGEX configure flags
-# (e.g. the jayeshkrishna/async_thread_support branch as of this writing -
-# see https://e3sm.atlassian.net/wiki/spaces/EPG/pages/6128730122 ).
+# the SPIO_DIM_CHUNK_INFO / SPIO_ENABLE_CHUNKING_REGEX configure flags.
+# On this branch the externals/scorpio submodule is pinned to commit
+# 89779dcaf6 of jayeshkrishna/async_thread_support, which provides them.
+# Background: https://e3sm.atlassian.net/wiki/spaces/EPG/pages/6128730122
 # ============================================================================
 
 ./xmlchange PIO_TYPENAME=netcdf4

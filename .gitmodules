@@ -15,7 +15,7 @@
 [submodule "externals/scorpio"]
 	path = externals/scorpio
 	url = git@github.com:E3SM-Project/scorpio.git
-	branch = master
+	branch = jayeshkrishna/async_thread_support
 [submodule "externals/scorpio_classic"]
 	path = externals/scorpio_classic
 	url = git@github.com:E3SM-Project/scorpio.git
