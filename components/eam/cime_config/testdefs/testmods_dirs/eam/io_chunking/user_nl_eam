@@ -1,0 +1,35 @@
+! ============================================================================
+! io_chunking testmod
+!
+! Emit two daily h-tapes carrying the SAME variable list so a downstream
+! benchmark can compare read performance with and without per-variable
+! chunking (and, after offline conversion, against the equivalent Zarr
+! store). The chunking itself is configured in shell_commands via
+! SCORPIO PIO_CONFIG_OPTS and a FILE-name regex that matches only the
+! ".eam.h1." files; ".eam.h2." files share the identical schema but are
+! written contiguously (no per-variable chunking).
+!
+! Variable selection mixes:
+!   * 2D fields (time, ncol)        - PS, PSL, TS, TREFHT, TMQ, PRECT,
+!                                     FLUT, FSNT, LHFLX, SHFLX, CLDTOT,
+!                                     U10, QREFHT
+!   * 3D fields (time, lev, ncol)   - T, Q, U, V, OMEGA, Z3, RELHUM,
+!                                     CLOUD, CLDLIQ, CLDICE
+! ============================================================================
+
+empty_htapes = .true.
+
+! tape 1 (h0, default monthly) is left empty so only h1 + h2 carry data
+avgflag_pertape = 'A','A','A'
+nhtfrq          =  0,-24,-24
+mfilt           =  1, 30, 30
+
+! ---- h1: CHUNKED stream (matched by SPIO_ENABLE_CHUNKING_REGEX) ----
+fincl2 = 'PS','PSL','TS','TREFHT','TMQ','PRECT','FLUT','FSNT',
+         'LHFLX','SHFLX','CLDTOT','U10','QREFHT',
+         'T','Q','U','V','OMEGA','Z3','RELHUM','CLOUD','CLDLIQ','CLDICE'
+
+! ---- h2: UNCHUNKED stream (same variables; baseline for benchmark) ----
+fincl3 = 'PS','PSL','TS','TREFHT','TMQ','PRECT','FLUT','FSNT',
+         'LHFLX','SHFLX','CLDTOT','U10','QREFHT',
+         'T','Q','U','V','OMEGA','Z3','RELHUM','CLOUD','CLDLIQ','CLDICE'

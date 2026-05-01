@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# ============================================================================
+# io_chunking testmod - SCORPIO configuration
+#
+# Use NetCDF4 iotype so per-variable chunking is honored. Apply chunking
+# only to the ".eam.h1." stream via SPIO_ENABLE_CHUNKING_REGEX, leaving
+# ".eam.h2." (and all non-EAM components) contiguous. Chunk shape:
+#   timelevels : 1   (one record per chunk along the unlimited dim)
+#   lev        : 8   (split the vertical dimension into chunks of 8)
+# 2D fields (no lev) are chunked only along the time dimension.
+#
+# NOTE: chunking via PIO_CONFIG_OPTS requires a SCORPIO build that exposes
+# the SPIO_DIM_CHUNK_INFO / SPIO_ENABLE_CHUNKING_REGEX configure flags
+# (e.g. the jayeshkrishna/async_thread_support branch as of this writing -
+# see https://e3sm.atlassian.net/wiki/spaces/EPG/pages/6128730122 ).
+# ============================================================================
+
+./xmlchange PIO_TYPENAME=netcdf4
+./xmlchange PIO_CONFIG_OPTS=" -DSPIO_DIM_CHUNK_INFO=\"timelevels:1;lev:8\" -DSPIO_ENABLE_CHUNKING_REGEX:STRING='(FILE=\\\".*eam\\.h1\\..*\\\")' "
+
+# Replicate user_nl_* for multi-instance tests, mirroring the convention
+# used by outfrq1d / outfrq3d.
+cp user_nl_eam  user_nl_eam_0001 2>/dev/null || true
+cp user_nl_eam  user_nl_eam_0002 2>/dev/null || true
