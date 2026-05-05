@@ -3,6 +3,27 @@ set(P3_SRCS
   eamxx_p3_run.cpp
 )
 
+##++ LL Add Python sources
+if (EAMXX_ENABLE_PYTHON)
+
+set(P3_PY_SRCS
+  impl/py_interface.py
+  impl/py_ROM.py
+  impl/rom_utils.py
+)
+
+##set(PY_MODULE_NAME "py_interface")
+##set(PY_MODULE_PATH "/global/cfs/cdirs/mp193/llin/github_code/E3SM_20260217_master_MLROM_v2/E3SM_master/components/eamxx/src/physics/p3/impl/")
+
+##configure_file(/global/homes/l/linlin00/cpp_python_screamv1_bridge_v4_v3/input_ml.yaml ${CMAKE_CURRENT_BINARY_DIR}/input_ml.yaml)
+## copy file over /build/cmake-bld/eamxx/src/physics/p3/
+## configure_file only places file in build tree. It does NOT: parse YAML; register YAML automatically; inject YAML into program memory.
+## this cause the bad any_cast error, Program received signal SIGSEGV: Segmentation fault - invalid memory reference. in e3sm.log
+## check debug print statement in atmosphere_process.cpp, so you know what's happening.
+## Your C++ code must still explicitly load it.
+endif()
+##-- LL
+
 # Add ETI source files if not on CUDA/HIP
 if (NOT EAMXX_ENABLE_GPU OR Kokkos_ENABLE_CUDA_RELOCATABLE_DEVICE_CODE OR Kokkos_ENABLE_HIP_RELOCATABLE_DEVICE_CODE)
   list(APPEND P3_SRCS
@@ -48,7 +69,9 @@ if (NOT EAMXX_ENABLE_GPU OR Kokkos_ENABLE_CUDA_RELOCATABLE_DEVICE_CODE OR Kokkos
     eti/p3_nr_conservation.cpp
     eti/p3_ni_conservation.cpp
     eti/p3_prevent_liq_supersaturation.cpp
+    eti/rom_emulate_collection.cpp
   ) # P3 ETI SRCS
+    ##++ LL add rom_emulate_collection.cpp file
 endif()
 
 # List of dispatch source files if monolithic kernels are off
@@ -65,13 +88,22 @@ set(P3_SK_SRCS
 
 set(P3_LIBS "p3")
 if (SCREAM_P3_SMALL_KERNELS)
-  add_library(p3 ${P3_SRCS} ${P3_SK_SRCS})
+##++ LL
+##  add_library(p3 ${P3_SRCS} ${P3_SK_SRCS})
+  add_library(p3 ${P3_SRCS} ${P3_SK_SRCS} ${P3_PY_SRCS})
+##-- LL
 else()
-  add_library(p3 ${P3_SRCS})
+##++ LL
+##  add_library(p3 ${P3_SRCS})
+  add_library(p3 ${P3_SRCS} ${P3_PY_SRCS})
+##-- LL
   # If small kernels are ON, we don't need a separate executable to test them.
   # Also, we never want to generate baselines with this separate executable
   if (NOT SCREAM_LIB_ONLY AND NOT SCREAM_ONLY_GENERATE_BASELINES)
-    add_library(p3_sk ${P3_SRCS} ${P3_SK_SRCS})
+##++ LL
+##    add_library(p3_sk ${P3_SRCS} ${P3_SK_SRCS})
+    add_library(p3_sk ${P3_SRCS} ${P3_SK_SRCS} ${P3_PY_SRCS})
+##-- LL
     # Always build p3_sk with SCREAM_P3_SMALL_KERNELS on
     target_compile_definitions(p3_sk PUBLIC "SCREAM_P3_SMALL_KERNELS")
     list(APPEND P3_LIBS "p3_sk")
