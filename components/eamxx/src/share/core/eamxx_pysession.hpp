@@ -61,6 +61,9 @@ public:
   // during the import operation, and re-enabled afterwards.
   pybind11::module safe_import (const std::string& module_name) const;
 
+  //++ LL
+  std::any rom_module;
+  //-- LL
 private:
 
   PySession () = default;
