@@ -256,6 +256,10 @@ template <typename ScalarT, typename DeviceT> struct Functions {
     view_2d<Spack> diag_eff_radius_qi;
     // Effective rain radius [m]
     view_2d<Spack> diag_eff_radius_qr;
+//<LL 2025/10/29 EMC2 output
+    view_2d<Spack> diag_mu_c;
+    view_2d<Spack> diag_lamc;
+//LL>
     // Bulk density of ice [kg m-3]
     view_2d<Spack> rho_qi;
     // Grid-box average rain flux [kg m^-2 s^-1] pverp
@@ -947,8 +951,12 @@ template <typename ScalarT, typename DeviceT> struct Functions {
                const uview_1d<Spack> &diag_eff_radius_qr, const uview_1d<Spack> &inv_cld_frac_i,
                const uview_1d<Spack> &inv_cld_frac_l, const uview_1d<Spack> &inv_cld_frac_r,
                const uview_1d<Spack> &exner, const uview_1d<Spack> &T_atm,
-               const uview_1d<Spack> &qv, const uview_1d<Spack> &inv_dz, Scalar &precip_liq_surf,
+               const uview_1d<Spack> &qv, const uview_1d<Spack> &inv_dz, const uview_1d<Spack>& diag_mu_c, const uview_1d<Spack>& diag_lamc, Scalar &precip_liq_surf,
                Scalar &precip_ice_surf, view_1d_ptr_array<Spack, 36> &zero_init);
+
+   //<LL 2025/10/29 EMC2 output
+   // add two new arguments within p3_main_init: diag_mu_c, diag_lamc.
+   //>LL
 
 #ifdef SCREAM_P3_SMALL_KERNELS
   static void p3_main_init_disp(
@@ -1128,7 +1136,11 @@ template <typename ScalarT, typename DeviceT> struct Functions {
                 const uview_1d<Spack> &diag_eff_radius_qi, const uview_1d<Spack> &diag_diam_qi,
                 const uview_1d<Spack> &rho_qi, const uview_1d<Spack> &diag_equiv_reflectivity,
                 const uview_1d<Spack> &diag_eff_radius_qc,
-                const uview_1d<Spack> &diag_eff_radius_qr, const P3Runtime &runtime_options);
+                const uview_1d<Spack> &diag_eff_radius_qr, const uview_1d<Spack>& diag_mu_c, const uview_1d<Spack>& diag_lamc, const P3Runtime &runtime_options);
+
+//<LL 2025/10/29 EMC2 output
+    //add two new arguments within p3_main_part3: diag_mu_c, diag_lamc.
+    //LL>
 
 #ifdef SCREAM_P3_SMALL_KERNELS
   static void p3_main_part3_disp(

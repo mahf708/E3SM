@@ -41,10 +41,15 @@ void Functions<S,D>
   const uview_1d<Spack>& T_atm,
   const uview_1d<Spack>& qv,
   const uview_1d<Spack>& inv_dz,
+  const uview_1d<Spack>& diag_mu_c,
+  const uview_1d<Spack>& diag_lamc,
   Scalar& precip_liq_surf,
   Scalar& precip_ice_surf,
   view_1d_ptr_array<Spack, 36>& zero_init)
 {
+//<LL 2025/10/29 EMC2 output
+// add two arguments: diag_mu_c, diag_lamc above.
+//LL>
   precip_liq_surf = 0;
   precip_ice_surf = 0;
 
@@ -57,6 +62,10 @@ void Functions<S,D>
     diag_eff_radius_qc(k)         = 10.e-6;
     diag_eff_radius_qi(k)         = 25.e-6;
     diag_eff_radius_qr(k)         = 500.e-6;
+//<LL 2025/10/29 EMC2 output
+    diag_mu_c(k)                  = 0.0;
+    diag_lamc(k)                  = 0.0;
+//LL>
     inv_cld_frac_i(k)    = 1 / cld_frac_i(k);
     inv_cld_frac_l(k)    = 1 / cld_frac_l(k);
     inv_cld_frac_r(k)    = 1 / cld_frac_r(k);
@@ -191,6 +200,10 @@ Int Functions<S,D>
     const auto odiag_eff_radius_qc = ekat::subview(diagnostic_outputs.diag_eff_radius_qc, i);
     const auto odiag_eff_radius_qi = ekat::subview(diagnostic_outputs.diag_eff_radius_qi, i);
     const auto odiag_eff_radius_qr = ekat::subview(diagnostic_outputs.diag_eff_radius_qr, i);
+//<LL 2025/10/29 EMC2 output
+    const auto odiag_mu_c          = ekat::subview(diagnostic_outputs.diag_mu_c, i);
+    const auto odiag_lamc          = ekat::subview(diagnostic_outputs.diag_lamc, i);
+//LL>
     const auto oqv2qi_depos_tend   = ekat::subview(diagnostic_outputs.qv2qi_depos_tend, i);
     const auto orho_qi             = ekat::subview(diagnostic_outputs.rho_qi, i);
     const auto oprecip_liq_flux    = ekat::subview(diagnostic_outputs.precip_liq_flux, i);
@@ -244,8 +257,10 @@ Int Functions<S,D>
       team, nk_pack,
       ocld_frac_i, ocld_frac_l, ocld_frac_r, oinv_exner, oth, odz, odiag_equiv_refl,
       ze_ice, ze_rain, odiag_eff_radius_qc, odiag_eff_radius_qi, odiag_eff_radius_qr,
-      inv_cld_frac_i, inv_cld_frac_l, inv_cld_frac_r, exner, T_atm, oqv, inv_dz,
-      diagnostic_outputs.precip_liq_surf(i), diagnostic_outputs.precip_ice_surf(i), zero_init);
+      inv_cld_frac_i, inv_cld_frac_l, inv_cld_frac_r, exner, T_atm, oqv, inv_dz, odiag_mu_c, odiag_lamc, diagnostic_outputs.precip_liq_surf(i), diagnostic_outputs.precip_ice_surf(i), zero_init);
+//<LL 2025/10/29 EMC2 output
+// add two arguments: omu_c, olamc within p3_main_init.
+//LL
 
     p3_main_part1(
       team, nk, infrastructure.predictNc, infrastructure.prescribedCCN, infrastructure.dt,
@@ -329,7 +344,10 @@ Int Functions<S,D>
       rho, inv_rho, rhofaci, oqv, oth, oqc, onc, oqr, onr, oqi, oni,
       oqm, obm, mu_c, nu, lamc, mu_r, lamr,
       ovap_liq_exchange, ze_rain, ze_ice, diag_vm_qi, odiag_eff_radius_qi, diag_diam_qi,
-      orho_qi, odiag_equiv_refl, odiag_eff_radius_qc, odiag_eff_radius_qr, runtime_options);
+      orho_qi, odiag_equiv_refl, odiag_eff_radius_qc, odiag_eff_radius_qr, odiag_mu_c, odiag_lamc,runtime_options);
+//<LL EMC2
+// add two arguments: odiag_mu_c, odiag_lamc within p3_main_part3.
+//LL>
 
     //
     // merge ice categories with similar properties
