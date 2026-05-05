@@ -99,15 +99,23 @@ AtmosphereProcess (const ekat::Comm& comm, const ekat::ParameterList& params)
 
   m_internal_diagnostics_level = m_params.get<int>("internal_diagnostics_level", 0);
 #ifdef EAMXX_HAS_PYTHON
-  if (m_params.get("py_module_name",std::string(""))!="") {
+//++ LL having trouble defining py_module_name from yaml. 
+//  if (m_params.get("py_module_name",std::string(""))!="") {
+   if (true) {
     auto& pysession = PySession::get();
     pysession.initialize();
 
-    const auto& py_module_name = m_params.get<std::string>("py_module_name");
-    const auto& py_module_path = m_params.get<std::string>("py_module_path","./");
+//    const auto& py_module_name = m_params.get<std::string>("py_module_name");
+//    const auto& py_module_path = m_params.get<std::string>("py_module_path","./");
+
+    const std::string py_module_name = "py_interface";  
+    const std::string py_module_path = "/global/cfs/cdirs/mp193/llin/github_code/E3SM_20260217_master_MLROM_v3/E3SM_master/components/eamxx/src/physics/p3/impl/";
 
     pysession.add_path(py_module_path);
-    m_py_module = pysession.safe_import(py_module_name);
+//    m_py_module = pysession.safe_import(py_module_name);
+
+    pysession.rom_module = pysession.safe_import(py_module_name);
+//-- LL
   }
 #endif
 }
