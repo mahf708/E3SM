@@ -251,6 +251,8 @@ template <typename ScalarT, typename DeviceT> struct Functions {
     view_2d<Pack> diag_eff_radius_qi;
     // Effective rain radius [m]
     view_2d<Pack> diag_eff_radius_qr;
+    view_2d<Pack> diag_mu_c;
+    view_2d<Pack> diag_lamc;
     // Bulk density of ice [kg m-3]
     view_2d<Pack> rho_qi;
     // Grid-box average rain flux [kg m^-2 s^-1] pverp
@@ -942,8 +944,10 @@ template <typename ScalarT, typename DeviceT> struct Functions {
                const uview_1d<Pack> &diag_eff_radius_qr, const uview_1d<Pack> &inv_cld_frac_i,
                const uview_1d<Pack> &inv_cld_frac_l, const uview_1d<Pack> &inv_cld_frac_r,
                const uview_1d<Pack> &exner, const uview_1d<Pack> &T_atm,
-               const uview_1d<Pack> &qv, const uview_1d<Pack> &inv_dz, Scalar &precip_liq_surf,
-               Scalar &precip_ice_surf, view_1d_ptr_array<Pack, 36> &zero_init);
+               const uview_1d<Pack> &qv, const uview_1d<Pack> &inv_dz,
+               const uview_1d<Pack>& diag_mu_c, const uview_1d<Pack>& diag_lamc,
+               Scalar &precip_liq_surf, Scalar &precip_ice_surf,
+               view_1d_ptr_array<Pack, 36> &zero_init);
 
 #ifdef SCREAM_P3_SMALL_KERNELS
   static void p3_main_init_disp(
@@ -1123,7 +1127,9 @@ template <typename ScalarT, typename DeviceT> struct Functions {
                 const uview_1d<Pack> &diag_eff_radius_qi, const uview_1d<Pack> &diag_diam_qi,
                 const uview_1d<Pack> &rho_qi, const uview_1d<Pack> &diag_equiv_reflectivity,
                 const uview_1d<Pack> &diag_eff_radius_qc,
-                const uview_1d<Pack> &diag_eff_radius_qr, const P3Runtime &runtime_options);
+                const uview_1d<Pack> &diag_eff_radius_qr,
+                const uview_1d<Pack>& diag_mu_c, const uview_1d<Pack>& diag_lamc,
+                const P3Runtime &runtime_options);
 
 #ifdef SCREAM_P3_SMALL_KERNELS
   static void p3_main_part3_disp(

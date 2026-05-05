@@ -56,8 +56,11 @@ void Functions<S,D>
   const uview_1d<Pack>& diag_equiv_reflectivity,
   const uview_1d<Pack>& diag_eff_radius_qc,
   const uview_1d<Pack>& diag_eff_radius_qr,
+  const uview_1d<Pack>& diag_mu_c,
+  const uview_1d<Pack>& diag_lamc,
   const P3Runtime& runtime_options)
 {
+
   constexpr Scalar qsmall       = C::QSMALL;
   constexpr Scalar inv_cp       = C::INV_CP.value;
   constexpr Scalar nsmall       = C::NSMALL;
@@ -90,6 +93,10 @@ void Functions<S,D>
       if (qc_gt_small.any()) {
         nc(k).set(qc_gt_small,nc_incld*cld_frac_l(k)); //cld_dsd2 might have changed incld nc... need consistency.
         diag_eff_radius_qc(k).set(qc_gt_small, sp(0.5) * (mu_c(k) + 3) / lamc(k));
+//<LL 2025/10/29 EMC2 output 
+        diag_mu_c(k).set(qc_gt_small, mu_c(k));
+        diag_lamc(k).set(qc_gt_small, lamc(k));
+//LL>
       }
       if (qc_small.any()) {
         qv(k)                .set(qc_small, qv(k)+qc(k));
