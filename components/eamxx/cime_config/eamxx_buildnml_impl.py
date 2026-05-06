@@ -216,7 +216,11 @@ def refine_type(entry, force_type=None):
         elif elem_type == "real":
             return float(entry)
         elif elem_type in ["string", "file"]:
-            return str(entry)
+            # An empty XML element <foo/> yields entry=None, and the
+            # naive str(None) would emit the literal "None" into the
+            # generated yaml, which downstream code then has to special
+            # case. Treat None as the empty string here.
+            return "" if entry is None else str(entry)
 
     except ValueError as e:
         expect(False, f"Could not refine '{entry}' as type '{force_type}':\n{e}")

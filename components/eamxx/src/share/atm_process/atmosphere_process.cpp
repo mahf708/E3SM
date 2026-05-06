@@ -99,23 +99,24 @@ AtmosphereProcess (const ekat::Comm& comm, const ekat::ParameterList& params)
 
   m_internal_diagnostics_level = m_params.get<int>("internal_diagnostics_level", 0);
 #ifdef EAMXX_HAS_PYTHON
-//++ LL having trouble defining py_module_name from yaml. 
-//  if (m_params.get("py_module_name",std::string(""))!="") {
-   if (true) {
+  if (m_params.get("py_module_name",std::string(""))!="") {
     auto& pysession = PySession::get();
     pysession.initialize();
 
-//    const auto& py_module_name = m_params.get<std::string>("py_module_name");
-//    const auto& py_module_path = m_params.get<std::string>("py_module_path","./");
-
-    const std::string py_module_name = "py_interface";  
-    const std::string py_module_path = "/global/cfs/cdirs/mp193/llin/github_code/E3SM_20260217_master_MLROM_v3/E3SM_master/components/eamxx/src/physics/p3/impl/";
+    const auto& py_module_name = m_params.get<std::string>("py_module_name");
+    const auto& py_module_path = m_params.get<std::string>("py_module_path","./");
 
     pysession.add_path(py_module_path);
-//    m_py_module = pysession.safe_import(py_module_name);
+    auto py_mod = pysession.safe_import(py_module_name);
+    m_py_module = py_mod;
 
-    pysession.rom_module = pysession.safe_import(py_module_name);
-//-- LL
+    // Also expose the imported module via PySession so deep call sites
+    // (P3 rom_emulate_collection inside p3_main_part2) can reach it
+    // without plumbing a py::module through every function signature.
+    // PySession owns the lifetime and clears it before Py_Finalize()
+    // (see PySession::finalize), which is required to avoid a segfault
+    // at exit.
+    pysession.rom_module = py_mod;
   }
 #endif
 }

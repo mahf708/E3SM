@@ -245,12 +245,15 @@ def sindy_library_tensor(z, latent_dim, poly_order):
 
     return new_library
 
-def simulate(z0, T, dz_network):
+def simulate(z0, T, dz_network, z_lim):
     from scipy.integrate import solve_ivp
     import torch
     def f(t, z):
         n_latent = z.size
         dz = dz_network(torch.Tensor(z)).squeeze().detach().numpy()
+        for il in range(n_latent):
+            if (z[il] >= z_lim[il][1]) or (z[il] <= z_lim[il][0]):
+                dz[il] = 0.0
         return dz
 
     sol = solve_ivp(f, [T[0], T[-1]], z0, method="RK45", t_eval=T)

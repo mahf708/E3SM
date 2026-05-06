@@ -95,6 +95,10 @@ inline void PySession::finalize () {
 
   --num_customers;
   if (num_customers==0) {
+    // Any pybind11::module held by rom_module must be destroyed BEFORE
+    // py_guard, or its dtor will run after Py_Finalize() and segfault
+    // ("GIL released / interpreter finalizing"). Reset it here.
+    rom_module.reset();
     py_guard.reset();
   }
 }

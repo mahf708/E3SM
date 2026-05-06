@@ -21,13 +21,17 @@ namespace p3 {
 template<typename S, typename D>
 void Functions<S,D>
 ::rom_emulate_collection(
-const Spack& qc_incld, const Spack& nc_incld, const Spack& qr_incld, const Spack& nr_incld, const Spack& rho, const Spack& mu_c, const Spack& mu_r, const Scalar& dtimestep, Spack& rom_emulate_qctend, Spack& rom_emulate_nctend, Spack& rom_emulate_qrtend, Spack& rom_emulate_nrtend, const Smask& context)
+const Pack& qc_incld, const Pack& nc_incld, const Pack& qr_incld, const Pack& nr_incld, const Pack& rho, const Pack& mu_c, const Pack& mu_r, const Scalar& dtimestep, Pack& rom_emulate_qctend, Pack& rom_emulate_nctend, Pack& rom_emulate_qrtend, Pack& rom_emulate_nrtend, const Mask& context)
 {
 
-  // Check interpreter state 
-  if (!Py_IsInitialized() || Py_IsFinalizing()) {
-     printf("ALICE: Py is not Init or is Finalizd!\n");
-     return;
+  // The lifetime of rom_module is owned by PySession, which clears it
+  // before Py_Finalize() runs (eamxx_pysession.hpp). So if we got here
+  // and the interpreter is still up, we are safe to call into Python.
+  // A simple Py_IsInitialized() guard is enough; Py_IsFinalizing() is
+  // 3.13-only public API and we don't need it now that the lifetime
+  // bug is fixed at the source.
+  if (!Py_IsInitialized()) {
+    return;
   }
 
   PyGILState_STATE gstate = PyGILState_Ensure();
@@ -52,7 +56,7 @@ const Spack& qc_incld, const Spack& nc_incld, const Spack& qr_incld, const Spack
   try { 
 
     if (qc_large_enough.any() || (qc_not_small.any() && qr_not_small.any()) || qr_not_small.any()) {
-       for(int i = 0; i < Spack::n; ++i) {
+       for(int i = 0; i < Pack::n; ++i) {
             if (qc_not_small[i] || qr_not_small[i]) {
                 
                 //qc_val = qc_incld[i] * rho[i];  // unit: kg/m3

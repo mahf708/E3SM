@@ -737,13 +737,13 @@ template <typename ScalarT, typename DeviceT> struct Functions {
 
   //++ LL 20260401
   //KOKKOS_FUNCTION
-  static void rom_emulate_collection(const Spack& qc_incld, const Spack& nc_incld, 
-                                     const Spack& qr_incld, const Spack& nr_incld, 
-                                     const Spack& rho, const Spack& mu_c, const Spack& mu_r, 
+  static void rom_emulate_collection(const Pack& qc_incld, const Pack& nc_incld, 
+                                     const Pack& qr_incld, const Pack& nr_incld, 
+                                     const Pack& rho, const Pack& mu_c, const Pack& mu_r, 
                                      const Scalar& dt, 
-                                     Spack& rom_emulate_qctend, Spack& rom_emulate_nctend, 
-                                     Spack& rom_emulate_qrtend, Spack& rom_emulate_nrtend, 
-                                     const Smask& context = Smask(true));  
+                                     Pack& rom_emulate_qctend, Pack& rom_emulate_nctend, 
+                                     Pack& rom_emulate_qrtend, Pack& rom_emulate_nrtend, 
+                                     const Mask& context = Mask(true));  
   //-- LL
 
   // Impose maximum ice number

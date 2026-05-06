@@ -39,7 +39,9 @@ def ROM_interface(qc_in, nc_in, qr_in, nr_in, muc_in, mur_in, qsmall, dt_in):
     """
     # CONSTANTS
     # radius bins
-    NUMBIN = 64
+    # Must match the model the weights file was trained for.
+    # aesindy_weights_pysdm.pth (Emily's reference) uses 63 bins.
+    NUMBIN = 63
     NUMEDG = NUMBIN + 1
     EDGR = 5e-3                    # unit: m
     EDGL = 1e-6                    # unit: m

@@ -7,11 +7,15 @@ def compute_coll_SDM(numbin, dt, dmdlnr_bin, dndlnr_bin, m_to_n_factors):
     LATENT_DIM = 3
     POLY_ORDER = 2
     NBIN = numbin
-    WEIGHT_DIR = "/global/cfs/cdirs/mp193/llin/github_code/cpp_SCREAM_python_ROM_interface_2026may04/ftorch_weights/erfAll_aesindy_weights.pth"
-    M_SCALE = 0.01589495           # units: kg m^-3
-    # ZLIM = np.load("./zlim_data.npz")['zlim']
-    # ZLIM[-1, 0] = 0.0
-    # ZLIM[-1, 1] = np.inf
+    # Path to local artifact bundle (weights + latent-limit data) on Perlmutter.
+    # See cpp_SCREAM_python_ROM_interface for the source of truth.
+    ARTIFACT_DIR = "/pscratch/sd/m/mahf708/e3sm-repo/cpp_SCREAM_python_ROM_interface"
+    WEIGHT_DIR = f"{ARTIFACT_DIR}/aesindy_weights_pysdm.pth"
+    M_SCALE = 0.01046717958952477  # units: kg m^-3 (lnr)^-1 (matches aesindy_weights_pysdm.pth)
+    ZLIM = np.load(f"{ARTIFACT_DIR}/zlim_data.npz")['zlim']
+    # Override mass-channel limits so the bulk-mass latent is unclipped.
+    ZLIM[-1, 0] = 0.0
+    ZLIM[-1, 1] = np.inf
 
     # set up the model: should be done only once and not need to be updated
     # on sequential calls to computation
@@ -34,7 +38,7 @@ def compute_coll_SDM(numbin, dt, dmdlnr_bin, dndlnr_bin, m_to_n_factors):
     z_bf[LATENT_DIM] = M_scaled
 
     # step forward in time
-    z_af = simulate(z_bf, [0, dt], model.dzdt)
+    z_af = simulate(z_bf, [0, dt], model.dzdt, ZLIM)
 
     # decode; enforce mass conservation exactly, i.e. ignore dM/dt or latents[-1]
     x_scaled_af = model.decoder(torch.Tensor(z_af[-1, :-1])).detach().numpy()

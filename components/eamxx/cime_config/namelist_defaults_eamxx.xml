@@ -155,6 +155,14 @@ be lost if SCREAM_HACK_XML is not enabled.
         type="array(string)"
         doc="list of computed fields/groups for which this process will back out tendencies"
         />
+      <py_module_name
+        type="string"
+        doc="Name of a Python module to import for this atm process (empty = no Python). Requires EAMXX_ENABLE_PYTHON=ON."
+      ></py_module_name>
+      <py_module_path
+        type="string"
+        doc="Filesystem path prepended to sys.path before importing py_module_name."
+      >./</py_module_path>
     </atm_proc_base>
 
     <!-- Basic options for each atm process group -->
