@@ -66,6 +66,13 @@ if (EAMXX_ENABLE_PYTHON)
       message(FATAL_ERROR "Python version check failed: ${python_version_check_error}")
   endif()
 
+  # Resolve Python with the modern FindPython module so the Python::Module /
+  # Python::Embed targets are populated from Python_EXECUTABLE / Python_ROOT_DIR.
+  # Without this, pybind11's CMake config falls back to the legacy PythonLibsNew
+  # shim, which can pick up the system libpython (e.g. /usr/lib64/libpython3.6m.so)
+  # and produce undefined-symbol link errors for APIs added in Python 3.7+/3.9+.
+  find_package(Python REQUIRED COMPONENTS Interpreter Development)
+
   # Need pybind11
   execute_process(
     COMMAND "${Python_EXECUTABLE}" -c "import pybind11; print(pybind11.get_cmake_dir())"

@@ -216,7 +216,7 @@ def refine_type(entry, force_type=None):
         elif elem_type == "real":
             return float(entry)
         elif elem_type in ["string", "file"]:
-            return str(entry)
+            return "" if entry is None else str(entry)
 
     except ValueError as e:
         expect(False, f"Could not refine '{entry}' as type '{force_type}':\n{e}")

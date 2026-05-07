@@ -2,11 +2,10 @@
 #define ROM_EMULATE_COLLECTION_IMPL_HPP
 
 #include "p3_functions.hpp" // for ETI only but harmless for GPU
+#include "p3_py_module.hpp" // P3-local handle to the imported py::module
 
 #include <Python.h>
 #include <pybind11/pybind11.h>
-#include "share/atm_process/atmosphere_process_pyhelpers.hpp"
-#include "share/core/eamxx_pysession.hpp"
 
 namespace py = pybind11;
 
@@ -15,7 +14,7 @@ namespace p3 {
 
 /*
  * Implementation of SDM ROM microphysics emulator.
- * 
+ *
  */
 
 template<typename S, typename D>
@@ -24,23 +23,13 @@ void Functions<S,D>
 const Spack& qc_incld, const Spack& nc_incld, const Spack& qr_incld, const Spack& nr_incld, const Spack& rho, const Spack& mu_c, const Spack& mu_r, const Scalar& dtimestep, Spack& rom_emulate_qctend, Spack& rom_emulate_nctend, Spack& rom_emulate_qrtend, Spack& rom_emulate_nrtend, const Smask& context)
 {
 
-  // Check interpreter state 
-  if (!Py_IsInitialized() || Py_IsFinalizing()) {
-     printf("ALICE: Py is not Init or is Finalizd!\n");
-     return;
+  if (!Py_IsInitialized() || g_p3_py_module == nullptr) {
+    return;
   }
 
   PyGILState_STATE gstate = PyGILState_Ensure();
-  //py::gil_scoped_acquire gil;
 
-  auto& pysession = scream::PySession::get();
-  if (!pysession.rom_module.has_value()) {
-      printf("rom_module not initialized!\n");
-      PyGILState_Release(gstate);
-      return;
-    }
-
-  const auto& py_mod = std::any_cast<const py::module&>(pysession.rom_module);
+  const auto& py_mod = *g_p3_py_module;
 
   constexpr Scalar QSMALL  = C::QSMALL;
   const     Scalar QSMALL2 = 1.0e-8;
@@ -63,10 +52,10 @@ const Spack& qc_incld, const Spack& nc_incld, const Spack& qr_incld, const Spack
 
                 // Import SDM_interface python module and call function with scalars
                 //printf("BEFORE ROM_interface call\n");
-                py::tuple result = py_mod.attr("ROM_interface")( 
-                          qc_incld[i] * rho[i], nc_incld[i] * rho[i], 
-                          qr_incld[i] * rho[i], nr_incld[i] * rho[i], 
-                          mu_c[i], mu_r[i], QSMALL, dtimestep);
+                py::tuple result = py_mod.attr("ROM_interface")(
+                          qc_incld[i] * rho[i], nc_incld[i] * rho[i],
+                          qr_incld[i] * rho[i], nr_incld[i] * rho[i],
+                          mu_c[i], mu_r[i], QSMALL);
 
                 //printf("AFTER ROM_interface call\n");
                 // Unpack tuple: retrieve tendency rate terms

@@ -3,6 +3,11 @@
 #include "p3_functions.hpp"
 #include "eamxx_p3_process_interface.hpp"
 
+#ifdef EAMXX_HAS_PYTHON
+#include "impl/p3_py_module.hpp"
+#include <pybind11/pybind11.h>
+#endif
+
 #include <ekat_assert.hpp>
 #include <ekat_units.hpp>
 
@@ -272,6 +277,12 @@ void P3Microphysics::initialize_impl (const RunType /* run_type */)
 {
   using TPF = ekat::TeamPolicyFactory<KT::ExeSpace>;
 
+#ifdef EAMXX_HAS_PYTHON
+  if (has_py_module()) {
+    p3::g_p3_py_module = &std::any_cast<const pybind11::module&>(m_py_module);
+  }
+#endif
+
   // Set property checks for fields in this process
   add_invariant_check<FieldWithinIntervalCheck>(get_field_out("T_mid"),m_grid,100.0,500.0,false);
   add_invariant_check<FieldWithinIntervalCheck>(get_field_out("qv"),m_grid,1e-13,0.2,true);
@@ -533,7 +544,9 @@ void P3Microphysics::initialize_impl (const RunType /* run_type */)
 // =========================================================================================
 void P3Microphysics::finalize_impl()
 {
-  // Do nothing
+#ifdef EAMXX_HAS_PYTHON
+  p3::g_p3_py_module = nullptr;
+#endif
 }
 // =========================================================================================
 } // namespace scream

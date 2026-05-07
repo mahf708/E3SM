@@ -69,9 +69,10 @@ if (NOT EAMXX_ENABLE_GPU OR Kokkos_ENABLE_CUDA_RELOCATABLE_DEVICE_CODE OR Kokkos
     eti/p3_nr_conservation.cpp
     eti/p3_ni_conservation.cpp
     eti/p3_prevent_liq_supersaturation.cpp
-    eti/rom_emulate_collection.cpp
   ) # P3 ETI SRCS
-    ##++ LL add rom_emulate_collection.cpp file
+  if (EAMXX_ENABLE_PYTHON)
+    list(APPEND P3_SRCS eti/rom_emulate_collection.cpp)
+  endif()
 endif()
 
 # List of dispatch source files if monolithic kernels are off
@@ -112,6 +113,15 @@ endif()
 
 target_compile_definitions(p3 PUBLIC EAMXX_HAS_P3)
 
+if (EAMXX_ENABLE_PYTHON)
+  execute_process(
+    COMMAND "${Python_EXECUTABLE}" -c "import pybind11; print(pybind11.get_include())"
+    OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE P3_PYBIND11_INCLUDE)
+  execute_process(
+    COMMAND "${Python_EXECUTABLE}" -c "import sysconfig; print(sysconfig.get_path('include'))"
+    OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE P3_PYTHON_INCLUDE)
+endif()
+
 foreach (P3_LIB IN LISTS P3_LIBS)
   target_include_directories(${P3_LIB} PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -119,6 +129,10 @@ foreach (P3_LIB IN LISTS P3_LIBS)
     ${SCREAM_BASE_DIR}/../eam/src/physics/cam
   )
   target_link_libraries(${P3_LIB} eamxx_physics_share scream_share)
+  if (EAMXX_ENABLE_PYTHON)
+    target_include_directories(${P3_LIB} SYSTEM PRIVATE
+      ${P3_PYBIND11_INCLUDE} ${P3_PYTHON_INCLUDE})
+  endif()
 endforeach()
 
 # Ensure tables are present in the data dir

@@ -266,17 +266,7 @@ set(SCREAM_BASE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(SCREAM_SRC_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set(SCREAM_BIN_DIR  ${CMAKE_CURRENT_BINARY_DIR})
 
-##++ LL set to ON
-option (EAMXX_ENABLE_PYTHON "Whether to enable interfaces to python via pybind11" ON)
-
-if (EAMXX_ENABLE_PYTHON)
-   set(Python_EXECUTABLE "/global/common/software/nersc/pe/conda-envs/26.1.0/python-3.13/nersc-python/bin/python" CACHE STRING "the CMake variable Python_EXECUTABLE must point to a python3 executable, with python version >= 3.9." FORCE)
-##   set(Python_EXECUTABLE "/global/common/software/nersc/pe/conda-envs/24.1.0/python-3.9/nersc-python/bin/python" CACHE STRING "the CMake variable Python_EXECUTABLE must point to a python3 executable, with python version >= 3.9." FORCE)
-
-  find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
-## else is handled in eamxx/src/share/core/CMakeLists.txt
-endif()
-##-- LL
+option (EAMXX_ENABLE_PYTHON "Whether to enable interfaces to python via pybind11" OFF)
 
 ####################################################################
 #                    Packs-related settings                        #
