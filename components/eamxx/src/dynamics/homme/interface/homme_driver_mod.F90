@@ -68,7 +68,6 @@ contains
 #ifdef HOMME_ENABLE_COMPOSE
     use compose_mod,       only: compose_control_kokkos_init_and_fin
 #endif
-    use prim_driver_mod,   only: prim_init_grid_views
 
 #ifdef HOMME_ENABLE_COMPOSE
     ! Compose is not in charge of init/finalize kokkos
@@ -86,7 +85,10 @@ contains
     ! Cleanup the tmp stuff used in prim_init1_geometry
     call prim_init1_cleanup()
 
-    call prim_init_grid_views (elem)
+    ! NOTE: grid-related views (which include elem%tensorVisc) are NOT initialized
+    !       here. They are initialized in prim_init_model_f90, *after* dss_hvtensor
+    !       has made tensorVisc continuous (C0) across elements. Initializing them
+    !       here would copy the un-DSS'd tensorVisc to C++ (see homme PRs #7202/#7249).
 
   end subroutine prim_complete_init1_phase_f90
 
@@ -183,7 +185,7 @@ contains
   subroutine prim_init_model_f90 () bind(c)
     use prim_driver_mod,   only: prim_init_ref_states_views, &
                                  prim_init_diags_views, prim_init_kokkos_functors, &
-                                 prim_init_state_views
+                                 prim_init_state_views, prim_init_grid_views
     use prim_state_mod,    only: prim_printstate
     use model_init_mod,    only: model_init2
     use global_norms_mod,  only: dss_hvtensor, print_cfl
@@ -212,6 +214,13 @@ contains
 
     ! Print advective and viscious CFL estimates
     call print_cfl(elem,hybrid,1,nelemd)
+
+    ! Initialize grid-related views (incl. elem%tensorVisc) only now, *after*
+    ! dss_hvtensor has DSS'd tensorVisc, so C++ receives the continuous (C0)
+    ! tensor. Must still happen before prim_init_kokkos_functors so the functors
+    ! pick up the geometry. (Previously done in prim_complete_init1_phase_f90,
+    ! which ran before dss_hvtensor and thus copied the un-DSS'd tensor.)
+    call prim_init_grid_views (elem)
 
     ! Initialize reference states before functors so that setup() can read
     ! nu_scale_top from ref_states (needed by HyperviscosityFunctorImpl).
