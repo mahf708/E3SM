@@ -1,0 +1,100 @@
+#!/bin/bash
+# FME Online Output -- v3 High-Resolution (1950 CMIP7) science overlay
+#
+# Runs the `fme_output` online-output configuration (inherited verbatim via
+# include_user_mods -> ../fme_output) with the v3.HR.1950-CMIP7 *science*
+# settings layered on top. The FME machinery itself -- horizontal remap,
+# vertical coarsening, derived fields, coupler-native merged forcing -- is
+# unchanged; this file only adds the run-time settings that define the v3
+# high-resolution 1950 CMIP7 simulation.
+#
+# Settings transcribed from the 20260525.v3.HR.1950-CMIP7 production
+# run_e3sm script (master @ 20260521 v3.1.0-beta.1-1613-g57e5cd7039 plus
+# win/v3hr_1950_cmip7; https://e3sm.atlassian.net/wiki/spaces/CM/pages/6321340417).
+#
+# Intended pairing (set at create_test / create_newcase time):
+#   COMPSET = WCYCL1950-CMIP7
+#   RES     = ne120pg2_r025_RRSwISC6to18E3r5
+#
+# Only the *settings* are carried over -- NOT the production output tapes
+# (EAM fincl1..6, ELM hist_*, MPAS streams.ocean variable lists, COSP). FME
+# online output replaces all of that. See AGENTS.md for the full
+# include/exclude rationale and the prerequisites (HR remap maps, the
+# WCYCL1950-CMIP7 compset, HR/1950 input data, ocean IC) that must be in
+# place before a case will build and run as the production v3-HR config.
+# ---------------------------------------------------------------------------
+
+DIN_LOC_ROOT=$(./xmlquery --value DIN_LOC_ROOT)
+
+# ---------------------------------------------------------------------------
+# EAM -- physics tuning only (chemUCI + MAM5 atmosphere; enabled by the
+# compset, not here). The production output (cosp_lite, all fincl*/nhtfrq/
+# mfilt/avgflag_pertape, the chemdyg/gaschmbudget history toggles, and the
+# is_output_interactive_volc diagnostic) is dropped -- the inherited
+# fme_output tape is the only EAM history we want.
+# ---------------------------------------------------------------------------
+cat >> user_nl_eam << EOF
+
+! --- v3.HR.1950-CMIP7 physics tuning (from the production run script) ---
+clubb_c8             = 5.2
+nucleate_ice_subgrid = 1.40
+EOF
+
+# ---------------------------------------------------------------------------
+# ELM -- 1950 spun-up initial condition + CMIP7 fixed-1950 population-density
+# fire forcing. Paths are anchored to DIN_LOC_ROOT so they resolve on any
+# machine where the files are staged (on chrysalis this reproduces the
+# absolute /lcrc/group/e3sm/data/inputdata paths in the run script). The
+# consistency checks are relaxed because the finidat is an off-year spun-up
+# restart. The inherited fme_output sets hist_empty_htapes=.true., so no ELM
+# history tape is produced.
+# ---------------------------------------------------------------------------
+cat >> user_nl_elm << EOF
+
+! --- v3.HR.1950-CMIP7 land initial condition + fire forcing ---
+finidat = '${DIN_LOC_ROOT}/lnd/clm2/initdata_map/elmi.CNPRDCTCBCTOP.r025_RRSwISC6to18E3r5.1950-01-01-00000.c20260412.nc'
+check_finidat_year_consistency    = .false.
+check_finidat_fsurdat_consistency = .false.
+check_finidat_pct_consistency     = .false.
+
+stream_fldfilename_popdens = '${DIN_LOC_ROOT}/lnd/clm2/firedata/elmforc.popden_cmip7_gr_0.5x0.5_simyr1950_c260525.nc'
+model_year_align_popdens  = 1950
+stream_year_first_popdens = 1950
+stream_year_last_popdens  = 1950
+EOF
+
+# ---------------------------------------------------------------------------
+# MPAS-Ocean -- CVMix background mixing + Langmuir settings for the
+# RRSwISC6to18E3r5 HR mesh, and active-tracer budgets off (efficiency).
+# These do not touch the fmeDepthCoarsening / fmeDerivedFields analysis
+# members configured by the inherited fme_output.
+# ---------------------------------------------------------------------------
+cat >> user_nl_mpaso << EOF
+
+! --- v3.HR.1950-CMIP7 ocean settings (from the production run script) ---
+config_compute_active_tracer_budgets      = .false.
+config_cvmix_kpp_langmuir_mixing_opt      = 'NONE'
+config_cvmix_kpp_langmuir_entrainment_opt = 'NONE'
+config_cvmix_background_scheme            = 'latitude-dependent'
+config_cvmix_background_diffusion         = 3.0e-5
+config_cvmix_background_diffusion_max_latitude = -50
+EOF
+
+# ---------------------------------------------------------------------------
+# MPAS-Sea-Ice -- sea-level meltpond scheme + CICE-style initialization.
+# (timeSeriesStatsDaily is already disabled by the inherited fme_output.)
+# ---------------------------------------------------------------------------
+cat >> user_nl_mpassi << EOF
+
+! --- v3.HR.1950-CMIP7 sea-ice settings (from the production run script) ---
+config_use_sealevel_meltponds = true
+config_use_level_meltponds    = false
+config_initial_condition_type = 'cice_default'
+EOF
+
+echo "FME v3-HR overlay applied on top of fme_output:"
+echo "  EAM    : clubb_c8=5.2, nucleate_ice_subgrid=1.40"
+echo "  ELM    : 1950 finidat + CMIP7 popdens fire forcing (DIN_LOC_ROOT-relative)"
+echo "  MPAS-O : CVMix latitude-dependent background + Langmuir off, tracer budgets off"
+echo "  MPAS-SI: sea-level meltponds + cice_default IC"
+echo "  NOTE: ocean IC override and HR remap maps are NOT auto-staged -- see AGENTS.md."
