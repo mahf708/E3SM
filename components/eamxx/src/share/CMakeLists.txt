@@ -37,6 +37,9 @@ add_subdirectory(io)
 # Algorithm library
 add_subdirectory(algorithm)
 
+# Stochastic-forcing pattern generator (SPPT/SKEBS)
+add_subdirectory(stochastic)
+
 # For bwd compatibility: a "catch" all interface lib of all the stuff in the share folder
 add_library(scream_share INTERFACE)
 target_link_libraries(scream_share INTERFACE
@@ -51,7 +54,8 @@ target_link_libraries(scream_share INTERFACE
   eamxx_atm_process
   eamxx_diagnostics
   eamxx_io
-  eamxx_algorithm)
+  eamxx_algorithm
+  eamxx_stochastic)
 
 # The "build_cf_dictionary" target downloads an XML file containing valid field
 # names and aliases based on the CF conventions, and transforms it into a YAML

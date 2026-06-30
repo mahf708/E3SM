@@ -50,6 +50,12 @@
 #ifdef EAMXX_HAS_CLD_FRAC_NET
 #include "physics/cld_fraction/cld_frac_net/eamxx_cld_frac_net_process_interface.hpp"
 #endif
+#ifdef EAMXX_HAS_SPPT
+#include "physics/stochastic_forcing/eamxx_sppt_process_interface.hpp"
+#endif
+#ifdef EAMXX_HAS_SKEBS
+#include "physics/stochastic_forcing/eamxx_skebs_process_interface.hpp"
+#endif
 
 namespace scream {
 
@@ -99,6 +105,13 @@ inline void register_physics () {
 #endif
 #ifdef EAMXX_HAS_CLD_FRAC_NET
   proc_factory.register_product("cld_frac_net",&create_atmosphere_process<CldFracNet>);
+#endif
+#ifdef EAMXX_HAS_SPPT
+  proc_factory.register_product("sppt_begin",&create_atmosphere_process<SPPTBegin>);
+  proc_factory.register_product("sppt",&create_atmosphere_process<SPPT>);
+#endif
+#ifdef EAMXX_HAS_SKEBS
+  proc_factory.register_product("skebs",&create_atmosphere_process<SKEBS>);
 #endif
 
   // If no physics was enabled, silence compile warning about unused var
