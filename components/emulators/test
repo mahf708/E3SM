@@ -28,10 +28,12 @@ fi
 mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 
-# Configure (only if needed)
-if [ ! -f "CMakeCache.txt" ]; then
+# Configure.  Re-run when extra options are given, so that enabling a backend
+# (e.g. --with-onnx) takes effect on an existing build directory.
+if [ ! -f "CMakeCache.txt" ] || [ ${#CMAKE_EXTRA_ARGS[@]} -gt 0 ]; then
     print_status "Configuring CMake..."
-        cmake "${SCRIPT_DIR}" -DCMAKE_BUILD_TYPE=Release -DBUILD_EMULATOR_TESTS=ON -DSTANDALONE_MODE=ON
+    cmake "${SCRIPT_DIR}" -DCMAKE_BUILD_TYPE=Release -DBUILD_EMULATOR_TESTS=ON \
+        -DSTANDALONE_MODE=ON "${CMAKE_EXTRA_ARGS[@]}"
 fi
 
 # Build
