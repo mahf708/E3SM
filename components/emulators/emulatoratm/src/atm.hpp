@@ -153,6 +153,7 @@ private:
   // Helper methods
   // =========================================================================
   void run_inference();
+  void validate_coupling(bool allow_unmatched_inputs);
   void import_coupling_fields();
   void export_coupling_fields();
   void prepare_inputs();

@@ -216,10 +216,15 @@ class TestContext(unittest.TestCase):
         context = Context(
             rank=3, world_size=8, local_rank=3, master_addr="nid001", master_port=41111
         )
-        context.export()
+        context.export(device_ordinal=0)
         self.assertEqual(os.environ["RANK"], "3")
         self.assertEqual(os.environ["WORLD_SIZE"], "8")
-        self.assertEqual(os.environ["LOCAL_RANK"], "3")
+        # LOCAL_RANK is a *device ordinal*, not a rank: every consumer of it in
+        # ACE and PhysicsNeMo feeds it to torch.cuda.set_device. Under the
+        # recommended one-GPU-per-rank binding that is 0 on every rank, and
+        # publishing the component-local rank 3 here would ask for a device
+        # this process cannot see.
+        self.assertEqual(os.environ["LOCAL_RANK"], "0")
         self.assertEqual(os.environ["MASTER_ADDR"], "nid001")
         self.assertEqual(os.environ["MASTER_PORT"], "41111")
         # ACE reads SLURM_* only when FME_USE_SRUN says to; it must not.
@@ -259,9 +264,10 @@ class TestAceModeResolution(unittest.TestCase):
     """Mode selection, tested without ACE, torch or a checkpoint."""
 
     def setUp(self):
-        from e3sm_emulator.ace import resolve_mode
+        from e3sm_emulator.ace import SPATIAL_OVERRIDE, resolve_mode
 
         self.resolve = resolve_mode
+        self.override = SPATIAL_OVERRIDE
 
     def test_serial_runs_undistributed(self):
         self.assertEqual(self.resolve({}, Context(world_size=1)), ("single", 1, 1))
@@ -274,7 +280,11 @@ class TestAceModeResolution(unittest.TestCase):
     def test_auto_uses_a_declared_mesh(self):
         self.assertEqual(
             self.resolve(
-                {"ace_h": "2", "ace_w": "4", "ace_allow_spatial": "true"},
+                {
+                    "ace_h": "2",
+                    "ace_w": "4",
+                    self.override: "true",
+                },
                 Context(world_size=8),
             ),
             ("spatial", 2, 4),
@@ -290,7 +300,7 @@ class TestAceModeResolution(unittest.TestCase):
                 Context(world_size=8),
             )
         self.assertIn("RealSHT", str(caught.exception))
-        self.assertIn("ace_allow_spatial", str(caught.exception))
+        self.assertIn(self.override, str(caught.exception))
 
     def test_spatial_needs_every_rank(self):
         with self.assertRaises(ValueError) as caught:
@@ -318,32 +328,81 @@ class TestAceModeResolution(unittest.TestCase):
 class TestDeviceContract(unittest.TestCase):
     """GPU ownership is not inferred from the component's rank numbering."""
 
-    def test_ambiguous_binding_is_refused(self):
-        import unittest.mock as mock
+    def test_one_visible_device_means_ordinal_zero(self):
+        # The whole point. Under --gpus-per-task=1 every rank sees exactly one
+        # device and must select logical 0; the fourth rank on a node asking
+        # for device 3 is out of range. This is what LOCAL_RANK carries, and
+        # what ACE feeds to torch.cuda.set_device.
+        context = Context(rank=7, world_size=8, local_rank=3, local_size=4)
+        self.assertEqual(context.device_ordinal(visible_devices=1), 0)
 
-        context = Context(rank=1, world_size=4, local_rank=1, local_size=4)
-        fake_torch = mock.MagicMock()
-        fake_torch.cuda.is_available.return_value = True
-        fake_torch.cuda.device_count.return_value = 4
-        with mock.patch.dict(sys.modules, {"torch": fake_torch}):
-            with self.assertRaises(ValueError) as caught:
-                context.torch_device()
-        message = str(caught.exception)
+    def test_ambiguous_binding_is_refused(self):
         # Another component's ranks may hold some of those devices, and our
         # local_rank says nothing about which.
+        context = Context(rank=1, world_size=4, local_rank=1, local_size=4)
+        with self.assertRaises(ValueError) as caught:
+            context.device_ordinal(visible_devices=4)
+        message = str(caught.exception)
         self.assertIn("gpus-per-task", message)
         self.assertIn("device_id", message)
 
-    def test_an_explicit_device_is_honoured(self):
-        import unittest.mock as mock
+    def test_a_sole_rank_on_a_node_takes_the_first_device(self):
+        context = Context(rank=1, world_size=4, local_rank=0, local_size=1)
+        self.assertEqual(context.device_ordinal(visible_devices=4), 0)
 
+    def test_an_explicit_device_is_honoured_and_range_checked(self):
         context = Context(rank=1, world_size=4, local_rank=1, local_size=4)
-        fake_torch = mock.MagicMock()
-        fake_torch.cuda.is_available.return_value = True
-        fake_torch.cuda.device_count.return_value = 4
-        fake_torch.device = lambda kind, index=None: (kind, index)
-        with mock.patch.dict(sys.modules, {"torch": fake_torch}):
-            self.assertEqual(context.torch_device(device_id=2), ("cuda", 2))
+        self.assertEqual(context.device_ordinal(2, visible_devices=4), 2)
+        with self.assertRaises(ValueError):
+            context.device_ordinal(9, visible_devices=4)
+
+    def test_no_gpu_is_not_an_error(self):
+        context = Context(rank=1, world_size=4, local_rank=1, local_size=4)
+        self.assertEqual(context.device_ordinal(visible_devices=0), 0)
+
+
+class TestMeshOrdering(unittest.TestCase):
+    """The reconstructed (h, w) rank order has to be ACE's, not a guess."""
+
+    def setUp(self):
+        from e3sm_emulator.ace import _check_mesh_ordering
+
+        self.check = _check_mesh_ordering
+        self.tiling = Tiling(NY, NX, 2, 2)  # NY=6, NX=8 -> four 3x4 tiles
+
+    def _reported(self, order):
+        """Slices as if rank r held the tile of `order[r]`."""
+        rows = []
+        for rank in order:
+            j0, i0 = self.tiling.tile_origin(rank)
+            nj, ni = self.tiling.tile_shape(rank)
+            rows.append([j0, j0 + nj, i0, i0 + ni])
+        return np.array(rows, dtype=np.int64)
+
+    def test_the_assumed_order_passes(self):
+        self.check(self._reported([0, 1, 2, 3]), self.tiling, NY, NX, 2, 2)
+
+    def test_a_permuted_rank_order_is_caught(self):
+        # Every tile here is 3x4, so comparing shapes alone would pass while
+        # each rank worked on somebody else's piece of the planet — and a
+        # global model fed a rotated globe returns a plausible field.
+        for rank in range(4):
+            nj, ni = self.tiling.tile_shape(rank)
+            self.assertEqual((nj, ni), (3, 4))
+        with self.assertRaises(ValueError) as caught:
+            self.check(self._reported([0, 2, 1, 3]), self.tiling, NY, NX, 2, 2)
+        self.assertIn("does not match ACE's", str(caught.exception))
+
+    def test_two_ranks_claiming_one_rectangle_are_caught(self):
+        # The per-rank coordinate check fires first here, before the coverage
+        # check does. That is the honest description: once every rank matches
+        # the reconstruction, complete coverage follows by construction, so
+        # the coverage check in _check_mesh_ordering is belt-and-braces
+        # against a partition shape nobody has anticipated.
+        reported = self._reported([0, 1, 2, 3])
+        reported[3] = reported[0]  # rank 3 claims rank 0's rectangle
+        with self.assertRaises(ValueError):
+            self.check(reported, self.tiling, NY, NX, 2, 2)
 
 
 if __name__ == "__main__":

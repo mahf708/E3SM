@@ -190,31 +190,7 @@ void EmulatorAtm::init_impl() {
   m_infer_out.assign(
       static_cast<std::size_t>(m_num_local_cols) * m_infer_outputs.size(), 0.0);
 
-  // Resolve each declared field against the coupler's lists once, here,
-  // rather than looking names up every step.  A model is entitled to consume
-  // or produce fields the coupler does not carry — internal state,
-  // diagnostics — so an unmatched name is recorded as -1 and reported at
-  // startup rather than being fatal.  Reporting is the point: the failure
-  // this guards against is a misspelled field silently staying zero.
-  const auto resolve = [](const std::vector<std::string> &names,
-                          const std::map<std::string, int> &index,
-                          const char *what, bool verbose) {
-    std::vector<int> rows;
-    rows.reserve(names.size());
-    for (const auto &name : names) {
-      const auto it = index.find(name);
-      rows.push_back(it == index.end() ? -1 : it->second);
-      if (it == index.end() && verbose) {
-        std::cout << "[emulatoratm] inference " << what << " '" << name
-                  << "' is not a coupling field; it will not be exchanged "
-                     "with the coupler.\n";
-      }
-    }
-    return rows;
-  };
-  const bool report = config.verbose && context.is_root();
-  m_input_src = resolve(m_infer_inputs, m_import_idx, "input", report);
-  m_output_dst = resolve(m_infer_outputs, m_export_idx, "output", report);
+  validate_coupling(config.get_bool("allow_unmatched_inputs", false));
 
   // TODO: Read initial conditions
   // TODO: Set up diagnostic output manager
@@ -288,6 +264,126 @@ void EmulatorAtm::run_inference() {
 // Coupling helpers
 // =========================================================================
 
+/**
+ * @brief Check the coupling descriptor before a single value moves.
+ *
+ * Everything here is a mismatch that would otherwise show up as a partly
+ * filled field: plausible numbers over part of the globe and zeros or stale
+ * values over the rest, which no downstream check would catch.  A component
+ * that has not been given coupling buffers at all is a different matter — a
+ * unit test, or a driver bringing the emulator up — and is left alone.
+ *
+ * @param allow_unmatched_inputs Permit a declared input that the coupler does
+ *        not carry.  Off by default: unlike an output, an unmatched input has
+ *        no other source, so allowing one is permission to run on zeros.
+ */
+void EmulatorAtm::validate_coupling(bool allow_unmatched_inputs) {
+  const bool has_import = m_import_data != nullptr;
+  const bool has_export = m_export_data != nullptr;
+
+  m_input_src.assign(m_infer_inputs.size(), -1);
+  m_output_dst.assign(m_infer_outputs.size(), -1);
+  if (!has_import && !has_export) {
+    if (!m_infer_inputs.empty() || !m_infer_outputs.empty()) {
+      std::cout << "[emulatoratm] no coupling buffers; the model will run on "
+                   "whatever is in its input buffers.\n";
+    }
+    return;
+  }
+
+  if (m_field_size != m_num_local_cols) {
+    throw std::runtime_error(
+        "[emulatoratm] the coupler's field size (" +
+        std::to_string(m_field_size) + ") and this rank's column count (" +
+        std::to_string(m_num_local_cols) +
+        ") disagree. Truncating to the shorter of the two would leave part of "
+        "every field unset, so this is fatal.");
+  }
+  if (m_num_imports < 0 || m_num_exports < 0 || m_field_size < 0) {
+    throw std::runtime_error(
+        "[emulatoratm] negative coupling extents: num_imports=" +
+        std::to_string(m_num_imports) +
+        " num_exports=" + std::to_string(m_num_exports) +
+        " field_size=" + std::to_string(m_field_size) + ".");
+  }
+  // The field lists and the attribute vectors have to describe the same
+  // thing; if they do not, every row index below is off by an unknown amount.
+  // An *empty* list is a different matter — a driver may set up buffers
+  // without naming their contents — and is left to the per-name resolution
+  // below, which fails loudly for any input that then cannot be found.
+  if (has_import && !m_import_idx.empty() &&
+      static_cast<int>(m_import_idx.size()) != m_num_imports) {
+    throw std::runtime_error(
+        "[emulatoratm] the import field list names " +
+        std::to_string(m_import_idx.size()) + " field(s) but x2a holds " +
+        std::to_string(m_num_imports) + ".");
+  }
+  if (has_export && !m_export_idx.empty() &&
+      static_cast<int>(m_export_idx.size()) != m_num_exports) {
+    throw std::runtime_error(
+        "[emulatoratm] the export field list names " +
+        std::to_string(m_export_idx.size()) + " field(s) but a2x holds " +
+        std::to_string(m_num_exports) + ".");
+  }
+
+  // Resolve each declared field against the coupler's lists once, here,
+  // rather than looking names up every step.
+  const auto resolve = [](const std::string &name,
+                          const std::map<std::string, int> &index, int width) {
+    const auto it = index.find(name);
+    if (it == index.end()) {
+      return -1;
+    }
+    if (it->second < 0 || it->second >= width) {
+      throw std::runtime_error("[emulatoratm] coupling field '" + name +
+                               "' resolves to row " +
+                               std::to_string(it->second) +
+                               ", outside the buffer's " +
+                               std::to_string(width) + " row(s).");
+    }
+    return it->second;
+  };
+
+  std::vector<std::string> unmatched_inputs;
+  for (std::size_t i = 0; i < m_infer_inputs.size(); ++i) {
+    m_input_src[i] =
+        has_import ? resolve(m_infer_inputs[i], m_import_idx, m_num_imports)
+                   : -1;
+    if (m_input_src[i] < 0) {
+      unmatched_inputs.push_back(m_infer_inputs[i]);
+    }
+  }
+  if (!unmatched_inputs.empty() && !allow_unmatched_inputs) {
+    std::string names;
+    for (const auto &name : unmatched_inputs) {
+      names += (names.empty() ? "" : ", ") + name;
+    }
+    throw std::runtime_error(
+        "[emulatoratm] the model declares input(s) the coupler does not "
+        "carry: " +
+        names +
+        ". An unmatched input has no other source, so the model would run on "
+        "zeros. Fix the name, check that init_coupling_indices was given the "
+        "x2a field list (it named " +
+        std::to_string(m_import_idx.size()) +
+        " field(s)), or set `inference.allow_unmatched_inputs: true` if the "
+        "field really is supplied some other way.");
+  }
+
+  // An unmatched *output* is different: a model may legitimately produce
+  // diagnostics the coupler does not consume. Report it and carry on.
+  for (std::size_t i = 0; i < m_infer_outputs.size(); ++i) {
+    m_output_dst[i] =
+        has_export ? resolve(m_infer_outputs[i], m_export_idx, m_num_exports)
+                   : -1;
+    if (m_output_dst[i] < 0) {
+      std::cout << "[emulatoratm] inference output '" << m_infer_outputs[i]
+                << "' is not a coupling field; it will not be sent to the "
+                   "coupler.\n";
+    }
+  }
+}
+
 void EmulatorAtm::import_coupling_fields() {
   // The pack step reads x2a directly, so there is no separate copy into
   // internal field storage yet.  It gets one when the component grows state
@@ -311,7 +407,9 @@ void EmulatorAtm::prepare_inputs() {
   if (m_import_data == nullptr) {
     return;
   }
-  const int ncol = std::min(m_num_local_cols, m_field_size);
+  // validate_coupling() has already established that m_field_size and
+  // m_num_local_cols agree, so one bound serves both.
+  const int ncol = m_num_local_cols;
   for (std::size_t i = 0; i < m_infer_inputs.size(); ++i) {
     double *dst = m_infer_in.data() + i * m_num_local_cols;
     const int row = m_input_src[i];
@@ -333,7 +431,7 @@ void EmulatorAtm::process_outputs() {
   if (m_export_data == nullptr) {
     return;
   }
-  const int ncol = std::min(m_num_local_cols, m_field_size);
+  const int ncol = m_num_local_cols;
   for (std::size_t i = 0; i < m_infer_outputs.size(); ++i) {
     const double *src = m_infer_out.data() + i * m_num_local_cols;
     const int row = m_output_dst[i];

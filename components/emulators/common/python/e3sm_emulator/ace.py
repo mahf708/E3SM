@@ -95,11 +95,24 @@ from .decomposition import PermutationExchange, Tiling, split_bounds
 #: deep inside a load.  Bump this together with the code, not before it.
 PINNED_ACE_COMMIT = "75d8de6bcb0a30192720a16fc99f4eca0f54dbd2"
 
+#: The ``fme.__version__`` that commit reports.  Coarse — a release string,
+#: not a SHA — so it catches a wholesale version change and nothing finer.
+#: **This is a compatibility declaration, not dependency pinning.**  The real
+#: pin belongs in whatever builds the environment: a lockfile, a CIME machine
+#: definition, or an install script that names the SHA.
+PINNED_ACE_VERSION = "2026.4.0"
+
 #: ace_mode -> the value ACE's Distributed selector reads.
 _FME_BACKEND = {"single": "none", "spatial": "model"}
 
 #: Suffix marking an input that belongs to the *next* step.
 _NEXT_SUFFIX = "_next"
+
+#: The flag that lets ``spatial`` run anyway.  Named so that nobody sets it
+#: by accident or leaves it in a production namelist without noticing: what it
+#: turns off is a check against a *known* wrong-answer condition, not a
+#: conservative default.
+SPATIAL_OVERRIDE = "ace_unsafe_allow_unverified_spatial"
 
 _SPATIAL_WARNING = (
     "ace_mode=spatial builds ACE's (h, w) process mesh and hands each rank a "
@@ -111,10 +124,12 @@ _SPATIAL_WARNING = (
     "still performs global transforms, which produces plausible numbers "
     "rather than an error. Only NoiseConditionedSFNO is wired through the "
     "distributed constructors.\n\n"
-    "Before setting ace_allow_spatial: route every global operator in the "
-    "builder you are using through the distributed constructors, then check "
-    "one-step and multistep output against ace_mode=single on the same "
-    "checkpoint at 1, 2, 4 and 8 ranks."
+    "Before setting " + SPATIAL_OVERRIDE + ": route every global operator in "
+    "the builder you are using through the distributed constructors, then "
+    "check one-step and multistep output against ace_mode=single on the same "
+    "checkpoint at 1, 2, 4 and 8 ranks. Setting the flag does not make the "
+    "mode correct; it only records that you have taken responsibility for "
+    "checking that it is."
 )
 
 
@@ -168,7 +183,7 @@ def resolve_mode(config: dict, context: Context) -> tuple[str, int, int]:
                 "Hybrid data-and-spatial meshes (P_data * h * w) are not "
                 "supported yet; every rank must own a rectangle."
             )
-        if not _flag(config, "ace_allow_spatial"):
+        if not _flag(config, SPATIAL_OVERRIDE):
             raise ValueError(_SPATIAL_WARNING)
     else:
         h = w = 1
@@ -204,11 +219,21 @@ class AceEmulator:
             )
 
         # 1. Rank, device and process group, before anything reads a weight.
-        context.export()
+        #    The device ordinal has to be settled first: LOCAL_RANK *is* the
+        #    device ordinal as far as ACE and PhysicsNeMo are concerned, and
+        #    they call torch.cuda.set_device with it while loading.
+        device_id = config.get("device_id")
+        self.device_ordinal = context.device_ordinal(
+            None if device_id in (None, "") else int(device_id)
+        )
+        _set_cuda_device(self.device_ordinal)
+        context.export(device_ordinal=self.device_ordinal)
         os.environ["FME_DISTRIBUTED_BACKEND"] = _FME_BACKEND[self.mode]
         if self.mode == "spatial":
             os.environ["FME_DISTRIBUTED_H"] = str(self.h)
             os.environ["FME_DISTRIBUTED_W"] = str(self.w)
+
+        _check_ace_revision(warn=self.verbose and context.is_root)
 
         from fme.core.distributed import Distributed
 
@@ -218,35 +243,47 @@ class AceEmulator:
         # lifetime, so the context is entered here and closed in finalize()
         # rather than wrapped around a single call.
         self._exit_stack.enter_context(Distributed.context())
-        self.dist = Distributed.get_instance()
 
-        # `single` runs ACE with NonDistributed, so nothing upstream builds a
-        # process group — but the exchange still needs one.  In spatial mode
-        # ACE has already built its own, and initializing again would fail.
-        self.comm = self._make_comm()
+        # Everything from here on can fail — a missing checkpoint, a grid
+        # mismatch, an API that moved — and if it does, finalize() is never
+        # called because the object never comes into existence.  The context
+        # would then stay entered and the process group alive, so the next
+        # attempt in the same process fails as a nested context or hangs.
+        # Integration is exactly when those failures are routine.
+        try:
+            self.dist = Distributed.get_instance()
 
-        # 2. The decomposition.  Built before the checkpoint so a grid
-        #    mismatch is reported in milliseconds rather than after a
-        #    multi-gigabyte load.
-        tiling = self._make_tiling(ny, nx)
-        self.exchange = PermutationExchange(
-            self.comm, context.col_gids, tiling, self.lon_fastest
-        )
-        self.tile_shape = self.exchange.tile_shape
+            # `single` runs ACE with NonDistributed, so nothing upstream
+            # builds a process group — but the exchange still needs one.  In
+            # spatial mode ACE has already built its own, and initializing
+            # again would fail.
+            self.comm = self._make_comm()
 
-        # 3. The checkpoint — only where it will actually be evaluated.  In
-        #    `single` mode that is one rank, which is the point: 64 atmosphere
-        #    ranks should not hold 64 copies of the weights.
-        self.owns_model = self.tile_shape[0] > 0 and self.tile_shape[1] > 0
-        self.stepper = None
-        if self.owns_model:
-            model_path = config.get("model_path") or ""
-            if not model_path:
-                raise ValueError(
-                    "The ACE emulator needs `inference.model_path`, pointing "
-                    "at an ACE checkpoint."
-                )
-            self.stepper = _load_stepper(model_path)
+            # 2. The decomposition.  Built before the checkpoint so a grid
+            #    mismatch is reported in milliseconds rather than after a
+            #    multi-gigabyte load.
+            tiling = self._make_tiling(ny, nx)
+            self.exchange = PermutationExchange(
+                self.comm, context.col_gids, tiling, self.lon_fastest
+            )
+            self.tile_shape = self.exchange.tile_shape
+
+            # 3. The checkpoint — only where it will actually be evaluated.
+            #    In `single` mode that is one rank, which is the point: 64
+            #    atmosphere ranks should not hold 64 copies of the weights.
+            self.owns_model = self.tile_shape[0] > 0 and self.tile_shape[1] > 0
+            self.stepper = None
+            if self.owns_model:
+                model_path = config.get("model_path") or ""
+                if not model_path:
+                    raise ValueError(
+                        "The ACE emulator needs `inference.model_path`, "
+                        "pointing at an ACE checkpoint."
+                    )
+                self.stepper = _load_stepper(model_path)
+        except BaseException:
+            self._exit_stack.close()
+            raise
 
         #: Prognostic fields carried between timesteps.  ACE is
         #: autoregressive, so this is real model state; see
@@ -257,6 +294,7 @@ class AceEmulator:
             print(
                 f"[e3sm_emulator.ace] mode={self.mode} "
                 f"mesh={self.h}x{self.w} tile={self.tile_shape} "
+                f"device={self.device_ordinal} "
                 f"backend={_FME_BACKEND[self.mode]}",
                 flush=True,
             )
@@ -313,15 +351,7 @@ class AceEmulator:
                 "ACE's. Update split_bounds to match torch_harmonics.",
                 flush=True,
             )
-        # Cross-check that the reported slice really is this rank's tile.
-        expected = tiling.tile_shape(self.comm.rank)
-        actual = (int(mine[0, 1] - mine[0, 0]), int(mine[0, 3] - mine[0, 2]))
-        if expected != actual:
-            raise ValueError(
-                f"Rank {self.comm.rank}: ACE reports a {actual} slice but the "
-                f"reconstructed mesh says {expected}. The (h, w) rank ordering "
-                "assumed here does not match ACE's DeviceMesh."
-            )
+        _check_mesh_ordering(everyone, tiling, ny, nx, self.h, self.w)
         return tiling
 
     # -- per-step -----------------------------------------------------------
@@ -450,6 +480,91 @@ class AceEmulator:
         self.state = {}
         self.stepper = None
         self._exit_stack.close()
+
+
+def _check_mesh_ordering(reported, tiling: Tiling, ny: int, nx: int, h: int, w: int):
+    """Check every rank's rectangle, not just its size.
+
+    Comparing tile *shapes* is nearly worthless as a check: on an evenly
+    divisible mesh every tile has the same shape, so a permuted rank order
+    passes while each rank works on somebody else's piece of the planet — and
+    a global model fed a rotated globe returns a plausible field, not an
+    error.  So compare the actual coordinates, for all ranks, and confirm the
+    rectangles tile the sphere.
+
+    Args:
+        reported: ``(size, 4)`` of ``[j_start, j_stop, i_start, i_stop]``,
+            gathered in rank order, as ACE reported them.
+        tiling: what the assumed ``(r // w, r % w)`` ordering reconstructs.
+    """
+    covered = np.zeros((ny, nx), dtype=np.int32)
+    for rank in range(h * w):
+        j0, j1, i0, i1 = (int(v) for v in reported[rank])
+        origin = tiling.tile_origin(rank)
+        shape = tiling.tile_shape(rank)
+        expected = (origin[0], origin[0] + shape[0], origin[1], origin[1] + shape[1])
+        if (j0, j1, i0, i1) != expected:
+            raise ValueError(
+                f"Rank {rank}: ACE owns rows {j0}:{j1} and columns {i0}:{i1}, "
+                f"but the mesh ordering assumed here puts it at "
+                f"{expected[0]}:{expected[1]}, {expected[2]}:{expected[3]}. "
+                "The (h, w) rank ordering assumed here does not match ACE's "
+                "DeviceMesh, and routing columns on this assumption would give "
+                "every rank the wrong part of the globe."
+            )
+        covered[j0:j1, i0:i1] += 1
+
+    if not np.array_equal(covered, np.ones((ny, nx), dtype=np.int32)):
+        gaps = int((covered == 0).sum())
+        overlaps = int((covered > 1).sum())
+        raise ValueError(
+            f"The reported rectangles do not tile the {ny}x{nx} grid: "
+            f"{gaps} cell(s) belong to nobody and {overlaps} to more than one."
+        )
+
+
+def _set_cuda_device(ordinal: int) -> None:
+    """Claim this rank's device before ACE looks at it.
+
+    ACE reads ``get_device()`` (which is ``torch.cuda.current_device()``)
+    while loading a checkpoint, so the current device has to be right by then.
+    Setting it here also means the value is correct even in `single` mode,
+    where no ACE distributed backend runs to set it for us.
+    """
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.set_device(int(ordinal))
+
+
+def _check_ace_revision(warn: bool) -> None:
+    """Say something when the installed ACE is not the one this targets.
+
+    Best effort, and not a substitute for pinning: ``fme`` reports a coarse
+    release version rather than a commit, so this catches a wholesale version
+    change and nothing finer.  The real pin belongs in whatever builds the
+    environment — a lockfile, a CIME machine definition, or an install script
+    that names the SHA. This is a compatibility declaration that complains
+    when it is obviously violated.
+    """
+    if not warn:
+        return
+    try:
+        import fme
+
+        version = getattr(fme, "__version__", None)
+    except ImportError:
+        return
+    if version is not None and version != PINNED_ACE_VERSION:
+        print(
+            f"[e3sm_emulator.ace] warning: fme {version} is installed; this "
+            f"adapter was written against {PINNED_ACE_VERSION} "
+            f"(mahf708/ace {PINNED_ACE_COMMIT[:12]}). Pin the revision in the "
+            "environment if anything here misbehaves.",
+            flush=True,
+        )
 
 
 def _load_stepper(model_path: str):

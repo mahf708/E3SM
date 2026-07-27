@@ -134,37 +134,124 @@ TEST_CASE("A field goes from x2a through the model and back into a2x",
   std::remove("emulator_atm_test_report.txt");
 }
 
-TEST_CASE("A field the coupler does not carry is left alone",
-          "[atm][coupling]") {
+namespace {
+
+/// Wire up a component with a stub backend and the given namelist body.
+void configure(EmulatorAtm &atm, const FakeGrid &grid,
+               const ScopedFile &namelist, const std::string &export_fields,
+               const std::string &import_fields, std::vector<double> &x2a,
+               std::vector<double> &a2x, int n_import, int n_export,
+               int field_size) {
+  atm.create_instance(0, 1, namelist.path(), "", 0, 20260101, 0);
+  const auto desc = grid.desc();
+  atm.set_grid_data(desc);
+  atm.init_coupling_indices(export_fields, import_fields);
+
+  EmulatorCouplingDesc cpl{};
+  cpl.import_data = x2a.data();
+  cpl.export_data = a2x.data();
+  cpl.num_imports = n_import;
+  cpl.num_exports = n_export;
+  cpl.field_size = field_size;
+  atm.setup_coupling(cpl);
+}
+
+} // namespace
+
+TEST_CASE("An input the coupler does not carry is fatal", "[atm][coupling]") {
+  // An unmatched input has no other source, so allowing one is permission to
+  // run the model on zeros.
   ScopedFile namelist("emulator_atm_test_missing_in",
                       "inference.backend: stub\n"
                       "inference.input: not_a_coupling_field\n"
-                      "inference.output: also_not_one\n");
+                      "inference.output: b\n");
+
+  EmulatorAtm atm;
+  const FakeGrid grid;
+  std::vector<double> x2a(2 * NCOL, 1.0);
+  std::vector<double> a2x(2 * NCOL, 5.0);
+  configure(atm, grid, namelist, "a:b", "p:q", x2a, a2x, 2, 2, NCOL);
+
+  REQUIRE_THROWS_WITH(atm.initialize(),
+                      Catch::Contains("not_a_coupling_field") &&
+                          Catch::Contains("run on zeros"));
+}
+
+TEST_CASE("An unmatched input can be allowed deliberately",
+          "[atm][coupling]") {
+  ScopedFile namelist("emulator_atm_test_allowed_in",
+                      "inference.backend: stub\n"
+                      "inference.allow_unmatched_inputs: true\n"
+                      "inference.input: supplied_elsewhere\n"
+                      "inference.output: also_not_a_field\n");
+
+  EmulatorAtm atm;
+  const FakeGrid grid;
+  std::vector<double> x2a(2 * NCOL, 1.0);
+  std::vector<double> a2x(2 * NCOL, 5.0);
+  configure(atm, grid, namelist, "a:b", "p:q", x2a, a2x, 2, 2, NCOL);
+
+  // An unmatched *output* stays non-fatal: a model may produce diagnostics
+  // the coupler does not consume.
+  atm.initialize();
+  atm.run(1800);
+  for (double value : a2x) {
+    REQUIRE(value == 5.0);
+  }
+  atm.finalize();
+}
+
+TEST_CASE("A column-count mismatch is fatal", "[atm][coupling]") {
+  // Truncating to the shorter of the two would leave part of every field
+  // unset — plausible numbers over part of the globe, zeros over the rest.
+  ScopedFile namelist("emulator_atm_test_size_in",
+                      "inference.backend: stub\n"
+                      "inference.input: p\n"
+                      "inference.output: a\n");
+
+  EmulatorAtm atm;
+  const FakeGrid grid;
+  std::vector<double> x2a(2 * NCOL, 1.0);
+  std::vector<double> a2x(2 * NCOL, 5.0);
+  configure(atm, grid, namelist, "a:b", "p:q", x2a, a2x, 2, 2, NCOL - 1);
+
+  REQUIRE_THROWS_WITH(atm.initialize(), Catch::Contains("disagree"));
+}
+
+TEST_CASE("A field list that disagrees with the buffer is fatal",
+          "[atm][coupling]") {
+  // If the list and the attribute vector describe different things, every
+  // resolved row index is off by an unknown amount.
+  ScopedFile namelist("emulator_atm_test_list_in",
+                      "inference.backend: stub\n"
+                      "inference.input: p\n"
+                      "inference.output: a\n");
+
+  EmulatorAtm atm;
+  const FakeGrid grid;
+  std::vector<double> x2a(3 * NCOL, 1.0);
+  std::vector<double> a2x(2 * NCOL, 5.0);
+  configure(atm, grid, namelist, "a:b", "p:q", x2a, a2x, 3, 2, NCOL);
+
+  REQUIRE_THROWS_WITH(atm.initialize(), Catch::Contains("x2a holds 3"));
+}
+
+TEST_CASE("No coupling buffers at all is still allowed", "[atm][coupling]") {
+  // A driver bringing the emulator up, or a unit test, has no attribute
+  // vectors to offer.
+  ScopedFile namelist("emulator_atm_test_nocpl_in",
+                      "inference.backend: stub\n"
+                      "inference.input: p\n"
+                      "inference.output: a\n");
 
   EmulatorAtm atm;
   atm.create_instance(0, 1, namelist.path(), "", 0, 20260101, 0);
   const FakeGrid grid;
   const auto desc = grid.desc();
   atm.set_grid_data(desc);
-  atm.init_coupling_indices("a:b", "p:q");
 
-  std::vector<double> x2a(2 * NCOL, 1.0);
-  std::vector<double> a2x(2 * NCOL, 5.0);
-  EmulatorCouplingDesc cpl{};
-  cpl.import_data = x2a.data();
-  cpl.export_data = a2x.data();
-  cpl.num_imports = 2;
-  cpl.num_exports = 2;
-  cpl.field_size = NCOL;
-  atm.setup_coupling(cpl);
-
-  // Unmatched names are reported, not fatal: a model may legitimately consume
-  // or produce things the coupler knows nothing about.
   atm.initialize();
   atm.run(1800);
-  for (double value : a2x) {
-    REQUIRE(value == 5.0);
-  }
   atm.finalize();
 }
 

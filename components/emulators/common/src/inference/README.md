@@ -6,6 +6,29 @@ bridge. Nothing here knows about atmospheres, land, grids or coupling. A
 component packs its fields into tensors, calls `infer`, and reads the results
 back — usually into memory it already owns.
 
+## What this is, and what it is not
+
+**Working:** the Python bridge, the coupling path through `EmulatorAtm`, a
+column-local (`generic`) backend, and single-rank ACE as a numerical
+reference. All of it is covered by tests that run without MPI, torch or a
+checkpoint.
+
+**Not working, and deliberately so:** this is *not* distributed-ACE support.
+`TorchDistributed` was asked for and has been **removed** — it splits a batch
+of globes across ranks and a coupled run supplies one, so it cannot accelerate
+a single trajectory (details below). `ModelTorchDistributed` is **implemented
+but gated off**, because the builders a deterministic ACE2 checkpoint
+instantiates still call non-distributed spherical transforms, and running
+anyway produces plausible wrong fields rather than an error.
+
+**Never yet run:** nothing here has touched a real ACE checkpoint. There is no
+test involving several MPI processes, `torch.distributed`, a component
+communicator inside an MPMD job, several ranks per node, GPU binding, a
+checkpoint load, a real ACE timestep, or a restart. The passing test suite is
+evidence about local logic, not about distributed integration. The decisive
+next step is one pinned ACE checkpoint on two MPI ranks, compared against one,
+followed by a restart comparison — not another unit test.
+
 ```
               component (EmulatorAtm, ...)
                           |
@@ -25,7 +48,7 @@ back — usually into memory it already owns.
                           |                       |
                        generic                   ace
                   (column network,        (a globe per sample:
-                   pure data parallel)     single / spatial / ensemble)
+                   pure data parallel)      single / spatial)
 ```
 
 ## Files
@@ -106,9 +129,28 @@ inference.output:     air_temperature_0
 `inference.input` and `inference.output` name **coupling fields**: they are
 resolved once against the `x2a` and `a2x` field lists MCT hands the component,
 and each step `prepare_inputs`/`process_outputs` gather and scatter between
-`rAttr(nflds, lsize)` and the field-contiguous layout a model wants. A name
-the coupler does not carry is reported at startup and left unexchanged, rather
-than silently staying zero.
+`rAttr(nflds, lsize)` and the field-contiguous layout a model wants.
+
+Mismatches are fatal at initialization, because every one of them otherwise
+shows up as a partly filled field — plausible numbers over part of the globe,
+zeros or stale values over the rest, which nothing downstream would catch:
+
+- the coupler's `field_size` disagreeing with this rank's column count (the
+  earlier code took the shorter of the two, which is how that failure hides);
+- a field list whose length disagrees with its attribute vector, which makes
+  every resolved row index wrong by an unknown amount;
+- a resolved row outside the buffer;
+- **a declared input the coupler does not carry.** An unmatched input has no
+  other source, so tolerating one is permission to run the model on zeros.
+  `inference.allow_unmatched_inputs: true` says the field really is supplied
+  some other way. A declared *output* is different — a model may legitimately
+  produce diagnostics the coupler does not consume — so that is reported and
+  not fatal. If internal-state or computed inputs are wanted later, the honest
+  form is an explicit source per field (`inference.input.<name>.source:
+  coupling | computed | state`) rather than a blanket permission.
+
+A component with no coupling buffers at all — a driver bringing the emulator
+up, or a unit test — is left alone.
 
 Settings the C++ layer does not recognise become options and are passed
 through to the model, so a Python emulator can grow a setting without anyone
@@ -210,7 +252,7 @@ reject. `e3sm_emulator.ace` handles these, two ways:
 | `ace_mode` | ACE backend | Status |
 | --- | --- | --- |
 | `single` | `NonDistributed` | **Supported.** One rank assembles the globe and runs an unmodified checkpoint; the others take part only in the exchange. The numerical reference. |
-| `spatial` | `ModelTorchDistributed` | **Gated.** Ranks form an `h x w` mesh, each owning a rectangle. Refused unless `ace_allow_spatial` is set — see below. |
+| `spatial` | `ModelTorchDistributed` | **Gated.** Ranks form an `h x w` mesh, each owning a rectangle. Refused unless `ace_unsafe_allow_unverified_spatial` is set — see below. |
 
 `auto` picks `single` unless `ace_h`/`ace_w` are declared and multiply to the
 rank count. It will not invent a mesh: which factorization is right depends on
@@ -239,7 +281,11 @@ Only `NoiseConditionedSFNO` is wired through the distributed constructors. A
 sharded input therefore reaches a module that still performs global
 transforms, and the result is plausible numbers rather than an error. So the
 mode raises at initialization with that explanation attached, and
-`ace_allow_spatial` is the acknowledgement. The order of work before setting
+`ace_unsafe_allow_unverified_spatial` is the acknowledgement — named so that
+nobody leaves it in a production namelist without noticing what it turns off.
+Inspecting the loaded checkpoint's builder and permitting only a known-good
+set would be better protection than an opt-in flag; that is the right fix once
+one builder is verified. The order of work before setting
 it: route every global operator in the builder through the distributed
 constructors, then check one-step *and* multistep output against
 `ace_mode=single` on the same checkpoint at 1, 2, 4 and 8 ranks.
@@ -337,6 +383,23 @@ are missing rather than failing somewhere deep inside a load.
   rank (`--gpus-per-task=1 --gpu-bind=closest`, or an equivalent
   `CUDA_VISIBLE_DEVICES`); anything else has to be stated with
   `inference.device_id`. An ambiguous binding raises rather than guessing.
+- **`LOCAL_RANK` is a device ordinal, not a rank.** Every consumer of it in
+  ACE and PhysicsNeMo feeds it straight to `torch.cuda.set_device`
+  (`torch_distributed.py:49`, `model_torch_distributed.py:144`,
+  `pnd_manager.py:481`), so it indexes the devices *this process can see*.
+  Publishing the component-local rank there breaks under exactly the
+  one-GPU-per-rank binding recommended above: `device_count() == 1`, and the
+  fourth rank on a node would ask for device 3. `Context.device_ordinal()`
+  resolves it and `export()` publishes that; the adapter also calls
+  `torch.cuda.set_device` itself, before entering the context, so the current
+  device is right by the time a checkpoint is loaded.
+- **A failed constructor must not leak the context.** `Distributed.context()`
+  is entered in `AceEmulator.__init__` and closed in `finalize()`, so anything
+  that throws in between — a missing checkpoint, a grid mismatch, an API that
+  moved — would leave `Distributed._entered` true and the process group alive,
+  and the next attempt in that process would fail as a nested context or hang.
+  Integration is exactly when those failures are routine, so the initialization
+  after the context is entered closes the stack and re-raises.
 - **A global model can already run without any of this**, by giving the
   component few ranks (`NTASKS_ATM=1`). The coupler regrids and redistributes
   between components, so it performs the gather — correctly, and with no idle
