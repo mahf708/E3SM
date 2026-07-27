@@ -287,16 +287,34 @@ class AceEmulator:
             # 3. The checkpoint — only where it will actually be evaluated.
             #    In `single` mode that is one rank, which is the point: 64
             #    atmosphere ranks should not hold 64 copies of the weights.
+            #
+            #    That asymmetry is precisely why the load cannot simply throw.
+            #    Only rank 0 opens the checkpoint, so a bad path or a corrupt
+            #    file raises *there* while every other rank finishes
+            #    construction happily, and the component then holds
+            #    inconsistent state across ranks: the next collective — or
+            #    teardown — hangs instead of reporting the real error. So the
+            #    failure is caught, agreed over the whole communicator, and
+            #    re-raised everywhere with rank 0's message attached.
             self.owns_model = self.tile_shape[0] > 0 and self.tile_shape[1] > 0
             self.stepper = None
-            if self.owns_model:
-                model_path = config.get("model_path") or ""
-                if not model_path:
-                    raise ValueError(
-                        "The ACE emulator needs `inference.model_path`, "
-                        "pointing at an ACE checkpoint."
-                    )
-                self.stepper = _load_stepper(model_path)
+            problem, error = "", None
+            try:
+                if self.owns_model:
+                    model_path = config.get("model_path") or ""
+                    if not model_path:
+                        raise ValueError(
+                            "The ACE emulator needs `inference.model_path`, "
+                            "pointing at an ACE checkpoint."
+                        )
+                    self.stepper = _load_stepper(model_path)
+            except Exception as exc:  # noqa: BLE001 - re-raised by agree()
+                problem, error = (
+                    f"rank {self.comm.rank} could not load the ACE "
+                    f"checkpoint: {type(exc).__name__}: {exc}",
+                    exc,
+                )
+            self.comm.agree(problem, error)
         except BaseException:
             self._exit_stack.close()
             raise

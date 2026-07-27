@@ -229,8 +229,19 @@ class PermutationExchange:
         self.tile_shape = tiling.tile_shape(comm.rank)
         self.tile_size = self.tile_shape[0] * self.tile_shape[1]
 
-        j, i = cell_indices(col_gids, tiling.ny, tiling.nx, lon_fastest)
-        dest_rank, dest_offset = tiling.locate(j, i)
+        # cell_indices() inspects *this rank's* global ids, so it can fail on
+        # one rank alone — and it runs before the exchanges below.  A rank
+        # that raised here while the others entered exchange_counts() would
+        # hang them, so settle it collectively first.  Every rank reaches
+        # exactly one agree() before any exchange, and one after.
+        try:
+            j, i = cell_indices(col_gids, tiling.ny, tiling.nx, lon_fastest)
+            dest_rank, dest_offset = tiling.locate(j, i)
+            problem, error = "", None
+        except Exception as exc:  # noqa: BLE001 - re-raised by agree()
+            j = i = dest_rank = dest_offset = None
+            problem, error = f"rank {comm.rank}: {exc}", exc
+        comm.agree(problem, error)
 
         # Group the local columns by destination, so each rank's share is one
         # contiguous slice of the send buffer.
@@ -244,7 +255,13 @@ class PermutationExchange:
             ordered_offsets, self._send_counts, self._recv_counts
         ).reshape(-1)
 
-        self._validate()
+        # _validate() checks *this rank's* tile, so it too can fail alone.
+        try:
+            self._validate()
+            problem, error = "", None
+        except Exception as exc:  # noqa: BLE001 - re-raised by agree()
+            problem, error = f"rank {comm.rank}: {exc}", exc
+        comm.agree(problem, error)
 
     def _validate(self) -> None:
         """Refuse a decomposition that does not cover this rank's tile.

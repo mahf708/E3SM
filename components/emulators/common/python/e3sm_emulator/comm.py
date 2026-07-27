@@ -12,6 +12,11 @@ from typing import Sequence
 
 import numpy as np
 
+#: Room for one rank's failure message in :meth:`Comm.agree`.  Fixed so the
+#: exchange is a single equal-sized all-gather; a truncated message is still
+#: better than a hang.
+_MESSAGE_BYTES = 2048
+
 
 class Comm:
     """Collectives over the emulator's ranks.
@@ -45,6 +50,59 @@ class Comm:
         send = np.asarray(send_counts, dtype=np.int64).reshape(self.size, 1)
         ones = [1] * self.size
         return self.alltoall(send, ones, ones).reshape(self.size)
+
+    def agree(self, problem: str = "", error: BaseException | None = None) -> None:
+        """Raise on every rank, or on none.
+
+        The failure this exists to prevent: a model that only *some* ranks
+        load, or a check that only fails on the rank whose data is wrong, so
+        one rank raises while the others sail on into the next collective and
+        the run hangs instead of failing.  A hang tells you nothing; this
+        turns it into an error that names the cause on every rank.
+
+        Every rank's message is exchanged, not just a flag, so a rank that was
+        fine still reports the real reason the run is stopping rather than a
+        bare "some other rank failed".
+
+        **This is itself a collective.**  It must be reached exactly once, in
+        the same order, on every rank — which means it belongs *after* a
+        collective section, never inside one branch of an `if`.
+
+        Args:
+            problem: This rank's complaint, or "" if it has none.
+            error: The exception ``problem`` describes, when there was one.
+                It is re-raised unchanged on the rank that hit it, so the
+                caller still sees the real type and the original traceback;
+                the other ranks get a RuntimeError quoting it.
+        """
+        if self.size == 1:
+            if problem:
+                raise error if error is not None else RuntimeError(problem)
+            return
+
+        raw = problem.encode("utf-8")[:_MESSAGE_BYTES]
+        block = np.zeros(_MESSAGE_BYTES, dtype=np.uint8)
+        block[: len(raw)] = np.frombuffer(raw, dtype=np.uint8)
+        gathered = self.allgather(block.reshape(-1, 1)).reshape(
+            self.size, _MESSAGE_BYTES
+        )
+
+        problems = {}
+        for rank in range(self.size):
+            text = bytes(gathered[rank]).rstrip(b"\0").decode("utf-8", "replace")
+            if text:
+                problems[rank] = text
+        if not problems:
+            return
+        if problem:
+            raise error if error is not None else RuntimeError(problem)
+        rank, text = sorted(problems.items())[0]
+        raise RuntimeError(
+            f"This rank initialized cleanly, but rank {rank} did not, so the "
+            f"run is stopping on every rank rather than hanging. Rank {rank} "
+            f"said:\n{text}"
+        )
+
 
 
 class SerialComm(Comm):
@@ -94,8 +152,15 @@ class TorchComm(Comm):
         # a caller-supplied one is never destroyed here.
         self._owns_group = group is None
         self._group = group if group is not None else dist.new_group(backend="gloo")
-        self.rank = dist.get_rank(group=self._group)
-        self.size = dist.get_world_size(group=self._group)
+        # Anything after new_group() must not be able to lose it: the caller
+        # only learns the object exists — and only then registers its
+        # cleanup — once __init__ returns.
+        try:
+            self.rank = dist.get_rank(group=self._group)
+            self.size = dist.get_world_size(group=self._group)
+        except BaseException:
+            self.close()
+            raise
 
     def close(self) -> None:
         """Destroy the group this object created.  Idempotent.

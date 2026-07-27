@@ -248,6 +248,83 @@ class TestContext(unittest.TestCase):
         self.assertIn("3 of 48 columns", context.describe())
 
 
+class TestAgreement(unittest.TestCase):
+    """One rank failing must stop them all, not hang them all."""
+
+    def test_nobody_unhappy_is_a_no_op(self):
+        def body(comm, rank):
+            comm.agree("")
+            return "survived"
+
+        self.assertEqual(run_ranks(3, body), ["survived"] * 3)
+
+    def test_one_bad_rank_raises_everywhere(self):
+        # The case that matters: in single mode only rank 0 loads the
+        # checkpoint, so a bad path raises there while every other rank
+        # finishes construction and then hangs on the next collective.
+        def body(comm, rank):
+            comm.agree("checkpoint is corrupt" if rank == 0 else "")
+            return "survived"
+
+        with self.assertRaises(RuntimeError) as caught:
+            run_ranks(4, body)
+        self.assertIn("checkpoint is corrupt", str(caught.exception))
+
+    def test_a_healthy_rank_learns_the_real_reason(self):
+        # A bare "some other rank failed" would send someone to the wrong
+        # log, so the failing rank's message travels with the flag.
+        errors = {}
+
+        def body(comm, rank):
+            try:
+                comm.agree("disk on fire" if rank == 2 else "")
+            except RuntimeError as exc:
+                errors[rank] = str(exc)
+            return True
+
+        run_ranks(4, body)
+        self.assertEqual(sorted(errors), [0, 1, 2, 3])
+        self.assertEqual(errors[2], "disk on fire")
+        for rank in (0, 1, 3):
+            self.assertIn("rank 2", errors[rank])
+            self.assertIn("disk on fire", errors[rank])
+            self.assertIn("rather than hanging", errors[rank])
+
+    def test_the_failing_rank_keeps_its_own_exception(self):
+        # The rank that hit the problem should see the real type and the
+        # original traceback, not a RuntimeError wrapper that hides both.
+        original = ValueError("the grid does not match")
+
+        def body(comm, rank):
+            try:
+                comm.agree("rank 0 says no" if rank == 0 else "", original)
+            except BaseException as exc:  # noqa: BLE001 - inspected below
+                return type(exc).__name__
+            return "no error"
+
+        kinds = run_ranks(3, body)
+        self.assertEqual(kinds[0], "ValueError")
+        self.assertEqual(kinds[1:], ["RuntimeError", "RuntimeError"])
+
+    def test_a_rank_local_gid_error_is_agreed_not_hung(self):
+        # cell_indices() inspects this rank's own global ids and runs before
+        # the exchange's collectives, so a bad one on a single rank would
+        # otherwise leave the others waiting in exchange_counts().
+        size = 3
+        total = NY * NX
+
+        def body(comm, rank):
+            gids = round_robin_gids(rank, size, total)
+            if rank == 1:
+                gids = gids + total  # off the grid entirely, on one rank only
+            PermutationExchange(comm, gids, Tiling(NY, NX, 1, 1))
+            return True
+
+        with self.assertRaises(RuntimeError) as caught:
+            run_ranks(size, body)
+        self.assertIn("rank 1", str(caught.exception))
+
+
 class TestBridge(unittest.TestCase):
     def test_unknown_emulator_names_the_alternatives(self):
         from e3sm_emulator.bridge import create_emulator

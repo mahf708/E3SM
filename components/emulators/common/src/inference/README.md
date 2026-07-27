@@ -421,8 +421,28 @@ are missing rather than failing somewhere deep inside a load.
   life of the process, and every later attempt dies as "Nested
   Distributed.context() is not supported" — masking the original error.
   Since `enter_context()` never returned, there is nothing registered to undo
-  it, so the adapter puts the flag back by hand. The proper fix is upstream:
-  move `instance = cls.get_instance()` inside the `try`.
+  it, so the adapter puts the flag back by hand. That repairs the guard but
+  does **not** undo whatever partial process-group or singleton state was
+  built before `get_instance()` gave up — it is a workaround for the pinned
+  revision, not proof that retrying in the same process is safe. The real fix
+  is upstream: move `instance = cls.get_instance()` inside the `try`, with
+  exception-safe cleanup around it.
+- **A root-only failure has to become everybody's failure.** In `single` mode
+  only one rank loads the checkpoint, so a bad path or a corrupt file raises
+  *there* while every other rank finishes construction happily — and the
+  component then holds inconsistent state, so the next collective or the
+  teardown hangs instead of reporting the real error. `Comm.agree()` closes
+  that: the failure is caught, exchanged over the whole communicator, and
+  re-raised everywhere, with the failing rank's message attached so a healthy
+  rank does not send you to the wrong log. The rank that actually failed
+  re-raises its own exception, type and traceback intact.
+
+  The same treatment covers the two rank-local checks in the decomposition —
+  `cell_indices()` (this rank's global ids) and the tile validation — because
+  both can fail on one rank alone, and one of them runs *before* the
+  exchange's collectives. `agree()` is itself a collective, so it has to be
+  reached exactly once per rank on every path; that constraint is why
+  validation collects complaints instead of throwing them.
 - **A failed constructor must not leak the context.** `Distributed.context()`
   is entered in `AceEmulator.__init__` and closed in `finalize()`, so anything
   that throws in between — a missing checkpoint, a grid mismatch, an API that
