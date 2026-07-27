@@ -12,9 +12,9 @@ from typing import Sequence
 
 import numpy as np
 
-#: Room for one rank's failure message in :meth:`Comm.agree`.  Fixed so the
-#: exchange is a single equal-sized all-gather; a truncated message is still
-#: better than a hang.
+#: How much of a failure message :meth:`Comm.agree` will carry.  Truncating a
+#: diagnostic is acceptable; :meth:`Comm.allgather_text` itself is exact,
+#: because it also carries the restart field schema.
 _MESSAGE_BYTES = 2048
 
 
@@ -52,22 +52,30 @@ class Comm:
         return self.alltoall(send, ones, ones).reshape(self.size)
 
     def allgather_text(self, text: str) -> list[str]:
-        """One string per rank, in rank order.
+        """One string per rank, in rank order.  Exact, never truncated.
 
-        Padded to a fixed width so this is a single equal-sized all-gather.
-        Used for the things that have to be the same on every rank but are
-        only known on some of them: a failure message, a field name list.
+        Two all-gathers: the byte lengths, then blocks padded to the longest.
+        A fixed width would have been one call, but this also carries the
+        restart field schema, and silently dropping a state variable because
+        the name list ran past a buffer is not a trade worth making. Callers
+        that only want a diagnostic can truncate before calling.
         """
         if self.size == 1:
             return [text]
-        raw = text.encode("utf-8")[:_MESSAGE_BYTES]
-        block = np.zeros(_MESSAGE_BYTES, dtype=np.uint8)
+
+        raw = text.encode("utf-8")
+        lengths = self.allgather(
+            np.array([[len(raw)]], dtype=np.int64)
+        ).reshape(self.size)
+        width = int(lengths.max())
+        if width == 0:
+            return [""] * self.size
+
+        block = np.zeros(width, dtype=np.uint8)
         block[: len(raw)] = np.frombuffer(raw, dtype=np.uint8)
-        gathered = self.allgather(block.reshape(-1, 1)).reshape(
-            self.size, _MESSAGE_BYTES
-        )
+        gathered = self.allgather(block.reshape(-1, 1)).reshape(self.size, width)
         return [
-            bytes(gathered[r]).rstrip(b"\0").decode("utf-8", "replace")
+            bytes(gathered[r][: int(lengths[r])]).decode("utf-8", "replace")
             for r in range(self.size)
         ]
 
@@ -100,9 +108,14 @@ class Comm:
                 raise error if error is not None else RuntimeError(problem)
             return
 
+        # A diagnostic may be truncated; that is a fair trade for a bounded
+        # exchange, and unlike a field schema nothing downstream depends on
+        # its exact contents.
         problems = {
             rank: text
-            for rank, text in enumerate(self.allgather_text(problem))
+            for rank, text in enumerate(
+                self.allgather_text(problem[:_MESSAGE_BYTES])
+            )
             if text
         }
         if not problems:

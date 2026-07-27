@@ -449,7 +449,22 @@ are missing rather than failing somewhere deep inside a load.
   version of the bug: the prognostic state exists only on the owner, so a
   version that returned early when it was empty left the owner alone in the
   redistribution — a deadlock, not an empty result. The field names are agreed
-  first, then every rank contributes its tile (empty ones included).
+  first, then every rank contributes its tile (empty ones included). Two
+  details matter there: `allgather_text()` is exact rather than truncated,
+  because losing a state variable to a fixed buffer would drop part of the
+  atmosphere at every restart; and the ranks holding state must announce
+  *identical* field sets, since a union across them would write uninitialized
+  values into whichever tile lacked a field.
+
+  The boundary has to be drawn one operation wider than feels necessary.
+  Stacking the model's outputs is the last thing before the scatter and can
+  fail alone — a stepper may return a correctly *named* field of the wrong
+  size, and `.numpy()[0]` does not check — so `stack_output_tiles()` does the
+  shape check and runs *inside* the guard, with the result contract being the
+  stacked array rather than a dict. Likewise the row-count check now lives
+  inside `PermutationExchange.to_tile`/`to_columns` themselves, settled
+  collectively before they communicate: keeping the invariant next to the
+  communication it protects covers callers not yet written.
 
   The same treatment covers the rank-local work that immediately precedes a
   collective — packing the input fields, asking ACE for this rank's slice, and

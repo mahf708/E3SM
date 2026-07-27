@@ -134,6 +134,51 @@ _SPATIAL_WARNING = (
 )
 
 
+def stack_output_tiles(produced: dict, names, tile_shape) -> np.ndarray:
+    """Lay the model's named fields out as one ``(nj, ni, nfields)`` array.
+
+    The last thing that happens before the scatter, and the last thing that
+    can fail on one rank alone — which is why it lives here, is called from
+    inside ``run_where``, and is tested directly rather than through a
+    reimplementation of the same steps.
+
+    The shape check is the point: a stepper can return a correctly *named*
+    field of the wrong size, and ``.numpy()[0]`` will not notice.  Left to
+    ``reshape`` inside the scatter, that becomes a hang.
+
+    Args:
+        produced: Field name -> ``(nj, ni)`` array.
+        names: The output order the coupler expects.
+        tile_shape: ``(nj, ni)`` this rank owns; ``(0, 0)`` if it owns none.
+    """
+    nj, ni = int(tile_shape[0]), int(tile_shape[1])
+    tiles = []
+    for name in names:
+        if name not in produced:
+            raise ValueError(
+                f"No output named '{name}' to scatter; got {sorted(produced)}."
+            )
+        tile = np.asarray(produced[name], dtype=np.float64)
+        if tile.shape != (nj, ni):
+            raise ValueError(
+                f"Output '{name}' has shape {tile.shape}, but this rank owns a "
+                f"{nj}x{ni} tile. A model that returns the wrong size here "
+                "would fail alone, in the scatter, with every other rank "
+                "already waiting."
+            )
+        tiles.append(tile)
+    if not tiles:
+        return np.empty((nj, ni, 0), dtype=np.float64)
+    return np.stack(tiles, axis=-1)
+
+
+def empty_output_tiles(names, tile_shape) -> np.ndarray:
+    """The contribution of a rank that owns no part of the globe."""
+    return np.empty(
+        (int(tile_shape[0]), int(tile_shape[1]), len(names)), dtype=np.float64
+    )
+
+
 def build(config: dict, context: Context) -> "AceEmulator":
     return AceEmulator(config, context)
 
@@ -470,20 +515,27 @@ class AceEmulator:
                     f"The ACE stepper did not produce {missing}. It produces: "
                     f"{sorted(result)}."
                 )
-            return {
-                name: result[name].detach().to("cpu", torch.float64).numpy()[0]
-                for name in self.output_names
-            }
+            # Stacking, and the shape check inside it, belong here rather than
+            # after run_where: .numpy()[0] does not check (nj, ni), so a model
+            # that returned a correctly named field of the wrong size would
+            # pass the guard and then fail alone, in the reshape, with the
+            # other ranks already waiting in the scatter.
+            return stack_output_tiles(
+                {
+                    name: result[name].detach().to("cpu", torch.float64).numpy()[0]
+                    for name in self.output_names
+                },
+                self.output_names,
+                self.tile_shape,
+            )
 
-        produced = run_where(self.comm, self.owns_model, run_model)
-        if produced is None:
+        stacked = run_where(self.comm, self.owns_model, run_model)
+        if stacked is None:
             # This rank owns no part of the globe. It still has to take part
             # in the exchange — infer() is collective.
-            produced = {
-                name: np.empty((0, 0), dtype=np.float64) for name in self.output_names
-            }
+            stacked = empty_output_tiles(self.output_names, self.tile_shape)
 
-        self._to_columns(produced, outputs)
+        self._to_columns(stacked, outputs)
 
     def _to_tiles(self, inputs: dict, names) -> dict:
         """Move every named input field onto this rank's tile, in one go.
@@ -506,18 +558,12 @@ class AceEmulator:
         tile = self.exchange.to_tile(columns)
         return {name: np.ascontiguousarray(tile[..., k]) for k, name in enumerate(names)}
 
-    def _to_columns(self, produced: dict, outputs: dict) -> None:
-        """Move the model's fields back onto the coupler's columns."""
-        nj, ni = self.tile_shape
-        stacked = np.stack(
-            [
-                produced[name].reshape(nj, ni)
-                if produced[name].size
-                else np.empty((nj, ni), dtype=np.float64)
-                for name in self.output_names
-            ],
-            axis=-1,
-        )
+    def _to_columns(self, stacked: np.ndarray, outputs: dict) -> None:
+        """Scatter an already-stacked, already-checked tile back to columns.
+
+        Everything that could fail on one rank alone has happened before this
+        point, inside run_where; what is left is the collective itself.
+        """
         columns = self.exchange.to_columns(stacked)
         for k, name in enumerate(self.output_names):
             outputs[name].reshape(-1)[:] = columns[:, k]
@@ -548,9 +594,29 @@ class AceEmulator:
         announced = self.comm.allgather_text(
             "\n".join(sorted(self.state)) if self.owns_model else ""
         )
-        names = sorted({n for block in announced for n in block.split("\n") if n})
-        if not names:
+        announced_sets = {
+            rank: frozenset(n for n in block.split("\n") if n)
+            for rank, block in enumerate(announced)
+        }
+        owner_sets = {r: names for r, names in announced_sets.items() if names}
+        if not owner_sets:
             return {}
+        # Every rank that owns model state must hold the *same* fields. If one
+        # of them is missing a name the others have, the union would silently
+        # give that tile uninitialized values, and the restart would carry
+        # garbage over part of the globe.
+        distinct = set(owner_sets.values())
+        if len(distinct) > 1:
+            raise ValueError(
+                "The ranks holding model state disagree about which "
+                "prognostic fields they hold: "
+                + "; ".join(
+                    f"rank {r}: {sorted(names)}" for r, names in owner_sets.items()
+                )
+                + ". A union across them would write uninitialized values into "
+                "the restart for whichever tile lacks a field."
+            )
+        names = sorted(next(iter(distinct)))
 
         nj, ni = self.tile_shape
 
@@ -560,7 +626,7 @@ class AceEmulator:
                     self.state[n].detach().to("cpu", torch.float64).numpy().reshape(
                         nj, ni
                     )
-                    if self.owns_model and n in self.state
+                    if self.owns_model
                     else np.empty((nj, ni), dtype=np.float64)
                     for n in names
                 ],

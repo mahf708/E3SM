@@ -11,6 +11,7 @@ import unittest
 
 import numpy as np
 
+from e3sm_emulator.ace import empty_output_tiles, stack_output_tiles
 from e3sm_emulator.comm import SerialComm, run_where
 from e3sm_emulator.context import Context
 from e3sm_emulator.decomposition import (
@@ -343,11 +344,17 @@ class TestOwnerOnlyWork(unittest.TestCase):
             def model():
                 if owner_raises:
                     raise RuntimeError("CUDA out of memory")
-                return tile * 2.0
+                # The real helper, not a reimplementation: a gap in it has to
+                # show up here rather than being papered over by the test
+                # doing the same job a slightly safer way.
+                nj, ni = exchange.tile_shape
+                return stack_output_tiles(
+                    {"y": (tile * 2.0).reshape(nj, ni)}, ["y"], (nj, ni)
+                )
 
             result = run_where(comm, owns, model)
             if result is None:
-                result = np.empty((0, 0, 1), dtype=np.float64)
+                result = empty_output_tiles(["y"], exchange.tile_shape)
 
             # Scatter (collective). Only safe because run_where already
             # agreed: an owner that died above must not leave us here alone.
@@ -362,11 +369,64 @@ class TestOwnerOnlyWork(unittest.TestCase):
             expected = field_from_gids(round_robin_gids(rank, 4, NY * NX)) * 2.0
             np.testing.assert_allclose(columns[:, 0], expected)
 
+    def test_a_wrong_sized_model_output_stops_every_rank(self):
+        # A stepper can return a correctly *named* field of the wrong shape;
+        # .numpy()[0] does not check. Caught inside the guard it is an error
+        # on every rank; caught in the scatter it is a hang.
+        size = 4
+        total = NY * NX
+
+        def body(comm, rank):
+            gids = round_robin_gids(rank, size, total)
+            exchange = PermutationExchange(comm, gids, Tiling(NY, NX, 1, 1))
+            owns = exchange.tile_shape[0] > 0
+
+            def model():
+                nj, ni = exchange.tile_shape
+                return stack_output_tiles(
+                    {"y": np.zeros((nj, ni + 1))}, ["y"], (nj, ni)
+                )
+
+            result = run_where(comm, owns, model)
+            if result is None:
+                result = empty_output_tiles(["y"], exchange.tile_shape)
+            return exchange.to_columns(result)
+
+        # ValueError, not RankDivergence: the owner must fail *with* the
+        # others, not ahead of them.
+        with self.assertRaises(ValueError) as caught:
+            run_ranks(size, body)
+        self.assertIn("this rank owns", str(caught.exception))
+
+    def test_a_wrong_length_input_stops_every_rank(self):
+        # The row-count check lives inside the exchange, immediately before
+        # the all-to-all, so it has to be settled collectively too.
+        size = 3
+        total = NY * NX
+
+        def body(comm, rank):
+            gids = round_robin_gids(rank, size, total)
+            exchange = PermutationExchange(comm, gids, Tiling(NY, NX, 1, 1))
+            values = field_from_gids(gids).reshape(-1, 1)
+            if rank == 2:
+                values = values[:-1]  # one column short, on one rank only
+            return exchange.to_tile(values)
+
+        # RuntimeError specifically, not just "some exception": a divergence
+        # raises RankDivergence, which is an AssertionError, and its message
+        # would still mention rank 2. Asserting the type is what makes this
+        # distinguish "failed together" from "hung".
+        with self.assertRaises(RuntimeError) as caught:
+            run_ranks(size, body)
+        self.assertIn("rows of column values", str(caught.exception))
+        self.assertIn("rank 2", str(caught.exception))
+
     def test_an_owner_failure_stops_every_rank(self):
         # Without the agreement the three non-owner ranks would enter
         # to_columns() and block there forever. The fake cluster reports that
         # as RankDivergence rather than rescuing it, so this test really does
         # fail if run_where stops agreeing.
+        # RuntimeError, not RankDivergence — see the note above.
         with self.assertRaises(RuntimeError) as caught:
             self._step(size=4, owner_raises=True)
         self.assertIn("CUDA out of memory", str(caught.exception))
@@ -416,6 +476,24 @@ class TestRestartExport(unittest.TestCase):
                 round_robin_gids(rank, size, total).size,
             )
             np.testing.assert_allclose(exported["air_temperature"], 1.0)
+
+
+class TestRestartSchema(unittest.TestCase):
+    """The field name list is data, not a diagnostic: it must survive intact."""
+
+    def test_a_long_schema_is_not_truncated(self):
+        # Silently dropping a state variable because the name list ran past a
+        # fixed buffer would lose part of the atmosphere at every restart.
+        names = [f"prognostic_field_number_{i:04d}" for i in range(200)]
+        schema = "\n".join(names)
+        self.assertGreater(len(schema.encode()), 2048)
+
+        def body(comm, rank):
+            announced = comm.allgather_text(schema if rank == 0 else "")
+            return sorted({n for b in announced for n in b.split("\n") if n})
+
+        for got in run_ranks(3, body):
+            self.assertEqual(got, sorted(names))
 
 
 class TestBridge(unittest.TestCase):

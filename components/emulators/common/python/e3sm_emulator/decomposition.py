@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .comm import Comm
+from .comm import Comm, run_where
 
 
 def _as_2d(values: np.ndarray, expected_rows: int, what: str) -> np.ndarray:
@@ -292,8 +292,19 @@ class PermutationExchange:
             )
 
     def to_tile(self, values: np.ndarray) -> np.ndarray:
-        """``(ncol, k)`` on the coupler's columns -> ``(nj, ni, k)``."""
-        values = _as_2d(values, self.num_local_cols, "column values")
+        """``(ncol, k)`` on the coupler's columns -> ``(nj, ni, k)``.
+
+        **Collective.**  The shape check is settled across the ranks first:
+        it inspects only this rank's array, so a caller that supplied the
+        wrong column count on one rank would otherwise raise there while
+        everybody else entered the all-to-all.  Doing it here rather than in
+        the caller keeps the invariant with the communication it protects,
+        and covers callers that have not been written yet.
+        """
+        values = run_where(
+            self.comm, True,
+            lambda: _as_2d(values, self.num_local_cols, "column values"),
+        )
         recv = self.comm.alltoall(
             values[self._send_order], self._send_counts, self._recv_counts
         )
@@ -305,8 +316,14 @@ class PermutationExchange:
         return tile.reshape(self.tile_shape[0], self.tile_shape[1], width)
 
     def to_columns(self, tile: np.ndarray) -> np.ndarray:
-        """``(nj, ni, k)`` -> ``(ncol, k)`` on the coupler's columns."""
-        tile = _as_2d(tile, self.tile_size, "tile values")
+        """``(nj, ni, k)`` -> ``(ncol, k)`` on the coupler's columns.
+
+        **Collective**, and shape-checked collectively; see :meth:`to_tile`.
+        """
+        tile = run_where(
+            self.comm, True,
+            lambda: _as_2d(tile, self.tile_size, "tile values"),
+        )
         recv = self.comm.alltoall(
             tile[self._recv_offsets], self._recv_counts, self._send_counts
         )
@@ -365,8 +382,15 @@ class ReplicaExchange:
             )
 
     def to_grid(self, values: np.ndarray) -> np.ndarray:
-        """``(ncol, k)`` -> the full ``(ny, nx, k)`` grid, on every rank."""
-        values = _as_2d(values, self.num_local_cols, "column values")
+        """``(ncol, k)`` -> the full ``(ny, nx, k)`` grid, on every rank.
+
+        **Collective**, and shape-checked collectively; see
+        :meth:`PermutationExchange.to_tile`.
+        """
+        values = run_where(
+            self.comm, True,
+            lambda: _as_2d(values, self.num_local_cols, "column values"),
+        )
         width = values.shape[1]
         gathered = self.comm.allgather(values)
         grid = np.empty((self.ny * self.nx, width), dtype=np.float64)
