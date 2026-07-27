@@ -213,6 +213,93 @@ same number of times in the same order. That is why it is a different type
 from the local `InferenceBackend::infer()` — one is an ordinary call, the other
 can hang the run if a rank skips it.
 
+### Case study: a global model (ACE)
+
+Worth writing down, because it is the hardest case the group has named and
+because the conclusions are not the obvious ones. Everything below was read
+from `mahf708/ace` at commit `75d8de6` (upstream `fme`) in July 2026 — it is a
+moving target, so re-check before relying on it.
+
+**Its samples are globes, not columns.** `Stepper.step` takes
+`{name: tensor[n_batch, n_lat, n_lon]}` (`fme/ace/stepper/single_module.py:1026`,
+`fme/core/step/args.py`). One sample is an entire atmosphere, so E3SM's local
+columns are *not* ACE's batch dimension: splitting the grid across ranks splits
+one sample spatially. `local_replica` is wrong for it in a way that produces
+answers rather than errors.
+
+**The spatial machinery exists but is not connected to the checkpoints that
+matter.** ACE has `ModelTorchDistributed` (a `data × h × w` process mesh),
+distributed spherical transforms via `torch_harmonics.distributed`, and
+`Distributed.get_local_slices`. Several models route through them. The two
+registered builders a deterministic ACE2 checkpoint instantiates do not:
+
+| Registry entry | Implementation | Transforms |
+| --- | --- | --- |
+| `SphericalFourierNeuralOperatorNet` (`registry/sfno.py:14`), `SFNO-v0.1.0` (`:64`) | `models/modulus/sfnonet.py`, `models/makani/sfnonet.py` | `th.RealSHT` / `th.InverseRealSHT` **unconditionally** (`modulus/sfnonet.py:500`, `makani/sfnonet.py:479`) |
+| `NoiseConditionedSFNO` (`registry/stochastic_sfno.py:159`) | `core/models/conditional_sfno/sfnonet.py` | `dist.get_sht()` / `get_isht()` (`:428`), `get_local_slices()` (`:506`) — **wired** |
+| FourCastNet3 | `models/makani_fcn3/.../fourcastnet3.py:716` | branches to `thd.Distributed*`, but through makani's own vendored `comm`, a separate plane |
+
+So `FME_DISTRIBUTED_BACKEND=model` would build a process mesh and hand each
+rank a local shard to a module that still performs global transforms. Treat
+ACE's spatial parallelism as infrastructure under integration, not a mode to
+switch on.
+
+**Its rank discovery is job-wide; ours must not be.** `TorchDistributed`
+(`core/distributed/torch_distributed.py`) requires `RANK` in the environment
+(torchrun) or `FME_USE_SRUN=1` plus `SLURM_PROCID`/`SLURM_NTASKS`, then calls
+`init_process_group` itself. In a coupled run those SLURM variables describe
+the whole job, so a process group built from them waits for land and ocean
+ranks that never arrive. The hand-off must use the **component**
+communicator's rank and size — which is what `InferenceContext` carries — with
+a rendezvous chosen and broadcast by component rank 0. The clean fix is an
+explicit initializer upstream in ACE (`rank`, `world_size`, `local_rank`,
+`master_addr`, `master_port`, `h`, `w`) rather than environment archaeology.
+
+**Decompositions will not line up, and that is two problems, not one.** ACE
+wants rectangular slices of the last two dimensions; an E3SM rank owns
+arbitrary column GIDs. Splitting the work helps:
+
+- have the component declare **ACE's own grid** to the coupler, so the coupler
+  does the interpolation — its job, already conservative and validated;
+- leave the executor a **pure index permutation** onto rectangles: a
+  `local index ↔ global GID ↔ (lat, lon) ↔ (inference rank, offset)` map built
+  once at initialization, with persistent send/receive buffers.
+
+**Call the `Stepper`, not `modules[0]`.** Packing, normalization, residual
+prediction, correctors, prescribed SST, derived forcings and output unpacking
+all live in the Stepper. Bypassing it silently omits part of the learned
+timestep.
+
+**Initialize distributed and the device before loading the checkpoint.**
+`core/step/single_module.py:266-284` does `module.to(get_device())` then
+`Distributed.get_instance()` then `wrap_module`, so the factory order is:
+establish rank/device/process group, *then* `load_stepper`, then build the
+adapter.
+
+**Do not start one interpreter per rank.** 64 atmosphere ranks should feed a
+handful of inference ranks — one per GPU — with the rest participating only in
+the redistribution. `InferenceExecutor::owns_model()` exists for that
+distinction.
+
+A sane order of work:
+
+1. **One inference rank.** Gather the globe, run an unmodified checkpoint
+   through the full Stepper, scatter back. Reference behavior to validate
+   everything else against, and reachable with what is in this directory
+   today.
+2. **One globe per GPU, data-parallel over ensemble members.** No spatial
+   parallelism, nothing new needed from ACE, and for ensemble science it may
+   be the whole answer.
+3. **Spatial parallelism**, gated on upstream ACE work (transforms routed
+   through the distributed abstraction, verified across decompositions,
+   checked numerically against single-rank inference) rather than on anything
+   here.
+
+**Open question for the coupling design, not the inference layer:** ACE is
+autoregressive and holds prognostic state between calls. The Python object
+persisting across steps handles that naturally, but writing and reading that
+state at an E3SM restart boundary is unsolved.
+
 ### Thread counts
 
 `intra_op_threads` and `inter_op_threads` **default to 1** in the ONNX and

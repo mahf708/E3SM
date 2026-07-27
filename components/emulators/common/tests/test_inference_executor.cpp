@@ -90,7 +90,8 @@ TEST_CASE("unimplemented policies say what they would need", "[executor]") {
   config.set("execution_policy", std::string("spatial_distributed"));
   REQUIRE_THROWS_WITH(create_executor(config, InferenceContext::serial()),
                       Catch::Contains("not implemented") &&
-                          Catch::Contains("torch.distributed"));
+                          Catch::Contains("python backend") &&
+                          Catch::Contains("collectives"));
 
   config.set("execution_policy", std::string("nonsense"));
   REQUIRE_THROWS_AS(create_executor(config, InferenceContext::serial()),

@@ -40,11 +40,15 @@ const char *policy_gap(ExecutionPolicy policy) {
            "local_replica.";
   case ExecutionPolicy::SPATIAL_DISTRIBUTED:
     return "It needs the model itself to perform collectives, which neither "
-           "ONNX nor TorchScript can express portably; the first workable "
-           "route is the python backend with a model that already uses "
-           "torch.distributed. Until then, a global model can run on a "
-           "component configured with few ranks, letting the coupler gather "
-           "for it.";
+           "ONNX nor TorchScript can express portably, so the python backend "
+           "is the only route. Note that a model shipping distributed support "
+           "is not sufficient on its own: its layers have to route their "
+           "transforms through that support, and a model that does not will "
+           "receive a local shard and quietly treat it as the globe. It also "
+           "needs a redistribution from the component's decomposition onto "
+           "the model's, which is not a gather. See the ACE case study in "
+           "README.md. Until then, a global model can run on a component "
+           "configured with few ranks, letting the coupler do the work.";
   case ExecutionPolicy::LOCAL_REPLICA:
     return "";
   }
