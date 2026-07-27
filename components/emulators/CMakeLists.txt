@@ -7,6 +7,52 @@ set(EXTERNALS_ROOT "${E3SM_ROOT}/externals")
 
 option(BUILD_EMULATOR_TESTS "Build emulator unit tests" OFF)
 
+# ---------------------------------------------------------------------------
+# Inference backends
+#
+# Everything except the stub is opt-in, and emulator_common builds and its
+# tests pass with no ML dependency installed at all.
+# ---------------------------------------------------------------------------
+option(EMULATOR_ENABLE_PYTHON
+  "Build the embedded-Python inference backend (needs the Python dev headers, \
+plus numpy at run time)" OFF)
+set(EMULATOR_ENABLE_MPI AUTO CACHE STRING
+  "Use MPI in the inference context: AUTO, ON or OFF")
+
+if(EMULATOR_ENABLE_MPI STREQUAL "AUTO")
+  find_package(MPI QUIET COMPONENTS CXX)
+  set(EMULATOR_HAVE_MPI ${MPI_CXX_FOUND})
+elseif(EMULATOR_ENABLE_MPI)
+  find_package(MPI REQUIRED COMPONENTS CXX)
+  set(EMULATOR_HAVE_MPI TRUE)
+else()
+  set(EMULATOR_HAVE_MPI FALSE)
+endif()
+message(STATUS "Emulator inference: MPI=${EMULATOR_HAVE_MPI} "
+  "python=${EMULATOR_ENABLE_PYTHON}")
+
+# The python emulators that ship with E3SM.  Baked into the backend as a
+# sys.path entry so a run does not have to set PYTHONPATH.
+set(EMULATOR_PYTHON_PACKAGE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/common/python")
+
+if(EMULATOR_ENABLE_PYTHON)
+  # Development is the embedding half: headers and libpython.
+  find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
+elseif(BUILD_EMULATOR_TESTS)
+  # The decomposition tests need an interpreter with numpy and nothing else,
+  # whether or not the bridge itself was built.
+  find_package(Python3 QUIET COMPONENTS Interpreter)
+endif()
+
+if(BUILD_EMULATOR_TESTS AND Python3_EXECUTABLE)
+  execute_process(COMMAND ${Python3_EXECUTABLE} -c "import numpy"
+    RESULT_VARIABLE EMULATOR_NUMPY_MISSING OUTPUT_QUIET ERROR_QUIET)
+  if(EMULATOR_NUMPY_MISSING)
+    message(STATUS "Emulator inference: no numpy in ${Python3_EXECUTABLE}, "
+      "skipping the decomposition tests")
+  endif()
+endif()
+
 # When built standalone (i.e. this is the top-level project), default to
 # standalone mode so we don't try to compile Fortran sources (the project
 # only declares CXX).  When included from the full E3SM build Fortran

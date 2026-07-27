@@ -4,9 +4,20 @@ cmake_minimum_required(VERSION 3.16)
 set(EMULATOR_COMMON_CXX_SOURCES
   emulator.cpp
   emulator_c_api.cpp
+  inference/tensor.cpp
+  inference/inference_config.cpp
+  inference/inference_context.cpp
+  inference/inference_backend.cpp
   inference/stub_inference_backend.cpp
   inference/create_inference_backend.cpp
 )
+
+if(EMULATOR_ENABLE_PYTHON)
+  list(APPEND EMULATOR_COMMON_CXX_SOURCES
+    inference/python_interpreter.cpp
+    inference/python_inference_backend.cpp
+  )
+endif()
 
 set(EMULATOR_COMMON_F90_SOURCES
   emulator_f2c_api.F90
@@ -36,3 +47,19 @@ target_include_directories(emulator_common PUBLIC
   ${CMAKE_CURRENT_BINARY_DIR}/modules
 )
 
+# MPI is what turns InferenceContext from a serial stub into a real
+# description of the component's ranks.  Without it everything still builds
+# and the unit tests still run; the context just reports rank 0 of 1.
+if(EMULATOR_HAVE_MPI)
+  target_compile_definitions(emulator_common PUBLIC EMULATOR_HAVE_MPI)
+  target_link_libraries(emulator_common PUBLIC MPI::MPI_CXX)
+endif()
+
+if(EMULATOR_ENABLE_PYTHON)
+  target_compile_definitions(emulator_common PUBLIC EMULATOR_ENABLE_PYTHON)
+  target_link_libraries(emulator_common PUBLIC Python3::Python)
+  # Where the emulator python package lives, so a run does not have to set
+  # PYTHONPATH.  Anything the user names in `option.python_path` still wins.
+  target_compile_definitions(emulator_common PRIVATE
+    EMULATOR_PYTHON_PACKAGE_DIR="${EMULATOR_PYTHON_PACKAGE_DIR}")
+endif()

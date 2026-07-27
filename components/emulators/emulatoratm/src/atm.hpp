@@ -12,6 +12,7 @@
 
 #include "emulator.hpp"
 #include "emulator_c_api.hpp"
+#include "inference/create_inference_backend.hpp"
 #include <memory>
 #include <string>
 #include <vector>
@@ -122,8 +123,23 @@ private:
   int m_run_type = 0;          ///< Run type (startup/continue/branch)
 
   // =========================================================================
+  // Inference
+  //
+  // The backend is built in init_impl() from the `inference.*` settings in
+  // atm_in, and handed the component communicator together with the columns
+  // the coupler assigned to this rank.  With no such settings the default is
+  // the stub backend, which runs no model and changes nothing.
+  // =========================================================================
+  std::shared_ptr<inference::InferenceBackend> m_inference;
+  std::vector<std::string> m_infer_inputs;  ///< Fields the model consumes
+  std::vector<std::string> m_infer_outputs; ///< Fields the model produces
+  std::vector<double> m_infer_in;           ///< [ncol, n_in] packed inputs
+  std::vector<double> m_infer_out;          ///< [ncol, n_out] packed outputs
+
+  // =========================================================================
   // Helper methods
   // =========================================================================
+  void run_inference();
   void import_coupling_fields();
   void export_coupling_fields();
   void prepare_inputs();

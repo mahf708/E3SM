@@ -9,6 +9,7 @@
 #include "atm.hpp"
 #include "emulator_c_api.hpp"
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -143,12 +144,31 @@ void EmulatorAtm::get_cols_area(double *area) const {
 // =========================================================================
 
 void EmulatorAtm::init_impl() {
-  // TODO: Load YAML configuration from m_input_file
-  // TODO: Create inference backend
+  // Inference settings live in atm_in alongside everything else, prefixed so
+  // they cannot collide with the component's own keys.
+  auto config =
+      inference::InferenceConfig::from_file(m_input_file, "inference.");
+
+  // Hand the model the resources the coupler gave us: the *component*
+  // communicator, and the columns this rank owns.  Both matter — the first
+  // so a distributed model builds a process group over our ranks rather than
+  // over the whole coupled job, the second so it can work out how our
+  // decomposition relates to its own grid.
+  auto context = inference::make_context(m_comm);
+  context.set_grid(m_nx, m_ny, m_num_global_cols, m_col_gids.data(),
+                   m_lat.data(), m_lon.data(), m_num_local_cols);
+
+  m_infer_inputs = config.inputs;
+  m_infer_outputs = config.outputs;
+  m_inference = inference::create_backend(config, context);
+
+  m_infer_in.assign(
+      static_cast<std::size_t>(m_num_local_cols) * m_infer_inputs.size(), 0.0);
+  m_infer_out.assign(
+      static_cast<std::size_t>(m_num_local_cols) * m_infer_outputs.size(), 0.0);
+
   // TODO: Read initial conditions
   // TODO: Set up diagnostic output manager
-
-  // TODO: Allocate field storage
   // TODO: Export initial values to coupler
 }
 
@@ -161,8 +181,8 @@ void EmulatorAtm::run_impl(int dt) {
   // 2. Prepare AI model inputs
   prepare_inputs();
 
-  // 3. TODO: Run AI inference
-  // run_inference(m_fields.net_inputs, m_fields.net_outputs);
+  // 3. Run AI inference
+  run_inference();
 
   // 4. Process AI outputs
   process_outputs();
@@ -176,10 +196,43 @@ void EmulatorAtm::run_impl(int dt) {
 void EmulatorAtm::final_impl() {
   // TODO: Write final restart files
   // TODO: Finalize output manager
-  // TODO: Finalize inference backend
+
+  if (m_inference) {
+    m_inference->finalize();
+    m_inference.reset();
+  }
 
   // TODO: Deallocate field storage
   std::cout << "emulatoratm c++ side ... bye!" << std::endl;
+}
+
+/**
+ * @brief Evaluate the model on this rank's columns.
+ *
+ * Every field is wrapped as a `[ncol]` view of the packed buffers — nothing
+ * is copied on the way in or out.  For a distributed model this call is
+ * collective over the component communicator, which is why it sits on the
+ * unconditional path of run_impl() rather than behind a rank test.
+ */
+void EmulatorAtm::run_inference() {
+  if (!m_inference) {
+    return;
+  }
+
+  const auto ncol = static_cast<std::int64_t>(m_num_local_cols);
+
+  inference::TensorMap inputs;
+  for (std::size_t i = 0; i < m_infer_inputs.size(); ++i) {
+    inputs.wrap(m_infer_inputs[i],
+                static_cast<const double *>(m_infer_in.data()) + i * ncol,
+                {ncol});
+  }
+  inference::TensorMap outputs;
+  for (std::size_t i = 0; i < m_infer_outputs.size(); ++i) {
+    outputs.wrap(m_infer_outputs[i], m_infer_out.data() + i * ncol, {ncol});
+  }
+
+  m_inference->infer(inputs, outputs);
 }
 
 // =========================================================================
@@ -195,13 +248,14 @@ void EmulatorAtm::export_coupling_fields() {
 }
 
 void EmulatorAtm::prepare_inputs() {
-  // TODO: Pack field data into m_fields.net_inputs tensor
-  // for inference. Handle spatial_mode vs pointwise layout.
+  // TODO: Pack the imported coupling fields into m_infer_in, one contiguous
+  // [ncol] block per name in m_infer_inputs. Needs init_coupling_indices()
+  // to have resolved the MCT field lists first.
 }
 
 void EmulatorAtm::process_outputs() {
-  // TODO: Unpack m_fields.net_outputs tensor into field
-  // vectors. Handle spatial_mode vs pointwise layout.
+  // TODO: Unpack m_infer_out into the export coupling fields, one contiguous
+  // [ncol] block per name in m_infer_outputs.
 }
 
 } // namespace emulator
