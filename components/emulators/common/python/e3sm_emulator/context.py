@@ -144,14 +144,19 @@ class Context:
                     "CUDA_VISIBLE_DEVICES leaves it, not the node's devices."
                 )
             return int(device_id)
-        if visible_devices == 1 or self.local_size == 1:
+        if visible_devices == 1:
             return 0
+        # Being the only rank of *this* component on the node does not make
+        # device 0 free: the ocean and land ranks sharing it are invisible to
+        # us, and one of them may already have taken it. The rule has to be
+        # the same one argued for above — the launcher decides, or the user
+        # says — or it is not a rule.
         raise ValueError(
-            f"Rank {self.rank} can see {visible_devices} GPUs and shares this "
-            f"node with {self.local_size - 1} other rank(s) of this component, "
-            "so which device it owns is not ours to decide — another "
-            "component's ranks may already hold some of them. Bind one device "
-            "per rank in the job launcher (for example --gpus-per-task=1 "
+            f"Rank {self.rank} can see {visible_devices} GPUs, so which one it "
+            "owns is not ours to decide: the other components' ranks on this "
+            "node may already hold some of them, and nothing in the "
+            "communicator MCT gave us says which. Bind one device per rank in "
+            "the job launcher (for example --gpus-per-task=1 "
             "--gpu-bind=closest), or state it with `inference.device_id`."
         )
 

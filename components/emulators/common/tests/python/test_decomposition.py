@@ -346,9 +346,14 @@ class TestDeviceContract(unittest.TestCase):
         self.assertIn("gpus-per-task", message)
         self.assertIn("device_id", message)
 
-    def test_a_sole_rank_on_a_node_takes_the_first_device(self):
+    def test_being_alone_in_this_component_is_not_ownership(self):
+        # Only one rank of *this* component on the node says nothing about the
+        # ocean and land ranks sharing it, one of which may already hold
+        # device 0. The rule has to be the same one applied above, or it is
+        # not a rule.
         context = Context(rank=1, world_size=4, local_rank=0, local_size=1)
-        self.assertEqual(context.device_ordinal(visible_devices=4), 0)
+        with self.assertRaises(ValueError):
+            context.device_ordinal(visible_devices=4)
 
     def test_an_explicit_device_is_honoured_and_range_checked(self):
         context = Context(rank=1, world_size=4, local_rank=1, local_size=4)

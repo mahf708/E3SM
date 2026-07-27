@@ -142,15 +142,26 @@ zeros or stale values over the rest, which nothing downstream would catch:
 - a resolved row outside the buffer;
 - **a declared input the coupler does not carry.** An unmatched input has no
   other source, so tolerating one is permission to run the model on zeros.
-  `inference.allow_unmatched_inputs: true` says the field really is supplied
-  some other way. A declared *output* is different — a model may legitimately
+  `inference.unsafe_allow_zero_filled_inputs: true` says a zero-filled run is
+  genuinely wanted — the honest name, since there is no second source for
+  those buffers today. A declared *output* is different — a model may legitimately
   produce diagnostics the coupler does not consume — so that is reported and
   not fatal. If internal-state or computed inputs are wanted later, the honest
   form is an explicit source per field (`inference.input.<name>.source:
   coupling | computed | state`) rather than a blanket permission.
 
-A component with no coupling buffers at all — a driver bringing the emulator
-up, or a unit test — is left alone.
+No coupling buffers at all is accepted only for the stub backend, which runs
+no model and is exactly the case where unfed inputs are the point. A real
+backend with declared inputs and nothing feeding them is refused for the same
+reason as any other zero-filled input.
+
+All of these checks are **agreed across the component communicator** before
+any rank builds a backend. A mismatch usually holds on one rank only, and a
+lone rank throwing while the others are already inside collective model
+initialization hangs the run rather than failing it. Validation therefore
+collects its complaints, reduces them over `m_comm`, and either every rank
+throws or none does — which is also why validation now runs *before*
+`create_backend`, not after it.
 
 Settings the C++ layer does not recognise become options and are passed
 through to the model, so a Python emulator can grow a setting without anyone
@@ -393,6 +404,25 @@ are missing rather than failing somewhere deep inside a load.
   resolves it and `export()` publishes that; the adapter also calls
   `torch.cuda.set_device` itself, before entering the context, so the current
   device is right by the time a checkpoint is loaded.
+- **Process groups the adapter creates are the adapter's to destroy.** In
+  multi-rank `single` mode ACE runs `NonDistributed`, whose `shutdown()` is
+  literally `return` (`non_distributed.py:136`), so nothing upstream releases
+  the gloo groups the exchange needs — and exiting `Distributed.context()`
+  does not either. Every group created here is registered with the same
+  `ExitStack` that holds the ACE context, so it is released in reverse order
+  by `finalize()` *and* by the constructor's rollback. A group ACE made stays
+  ACE's. (ACE also skips its own shutdown when the context exits by exception,
+  `distributed.py:85-87` — deliberate for a training script that is about to
+  exit, less so for an embedded component. Not fixable from here.)
+- **Entering the context can itself poison the process.** `context()` sets
+  `_entered = True` and *then* calls `get_instance()` outside its own
+  try/finally (`distributed.py:78-79`), so a failure while building the mesh,
+  the process group or the PhysicsNeMo manager leaves the flag set for the
+  life of the process, and every later attempt dies as "Nested
+  Distributed.context() is not supported" — masking the original error.
+  Since `enter_context()` never returned, there is nothing registered to undo
+  it, so the adapter puts the flag back by hand. The proper fix is upstream:
+  move `instance = cls.get_instance()` inside the `try`.
 - **A failed constructor must not leak the context.** `Distributed.context()`
   is entered in `AceEmulator.__init__` and closed in `finalize()`, so anything
   that throws in between — a missing checkpoint, a grid mismatch, an API that

@@ -22,7 +22,8 @@ Two ways to spread one globe over the ranks the coupler gave us:
 ``spatial``             ``ModelTorchDistributed``  **Gated.**  Ranks form an
                                                    ``h x w`` mesh, each owning
                                                    a rectangle.  Refused
-                                                   unless ``ace_allow_spatial``
+                                                   unless
+                                                   :data:`SPATIAL_OVERRIDE`
                                                    is set, because the
                                                    builders a deterministic
                                                    ACE2 checkpoint
@@ -66,7 +67,7 @@ Settings (``inference.*`` in the component namelist)::
     ace_mode:           auto        # auto | single | spatial
     ace_h:              4           # spatial only: latitude ranks
     ace_w:              8           # spatial only: longitude ranks
-    ace_allow_spatial:  false       # see above before setting this
+    ace_unsafe_allow_unverified_spatial: false   # read the above first
     input:              air_temperature_0    # ACE's own variable names
     output:             air_temperature_0
     lon_fastest:        true        # how the coupler numbers its columns
@@ -233,7 +234,7 @@ class AceEmulator:
             os.environ["FME_DISTRIBUTED_H"] = str(self.h)
             os.environ["FME_DISTRIBUTED_W"] = str(self.w)
 
-        _check_ace_revision(warn=self.verbose and context.is_root)
+        _check_ace_revision(enabled=context.is_root)
 
         from fme.core.distributed import Distributed
 
@@ -242,7 +243,22 @@ class AceEmulator:
         # shutdown.  A component's init/finalize bracket is exactly that
         # lifetime, so the context is entered here and closed in finalize()
         # rather than wrapped around a single call.
-        self._exit_stack.enter_context(Distributed.context())
+        #
+        # Entering it can itself fail, and at the pinned revision that leaves
+        # the process unusable: context() sets `_entered = True` and *then*
+        # calls get_instance() outside its own try/finally
+        # (distributed.py:78-79), so a failure while building the mesh, the
+        # process group or the PhysicsNeMo manager leaves the flag set
+        # forever, and every later attempt dies as "Nested
+        # Distributed.context() is not supported" — masking the real error.
+        # Since enter_context() never returned, the ExitStack has nothing
+        # registered to undo, so put the flag back by hand.  The proper fix is
+        # upstream: move `instance = cls.get_instance()` inside the try.
+        try:
+            self._exit_stack.enter_context(Distributed.context())
+        except BaseException:
+            Distributed._entered = False
+            raise
 
         # Everything from here on can fail — a missing checkpoint, a grid
         # mismatch, an API that moved — and if it does, finalize() is never
@@ -302,16 +318,30 @@ class AceEmulator:
     # -- setup helpers ------------------------------------------------------
 
     def _make_comm(self):
+        """Build the exchange's communicator, owning whatever we create.
+
+        Ownership matters because in multi-rank `single` mode ACE runs
+        `NonDistributed`, whose `shutdown()` is literally `return` — so
+        nothing upstream destroys a group we made, and the exit from
+        `Distributed.context()` does not either.  Every group created here is
+        registered with the same ExitStack that holds the ACE context, so it
+        is released both by :meth:`finalize` and by the constructor's rollback,
+        in reverse order of creation.
+        """
         if self.context.world_size == 1:
             return SerialComm()
 
         import torch.distributed as dist
 
         if not dist.is_initialized():
-            # Only reachable in `single` mode. env:// picks up exactly what
-            # Context.export() published.
+            # Only reachable in `single` mode: the other modes have already
+            # had ACE build the default group, and it belongs to ACE.
             dist.init_process_group(backend="gloo", init_method="env://")
-        return TorchComm()
+            self._exit_stack.callback(dist.destroy_process_group)
+
+        comm = TorchComm()
+        self._exit_stack.callback(comm.close)
+        return comm
 
     def _make_tiling(self, ny: int, nx: int) -> Tiling:
         """The partition of the globe, taken from ACE where ACE owns it.
@@ -474,9 +504,16 @@ class AceEmulator:
 
     def finalize(self) -> None:
         # Dropping these is what frees the weights and the carried
-        # atmosphere.  Closing the stack exits Distributed.context(), which
-        # is what shuts the process group down — the same object that opened
-        # it closes it.
+        # atmosphere.  Closing the stack then releases, in reverse order of
+        # creation, every process group this adapter made and finally exits
+        # Distributed.context().
+        #
+        # It does *not* release a group ACE made: in spatial mode the default
+        # group is ACE's, and its own shutdown runs on the way out of the
+        # context.  Note that ACE skips that shutdown when the context exits
+        # by exception (distributed.py:85-87, deliberately — a training script
+        # is about to exit anyway), so a failed run leaves ACE's group up.
+        # That one is not ours to fix from here.
         self.state = {}
         self.stepper = None
         self._exit_stack.close()
@@ -539,7 +576,7 @@ def _set_cuda_device(ordinal: int) -> None:
         torch.cuda.set_device(int(ordinal))
 
 
-def _check_ace_revision(warn: bool) -> None:
+def _check_ace_revision(enabled: bool) -> None:
     """Say something when the installed ACE is not the one this targets.
 
     Best effort, and not a substitute for pinning: ``fme`` reports a coarse
@@ -548,8 +585,13 @@ def _check_ace_revision(warn: bool) -> None:
     environment — a lockfile, a CIME machine definition, or an install script
     that names the SHA. This is a compatibility declaration that complains
     when it is obviously violated.
+
+    Runs on the component root whatever the verbosity: it costs an attribute
+    lookup and says nothing unless something is actually wrong, and a run that
+    is not in verbose mode is exactly the one where a silent version drift
+    would go unnoticed.
     """
-    if not warn:
+    if not enabled:
         return
     try:
         import fme

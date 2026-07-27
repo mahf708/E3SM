@@ -183,14 +183,23 @@ void EmulatorAtm::init_impl() {
 
   m_infer_inputs = config.inputs;
   m_infer_outputs = config.outputs;
-  m_inference = inference::create_backend(config, context);
+
+  // Validate *before* building the backend, not after.  Creating a backend
+  // initializes it, and for a distributed model that means building process
+  // groups and loading a checkpoint.  A mismatch found afterwards is not just
+  // wasted work: if it holds on one rank only, that rank throws while the
+  // others are already inside collective model initialization, and the run
+  // hangs instead of failing.  So: check locally, agree across the component
+  // communicator, and only then let anybody near PyTorch.
+  validate_coupling(config.backend,
+                    config.get_bool("unsafe_allow_zero_filled_inputs", false));
 
   m_infer_in.assign(
       static_cast<std::size_t>(m_num_local_cols) * m_infer_inputs.size(), 0.0);
   m_infer_out.assign(
       static_cast<std::size_t>(m_num_local_cols) * m_infer_outputs.size(), 0.0);
 
-  validate_coupling(config.get_bool("allow_unmatched_inputs", false));
+  m_inference = inference::create_backend(config, context);
 
   // TODO: Read initial conditions
   // TODO: Set up diagnostic output manager
@@ -265,123 +274,201 @@ void EmulatorAtm::run_inference() {
 // =========================================================================
 
 /**
+ * @brief Fail on every rank, or on none.
+ *
+ * A configuration mistake usually holds on one rank only — a decomposition
+ * that leaves one rank a different column count, a field the coupler drops on
+ * one side.  If that rank throws on its own, the others sail past into
+ * collective model initialization and the run *hangs* rather than failing,
+ * which is much harder to diagnose than the original mistake.
+ *
+ * So every rank reports whether it is unhappy, the answer is reduced over the
+ * component communicator, and either all of them throw or none does.  Each
+ * rank raises its own message when it has one, and otherwise says which
+ * neighbour to look at.
+ *
+ * This is itself a collective, so it must be reached exactly once on every
+ * rank — see validate_coupling(), which collects its complaints rather than
+ * throwing them so that there is one call on every path.
+ *
+ * @param problem This rank's complaint, or "" if it has none.
+ */
+void EmulatorAtm::agree_and_throw(const std::string &problem) const {
+  int local_bad = problem.empty() ? 0 : 1;
+  int any_bad = local_bad;
+  int first_bad = 0;
+
+  int initialized = 0;
+  MPI_Initialized(&initialized);
+  MPI_Comm comm =
+      initialized ? MPI_Comm_f2c(static_cast<MPI_Fint>(m_comm)) : MPI_COMM_NULL;
+  if (initialized && comm != MPI_COMM_NULL) {
+    int rank = 0;
+    int size = 1;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+    MPI_Allreduce(&local_bad, &any_bad, 1, MPI_INT, MPI_MAX, comm);
+    // Lowest unhappy rank, so every rank names the same one.
+    int candidate = local_bad ? rank : size;
+    MPI_Allreduce(&candidate, &first_bad, 1, MPI_INT, MPI_MIN, comm);
+  }
+
+  if (any_bad == 0) {
+    return;
+  }
+  if (!problem.empty()) {
+    throw std::runtime_error(problem);
+  }
+  throw std::runtime_error(
+      "[emulatoratm] this rank's coupling configuration is fine, but rank " +
+      std::to_string(first_bad) +
+      " rejected its own. Aborting together so the run fails instead of "
+      "hanging; see that rank's message for the cause.");
+}
+
+/**
  * @brief Check the coupling descriptor before a single value moves.
  *
  * Everything here is a mismatch that would otherwise show up as a partly
  * filled field: plausible numbers over part of the globe and zeros or stale
- * values over the rest, which no downstream check would catch.  A component
- * that has not been given coupling buffers at all is a different matter — a
- * unit test, or a driver bringing the emulator up — and is left alone.
+ * values over the rest, which no downstream check would catch.
  *
- * @param allow_unmatched_inputs Permit a declared input that the coupler does
- *        not carry.  Off by default: unlike an output, an unmatched input has
- *        no other source, so allowing one is permission to run on zeros.
+ * Complaints are collected rather than thrown, because the agreement at the
+ * end is a collective and reaching it a different number of times on
+ * different ranks would hang the run in exactly the way it exists to prevent.
+ *
+ * @param backend Which backend was asked for; the stub is the one for which
+ *        unfed inputs are harmless, because it runs no model.
+ * @param allow_zero_filled_inputs Run anyway with inputs nothing feeds.  Off
+ *        by default: there is no second source for m_infer_in today, so an
+ *        unmatched input really does mean zeros.
  */
-void EmulatorAtm::validate_coupling(bool allow_unmatched_inputs) {
+void EmulatorAtm::validate_coupling(const std::string &backend,
+                                    bool allow_zero_filled_inputs) {
   const bool has_import = m_import_data != nullptr;
   const bool has_export = m_export_data != nullptr;
+  const bool runs_a_model =
+      !(backend.empty() || backend == "stub" || backend == "none");
 
   m_input_src.assign(m_infer_inputs.size(), -1);
   m_output_dst.assign(m_infer_outputs.size(), -1);
+
+  std::string problem;
+  const auto complain = [&problem](const std::string &message) {
+    if (problem.empty()) {
+      problem = message;
+    }
+  };
+
   if (!has_import && !has_export) {
-    if (!m_infer_inputs.empty() || !m_infer_outputs.empty()) {
+    if (runs_a_model && !m_infer_inputs.empty() && !allow_zero_filled_inputs) {
+      complain("[emulatoratm] the '" + backend +
+               "' backend declares input(s) but the component was given no "
+               "coupling buffers, so the model would run on zeros. That is "
+               "normal only for the stub backend; set "
+               "`inference.unsafe_allow_zero_filled_inputs: true` if a "
+               "zero-filled run is really what you want.");
+    } else if (!m_infer_inputs.empty() || !m_infer_outputs.empty()) {
       std::cout << "[emulatoratm] no coupling buffers; the model will run on "
                    "whatever is in its input buffers.\n";
     }
-    return;
+  } else {
+    if (m_num_imports < 0 || m_num_exports < 0 || m_field_size < 0) {
+      complain("[emulatoratm] negative coupling extents: num_imports=" +
+               std::to_string(m_num_imports) +
+               " num_exports=" + std::to_string(m_num_exports) +
+               " field_size=" + std::to_string(m_field_size) + ".");
+    } else if (m_field_size != m_num_local_cols) {
+      complain("[emulatoratm] the coupler's field size (" +
+               std::to_string(m_field_size) +
+               ") and this rank's column count (" +
+               std::to_string(m_num_local_cols) +
+               ") disagree. Truncating to the shorter of the two would leave "
+               "part of every field unset, so this is fatal.");
+    }
+
+    // The field lists and the attribute vectors have to describe the same
+    // thing; if they do not, every row index below is off by an unknown
+    // amount.  An *empty* list is a different matter — a driver may set up
+    // buffers without naming their contents — and is left to the per-name
+    // resolution below.
+    if (has_import && !m_import_idx.empty() &&
+        static_cast<int>(m_import_idx.size()) != m_num_imports) {
+      complain("[emulatoratm] the import field list names " +
+               std::to_string(m_import_idx.size()) +
+               " field(s) but x2a holds " + std::to_string(m_num_imports) +
+               ".");
+    }
+    if (has_export && !m_export_idx.empty() &&
+        static_cast<int>(m_export_idx.size()) != m_num_exports) {
+      complain("[emulatoratm] the export field list names " +
+               std::to_string(m_export_idx.size()) +
+               " field(s) but a2x holds " + std::to_string(m_num_exports) +
+               ".");
+    }
+
+    // Resolve each declared field against the coupler's lists once, here,
+    // rather than looking names up every step.
+    const auto resolve = [&complain](const std::string &name,
+                                     const std::map<std::string, int> &index,
+                                     int width) {
+      const auto it = index.find(name);
+      if (it == index.end()) {
+        return -1;
+      }
+      if (it->second < 0 || it->second >= width) {
+        complain("[emulatoratm] coupling field '" + name +
+                 "' resolves to row " + std::to_string(it->second) +
+                 ", outside the buffer's " + std::to_string(width) +
+                 " row(s).");
+        return -1;
+      }
+      return it->second;
+    };
+
+    std::vector<std::string> unmatched_inputs;
+    for (std::size_t i = 0; i < m_infer_inputs.size(); ++i) {
+      m_input_src[i] =
+          has_import ? resolve(m_infer_inputs[i], m_import_idx, m_num_imports)
+                     : -1;
+      if (m_input_src[i] < 0) {
+        unmatched_inputs.push_back(m_infer_inputs[i]);
+      }
+    }
+    if (!unmatched_inputs.empty() && !allow_zero_filled_inputs) {
+      std::string names;
+      for (const auto &name : unmatched_inputs) {
+        names += (names.empty() ? "" : ", ") + name;
+      }
+      complain(
+          "[emulatoratm] the model declares input(s) the coupler does not "
+          "carry: " +
+          names +
+          ". An unmatched input has no other source — prepare_inputs() simply "
+          "leaves the buffer zero-filled — so the model would run on zeros. "
+          "Fix the name, check that init_coupling_indices was given the x2a "
+          "field list (it named " +
+          std::to_string(m_import_idx.size()) +
+          " field(s)), or set "
+          "`inference.unsafe_allow_zero_filled_inputs: true` if that is "
+          "genuinely what you want.");
+    }
+
+    // An unmatched *output* is different: a model may legitimately produce
+    // diagnostics the coupler does not consume. Report it and carry on.
+    for (std::size_t i = 0; i < m_infer_outputs.size(); ++i) {
+      m_output_dst[i] =
+          has_export ? resolve(m_infer_outputs[i], m_export_idx, m_num_exports)
+                     : -1;
+      if (m_output_dst[i] < 0) {
+        std::cout << "[emulatoratm] inference output '" << m_infer_outputs[i]
+                  << "' is not a coupling field; it will not be sent to the "
+                     "coupler.\n";
+      }
+    }
   }
 
-  if (m_field_size != m_num_local_cols) {
-    throw std::runtime_error(
-        "[emulatoratm] the coupler's field size (" +
-        std::to_string(m_field_size) + ") and this rank's column count (" +
-        std::to_string(m_num_local_cols) +
-        ") disagree. Truncating to the shorter of the two would leave part of "
-        "every field unset, so this is fatal.");
-  }
-  if (m_num_imports < 0 || m_num_exports < 0 || m_field_size < 0) {
-    throw std::runtime_error(
-        "[emulatoratm] negative coupling extents: num_imports=" +
-        std::to_string(m_num_imports) +
-        " num_exports=" + std::to_string(m_num_exports) +
-        " field_size=" + std::to_string(m_field_size) + ".");
-  }
-  // The field lists and the attribute vectors have to describe the same
-  // thing; if they do not, every row index below is off by an unknown amount.
-  // An *empty* list is a different matter — a driver may set up buffers
-  // without naming their contents — and is left to the per-name resolution
-  // below, which fails loudly for any input that then cannot be found.
-  if (has_import && !m_import_idx.empty() &&
-      static_cast<int>(m_import_idx.size()) != m_num_imports) {
-    throw std::runtime_error(
-        "[emulatoratm] the import field list names " +
-        std::to_string(m_import_idx.size()) + " field(s) but x2a holds " +
-        std::to_string(m_num_imports) + ".");
-  }
-  if (has_export && !m_export_idx.empty() &&
-      static_cast<int>(m_export_idx.size()) != m_num_exports) {
-    throw std::runtime_error(
-        "[emulatoratm] the export field list names " +
-        std::to_string(m_export_idx.size()) + " field(s) but a2x holds " +
-        std::to_string(m_num_exports) + ".");
-  }
-
-  // Resolve each declared field against the coupler's lists once, here,
-  // rather than looking names up every step.
-  const auto resolve = [](const std::string &name,
-                          const std::map<std::string, int> &index, int width) {
-    const auto it = index.find(name);
-    if (it == index.end()) {
-      return -1;
-    }
-    if (it->second < 0 || it->second >= width) {
-      throw std::runtime_error("[emulatoratm] coupling field '" + name +
-                               "' resolves to row " +
-                               std::to_string(it->second) +
-                               ", outside the buffer's " +
-                               std::to_string(width) + " row(s).");
-    }
-    return it->second;
-  };
-
-  std::vector<std::string> unmatched_inputs;
-  for (std::size_t i = 0; i < m_infer_inputs.size(); ++i) {
-    m_input_src[i] =
-        has_import ? resolve(m_infer_inputs[i], m_import_idx, m_num_imports)
-                   : -1;
-    if (m_input_src[i] < 0) {
-      unmatched_inputs.push_back(m_infer_inputs[i]);
-    }
-  }
-  if (!unmatched_inputs.empty() && !allow_unmatched_inputs) {
-    std::string names;
-    for (const auto &name : unmatched_inputs) {
-      names += (names.empty() ? "" : ", ") + name;
-    }
-    throw std::runtime_error(
-        "[emulatoratm] the model declares input(s) the coupler does not "
-        "carry: " +
-        names +
-        ". An unmatched input has no other source, so the model would run on "
-        "zeros. Fix the name, check that init_coupling_indices was given the "
-        "x2a field list (it named " +
-        std::to_string(m_import_idx.size()) +
-        " field(s)), or set `inference.allow_unmatched_inputs: true` if the "
-        "field really is supplied some other way.");
-  }
-
-  // An unmatched *output* is different: a model may legitimately produce
-  // diagnostics the coupler does not consume. Report it and carry on.
-  for (std::size_t i = 0; i < m_infer_outputs.size(); ++i) {
-    m_output_dst[i] =
-        has_export ? resolve(m_infer_outputs[i], m_export_idx, m_num_exports)
-                   : -1;
-    if (m_output_dst[i] < 0) {
-      std::cout << "[emulatoratm] inference output '" << m_infer_outputs[i]
-                << "' is not a coupling field; it will not be sent to the "
-                   "coupler.\n";
-    }
-  }
+  agree_and_throw(problem);
 }
 
 void EmulatorAtm::import_coupling_fields() {

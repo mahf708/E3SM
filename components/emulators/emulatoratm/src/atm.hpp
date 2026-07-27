@@ -153,7 +153,9 @@ private:
   // Helper methods
   // =========================================================================
   void run_inference();
-  void validate_coupling(bool allow_unmatched_inputs);
+  void validate_coupling(const std::string &backend,
+                         bool allow_zero_filled_inputs);
+  void agree_and_throw(const std::string &problem) const;
   void import_coupling_fields();
   void export_coupling_fields();
   void prepare_inputs();

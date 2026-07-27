@@ -177,11 +177,11 @@ TEST_CASE("An input the coupler does not carry is fatal", "[atm][coupling]") {
                           Catch::Contains("run on zeros"));
 }
 
-TEST_CASE("An unmatched input can be allowed deliberately",
+TEST_CASE("A zero-filled input can be allowed deliberately",
           "[atm][coupling]") {
   ScopedFile namelist("emulator_atm_test_allowed_in",
                       "inference.backend: stub\n"
-                      "inference.allow_unmatched_inputs: true\n"
+                      "inference.unsafe_allow_zero_filled_inputs: true\n"
                       "inference.input: supplied_elsewhere\n"
                       "inference.output: also_not_a_field\n");
 
@@ -236,23 +236,50 @@ TEST_CASE("A field list that disagrees with the buffer is fatal",
   REQUIRE_THROWS_WITH(atm.initialize(), Catch::Contains("x2a holds 3"));
 }
 
-TEST_CASE("No coupling buffers at all is still allowed", "[atm][coupling]") {
-  // A driver bringing the emulator up, or a unit test, has no attribute
-  // vectors to offer.
+namespace {
+
+/// Bring a component up with no coupling buffers at all.
+void without_coupling(EmulatorAtm &atm, const FakeGrid &grid,
+                      const ScopedFile &namelist) {
+  atm.create_instance(0, 1, namelist.path(), "", 0, 20260101, 0);
+  const auto desc = grid.desc();
+  atm.set_grid_data(desc);
+}
+
+} // namespace
+
+TEST_CASE("No coupling buffers is fine for the stub", "[atm][coupling]") {
+  // The stub runs no model, so unfed inputs are exactly what it is for.
   ScopedFile namelist("emulator_atm_test_nocpl_in",
                       "inference.backend: stub\n"
                       "inference.input: p\n"
                       "inference.output: a\n");
 
   EmulatorAtm atm;
-  atm.create_instance(0, 1, namelist.path(), "", 0, 20260101, 0);
   const FakeGrid grid;
-  const auto desc = grid.desc();
-  atm.set_grid_data(desc);
+  without_coupling(atm, grid, namelist);
 
   atm.initialize();
   atm.run(1800);
   atm.finalize();
+}
+
+TEST_CASE("No coupling buffers is fatal for a real backend",
+          "[atm][coupling]") {
+  // A python or ACE backend with declared inputs and nothing feeding them
+  // would run on zeros and return plausible numbers.
+  ScopedFile namelist("emulator_atm_test_nocpl_real_in",
+                      "inference.backend: python\n"
+                      "inference.python_module: emulator_fixture\n"
+                      "inference.python_path: " EMULATOR_TEST_FIXTURE_DIR "\n"
+                      "inference.input: x\n"
+                      "inference.output: y\n");
+
+  EmulatorAtm atm;
+  const FakeGrid grid;
+  without_coupling(atm, grid, namelist);
+
+  REQUIRE_THROWS_WITH(atm.initialize(), Catch::Contains("run on zeros"));
 }
 
 } // namespace test

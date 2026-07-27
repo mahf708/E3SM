@@ -90,10 +90,24 @@ class TorchComm(Comm):
             )
         self._dist = dist
         # A dedicated gloo group: the model's own group may be NCCL, and the
-        # buffers here live on the host.
+        # buffers here live on the host.  Whoever creates a group owns it, so
+        # a caller-supplied one is never destroyed here.
+        self._owns_group = group is None
         self._group = group if group is not None else dist.new_group(backend="gloo")
         self.rank = dist.get_rank(group=self._group)
         self.size = dist.get_world_size(group=self._group)
+
+    def close(self) -> None:
+        """Destroy the group this object created.  Idempotent.
+
+        A process group is a real resource — file descriptors, a rendezvous
+        entry, a background thread — and an embedded component may be built
+        and torn down inside a process that keeps running.  Leaving it behind
+        is not free the way it is for a training script that is about to exit.
+        """
+        if self._group is not None and self._owns_group:
+            self._dist.destroy_process_group(self._group)
+        self._group = None
 
     def _to_tensor(self, array):
         import torch
