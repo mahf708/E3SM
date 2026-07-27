@@ -51,6 +51,26 @@ class Comm:
         ones = [1] * self.size
         return self.alltoall(send, ones, ones).reshape(self.size)
 
+    def allgather_text(self, text: str) -> list[str]:
+        """One string per rank, in rank order.
+
+        Padded to a fixed width so this is a single equal-sized all-gather.
+        Used for the things that have to be the same on every rank but are
+        only known on some of them: a failure message, a field name list.
+        """
+        if self.size == 1:
+            return [text]
+        raw = text.encode("utf-8")[:_MESSAGE_BYTES]
+        block = np.zeros(_MESSAGE_BYTES, dtype=np.uint8)
+        block[: len(raw)] = np.frombuffer(raw, dtype=np.uint8)
+        gathered = self.allgather(block.reshape(-1, 1)).reshape(
+            self.size, _MESSAGE_BYTES
+        )
+        return [
+            bytes(gathered[r]).rstrip(b"\0").decode("utf-8", "replace")
+            for r in range(self.size)
+        ]
+
     def agree(self, problem: str = "", error: BaseException | None = None) -> None:
         """Raise on every rank, or on none.
 
@@ -80,18 +100,11 @@ class Comm:
                 raise error if error is not None else RuntimeError(problem)
             return
 
-        raw = problem.encode("utf-8")[:_MESSAGE_BYTES]
-        block = np.zeros(_MESSAGE_BYTES, dtype=np.uint8)
-        block[: len(raw)] = np.frombuffer(raw, dtype=np.uint8)
-        gathered = self.allgather(block.reshape(-1, 1)).reshape(
-            self.size, _MESSAGE_BYTES
-        )
-
-        problems = {}
-        for rank in range(self.size):
-            text = bytes(gathered[rank]).rstrip(b"\0").decode("utf-8", "replace")
-            if text:
-                problems[rank] = text
+        problems = {
+            rank: text
+            for rank, text in enumerate(self.allgather_text(problem))
+            if text
+        }
         if not problems:
             return
         if problem:
@@ -245,3 +258,42 @@ class TorchComm(Comm):
         return np.concatenate(
             [recv[r].numpy()[: counts[r]] for r in range(self.size)], axis=0
         )
+
+
+def run_where(comm: Comm, participating: bool, work):
+    """Run ``work()`` on the ranks that own it, and fail everywhere or nowhere.
+
+    The shape this exists for: only some ranks hold the model, so only they
+    call it, and an exception there leaves every other rank walking into the
+    next collective alone.  A hang is the result, at a point unrelated to the
+    cause.  Wrapping the owner-only work makes the failure collective:
+
+    .. code-block:: python
+
+        result = run_where(comm, self.owns_model, lambda: stepper.step(args))
+        # every rank is here, or none is
+        redistribute(result)
+
+    The whole owner-only section belongs inside ``work``, not just the risky
+    line — a conversion, a lookup or a missing output diverges exactly as
+    badly as the model call itself.
+
+    Args:
+        comm: The communicator every rank shares.
+        participating: Whether *this* rank runs the work.
+        work: Zero-argument callable, run only where ``participating``.
+
+    Returns:
+        What ``work()`` returned, or None on ranks that did not run it.
+    """
+    problem = ""
+    error: BaseException | None = None
+    result = None
+    if participating:
+        try:
+            result = work()
+        except Exception as exc:  # noqa: BLE001 - re-raised by agree()
+            problem = f"rank {comm.rank}: {type(exc).__name__}: {exc}"
+            error = exc
+    comm.agree(problem, error)
+    return result

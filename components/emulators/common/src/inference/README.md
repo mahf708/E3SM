@@ -437,7 +437,23 @@ are missing rather than failing somewhere deep inside a load.
   rank does not send you to the wrong log. The rank that actually failed
   re-raises its own exception, type and traceback intact.
 
-  The same treatment covers the two rank-local checks in the decomposition —
+  The same shape recurs *every step*, not just at startup: only the owning
+  ranks run the model, so a CUDA OOM, a malformed input or an absent output
+  on the owner would leave every other rank blocked in the scatter. The whole
+  owner-only section — conversions, the stepper call, the missing-output
+  check, the trip back to host memory — runs inside `run_where()`, which is
+  `agree()` wrapped around work that only some ranks do. Guarding just
+  `stepper.step()` would leave the hole open.
+
+  `state_for_restart()` is collective for the same reason, and was the sharper
+  version of the bug: the prognostic state exists only on the owner, so a
+  version that returned early when it was empty left the owner alone in the
+  redistribution — a deadlock, not an empty result. The field names are agreed
+  first, then every rank contributes its tile (empty ones included).
+
+  The same treatment covers the rank-local work that immediately precedes a
+  collective — packing the input fields, asking ACE for this rank's slice, and
+  the two checks in the decomposition —
   `cell_indices()` (this rank's global ids) and the tile validation — because
   both can fail on one rank alone, and one of them runs *before* the
   exchange's collectives. `agree()` is itself a collective, so it has to be
@@ -494,7 +510,12 @@ cmake --build build --parallel && (cd build && ctest --output-on-failure)
 - The decomposition tests are plain `unittest` and need only numpy. They run
   N logical ranks as threads over the same `Comm` interface the real
   implementation satisfies, so a multi-rank exchange is tested in CI without
-  MPI, torch or a launcher.
+  MPI, torch or a launcher. The fake cluster **reports deadlocks rather than
+  rescuing them**: a rank that leaves while the others wait at a collective
+  makes them time out, and the harness raises `RankDivergence` naming who was
+  stuck and why. An earlier version released the waiting ranks instead, which
+  made the owner-failure tests pass against deliberately broken code — worth
+  knowing, because a forgiving harness is worse than no harness.
 - The option defaults to `OFF`, so a CIME build is unaffected until a machine
   turns it on.
 

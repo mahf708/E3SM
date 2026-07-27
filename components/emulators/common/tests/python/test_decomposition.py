@@ -11,7 +11,7 @@ import unittest
 
 import numpy as np
 
-from e3sm_emulator.comm import SerialComm
+from e3sm_emulator.comm import SerialComm, run_where
 from e3sm_emulator.context import Context
 from e3sm_emulator.decomposition import (
     PermutationExchange,
@@ -323,6 +323,99 @@ class TestAgreement(unittest.TestCase):
         with self.assertRaises(RuntimeError) as caught:
             run_ranks(size, body)
         self.assertIn("rank 1", str(caught.exception))
+
+
+class TestOwnerOnlyWork(unittest.TestCase):
+    """The shape of every step: gather -> owner computes -> scatter."""
+
+    def _step(self, size, owner_raises):
+        """Mimic AceEmulator.infer: a collective, owner-only work, a collective."""
+        total = NY * NX
+
+        def body(comm, rank):
+            gids = round_robin_gids(rank, size, total)
+            exchange = PermutationExchange(comm, gids, Tiling(NY, NX, 1, 1))
+            owns = exchange.tile_shape[0] > 0
+
+            # Gather (collective).
+            tile = exchange.to_tile(field_from_gids(gids).reshape(-1, 1))
+
+            def model():
+                if owner_raises:
+                    raise RuntimeError("CUDA out of memory")
+                return tile * 2.0
+
+            result = run_where(comm, owns, model)
+            if result is None:
+                result = np.empty((0, 0, 1), dtype=np.float64)
+
+            # Scatter (collective). Only safe because run_where already
+            # agreed: an owner that died above must not leave us here alone.
+            return exchange.to_columns(result)
+
+        return run_ranks(size, body)
+
+    def test_a_clean_step_round_trips(self):
+        results = self._step(size=4, owner_raises=False)
+        self.assertEqual(len(results), 4)
+        for rank, columns in enumerate(results):
+            expected = field_from_gids(round_robin_gids(rank, 4, NY * NX)) * 2.0
+            np.testing.assert_allclose(columns[:, 0], expected)
+
+    def test_an_owner_failure_stops_every_rank(self):
+        # Without the agreement the three non-owner ranks would enter
+        # to_columns() and block there forever. The fake cluster reports that
+        # as RankDivergence rather than rescuing it, so this test really does
+        # fail if run_where stops agreeing.
+        with self.assertRaises(RuntimeError) as caught:
+            self._step(size=4, owner_raises=True)
+        self.assertIn("CUDA out of memory", str(caught.exception))
+
+
+class TestRestartExport(unittest.TestCase):
+    """Restart state lives on one rank but has to come back on all of them."""
+
+    def test_export_when_only_the_owner_holds_state(self):
+        # The deadlock this guards against: non-owners see an empty state,
+        # return early, and leave rank 0 alone inside to_columns().
+        size = 3
+        total = NY * NX
+
+        def body(comm, rank):
+            gids = round_robin_gids(rank, size, total)
+            exchange = PermutationExchange(comm, gids, Tiling(NY, NX, 1, 1))
+            owns = exchange.tile_shape[0] > 0
+            state = {"air_temperature": 1.0} if owns else {}
+
+            # The name list is agreed before anybody touches the exchange.
+            announced = comm.allgather_text(
+                "\n".join(sorted(state)) if owns else ""
+            )
+            names = sorted({n for b in announced for n in b.split("\n") if n})
+            assert names == ["air_temperature"], f"rank {rank} saw {names}"
+            if not names:
+                return {}
+
+            nj, ni = exchange.tile_shape
+            stacked = np.stack(
+                [
+                    np.full((nj, ni), state[n]) if owns else np.empty((nj, ni))
+                    for n in names
+                ],
+                axis=-1,
+            )
+            columns = exchange.to_columns(stacked)
+            return {n: columns[:, k] for k, n in enumerate(names)}
+
+        results = run_ranks(size, body)
+        for rank, exported in enumerate(results):
+            self.assertEqual(sorted(exported), ["air_temperature"])
+            # Every rank gets its own columns back, owner or not.
+            self.assertEqual(
+                exported["air_temperature"].size,
+                round_robin_gids(rank, size, total).size,
+            )
+            np.testing.assert_allclose(exported["air_temperature"], 1.0)
 
 
 class TestBridge(unittest.TestCase):

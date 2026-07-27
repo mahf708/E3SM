@@ -85,7 +85,7 @@ import os
 
 import numpy as np
 
-from .comm import SerialComm, TorchComm
+from .comm import SerialComm, TorchComm, run_where
 from .context import Context
 from .decomposition import PermutationExchange, Tiling, split_bounds
 
@@ -373,12 +373,22 @@ class AceEmulator:
         if self.mode != "spatial":
             return Tiling(ny, nx, 1, 1)
 
-        j_slice, i_slice = self.dist.get_local_slices((1, ny, nx))[-2:]
-        mine = np.array(
-            [j_slice.start or 0, j_slice.stop or ny, i_slice.start or 0,
-             i_slice.stop or nx],
-            dtype=np.int64,
-        ).reshape(1, 4)
+        # Asking ACE for this rank's slice is rank-local and precedes the
+        # allgather below, so a failure here would strand the other ranks in
+        # it.
+        def local_slice():
+            j_slice, i_slice = self.dist.get_local_slices((1, ny, nx))[-2:]
+            return np.array(
+                [
+                    j_slice.start or 0,
+                    j_slice.stop or ny,
+                    i_slice.start or 0,
+                    i_slice.stop or nx,
+                ],
+                dtype=np.int64,
+            ).reshape(1, 4)
+
+        mine = run_where(self.comm, True, local_slice)
         everyone = self.comm.allgather(mine)
 
         # Rank r owns tile (r // w, r % w), so the h boundaries are the row
@@ -415,7 +425,14 @@ class AceEmulator:
         names = self.input_names or sorted(inputs)
         gathered = self._to_tiles(inputs, names)
 
-        if self.owns_model:
+        # Everything the owning ranks do alone goes inside run_where: the
+        # tensor conversions, the stepper call, the missing-output check and
+        # the trip back to host memory.  Any of them can fail on the owner
+        # while every other rank walks on into _to_columns() and blocks in the
+        # redistribution — a hang at a point with nothing to do with the
+        # cause.  Guarding only stepper.step() would leave that hole open for
+        # a malformed input or an absent output; the whole block belongs here.
+        def run_model():
             device = get_device()
             now, nxt = {}, {}
             for name, tile in gathered.items():
@@ -453,11 +470,13 @@ class AceEmulator:
                     f"The ACE stepper did not produce {missing}. It produces: "
                     f"{sorted(result)}."
                 )
-            produced = {
+            return {
                 name: result[name].detach().to("cpu", torch.float64).numpy()[0]
                 for name in self.output_names
             }
-        else:
+
+        produced = run_where(self.comm, self.owns_model, run_model)
+        if produced is None:
             # This rank owns no part of the globe. It still has to take part
             # in the exchange — infer() is collective.
             produced = {
@@ -467,10 +486,22 @@ class AceEmulator:
         self._to_columns(produced, outputs)
 
     def _to_tiles(self, inputs: dict, names) -> dict:
-        """Move every named input field onto this rank's tile, in one go."""
-        columns = np.stack(
-            [np.asarray(inputs[name], dtype=np.float64).reshape(-1) for name in names],
-            axis=1,
+        """Move every named input field onto this rank's tile, in one go.
+
+        The packing is rank-local and sits immediately before a collective, so
+        a field missing or misshapen on one rank alone would leave the others
+        waiting in the all-to-all.  Settle it first.
+        """
+        columns = run_where(
+            self.comm,
+            True,
+            lambda: np.stack(
+                [
+                    np.asarray(inputs[name], dtype=np.float64).reshape(-1)
+                    for name in names
+                ],
+                axis=1,
+            ),
         )
         tile = self.exchange.to_tile(columns)
         return {name: np.ascontiguousarray(tile[..., k]) for k, name in enumerate(names)}
@@ -497,26 +528,46 @@ class AceEmulator:
         """This rank's prognostic state, as numpy arrays on its own columns.
 
         ACE is autoregressive, so a run that stops and restarts without this
-        restarts a different atmosphere.  Returning it on *columns* rather
+        continues a *different* atmosphere.  Returning it on *columns* rather
         than on tiles is what makes it writable through the component's
         existing restart path, and reloadable under a different rank count.
 
-        Not yet called from anywhere: the component has no restart plumbing
-        to hand it to.
+        **Collective: every rank must call it, the same number of times.**
+        The state lives only on the ranks that own the model, so the field
+        names are agreed first — otherwise the ranks that hold nothing would
+        return early and leave the owner alone in the redistribution, which
+        is a deadlock rather than an empty result.
+
+        Nothing calls this yet: the component has no restart plumbing to hand
+        it to. It is written collectively so that wiring it up is safe when
+        that arrives.
         """
-        if not self.state:
-            return {}
-        names = sorted(self.state)
-        nj, ni = self.tile_shape
-        stacked = np.stack(
-            [
-                self.state[n].detach().to("cpu").numpy().reshape(nj, ni)
-                if self.owns_model
-                else np.empty((nj, ni), dtype=np.float64)
-                for n in names
-            ],
-            axis=-1,
+        import torch
+
+        # Owners announce what they hold; everyone learns the same name list.
+        announced = self.comm.allgather_text(
+            "\n".join(sorted(self.state)) if self.owns_model else ""
         )
+        names = sorted({n for block in announced for n in block.split("\n") if n})
+        if not names:
+            return {}
+
+        nj, ni = self.tile_shape
+
+        def tiles():
+            return np.stack(
+                [
+                    self.state[n].detach().to("cpu", torch.float64).numpy().reshape(
+                        nj, ni
+                    )
+                    if self.owns_model and n in self.state
+                    else np.empty((nj, ni), dtype=np.float64)
+                    for n in names
+                ],
+                axis=-1,
+            )
+
+        stacked = run_where(self.comm, True, tiles)
         columns = self.exchange.to_columns(stacked)
         return {name: columns[:, k] for k, name in enumerate(names)}
 
