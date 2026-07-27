@@ -39,6 +39,7 @@ class Cluster:
         self.barrier = threading.Barrier(size)
         self.alltoall_inbox = [[None] * size for _ in range(size)]
         self.allgather_inbox = [None] * size
+        self.flag_inbox = [False] * size
 
 
 class FakeComm(Comm):
@@ -56,6 +57,13 @@ class FakeComm(Comm):
     def _sync(self):
         """Wait for every rank, or record that somebody never came."""
         self._cluster.barrier.wait(timeout=BARRIER_TIMEOUT_SECONDS)
+
+    def any_true(self, flag):
+        self._cluster.flag_inbox[self.rank] = bool(flag)
+        self._sync()
+        result = any(self._cluster.flag_inbox)
+        self._sync()
+        return result
 
     def alltoall(self, send, send_counts, recv_counts):
         send = np.atleast_2d(np.asarray(send))

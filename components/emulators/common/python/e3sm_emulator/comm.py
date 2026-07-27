@@ -51,6 +51,22 @@ class Comm:
         ones = [1] * self.size
         return self.alltoall(send, ones, ones).reshape(self.size)
 
+    def any_true(self, flag: bool) -> bool:
+        """One bit per rank, reduced with OR.  The cheapest collective there is.
+
+        Exists so that :meth:`agree` costs a single small reduction when
+        nothing is wrong, which is every timestep of a healthy run.  Gathering
+        the diagnostic text is then paid for only when there is text to
+        gather.
+
+        The default goes through :meth:`allgather`; implementations with a
+        real reduction should override it with one.
+        """
+        gathered = self.allgather(
+            np.array([[1 if flag else 0]], dtype=np.int64)
+        )
+        return bool(gathered.any())
+
     def allgather_text(self, text: str) -> list[str]:
         """One string per rank, in rank order.  Exact, never truncated.
 
@@ -108,6 +124,12 @@ class Comm:
                 raise error if error is not None else RuntimeError(problem)
             return
 
+        # The healthy path — every step of a run that is working — pays for
+        # one small reduction and stops here.  Only a real failure is worth
+        # the cost of moving everybody's message around.
+        if not self.any_true(bool(problem)):
+            return
+
         # A diagnostic may be truncated; that is a fair trade for a bounded
         # exchange, and unlike a field schema nothing downstream depends on
         # its exact contents.
@@ -124,9 +146,9 @@ class Comm:
             raise error if error is not None else RuntimeError(problem)
         rank, text = sorted(problems.items())[0]
         raise RuntimeError(
-            f"This rank initialized cleanly, but rank {rank} did not, so the "
-            f"run is stopping on every rank rather than hanging. Rank {rank} "
-            f"said:\n{text}"
+            f"This rank completed this phase cleanly, but rank {rank} did "
+            f"not, so the run is stopping on every rank rather than hanging. "
+            f"Rank {rank} said:\n{text}"
         )
 
 
@@ -148,6 +170,9 @@ class SerialComm(Comm):
 
     def allgather(self, block):
         return np.array(np.atleast_2d(np.asarray(block)), copy=True)
+
+    def any_true(self, flag):
+        return bool(flag)
 
 
 class TorchComm(Comm):
@@ -199,6 +224,16 @@ class TorchComm(Comm):
         if self._group is not None and self._owns_group:
             self._dist.destroy_process_group(self._group)
         self._group = None
+
+    def any_true(self, flag: bool) -> bool:
+        """A single all_reduce, rather than the base class's all-gather."""
+        import torch
+
+        value = torch.tensor([1 if flag else 0], dtype=torch.int64)
+        self._dist.all_reduce(
+            value, op=self._dist.ReduceOp.MAX, group=self._group
+        )
+        return bool(value.item())
 
     def _to_tensor(self, array):
         import torch

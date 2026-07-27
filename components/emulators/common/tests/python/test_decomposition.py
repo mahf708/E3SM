@@ -478,6 +478,74 @@ class TestRestartExport(unittest.TestCase):
             np.testing.assert_allclose(exported["air_temperature"], 1.0)
 
 
+class _RecordingDist:
+    """Enough of torch.distributed to count what TorchComm puts on the wire."""
+
+    class ReduceOp:
+        MAX = "max"
+
+    def __init__(self):
+        self.calls = []
+
+    def is_initialized(self):
+        return True
+
+    def all_reduce(self, tensor, op=None, group=None):
+        self.calls.append("all_reduce")
+
+    def all_gather(self, out_list, tensor, group=None):
+        self.calls.append("all_gather")
+
+
+class TestAgreementCost(unittest.TestCase):
+    """What a working run pays, every step, for the safety above.
+
+    Counted at the *torch* level, which is where it is actually paid: one
+    ``Comm.allgather`` is an ``all_reduce`` (to exchange the block sizes)
+    *plus* an ``all_gather``, so counting Comm-level calls would have shown
+    no difference at all and pinned nothing. infer() reaches four agreement
+    points per timestep, multiplied by every step of a climate run.
+    """
+
+    def _torch_comm(self):
+        from e3sm_emulator.comm import TorchComm
+
+        recorder = _RecordingDist()
+        comm = TorchComm.__new__(TorchComm)  # bypass group creation
+        comm._dist = recorder
+        comm._group = None
+        comm._owns_group = False
+        comm.rank, comm.size = 0, 4
+        return comm, recorder
+
+    def _fake_torch(self, reduced_value):
+        import unittest.mock as mock
+
+        fake = mock.MagicMock()
+        fake.tensor = lambda values, dtype=None: mock.MagicMock(
+            item=lambda: reduced_value
+        )
+        return fake
+
+    def test_a_healthy_agreement_is_one_reduction(self):
+        import unittest.mock as mock
+
+        comm, recorder = self._torch_comm()
+        with mock.patch.dict(sys.modules, {"torch": self._fake_torch(0)}):
+            comm.agree("")
+        self.assertEqual(recorder.calls, ["all_reduce"])
+
+    def test_a_failing_agreement_pays_for_the_diagnostic(self):
+        # Only when something is actually wrong is the message worth moving.
+        import unittest.mock as mock
+
+        comm, recorder = self._torch_comm()
+        with mock.patch.dict(sys.modules, {"torch": self._fake_torch(1)}):
+            with self.assertRaises(BaseException):
+                comm.agree("something broke")
+        self.assertGreater(len(recorder.calls), 1)
+
+
 class TestRestartSchema(unittest.TestCase):
     """The field name list is data, not a diagnostic: it must survive intact."""
 
