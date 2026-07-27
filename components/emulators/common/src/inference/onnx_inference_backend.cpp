@@ -6,6 +6,7 @@
 #include "onnx_inference_backend.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <iostream>
 #include <sstream>
 
@@ -15,6 +16,19 @@ namespace emulator {
 namespace inference {
 
 namespace {
+
+/// Lowercase and strip whitespace, for option values.
+std::string normalize(const std::string &s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char c : s) {
+    if (!std::isspace(static_cast<unsigned char>(c))) {
+      out.push_back(
+          static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+  }
+  return out;
+}
 
 /// Map an ONNX element type onto ours; returns false for types we do not carry.
 bool from_onnx_type(ONNXTensorElementDataType onnx_type, DType &out) {
@@ -234,19 +248,35 @@ void OnnxBackend::init_impl() {
         parse_log_severity(m_config.get("log_severity")), "e3sm_emulator");
 
     Ort::SessionOptions options;
-    if (m_config.has("intra_op_threads")) {
-      options.SetIntraOpNumThreads(m_config.get_int("intra_op_threads"));
+    // Default to one thread per session.  Left to itself ONNX Runtime opens
+    // roughly one intra-op thread per core, which in an MPI run means every
+    // rank on the node claims every core: with 64 ranks that is 64x
+    // oversubscription and a component that runs slower the more resources it
+    // is given.  Raising this is a deliberate act, best paired with a PE
+    // layout that leaves the threads somewhere to run.  `auto` hands the
+    // decision back to the runtime.
+    if (normalize(m_config.get("intra_op_threads", "1")) != "auto") {
+      options.SetIntraOpNumThreads(m_config.get_int("intra_op_threads", 1));
     }
-    if (m_config.has("inter_op_threads")) {
-      options.SetInterOpNumThreads(m_config.get_int("inter_op_threads"));
+    if (normalize(m_config.get("inter_op_threads", "1")) != "auto") {
+      options.SetInterOpNumThreads(m_config.get_int("inter_op_threads", 1));
     }
     options.SetGraphOptimizationLevel(
         parse_optimization_level(m_config.get("optimization_level")));
 
-    const std::string device = m_config.get("device", "cpu");
+    const std::string device = normalize(m_config.get("device", "cpu"));
     if (device == "cuda" || device == "gpu") {
+      // No default ordinal, for the same reason as the torch backend: ranks
+      // sharing a node would all land on device 0.  create_executor() fills
+      // this in from the InferenceContext.
+      EMULATOR_INFER_REQUIRE(
+          m_config.has("device_id"),
+          "device=" << m_config.get("device")
+                    << " needs a 'device_id'. Build the backend through "
+                       "create_executor() so the ordinal comes from the "
+                       "InferenceContext, or set the option explicitly.");
       OrtCUDAProviderOptions cuda_options;
-      cuda_options.device_id = m_config.get_int("device_id", 0);
+      cuda_options.device_id = m_config.get_int("device_id");
       // Throws if this build of ONNX Runtime has no CUDA provider, which is a
       // clearer failure than silently running on the CPU.
       options.AppendExecutionProvider_CUDA(cuda_options);

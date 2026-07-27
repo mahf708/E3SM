@@ -41,10 +41,15 @@ namespace inference {
  *
  * ## Options
  *  - `device`         `cpu` (default) or `cuda`
- *  - `device_id`      CUDA device ordinal (default 0)
+ *  - `device_id`      CUDA device ordinal; required for `cuda`, and normally
+ *                     filled in from the InferenceContext by create_executor()
  *  - `method`         module method to call (default `forward`)
- *  - `intra_op_threads` passed to `at::set_num_threads`
- *  - `inter_op_threads` passed to `at::set_num_interop_threads`
+ *  - `intra_op_threads` `at::set_num_threads` (default 1; `auto` to leave it)
+ *  - `inter_op_threads` `at::set_num_interop_threads` (default 1)
+ *
+ * LibTorch thread counts are process-wide, not per module: the first backend
+ * to set them wins, and a later instance asking for something different is
+ * warned about rather than obeyed (asking twice would otherwise throw).
  *
  * `model_path` is required and must name a TorchScript archive.
  */

@@ -30,6 +30,29 @@ add_emulator_test(test_inference_registry test_inference_registry.cpp)
 # Test for StubBackend
 add_emulator_test(test_inference_stub_backend test_inference_stub_backend.cpp)
 
+# Test for the execution-policy layer (serial: local_replica needs no MPI)
+add_emulator_test(test_inference_executor test_inference_executor.cpp)
+
+# ---------------------------------------------------------------------------
+# Parallel test
+#
+# The one test here that runs on several ranks: it checks that a component
+# communicator reaches the inference layer intact and that a local replica
+# behaves on ragged local column counts.
+# ---------------------------------------------------------------------------
+if(EMULATOR_INFERENCE_HAS_MPI AND MPIEXEC_EXECUTABLE)
+  add_executable(test_inference_context_mpi test_inference_context_mpi.cpp)
+  target_link_libraries(test_inference_context_mpi PRIVATE emulator_common
+                                                           MPI::MPI_CXX)
+  add_test(NAME test_inference_context_mpi
+    COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
+            ${MPIEXEC_PREFLAGS} $<TARGET_FILE:test_inference_context_mpi>
+            ${MPIEXEC_POSTFLAGS})
+elseif(EMULATOR_INFERENCE_HAS_MPI)
+  message(STATUS "Emulator tests: skipping the parallel context test "
+                 "(no mpiexec found)")
+endif()
+
 # ---------------------------------------------------------------------------
 # Optional backends
 #

@@ -5,7 +5,9 @@
 
 #include "torch_inference_backend.hpp"
 
+#include <cctype>
 #include <iostream>
+#include <string>
 #include <vector>
 
 #include <ATen/Parallel.h> // at::set_num_threads
@@ -49,6 +51,69 @@ torch::ScalarType to_torch_type(DType dtype) {
     return torch::kLong;
   }
   return torch::kFloat;
+}
+
+/// Lowercase and strip whitespace, for option values.
+std::string normalize(const std::string &s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char c : s) {
+    if (!std::isspace(static_cast<unsigned char>(c))) {
+      out.push_back(
+          static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+  }
+  return out;
+}
+
+/**
+ * @brief Apply LibTorch's process-wide thread settings, once.
+ *
+ * `at::set_num_threads` and `at::set_num_interop_threads` configure the whole
+ * process, not one module: two backends cannot hold different policies, and
+ * `set_num_interop_threads` *throws* once the interop pool exists, so a second
+ * backend calling it would abort a perfectly good run.  Apply the first
+ * request, then report — rather than obey — any later disagreement.
+ */
+void apply_thread_settings(int intra, int inter, bool verbose) {
+  static bool applied = false;
+  static int applied_intra = -1;
+  static int applied_inter = -1;
+
+  if (applied) {
+    if ((intra > 0 && intra != applied_intra) ||
+        (inter > 0 && inter != applied_inter)) {
+      std::cerr << "[emulator::inference] warning: LibTorch thread counts are "
+                   "process-wide and were already set to intra="
+                << applied_intra << " inter=" << applied_inter
+                << "; ignoring the request for intra=" << intra
+                << " inter=" << inter << ".\n";
+    }
+    return;
+  }
+
+  // Torch throws if the pools are already running; that is not a reason to
+  // fail model setup, so report and carry on with whatever it has.
+  try {
+    if (intra > 0) {
+      at::set_num_threads(intra);
+      applied_intra = intra;
+    }
+    if (inter > 0) {
+      at::set_num_interop_threads(inter);
+      applied_inter = inter;
+    }
+  } catch (const std::exception &e) {
+    std::cerr << "[emulator::inference] warning: LibTorch would not accept the "
+                 "requested thread counts (intra="
+              << intra << " inter=" << inter << "): " << e.what() << "\n";
+  }
+  applied = true;
+
+  if (verbose) {
+    std::cout << "[torch inference] threads: intra=" << at::get_num_threads()
+              << " interop=" << at::get_num_interop_threads() << "\n";
+  }
 }
 
 /// Flatten a TorchScript result into (name, tensor) pairs.
@@ -170,14 +235,29 @@ void TorchBackend::init_impl() {
                          "The torch backend needs 'model_path' to point at a "
                          "TorchScript archive (torch.jit.script(...).save()).");
 
-  const std::string device = m_config.get("device", "cpu");
+  const std::string device = normalize(m_config.get("device", "cpu"));
   if (device == "cuda" || device == "gpu") {
     EMULATOR_INFER_REQUIRE(torch::cuda::is_available(),
                            "device=cuda was requested but this LibTorch build "
                            "reports no CUDA device.");
+    // No default ordinal: without one, every rank sharing a node would load
+    // its own copy of the model onto device 0.  create_executor() fills this
+    // in from the InferenceContext; a bare backend has to be told.
+    EMULATOR_INFER_REQUIRE(
+        m_config.has("device_id"),
+        "device=" << m_config.get("device")
+                  << " needs a 'device_id'. Build the backend through "
+                     "create_executor() so the ordinal comes from the "
+                     "InferenceContext, or set the option explicitly.");
+    const int device_id = m_config.get_int("device_id");
+    EMULATOR_INFER_REQUIRE(device_id >= 0 &&
+                               device_id < torch::cuda::device_count(),
+                           "device_id " << device_id << " is out of range; "
+                                        << "this host reports "
+                                        << torch::cuda::device_count()
+                                        << " CUDA device(s).");
     m_impl->device =
-        torch::Device(torch::kCUDA, static_cast<torch::DeviceIndex>(
-                                        m_config.get_int("device_id", 0)));
+        torch::Device(torch::kCUDA, static_cast<torch::DeviceIndex>(device_id));
   } else {
     EMULATOR_INFER_REQUIRE(device == "cpu",
                            "Unknown device '" << device
@@ -187,12 +267,16 @@ void TorchBackend::init_impl() {
 
   m_impl->method = m_config.get("method", "forward");
 
-  if (m_config.has("intra_op_threads")) {
-    at::set_num_threads(m_config.get_int("intra_op_threads"));
-  }
-  if (m_config.has("inter_op_threads")) {
-    at::set_num_interop_threads(m_config.get_int("inter_op_threads"));
-  }
+  // One thread per rank by default: see apply_thread_settings, and the same
+  // MPI oversubscription argument as the onnx backend.  `auto` leaves the
+  // process-wide setting alone.
+  const std::string intra = normalize(m_config.get("intra_op_threads", "1"));
+  const std::string inter = normalize(m_config.get("inter_op_threads", "1"));
+  apply_thread_settings(intra == "auto" ? 0 : m_config.get_int(
+                                                  "intra_op_threads", 1),
+                        inter == "auto" ? 0 : m_config.get_int(
+                                                  "inter_op_threads", 1),
+                        m_config.verbose);
 
   try {
     m_impl->module = torch::jit::load(m_config.model_path, m_impl->device);

@@ -9,12 +9,25 @@ Nothing here knows about atmospheres, land, grids or coupling. A component
 packs its fields into tensors, calls `infer`, and reads the results back —
 usually into memory it already owns.
 
+**The backends are local inference engines.** Each one loads a model in one
+process and evaluates it on the tensors that process hands it. How that relates
+to the other ranks of a component is a separate question, answered by an
+`InferenceExecutor` and its execution policy — today only *one replica per
+rank*, which is correct for column-local models and nothing else. Read
+"Running across ranks" below before assuming anything about scaling.
+
 ```
                      component (EmulatorAtm, EmulatorLnd, ...)
+                                      |
+                     InferenceContext (comm, rank, node, device)
+                                      v
+                     InferenceExecutor   <- execution policy
+                        (local_replica)     (how ranks cooperate)
                                       |
                         TensorMap in / TensorMap out
                                       v
    InferenceConfig  ->  InferenceBackend  <-  BackendRegistry ("stub", "onnx", ...)
+                          (local engine)
                                       |
              +------------+-----------+-----------+--------------+
              |            |                       |              |
@@ -28,7 +41,10 @@ usually into memory it already owns.
 | --- | --- |
 | `tensor.hpp/.cpp` | `Tensor` (the data container), `TensorMap`, `TensorSpec`, `DType` |
 | `inference_config.hpp/.cpp` | `InferenceConfig`: core settings, free-form options, text parsing |
-| `inference_backend.hpp/.cpp` | The `InferenceBackend` interface, lifecycle, validation, flat-array path |
+| `inference_context.hpp/.cpp` | `InferenceContext`: rank, node, device — MPI-free |
+| `inference_context_mpi.hpp/.cpp` | Building a context from a communicator (the only TU that includes `<mpi.h>`) |
+| `inference_backend.hpp/.cpp` | The `InferenceBackend` interface (a **local** engine), lifecycle, validation, flat-array path |
+| `inference_executor.hpp/.cpp` | `InferenceExecutor`: how ranks cooperate; `local_replica` |
 | `inference_backend_registry.hpp/.cpp` | String-keyed factory registry |
 | `create_inference_backend.hpp/.cpp` | `create_backend(...)` conveniences |
 | `stub_inference_backend.hpp/.cpp` | Synthetic backend, no ML dependency |
@@ -84,25 +100,39 @@ Design points, and why:
 ## Adding a model to a component
 
 ```cpp
-#include "create_inference_backend.hpp"
+#include "inference_executor.hpp"
+#include "inference_context_mpi.hpp"   // when built with MPI
 
 // In the component's init: read the inference settings straight out of the
 // component namelist, where they are prefixed with `inference.`
 auto config = InferenceConfig::from_file_with_prefix(m_input_file, "inference.");
-m_backend = create_backend(config);
-m_backend->initialize();
 
-// Each step: wrap what the model needs and run.
+// Tell the inference layer where it is running.  m_comm is the *component*
+// communicator, which is what the component already holds.
+auto context = make_context_from_comm(m_comm);
+// On a machine with accelerators, say which one this rank owns:
+// assign_device_round_robin(context, devices_per_node);
+
+m_executor = create_executor(config, context);
+m_executor->initialize();
+
+// Each step: wrap what the model needs and run.  Shapes are this rank's.
 TensorMap inputs;
 inputs.wrap("T",  static_cast<const double*>(m_T.data()),  {ncol, nlev});
 inputs.wrap("ps", static_cast<const double*>(m_ps.data()), {ncol, 1});
 TensorMap outputs;
 outputs.wrap("dT", m_dT.data(), {ncol, nlev});
-if (!m_backend->infer(inputs, outputs)) { /* handle a step failure */ }
+if (!m_executor->infer(inputs, outputs)) { /* handle a step failure */ }
 
 // In the component's finalize:
-m_backend->finalize();
+m_executor->finalize();
 ```
+
+Going through an executor rather than calling `create_backend` directly costs
+nothing under `local_replica` — `infer()` forwards straight to the backend —
+and it is what lets the parallel strategy change from a namelist later without
+touching the component. `create_backend` remains available for serial code,
+tools and tests.
 
 with, in `atm_in` (or any file the component already reads):
 
@@ -125,7 +155,8 @@ Line-oriented `key: value`, deliberately close to the parsing the emulator
 components already do on their `*_in` files. `#` and `!` start comments.
 
 ```
-backend:         onnx           # registry key
+backend:         onnx           # registry key: which local engine
+execution_policy: local_replica # how the ranks cooperate (default)
 model_path:      atm.onnx
 input:           T[-1,72]:float32    # repeatable, ordered
 output:          dT[-1,72]:float32
@@ -145,6 +176,53 @@ does — or set programmatically (`config.backend = "stub"`,
 A YAML front end (ekat, as EAMxx uses) can be layered on later: it would
 produce an `InferenceConfig` and nothing else would change.
 
+## Running across ranks
+
+Each backend runs a model **in one process**. An `InferenceExecutor` says what
+the other ranks are doing, and the only policy implemented today is:
+
+| Policy | What it does | Status |
+| --- | --- | --- |
+| `local_replica` | Every rank loads its own copy of the model and infers on its own local columns. No communication. | **implemented**, the default |
+| `gpu_group` | Ranks sharing an accelerator gather their batches onto one owner, infer once, scatter back. | not implemented |
+| `spatial_distributed` | Every rank evaluates part of one global model, with collectives inside the model. | not implemented |
+
+`local_replica` is correct **only** when a column's output depends on that
+column alone — `y_i = f(x_i)`. Pointwise parameterizations, column MLPs and
+per-column vertical networks qualify. Models that need neighbouring columns, a
+global receptive field (spherical transforms, global attention, graph networks
+over the whole grid), or a shard of one global input **do not**, and running
+them under `local_replica` produces wrong answers rather than an error: the
+layer cannot tell from a model file what its receptive field is.
+
+Two practical notes for the cases that are not implemented yet:
+
+- A **global model can run today** without any of this, by giving the
+  component few ranks (`NTASKS_ATM=1` or a handful). The coupler already
+  regrids and redistributes between components, so it performs the gather —
+  correctly, and with no idle ranks, because the component never had them.
+- **Several ranks per GPU is refused, not guessed.** With `device: cuda` and
+  more than one rank of the component on a node, `create_executor` throws
+  unless an ordinal is assigned, because the alternative is every rank quietly
+  loading the model onto device 0. Use `assign_device_round_robin()`, set
+  `device_id`, or give the component one rank per device.
+
+`InferenceExecutor::infer()` is documented as **collective**: for any policy
+but `local_replica`, every rank of the context's communicator must call it the
+same number of times in the same order. That is why it is a different type
+from the local `InferenceBackend::infer()` — one is an ordinary call, the other
+can hang the run if a rank skips it.
+
+### Thread counts
+
+`intra_op_threads` and `inter_op_threads` **default to 1** in the ONNX and
+Torch backends. Left to themselves both runtimes open roughly one thread per
+core, which in an MPI run means every rank on the node claims every core.
+Raise them deliberately, together with a PE layout that leaves the threads
+somewhere to run; `auto` hands the decision back to the runtime. LibTorch's
+thread counts are process-wide, so the first backend to ask wins and later
+disagreements are reported rather than obeyed.
+
 ## Choosing a backend
 
 | | stub | python | onnx | torch |
@@ -152,9 +230,15 @@ produce an `InferenceConfig` and nothing else would change.
 | Extra dependency | none | Python + numpy | libonnxruntime (~15 MB) | LibTorch (~2 GB) |
 | Model format | none | whatever Python loads | `.onnx` | TorchScript `.pt` |
 | Knows its own signature | no | no | **yes** | no (positional) |
-| Zero-copy inputs | n/a | **yes** (numpy views) | yes (matching dtype) | yes (matching dtype) |
+| Zero-copy inputs (CPU) | n/a | **yes** (numpy views) | yes (matching dtype) | yes (matching dtype) |
+| Zero-copy inputs (GPU) | n/a | no | no | no |
 | Custom layers / control flow | n/a | **anything** | export-limited | good |
 | In-process Python | no | yes | no | no |
+
+**Zero-copy is a CPU-only claim.** The container is host memory today, so every
+GPU execution stages host→device on the way in and device→host on the way out,
+in all three backends. For a component whose fields already live on the device
+that round trip can cost more than the model.
 
 Recommendation: **ONNX Runtime for production**, because the model file
 carries its own input/output names, shapes and precision — so a shape or
@@ -203,13 +287,24 @@ def infer(self, inputs):
 
 See `../../tests/fixtures/emulator_*.py` for complete working examples.
 
-**Scaling.** Parallelism comes from MPI ranks, not threads: one interpreter
-per process, and the GIL is held for the duration of each `infer`. That is the
-natural fit for E3SM, where each rank owns its own columns — an MPI-parallel
-emulator (an ACE2-style model that needs its own communicator) gets the
-Fortran handle through an option and rebuilds the communicator with
-`mpi4py`. What this design cannot do is run several models concurrently in
-threads inside one rank; that would need out-of-process workers.
+**What this backend does and does not give you.** One interpreter per process,
+holding the GIL for the duration of each `infer`. Separate MPI ranks are
+separate processes with separate interpreters, so ranks do not contend for a
+GIL and independent model replicas run fine side by side. What it does *not*
+provide is a distributed inference facility: the backend does not accept,
+duplicate or validate a communicator, does not initialize `torch.distributed`,
+and does not propagate a collective failure safely. A model that wants to be
+MPI-parallel can be handed a communicator handle through the option map and
+rebuild it with `mpi4py` — that is a **convention available to model code**,
+and the model owns everything that follows from it.
+
+The Python bridge is nevertheless the most promising route to genuinely
+distributed inference, because it is the only one where the model can contain
+collectives at all: neither ONNX nor TorchScript can express them portably.
+
+**Zero-copy ends at the numpy view.** A Python model that moves the array onto
+a GPU, or converts it to a framework tensor with a different layout, pays for
+that copy like anybody else.
 
 ## Adding a backend
 
@@ -262,6 +357,10 @@ cmake -S . -B build -DBUILD_EMULATOR_TESTS=ON -DSTANDALONE_MODE=ON \
 cmake --build build --parallel && (cd build && ctest --output-on-failure)
 ```
 
+- `EMULATOR_ENABLE_MPI` (`AUTO`, `ON`, `OFF`; default `AUTO`) controls only the
+  context helper `make_context_from_comm`. The engines and their unit tests
+  stay MPI-free either way, so the suite runs without a launcher; with MPI on,
+  one additional test runs under `mpiexec` on two ranks.
 - `EMULATOR_ENABLE_PYTHON` needs the Python development headers
   (`Python3::Python`), plus numpy in that interpreter at run time.
 - `EMULATOR_ENABLE_ONNXRUNTIME` uses `cmake/FindONNXRuntime.cmake`; point
@@ -315,25 +414,47 @@ Findings worth keeping, since they shaped the code:
   `find_package(... QUIET)` cannot suppress — so `FindLibTorch.cmake` cannot
   try the config package and fall back automatically. The choice is an
   explicit option instead.
-- **Plumbing overhead is not the problem.** With a trivial model at 4608
-  columns × 3 levels (one CPU core), per-step cost was ≈0.02 ms for the Python
-  bridge, ≈0.03 ms for ONNX Runtime and ≈0.06 ms for LibTorch — tens of
-  microseconds, i.e. the bridge is nowhere near the cost of a real model or a
-  component time step. In particular the Python bridge is *not* inherently
-  slower than the compiled runtimes once the arrays are views instead of
-  copies.
+- **Plumbing overhead is not the problem — in one process.** With a trivial
+  model at 4608 columns × 3 levels, single process, one CPU core, per-step cost
+  was ≈0.02 ms for the Python bridge, ≈0.03 ms for ONNX Runtime and ≈0.06 ms
+  for LibTorch. That measures the wrapper, not a model and not a parallel run:
+  it says the bridge is cheap and that the Python bridge is *not* inherently
+  slower than the compiled runtimes once arrays are views instead of copies.
+  It says nothing about scaling. Note also where E3SM layouts actually sit —
+  ne30pg2 is 21,600 columns, so ~1,350 ranks leaves **16 columns per rank**,
+  a batch too small to be worth a GPU kernel launch. Real numbers need strong
+  and weak scaling, ranks per node, ranks per GPU, initialization separated
+  from stepping, and maximum rather than mean rank latency.
 
 ## Not done yet
 
-- Fortran/C entry points for the inference layer (only the C++ API exists;
-  the emulator components that use it are C++).
+Roughly in the order they are worth doing:
+
+- **Device-resident tensors.** The container is host memory only, so every GPU
+  run pays a host round trip in both directions. This probably matters more to
+  total GPU cost than the choice of runtime. It wants a memory space (host,
+  pinned, device), a device ordinal and a stream on `Tensor`, then ONNX
+  `IOBinding`, `torch::from_blob` on device pointers, and DLPack for Python.
+  None of that changes the `InferenceBackend` interface — which is the point of
+  tensors being the only thing that crosses it.
+- **The `gpu_group` policy**, for layouts with several ranks per accelerator:
+  split the communicator by node and device, elect an owner, gather ragged
+  local batches, infer once, scatter back, reusing the buffers.
+- **Distribution semantics in the tensor metadata.** `{-1, 72}` says a local
+  shape and nothing about how it relates to the global grid. A spatial model
+  needs replicated-versus-sharded, global IDs, global shape and halo width.
+- **`spatial_distributed`**, once a concrete emulator needs it, prototyped
+  through the Python backend with a model that already speaks
+  `torch.distributed`.
 - Wiring into `EmulatorAtm` — see "Adding a model to a component" for the
   pattern; the hooks in `atm.cpp` (`prepare_inputs`, `process_outputs`) are
   where it goes.
-- GPU paths are configurable (`device: cuda`) but untested here, and the
-  container is host-memory only: a device-resident tensor would be an
-  additional `DType`-like axis on `Tensor`, not a change to the interface.
+- Fortran/C entry points for the inference layer (only the C++ API exists;
+  the emulator components that use it are C++).
 - ONNX Runtime outputs are copied out of runtime-owned buffers. Binding
   caller memory as pre-allocated outputs would remove that copy for models
   with fully static output shapes.
-- No batching/queuing across components: each `infer` call is synchronous.
+- ONNX Runtime global thread pools (an `Env`-level threading option plus
+  `DisablePerSessionThreads`), which matter once one process holds several
+  sessions.
+- No batching or queuing across components: each `infer` call is synchronous.

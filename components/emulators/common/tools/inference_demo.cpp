@@ -10,6 +10,11 @@
  *    and ONNX and run it through each),
  *  - measuring per-step cost against a component's time step.
  *
+ * This is a **serial** harness: it drives one local engine in one process, so
+ * its timings measure the wrapper and the model, not scaling.  Multi-rank
+ * behavior belongs to InferenceExecutor and needs a real allocation to
+ * measure.
+ *
  * Build: configure with -DBUILD_EMULATOR_TESTS=ON, then run
  *   ./emulator_inference_demo --help
  */

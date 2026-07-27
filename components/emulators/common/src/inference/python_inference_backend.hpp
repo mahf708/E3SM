@@ -68,9 +68,18 @@ namespace inference {
  * ## Lifetime and threading
  * The numpy arrays are only valid during the call: a Python emulator must not
  * stash them for later (copy instead).  One interpreter is shared per process
- * and the GIL is held for the duration of each `infer`, so parallelism comes
- * from MPI ranks, not threads.  Passing a communicator through to Python (for
- * mpi4py) is a matter of putting its Fortran handle in an option.
+ * and the GIL is held for the duration of each `infer`, so two threads of one
+ * rank cannot infer concurrently.  Separate MPI ranks are separate processes
+ * with separate interpreters and do not contend.
+ *
+ * ## What this backend does not do
+ * It is a local engine, like the others: it does not accept, duplicate or
+ * validate a communicator, does not initialize `torch.distributed`, and does
+ * not propagate collective failures.  A model that wants to be MPI-parallel
+ * can be handed a communicator handle through the option map and rebuild it
+ * with mpi4py — a convention available to model code, with the model owning
+ * what follows.  It is nonetheless the only backend where the model *can*
+ * contain collectives, since neither ONNX nor TorchScript can express them.
  */
 class PythonBackend : public InferenceBackend {
 public:

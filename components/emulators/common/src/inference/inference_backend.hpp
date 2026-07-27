@@ -34,11 +34,19 @@ enum class BackendType {
 std::string backend_type_name(BackendType type);
 
 /**
- * @brief Abstract interface for inference backends.
+ * @brief Abstract interface for a **local** inference engine.
  *
- * A backend maps a set of named input tensors to a set of named output
- * tensors.  Tensors may view memory owned by the caller, so a component can
- * pass its own field or coupling buffers straight through with no copy.
+ * A backend loads a model in one process and maps a set of named input
+ * tensors to a set of named output tensors.  Tensors may view memory owned by
+ * the caller, so a component can pass its own field or coupling buffers
+ * straight through with no copy (on the host; a GPU run still stages through
+ * host memory today).
+ *
+ * A backend knows nothing about the other ranks of a component.  Running one
+ * model across ranks — replicas, aggregation onto an accelerator, a model with
+ * collectives inside it — is the job of InferenceExecutor, which owns a
+ * backend and an InferenceContext.  Components should build one through
+ * create_executor() rather than calling create_backend() directly.
  *
  * ## Lifecycle
  * 1. Construction takes the full InferenceConfig (cheap; no model loading).
@@ -54,8 +62,11 @@ std::string backend_type_name(BackendType type);
  * failure a caller may plausibly want to handle itself.
  *
  * ## Threading
- * A backend instance is not thread safe.  Use one instance per thread (or
- * per MPI rank, which is the expected E3SM usage).
+ * A backend instance is not thread safe.  Use one instance per thread, or —
+ * the expected E3SM usage — one per MPI rank, which is a replica of the model
+ * evaluating that rank's own columns.  That is only correct for models whose
+ * output for a column depends on that column alone; see inference_executor.hpp
+ * for what the alternatives would take.
  */
 class InferenceBackend {
 public:

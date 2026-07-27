@@ -6,8 +6,10 @@ set(EMULATOR_COMMON_CXX_SOURCES
   emulator_c_api.cpp
   inference/tensor.cpp
   inference/inference_config.cpp
+  inference/inference_context.cpp
   inference/inference_backend.cpp
   inference/inference_backend_registry.cpp
+  inference/inference_executor.cpp
   inference/create_inference_backend.cpp
   inference/stub_inference_backend.cpp
 )
@@ -17,6 +19,12 @@ set(EMULATOR_COMMON_F90_SOURCES
   emulator_f_api.F90
   emulator_handle.F90
 )
+
+# The MPI-aware context helper (EMULATOR_INFERENCE_HAS_MPI is decided at the
+# top level, where the MPI imported target is visible to every subdirectory).
+if(EMULATOR_INFERENCE_HAS_MPI)
+  list(APPEND EMULATOR_COMMON_CXX_SOURCES inference/inference_context_mpi.cpp)
+endif()
 
 # Optional inference backends.  Each one is opt-in: emulator_common must keep
 # building (and its tests passing) with no ML dependency installed at all.
@@ -59,8 +67,13 @@ target_include_directories(emulator_common PUBLIC
 )
 
 # ---------------------------------------------------------------------------
-# Optional backend dependencies
+# Optional dependencies
 # ---------------------------------------------------------------------------
+
+if(EMULATOR_INFERENCE_HAS_MPI)
+  target_link_libraries(emulator_common PUBLIC MPI::MPI_CXX)
+  target_compile_definitions(emulator_common PUBLIC EMULATOR_HAS_MPI)
+endif()
 
 if(EMULATOR_ENABLE_PYTHON)
   # Development.Embed provides libpython, which embedding needs

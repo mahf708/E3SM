@@ -32,11 +32,15 @@ namespace inference {
  * scratch buffer that is allocated once and reused.
  *
  * ## Options
- *  - `intra_op_threads`  threads within an operator (default: runtime default)
- *  - `inter_op_threads`  threads across operators
+ *  - `intra_op_threads`  threads within an operator (default 1; `auto` leaves
+ *                        it to the runtime, which opens roughly one thread per
+ *                        core — once per MPI rank)
+ *  - `inter_op_threads`  threads across operators (default 1, same caveat)
  *  - `optimization_level` `disable`, `basic`, `extended` or `all` (default)
  *  - `device`            `cpu` (default) or `cuda`
- *  - `device_id`         CUDA device ordinal (default 0)
+ *  - `device_id`         CUDA device ordinal; required for `cuda`, and
+ *                        normally filled in from the InferenceContext by
+ *                        create_executor()
  *  - `log_severity`      `verbose`, `info`, `warning` (default), `error`,
  *                        `fatal`
  *

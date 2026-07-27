@@ -21,6 +21,31 @@ option(EMULATOR_ENABLE_ONNXRUNTIME "Build the ONNX Runtime inference backend" OF
 # Our Find modules for the optional runtimes (FindLibTorch, FindONNXRuntime).
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+# MPI support for the inference layer.  Only the context helper needs it, and
+# only so a component can hand its communicator down; the inference engines
+# stay MPI-free, which is what keeps their unit tests runnable without a
+# launcher.  AUTO uses MPI when it is available, ON requires it, OFF skips it.
+# Resolved here rather than in common/src so that the MPI imported target is
+# visible to every subdirectory that links emulator_common.
+set(EMULATOR_ENABLE_MPI "AUTO" CACHE STRING
+  "MPI-aware inference context helpers: AUTO, ON or OFF")
+set_property(CACHE EMULATOR_ENABLE_MPI PROPERTY STRINGS AUTO ON OFF)
+
+if(EMULATOR_ENABLE_MPI STREQUAL "ON")
+  find_package(MPI REQUIRED COMPONENTS CXX)
+elseif(NOT EMULATOR_ENABLE_MPI STREQUAL "OFF")
+  find_package(MPI QUIET COMPONENTS CXX)
+endif()
+
+if(MPI_CXX_FOUND AND NOT EMULATOR_ENABLE_MPI STREQUAL "OFF")
+  set(EMULATOR_INFERENCE_HAS_MPI TRUE)
+  message(STATUS "Emulator inference: MPI context helpers ON")
+else()
+  set(EMULATOR_INFERENCE_HAS_MPI FALSE)
+  message(STATUS "Emulator inference: MPI context helpers OFF "
+                 "(make_context_from_comm will not be available)")
+endif()
+
 # When built standalone (i.e. this is the top-level project), default to
 # standalone mode so we don't try to compile Fortran sources (the project
 # only declares CXX).  When included from the full E3SM build Fortran
