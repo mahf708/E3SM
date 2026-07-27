@@ -92,8 +92,20 @@ class Context:
         # component.
         os.environ["FME_USE_SRUN"] = "0"
 
-    def torch_device(self):
-        """The device this rank owns, one per rank on the node.
+    def torch_device(self, device_id: int | None = None):
+        """The accelerator this rank owns.
+
+        There is no guessing here, deliberately.  MCT gives us a communicator
+        and a field decomposition; it does *not* give us a GPU ownership map,
+        and our per-component ``local_rank`` says nothing about what the ocean
+        and land ranks sharing this node have already claimed.  Assigning
+        ``local_rank % device_count`` looks reasonable and quietly puts two
+        components' rank 0 on device 0.
+
+        So: one visible device per rank is the supported contract — which is
+        what ``--gpus-per-task=1``, ``--gpu-bind=closest`` or an equivalent
+        ``CUDA_VISIBLE_DEVICES`` per rank already produces — and anything else
+        has to be stated with ``inference.device_id``.
 
         Requires torch; imported lazily so a torch-free build can still use
         the rest of this module.
@@ -102,11 +114,27 @@ class Context:
 
         if not torch.cuda.is_available():
             return torch.device("cpu")
+
         count = torch.cuda.device_count()
-        # local_rank counts only *this component's* ranks on the node, so the
-        # modulo distributes them over the node's devices without colliding
-        # with whatever the other components are doing.
-        return torch.device("cuda", self.local_rank % count)
+        if device_id is not None:
+            if not 0 <= device_id < count:
+                raise ValueError(
+                    f"device_id={device_id} is out of range; this rank can see "
+                    f"{count} device(s)."
+                )
+            return torch.device("cuda", device_id)
+        if count == 1:
+            return torch.device("cuda", 0)
+        if self.local_size == 1:
+            return torch.device("cuda", 0)
+        raise ValueError(
+            f"Rank {self.rank} can see {count} GPUs and shares this node with "
+            f"{self.local_size - 1} other rank(s) of this component, so which "
+            "device it owns is not ours to decide — another component's ranks "
+            "may already hold some of them. Bind one device per rank in the "
+            "job launcher (for example --gpus-per-task=1 --gpu-bind=closest), "
+            "or state it with `inference.device_id`."
+        )
 
     def describe(self) -> str:
         return (

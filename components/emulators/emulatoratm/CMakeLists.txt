@@ -59,3 +59,7 @@ endif()
 
 # C++17 required
 target_compile_features(emulatoratm PUBLIC cxx_std_17)
+
+if(BUILD_EMULATOR_TESTS)
+  add_subdirectory(tests)
+endif()

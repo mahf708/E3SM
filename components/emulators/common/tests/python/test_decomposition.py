@@ -36,12 +36,41 @@ def field_from_gids(gids: np.ndarray, offset: float = 0.0) -> np.ndarray:
     return gids.astype(np.float64) * 10.0 + offset
 
 
+def torch_harmonics_split_shapes(size: int, num_chunks: int) -> list:
+    """`torch_harmonics.distributed.compute_split_shapes`, reproduced.
+
+    ACE slices its spatial dimensions with this exact function, so our tiling
+    has to agree with it or our columns land in the wrong rows of the model's
+    tensor — a wrong answer, not an error.  Copied here (rather than imported)
+    so the property is pinned in CI on a machine with no torch installed.
+    """
+    base, remainder = divmod(size, num_chunks)
+    return [base + 1] * remainder + [base] * (num_chunks - remainder)
+
+
 class TestIndexing(unittest.TestCase):
     def test_split_bounds_covers_everything(self):
         bounds = split_bounds(10, 3)
-        self.assertEqual(list(bounds), [0, 3, 6, 10])
         self.assertEqual(bounds[0], 0)
         self.assertEqual(bounds[-1], 10)
+
+    def test_split_bounds_matches_torch_harmonics(self):
+        # The remainder goes to the LOW-numbered ranks. Getting this backwards
+        # is invisible on an even split and wrong on every uneven one.
+        for size, parts in [(10, 3), (10, 4), (180, 8), (360, 7), (721, 6)]:
+            sizes = list(np.diff(split_bounds(size, parts)))
+            self.assertEqual(
+                sizes,
+                torch_harmonics_split_shapes(size, parts),
+                f"split_bounds({size}, {parts}) disagrees with torch_harmonics",
+            )
+
+    def test_split_bounds_matches_numpy_array_split(self):
+        # Same convention, and a second independent statement of it.
+        for size, parts in [(10, 3), (10, 4), (97, 5)]:
+            sizes = list(np.diff(split_bounds(size, parts)))
+            expected = [len(c) for c in np.array_split(np.arange(size), parts)]
+            self.assertEqual(sizes, expected)
 
     def test_split_bounds_refuses_empty_tiles(self):
         with self.assertRaises(ValueError):
@@ -79,6 +108,18 @@ class TestIndexing(unittest.TestCase):
         tiling = Tiling(NY, NX, h=1, w=1)
         self.assertEqual(tiling.tile_shape(0), (NY, NX))
         self.assertEqual(tiling.tile_shape(3), (0, 0))
+
+    def test_a_tiling_can_be_built_from_someone_elses_partition(self):
+        # Spatial mode takes the partition from ACE rather than choosing one.
+        tiling = Tiling.from_bounds(NY, NX, 2, 2, [0, 4, NY], [0, 5, NX])
+        self.assertEqual(tiling.tile_shape(0), (4, 5))
+        self.assertEqual(tiling.tile_shape(3), (NY - 4, NX - 5))
+        self.assertFalse(tiling.agrees_with_even_split())
+        self.assertTrue(Tiling(NY, NX, 2, 2).agrees_with_even_split())
+
+    def test_a_foreign_partition_must_cover_the_grid(self):
+        with self.assertRaises(ValueError):
+            Tiling.from_bounds(NY, NX, 2, 2, [0, 4, NY - 1], [0, 5, NX])
 
 
 class TestSerialExchange(unittest.TestCase):
@@ -232,9 +273,24 @@ class TestAceModeResolution(unittest.TestCase):
 
     def test_auto_uses_a_declared_mesh(self):
         self.assertEqual(
-            self.resolve({"ace_h": "2", "ace_w": "4"}, Context(world_size=8)),
+            self.resolve(
+                {"ace_h": "2", "ace_w": "4", "ace_allow_spatial": "true"},
+                Context(world_size=8),
+            ),
             ("spatial", 2, 4),
         )
+
+    def test_spatial_is_gated_on_an_explicit_opt_in(self):
+        # The SFNO builders a deterministic ACE2 checkpoint instantiates still
+        # call non-distributed spherical transforms, so a sharded input would
+        # produce plausible numbers rather than an error. Refuse by default.
+        with self.assertRaises(ValueError) as caught:
+            self.resolve(
+                {"ace_h": "2", "ace_w": "4"},
+                Context(world_size=8),
+            )
+        self.assertIn("RealSHT", str(caught.exception))
+        self.assertIn("ace_allow_spatial", str(caught.exception))
 
     def test_spatial_needs_every_rank(self):
         with self.assertRaises(ValueError) as caught:
@@ -251,6 +307,43 @@ class TestAceModeResolution(unittest.TestCase):
     def test_unknown_mode(self):
         with self.assertRaises(ValueError):
             self.resolve({"ace_mode": "magic"}, Context(world_size=1))
+
+    def test_torch_distributed_is_refused_with_a_reason(self):
+        # It splits a batch of globes across ranks; a coupled run has one.
+        with self.assertRaises(ValueError) as caught:
+            self.resolve({"ace_mode": "ensemble"}, Context(world_size=4))
+        self.assertIn("one globe", str(caught.exception))
+
+
+class TestDeviceContract(unittest.TestCase):
+    """GPU ownership is not inferred from the component's rank numbering."""
+
+    def test_ambiguous_binding_is_refused(self):
+        import unittest.mock as mock
+
+        context = Context(rank=1, world_size=4, local_rank=1, local_size=4)
+        fake_torch = mock.MagicMock()
+        fake_torch.cuda.is_available.return_value = True
+        fake_torch.cuda.device_count.return_value = 4
+        with mock.patch.dict(sys.modules, {"torch": fake_torch}):
+            with self.assertRaises(ValueError) as caught:
+                context.torch_device()
+        message = str(caught.exception)
+        # Another component's ranks may hold some of those devices, and our
+        # local_rank says nothing about which.
+        self.assertIn("gpus-per-task", message)
+        self.assertIn("device_id", message)
+
+    def test_an_explicit_device_is_honoured(self):
+        import unittest.mock as mock
+
+        context = Context(rank=1, world_size=4, local_rank=1, local_size=4)
+        fake_torch = mock.MagicMock()
+        fake_torch.cuda.is_available.return_value = True
+        fake_torch.cuda.device_count.return_value = 4
+        fake_torch.device = lambda kind, index=None: (kind, index)
+        with mock.patch.dict(sys.modules, {"torch": fake_torch}):
+            self.assertEqual(context.torch_device(device_id=2), ("cuda", 2))
 
 
 if __name__ == "__main__":

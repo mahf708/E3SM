@@ -62,8 +62,21 @@ def split_bounds(n: int, parts: int) -> np.ndarray:
     """Start indices of ``parts`` near-equal contiguous chunks of ``n``.
 
     Returns ``parts + 1`` boundaries, so chunk ``p`` is
-    ``[bounds[p], bounds[p + 1])``.  The remainder goes to the low-numbered
-    chunks, which is what ``numpy.array_split`` does.
+    ``[bounds[p], bounds[p + 1])``.
+
+    **This must agree with torch_harmonics exactly.**  ACE slices its spatial
+    dimensions with ``torch_harmonics.distributed.compute_split_shapes``,
+    which is ``[base + 1] * remainder + [base] * (parts - remainder)`` — the
+    remainder goes to the *low*-numbered ranks.  A partition that merely looks
+    balanced is not good enough: on any grid where ``n % parts != 0`` a
+    different convention puts our values in the wrong rows of the model's
+    tensor, which is a wrong answer rather than an error.
+
+    Where it matters — spatial mode — the plan is built from the slices ACE
+    itself reports rather than from this function, and the two are
+    cross-checked (see :meth:`Tiling.from_bounds` and
+    ``e3sm_emulator.ace``).  This stays the reference implementation, and the
+    thing the unit tests pin.
     """
     if parts <= 0:
         raise ValueError(f"Need at least one part, got {parts}.")
@@ -73,7 +86,9 @@ def split_bounds(n: int, parts: int) -> np.ndarray:
             "nothing, and a model with a spatial receptive field cannot work "
             "with an empty tile."
         )
-    return np.array([(k * n) // parts for k in range(parts + 1)], dtype=np.int64)
+    base, remainder = divmod(int(n), int(parts))
+    sizes = [base + 1] * remainder + [base] * (parts - remainder)
+    return np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
 
 
 class Tiling:
@@ -91,19 +106,54 @@ class Tiling:
     comes to hold the whole globe.
     """
 
-    def __init__(self, ny: int, nx: int, h: int = 1, w: int = 1):
+    def __init__(self, ny: int, nx: int, h: int = 1, w: int = 1, bounds=None):
         if ny <= 0 or nx <= 0:
             raise ValueError(f"Need a positive grid shape, got {ny}x{nx}.")
         self.ny, self.nx = int(ny), int(nx)
         self.h, self.w = int(h), int(w)
         self.size = self.h * self.w
-        self._j_bounds = split_bounds(self.ny, self.h)
-        self._i_bounds = split_bounds(self.nx, self.w)
+        if bounds is None:
+            self._j_bounds = split_bounds(self.ny, self.h)
+            self._i_bounds = split_bounds(self.nx, self.w)
+        else:
+            self._j_bounds, self._i_bounds = bounds
+            if self._j_bounds[-1] != self.ny or self._i_bounds[-1] != self.nx:
+                raise ValueError(
+                    f"The supplied bounds cover "
+                    f"{self._j_bounds[-1]}x{self._i_bounds[-1]}, not the "
+                    f"{self.ny}x{self.nx} grid."
+                )
         # Lookup tables rather than searchsorted per cell: the grid has at
         # most a few thousand points per axis, and this makes the hot path a
         # pair of fancy-index reads.
         self._j_owner = np.repeat(np.arange(self.h), np.diff(self._j_bounds))
         self._i_owner = np.repeat(np.arange(self.w), np.diff(self._i_bounds))
+
+    @classmethod
+    def from_bounds(cls, ny: int, nx: int, h: int, w: int, j_bounds, i_bounds):
+        """Build a tiling from a partition somebody else chose.
+
+        Used in spatial mode, where the partition has to be ACE's rather than
+        ours: the model slices its tensors with
+        ``torch_harmonics.compute_split_shapes`` and we have to land our
+        columns in exactly those rows and columns.  Deriving the plan from
+        what ACE reports removes the possibility of two partitioning
+        algorithms drifting apart.
+        """
+        tiling = cls(
+            ny,
+            nx,
+            h,
+            w,
+            bounds=(np.asarray(j_bounds, np.int64), np.asarray(i_bounds, np.int64)),
+        )
+        return tiling
+
+    def agrees_with_even_split(self) -> bool:
+        """True if this partition is the one :func:`split_bounds` would pick."""
+        return np.array_equal(
+            self._j_bounds, split_bounds(self.ny, self.h)
+        ) and np.array_equal(self._i_bounds, split_bounds(self.nx, self.w))
 
     def tile_shape(self, rank: int) -> tuple[int, int]:
         """``(nj, ni)`` of the tile owned by ``rank``; ``(0, 0)`` past the mesh."""
@@ -254,10 +304,17 @@ class ReplicaExchange:
     Not a permutation — every value goes everywhere — so it costs an
     all-gather of the entire field per step and holds a full globe per rank.
     That is the price of data parallelism over a model whose sample *is* the
-    globe, and it is only worth paying when the ranks are doing genuinely
-    different work with it (different ensemble members).  The return trip
-    needs no communication at all: each rank already holds the answer for its
-    own columns.
+    globe.  The return trip needs no communication at all: each rank already
+    holds the answer for its own columns.
+
+    **Nothing currently uses this.**  It is the piece an ensemble contract
+    would need, and it is kept (and tested) because that contract is a
+    plausible next step — but data parallelism over a *single* coupled
+    trajectory is not one: every rank would run the same deterministic model
+    on the same globe.  Wiring it up means the component first supplying
+    genuinely independent members, each with its own initial state, random
+    state, prescribed forcings, autoregressive state and outputs.  See
+    ``e3sm_emulator.ace`` for why ``TorchDistributed`` is not offered today.
     """
 
     def __init__(

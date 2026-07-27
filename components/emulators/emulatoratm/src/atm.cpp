@@ -13,6 +13,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <mpi.h>
@@ -105,13 +106,35 @@ void EmulatorAtm::set_grid_data(const EmulatorGridDesc& grid) {
   m_area.assign(grid.area, grid.area + grid.num_local_cols);
 }
 
+namespace {
+
+/// Split an MCT field list ("Sa_z:Sa_u:Sa_v") into name -> row index.
+std::map<std::string, int> parse_field_list(const std::string &fields) {
+  std::map<std::string, int> index;
+  std::istringstream iss(fields);
+  std::string name;
+  int position = 0;
+  while (std::getline(iss, name, ':')) {
+    // Field lists arrive straight from a Fortran string, so they can carry
+    // trailing blanks.
+    const auto first = name.find_first_not_of(" \t");
+    if (first == std::string::npos) {
+      continue;
+    }
+    const auto last = name.find_last_not_of(" \t");
+    index.emplace(name.substr(first, last - first + 1), position);
+    ++position;
+  }
+  return index;
+}
+
+} // namespace
+
 void EmulatorAtm::init_coupling_indices(
     const std::string &export_fields,
     const std::string &import_fields) {
-  // TODO: Parse colon-separated MCT field lists and populate
-  // m_coupling_idx with index positions.
-  (void)export_fields;
-  (void)import_fields;
+  m_import_idx = parse_field_list(import_fields);
+  m_export_idx = parse_field_list(export_fields);
 }
 
 void EmulatorAtm::setup_coupling(const EmulatorCouplingDesc& cpl) {
@@ -119,7 +142,7 @@ void EmulatorAtm::setup_coupling(const EmulatorCouplingDesc& cpl) {
   m_export_data = cpl.export_data;
   m_num_imports = cpl.num_imports;
   m_num_exports = cpl.num_exports;
-  (void)cpl.field_size;
+  m_field_size = cpl.field_size;
 }
 
 void EmulatorAtm::get_local_col_gids(int *gids) const {
@@ -166,6 +189,32 @@ void EmulatorAtm::init_impl() {
       static_cast<std::size_t>(m_num_local_cols) * m_infer_inputs.size(), 0.0);
   m_infer_out.assign(
       static_cast<std::size_t>(m_num_local_cols) * m_infer_outputs.size(), 0.0);
+
+  // Resolve each declared field against the coupler's lists once, here,
+  // rather than looking names up every step.  A model is entitled to consume
+  // or produce fields the coupler does not carry — internal state,
+  // diagnostics — so an unmatched name is recorded as -1 and reported at
+  // startup rather than being fatal.  Reporting is the point: the failure
+  // this guards against is a misspelled field silently staying zero.
+  const auto resolve = [](const std::vector<std::string> &names,
+                          const std::map<std::string, int> &index,
+                          const char *what, bool verbose) {
+    std::vector<int> rows;
+    rows.reserve(names.size());
+    for (const auto &name : names) {
+      const auto it = index.find(name);
+      rows.push_back(it == index.end() ? -1 : it->second);
+      if (it == index.end() && verbose) {
+        std::cout << "[emulatoratm] inference " << what << " '" << name
+                  << "' is not a coupling field; it will not be exchanged "
+                     "with the coupler.\n";
+      }
+    }
+    return rows;
+  };
+  const bool report = config.verbose && context.is_root();
+  m_input_src = resolve(m_infer_inputs, m_import_idx, "input", report);
+  m_output_dst = resolve(m_infer_outputs, m_export_idx, "output", report);
 
   // TODO: Read initial conditions
   // TODO: Set up diagnostic output manager
@@ -240,22 +289,61 @@ void EmulatorAtm::run_inference() {
 // =========================================================================
 
 void EmulatorAtm::import_coupling_fields() {
-  // TODO: Transfer coupler import data → internal fields
+  // The pack step reads x2a directly, so there is no separate copy into
+  // internal field storage yet.  It gets one when the component grows state
+  // of its own beyond what the model carries.
 }
 
 void EmulatorAtm::export_coupling_fields() {
-  // TODO: Transfer internal fields → coupler export data
+  // Likewise: the unpack step writes a2x directly.
 }
 
+/**
+ * @brief Gather the model's inputs out of the coupler's import buffer.
+ *
+ * `x2a%rAttr` is Fortran `(nflds, lsize)`, so it is contiguous in *fields*
+ * and strided in columns: field `f` of column `c` lives at
+ * `import_data[c * num_imports + f]`.  The model wants each field contiguous
+ * in columns, which is the transpose, so this is a real gather rather than a
+ * pointer.  It is also why `m_infer_in` exists at all.
+ */
 void EmulatorAtm::prepare_inputs() {
-  // TODO: Pack the imported coupling fields into m_infer_in, one contiguous
-  // [ncol] block per name in m_infer_inputs. Needs init_coupling_indices()
-  // to have resolved the MCT field lists first.
+  if (m_import_data == nullptr) {
+    return;
+  }
+  const int ncol = std::min(m_num_local_cols, m_field_size);
+  for (std::size_t i = 0; i < m_infer_inputs.size(); ++i) {
+    double *dst = m_infer_in.data() + i * m_num_local_cols;
+    const int row = m_input_src[i];
+    if (row < 0) {
+      continue; // not a coupling field; leave whatever is there
+    }
+    for (int c = 0; c < ncol; ++c) {
+      dst[c] = m_import_data[static_cast<std::size_t>(c) * m_num_imports + row];
+    }
+  }
 }
 
+/**
+ * @brief Scatter the model's outputs into the coupler's export buffer.
+ *
+ * The inverse of prepare_inputs(), into `a2x%rAttr(nflds, lsize)`.
+ */
 void EmulatorAtm::process_outputs() {
-  // TODO: Unpack m_infer_out into the export coupling fields, one contiguous
-  // [ncol] block per name in m_infer_outputs.
+  if (m_export_data == nullptr) {
+    return;
+  }
+  const int ncol = std::min(m_num_local_cols, m_field_size);
+  for (std::size_t i = 0; i < m_infer_outputs.size(); ++i) {
+    const double *src = m_infer_out.data() + i * m_num_local_cols;
+    const int row = m_output_dst[i];
+    if (row < 0) {
+      continue; // the model produced something the coupler does not want
+    }
+    for (int c = 0; c < ncol; ++c) {
+      m_export_data[static_cast<std::size_t>(c) * m_num_exports + row] = src[c];
+    }
+  }
 }
 
 } // namespace emulator

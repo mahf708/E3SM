@@ -47,8 +47,11 @@ class GenericEmulator:
         self.dtype = getattr(torch, str(config.get("dtype", "float32")))
 
         device = str(config.get("device", "auto")).lower()
+        device_id = config.get("device_id")
         if device == "auto":
-            self.device = context.torch_device()
+            self.device = context.torch_device(
+                None if device_id in (None, "") else int(device_id)
+            )
         else:
             self.device = torch.device(device)
 

@@ -8,28 +8,41 @@ spatially, and a model with a global receptive field (spherical transforms,
 global attention) gives *wrong answers rather than errors* if you pretend
 otherwise.  Everything below exists to make that impossible to do by accident.
 
-Three ways to spread one globe over the ranks the coupler gave us, each
-mapping onto one of ACE's own distributed backends:
+Two ways to spread one globe over the ranks the coupler gave us:
 
-======================  ======================  =============================
-``inference.ace_mode``  ACE backend             What happens
-======================  ======================  =============================
-``single``              ``NonDistributed``      One rank assembles the globe
-                                                and runs an unmodified
-                                                checkpoint; the others take
-                                                part only in the exchange.
-                                                Reference behavior — validate
-                                                everything else against it.
-``spatial``             ``ModelTorchDistributed``  Ranks form an ``h x w``
-                                                mesh, each owning a rectangle;
-                                                ACE's distributed transforms
-                                                carry the coupling between
-                                                them.
-``ensemble``            ``TorchDistributed``    Every rank holds the whole
-                                                globe as its own batch member
-                                                and the members are averaged
-                                                on the way out.
-======================  ======================  =============================
+======================  =========================  =========================
+``inference.ace_mode``  ACE backend                Status
+======================  =========================  =========================
+``single``              ``NonDistributed``         **Supported.**  One rank
+                                                   assembles the globe and
+                                                   runs an unmodified
+                                                   checkpoint; the others take
+                                                   part only in the exchange.
+                                                   The numerical reference.
+``spatial``             ``ModelTorchDistributed``  **Gated.**  Ranks form an
+                                                   ``h x w`` mesh, each owning
+                                                   a rectangle.  Refused
+                                                   unless ``ace_allow_spatial``
+                                                   is set, because the
+                                                   builders a deterministic
+                                                   ACE2 checkpoint
+                                                   instantiates still call
+                                                   non-distributed spherical
+                                                   transforms — see
+                                                   :data:`_SPATIAL_WARNING`.
+======================  =========================  =========================
+
+``TorchDistributed`` is deliberately *not* offered.  It replicates the model
+and splits a *batch* across ranks, so it can only help when the component
+supplies several independent globes.  A single coupled E3SM trajectory has one
+globe: handing every rank the same globe and the same deterministic weights
+would compute the same answer N times, and reducing those to a mean and
+storing it as the autoregressive state would collapse any ensemble that did
+exist after a single step.  It becomes worth wiring when the coupling contract
+grows an explicit ensemble — separate initial states, random states,
+prescribed forcings, autoregressive states and outputs per member — and
+:class:`~e3sm_emulator.decomposition.ReplicaExchange` is the piece that will
+serve it.
 
 Two things this module gets right that a naive integration does not:
 
@@ -48,14 +61,16 @@ the order below, and it is not negotiable.
 
 Settings (``inference.*`` in the component namelist)::
 
-    emulator:    ace
-    model_path:  /path/to/ace_ckpt.tar
-    ace_mode:    auto          # auto | single | spatial | ensemble
-    ace_h:       4             # spatial only: latitude ranks
-    ace_w:       8             # spatial only: longitude ranks
-    input:       air_temperature_0     # ACE's own variable names
-    output:      air_temperature_0
-    lon_fastest: true          # how the coupler numbers its columns
+    emulator:           ace
+    model_path:         /path/to/ace_ckpt.tar
+    ace_mode:           auto        # auto | single | spatial
+    ace_h:              4           # spatial only: latitude ranks
+    ace_w:              8           # spatial only: longitude ranks
+    ace_allow_spatial:  false       # see above before setting this
+    input:              air_temperature_0    # ACE's own variable names
+    output:             air_temperature_0
+    lon_fastest:        true        # how the coupler numbers its columns
+    device_id:          0           # only if the launcher did not bind one
 
 An input named ``<name>_next`` is routed to the stepper's
 ``next_step_input_data`` as ``<name>``; that is how prescribed SSTs and
@@ -64,23 +79,54 @@ forcings valid at the *end* of the step get in.
 
 from __future__ import annotations
 
+import contextlib
 import os
 
 import numpy as np
 
 from .comm import SerialComm, TorchComm
 from .context import Context
-from .decomposition import PermutationExchange, ReplicaExchange, Tiling
+from .decomposition import PermutationExchange, Tiling, split_bounds
+
+#: The revision of https://github.com/mahf708/ace these calls were read from
+#: and are known to match.  ACE is a moving target and its distributed and
+#: stepper APIs have both changed shape recently, so the adapter states what
+#: it was written against and checks for it rather than failing somewhere
+#: deep inside a load.  Bump this together with the code, not before it.
+PINNED_ACE_COMMIT = "75d8de6bcb0a30192720a16fc99f4eca0f54dbd2"
 
 #: ace_mode -> the value ACE's Distributed selector reads.
-_FME_BACKEND = {"single": "none", "spatial": "model", "ensemble": "torch"}
+_FME_BACKEND = {"single": "none", "spatial": "model"}
 
 #: Suffix marking an input that belongs to the *next* step.
 _NEXT_SUFFIX = "_next"
 
+_SPATIAL_WARNING = (
+    "ace_mode=spatial builds ACE's (h, w) process mesh and hands each rank a "
+    "rectangle of the globe, but the two builders a deterministic ACE2 "
+    "checkpoint instantiates -- SphericalFourierNeuralOperatorNet "
+    "(registry/sfno.py) and SFNO-v0.1.0 -- construct torch_harmonics RealSHT "
+    "and InverseRealSHT unconditionally rather than through "
+    "Distributed.get_sht(). A sharded input therefore reaches a module that "
+    "still performs global transforms, which produces plausible numbers "
+    "rather than an error. Only NoiseConditionedSFNO is wired through the "
+    "distributed constructors.\n\n"
+    "Before setting ace_allow_spatial: route every global operator in the "
+    "builder you are using through the distributed constructors, then check "
+    "one-step and multistep output against ace_mode=single on the same "
+    "checkpoint at 1, 2, 4 and 8 ranks."
+)
+
 
 def build(config: dict, context: Context) -> "AceEmulator":
     return AceEmulator(config, context)
+
+
+def _flag(config: dict, key: str, default: bool = False) -> bool:
+    value = config.get(key)
+    if value is None or value == "":
+        return default
+    return str(value).lower() in ("true", "1", "yes", "on", ".true.")
 
 
 def resolve_mode(config: dict, context: Context) -> tuple[str, int, int]:
@@ -95,20 +141,17 @@ def resolve_mode(config: dict, context: Context) -> tuple[str, int, int]:
     world = context.world_size
 
     if mode == "auto":
-        if world == 1:
-            mode = "single"
-        elif h * w == world and h * w > 1:
-            mode = "spatial"
-        else:
-            # Refuse to guess a mesh.  Which factorization of the ranks is
-            # right depends on the model's transforms and on the machine, and
-            # picking one silently is how a run ends up slow or wrong.
-            mode = "single"
+        # Never guess a mesh.  Which factorization of the ranks is right
+        # depends on the model's transforms and on the machine, and picking
+        # one silently is how a run ends up slow or wrong.
+        mode = "spatial" if (h * w == world and h * w > 1) else "single"
 
     if mode not in _FME_BACKEND:
         raise ValueError(
             f"Unknown ace_mode '{mode}'. Use one of: "
-            f"{', '.join(sorted(_FME_BACKEND))}."
+            f"{', '.join(sorted(_FME_BACKEND))}. TorchDistributed "
+            "(data-parallel over a batch of globes) is not offered: a coupled "
+            "run supplies one globe, so there is nothing to distribute."
         )
 
     if mode == "spatial":
@@ -122,8 +165,11 @@ def resolve_mode(config: dict, context: Context) -> tuple[str, int, int]:
             raise ValueError(
                 f"ace_mode=spatial needs ace_h * ace_w to be the component's "
                 f"rank count, got {h} * {w} = {h * w} for {world} ranks. "
-                "Every rank must own a rectangle."
+                "Hybrid data-and-spatial meshes (P_data * h * w) are not "
+                "supported yet; every rank must own a rectangle."
             )
+        if not _flag(config, "ace_allow_spatial"):
+            raise ValueError(_SPATIAL_WARNING)
     else:
         h = w = 1
 
@@ -137,12 +183,8 @@ class AceEmulator:
         self.context = context
         self.verbose = bool(config.get("verbose", False))
         self.mode, self.h, self.w = resolve_mode(config, context)
-        self.lon_fastest = str(config.get("lon_fastest", "true")).lower() not in (
-            "false",
-            "0",
-            "no",
-            "off",
-        )
+        self.lon_fastest = _flag(config, "lon_fastest", default=True)
+        self._exit_stack = contextlib.ExitStack()
 
         ny, nx = context.ny, context.nx
         if ny <= 0 or nx <= 0:
@@ -170,27 +212,27 @@ class AceEmulator:
 
         from fme.core.distributed import Distributed
 
+        # Distributed.get_instance() refuses to hand out a multi-rank instance
+        # outside Distributed.context(), and the context also owns the
+        # shutdown.  A component's init/finalize bracket is exactly that
+        # lifetime, so the context is entered here and closed in finalize()
+        # rather than wrapped around a single call.
+        self._exit_stack.enter_context(Distributed.context())
         self.dist = Distributed.get_instance()
 
         # `single` runs ACE with NonDistributed, so nothing upstream builds a
-        # process group — but the exchange still needs one.  The other two
-        # modes have already built theirs, and initializing again would fail.
+        # process group — but the exchange still needs one.  In spatial mode
+        # ACE has already built its own, and initializing again would fail.
         self.comm = self._make_comm()
 
         # 2. The decomposition.  Built before the checkpoint so a grid
         #    mismatch is reported in milliseconds rather than after a
         #    multi-gigabyte load.
-        if self.mode == "ensemble":
-            self.exchange = ReplicaExchange(
-                self.comm, context.col_gids, ny, nx, self.lon_fastest
-            )
-            self.tile_shape = (ny, nx)
-        else:
-            tiling = Tiling(ny, nx, self.h, self.w)
-            self.exchange = PermutationExchange(
-                self.comm, context.col_gids, tiling, self.lon_fastest
-            )
-            self.tile_shape = self.exchange.tile_shape
+        tiling = self._make_tiling(ny, nx)
+        self.exchange = PermutationExchange(
+            self.comm, context.col_gids, tiling, self.lon_fastest
+        )
+        self.tile_shape = self.exchange.tile_shape
 
         # 3. The checkpoint — only where it will actually be evaluated.  In
         #    `single` mode that is one rank, which is the point: 64 atmosphere
@@ -204,13 +246,11 @@ class AceEmulator:
                     "The ACE emulator needs `inference.model_path`, pointing "
                     "at an ACE checkpoint."
                 )
-            from fme.ace.stepper.single_module import load_stepper
-
-            self.stepper = load_stepper(model_path)
+            self.stepper = _load_stepper(model_path)
 
         #: Prognostic fields carried between timesteps.  ACE is
-        #: autoregressive, so this is real model state — writing it at an
-        #: E3SM restart boundary is not solved here.
+        #: autoregressive, so this is real model state; see
+        #: :meth:`state_for_restart`.
         self.state: dict = {}
 
         if self.verbose and context.is_root:
@@ -234,6 +274,55 @@ class AceEmulator:
             # Context.export() published.
             dist.init_process_group(backend="gloo", init_method="env://")
         return TorchComm()
+
+    def _make_tiling(self, ny: int, nx: int) -> Tiling:
+        """The partition of the globe, taken from ACE where ACE owns it.
+
+        In spatial mode the tiling is not ours to choose: ACE slices its
+        tensors with ``torch_harmonics.compute_split_shapes`` and our columns
+        have to land in exactly those rows.  So we ask each rank what slice
+        ACE gave it, gather the answers, and build the routing plan from
+        those — one partitioning algorithm rather than two that can drift.
+        """
+        if self.mode != "spatial":
+            return Tiling(ny, nx, 1, 1)
+
+        j_slice, i_slice = self.dist.get_local_slices((1, ny, nx))[-2:]
+        mine = np.array(
+            [j_slice.start or 0, j_slice.stop or ny, i_slice.start or 0,
+             i_slice.stop or nx],
+            dtype=np.int64,
+        ).reshape(1, 4)
+        everyone = self.comm.allgather(mine)
+
+        # Rank r owns tile (r // w, r % w), so the h boundaries are the row
+        # starts of the first column of ranks and vice versa.
+        j_bounds = [int(everyone[r * self.w][0]) for r in range(self.h)] + [ny]
+        i_bounds = [int(everyone[r][2]) for r in range(self.w)] + [nx]
+
+        tiling = Tiling.from_bounds(ny, nx, self.h, self.w, j_bounds, i_bounds)
+        if not tiling.agrees_with_even_split():
+            # Not fatal — ACE's partition is authoritative — but it means the
+            # reference implementation in split_bounds has drifted from
+            # torch_harmonics, and every test that pins it is now testing the
+            # wrong thing.
+            print(
+                "[e3sm_emulator.ace] warning: ACE's spatial partition "
+                f"({split_bounds(ny, self.h).tolist()} expected, "
+                f"{j_bounds} reported) differs from split_bounds(). Using "
+                "ACE's. Update split_bounds to match torch_harmonics.",
+                flush=True,
+            )
+        # Cross-check that the reported slice really is this rank's tile.
+        expected = tiling.tile_shape(self.comm.rank)
+        actual = (int(mine[0, 1] - mine[0, 0]), int(mine[0, 3] - mine[0, 2]))
+        if expected != actual:
+            raise ValueError(
+                f"Rank {self.comm.rank}: ACE reports a {actual} slice but the "
+                f"reconstructed mesh says {expected}. The (h, w) rank ordering "
+                "assumed here does not match ACE's DeviceMesh."
+            )
+        return tiling
 
     # -- per-step -----------------------------------------------------------
 
@@ -273,22 +362,11 @@ class AceEmulator:
             # forcings all live here, and bypassing it silently drops part of
             # the learned timestep.
             result = self.stepper.step(StepArgs(input=now, next_step_input_data=nxt))
-
-            if self.mode == "ensemble":
-                # Each rank ran a different member; the coupler gets the mean.
-                result = {
-                    name: self.dist.reduce_mean(value.clone())
-                    for name, value in result.items()
-                }
+            result = _as_field_mapping(result)
 
             self.state = {
                 name: result[name]
                 for name in self.stepper.prognostic_names
-                if name in result
-            }
-            produced = {
-                name: result[name].detach().to("cpu", torch.float64).numpy()[0]
-                for name in self.output_names
                 if name in result
             }
             missing = [n for n in self.output_names if n not in result]
@@ -297,9 +375,13 @@ class AceEmulator:
                     f"The ACE stepper did not produce {missing}. It produces: "
                     f"{sorted(result)}."
                 )
+            produced = {
+                name: result[name].detach().to("cpu", torch.float64).numpy()[0]
+                for name in self.output_names
+            }
         else:
-            # This rank owns no part of the globe this time. It still has to
-            # take part in the exchange — infer() is collective.
+            # This rank owns no part of the globe. It still has to take part
+            # in the exchange — infer() is collective.
             produced = {
                 name: np.empty((0, 0), dtype=np.float64) for name in self.output_names
             }
@@ -312,11 +394,8 @@ class AceEmulator:
             [np.asarray(inputs[name], dtype=np.float64).reshape(-1) for name in names],
             axis=1,
         )
-        if self.mode == "ensemble":
-            grid = self.exchange.to_grid(columns)
-        else:
-            grid = self.exchange.to_tile(columns)
-        return {name: np.ascontiguousarray(grid[..., k]) for k, name in enumerate(names)}
+        tile = self.exchange.to_tile(columns)
+        return {name: np.ascontiguousarray(tile[..., k]) for k, name in enumerate(names)}
 
     def _to_columns(self, produced: dict, outputs: dict) -> None:
         """Move the model's fields back onto the coupler's columns."""
@@ -334,12 +413,79 @@ class AceEmulator:
         for k, name in enumerate(self.output_names):
             outputs[name].reshape(-1)[:] = columns[:, k]
 
+    # -- restart ------------------------------------------------------------
+
+    def state_for_restart(self) -> dict:
+        """This rank's prognostic state, as numpy arrays on its own columns.
+
+        ACE is autoregressive, so a run that stops and restarts without this
+        restarts a different atmosphere.  Returning it on *columns* rather
+        than on tiles is what makes it writable through the component's
+        existing restart path, and reloadable under a different rank count.
+
+        Not yet called from anywhere: the component has no restart plumbing
+        to hand it to.
+        """
+        if not self.state:
+            return {}
+        names = sorted(self.state)
+        nj, ni = self.tile_shape
+        stacked = np.stack(
+            [
+                self.state[n].detach().to("cpu").numpy().reshape(nj, ni)
+                if self.owns_model
+                else np.empty((nj, ni), dtype=np.float64)
+                for n in names
+            ],
+            axis=-1,
+        )
+        columns = self.exchange.to_columns(stacked)
+        return {name: columns[:, k] for k, name in enumerate(names)}
+
     def finalize(self) -> None:
-        # Dropping these is what actually frees the weights and the carried
-        # atmosphere.  The process group is deliberately left up: the
-        # interpreter cannot be restarted anyway (numpy and torch both refuse
-        # to load twice in one process), and tearing a group down while
-        # another emulator in the same run still holds it would be worse than
-        # leaking it until the process exits.
+        # Dropping these is what frees the weights and the carried
+        # atmosphere.  Closing the stack exits Distributed.context(), which
+        # is what shuts the process group down — the same object that opened
+        # it closes it.
         self.state = {}
         self.stepper = None
+        self._exit_stack.close()
+
+
+def _load_stepper(model_path: str):
+    """Load a checkpoint, saying plainly when ACE has moved under us."""
+    try:
+        from fme.ace.stepper.single_module import load_stepper
+    except ImportError as exc:
+        raise ImportError(
+            "Could not import load_stepper from fme.ace.stepper.single_module. "
+            f"This adapter was written against mahf708/ace {PINNED_ACE_COMMIT}, "
+            "where it lives there; ACE's stepper and distributed APIs both "
+            "move. Pin that revision, or update this adapter to the "
+            "checkpoint-loading API of the revision you are running."
+        ) from exc
+    return load_stepper(model_path)
+
+
+def _as_field_mapping(result):
+    """Read a step result as ``{name: tensor}``.
+
+    At the pinned revision ``Stepper.step`` returns a ``TensorDict``, which is
+    a mapping.  Later revisions have wrapped it; unwrap the obvious shapes and
+    otherwise say exactly what came back, because silently indexing the wrong
+    object is how a wrong field reaches the coupler.
+    """
+    from collections.abc import Mapping
+
+    if isinstance(result, Mapping):
+        return result
+    for attribute in ("data", "prediction", "output"):
+        candidate = getattr(result, attribute, None)
+        if isinstance(candidate, Mapping):
+            return candidate
+    raise TypeError(
+        f"Stepper.step returned {type(result).__name__}, which is not a "
+        "mapping of field name to tensor and exposes no .data/.prediction/"
+        f".output that is. This adapter targets mahf708/ace "
+        f"{PINNED_ACE_COMMIT}."
+    )

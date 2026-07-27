@@ -103,6 +103,13 @@ inference.input:      air_temperature_0
 inference.output:     air_temperature_0
 ```
 
+`inference.input` and `inference.output` name **coupling fields**: they are
+resolved once against the `x2a` and `a2x` field lists MCT hands the component,
+and each step `prepare_inputs`/`process_outputs` gather and scatter between
+`rAttr(nflds, lsize)` and the field-contiguous layout a model wants. A name
+the coupler does not carry is reported at startup and left unexchanged, rather
+than silently staying zero.
+
 Settings the C++ layer does not recognise become options and are passed
 through to the model, so a Python emulator can grow a setting without anyone
 touching this directory.
@@ -198,18 +205,44 @@ GPU kernel launch.
 an entire atmosphere and E3SM's local columns are *not* the batch dimension.
 Splitting the grid across ranks splits one sample spatially, which a model
 with a global receptive field will absorb and answer plausibly rather than
-reject. `e3sm_emulator.ace` handles these, three ways:
+reject. `e3sm_emulator.ace` handles these, two ways:
 
-| `ace_mode` | ACE backend | What happens |
+| `ace_mode` | ACE backend | Status |
 | --- | --- | --- |
-| `single` | `NonDistributed` | One rank assembles the globe and runs an unmodified checkpoint; the others take part only in the exchange. **Reference behavior** — validate the others against it. |
-| `spatial` | `ModelTorchDistributed` | Ranks form an `h x w` mesh, each owning a rectangle; ACE's distributed transforms carry the coupling between them. |
-| `ensemble` | `TorchDistributed` | Every rank holds the whole globe as its own batch member; the members are averaged on the way out. |
+| `single` | `NonDistributed` | **Supported.** One rank assembles the globe and runs an unmodified checkpoint; the others take part only in the exchange. The numerical reference. |
+| `spatial` | `ModelTorchDistributed` | **Gated.** Ranks form an `h x w` mesh, each owning a rectangle. Refused unless `ace_allow_spatial` is set — see below. |
 
 `auto` picks `single` unless `ace_h`/`ace_w` are declared and multiply to the
 rank count. It will not invent a mesh: which factorization is right depends on
 the model's transforms and on the machine, and guessing is how a run ends up
 slow or wrong.
+
+**`TorchDistributed` is deliberately not offered.** It replicates the model
+and splits a *batch* across ranks, so it only helps when the component
+supplies several independent globes. A coupled E3SM trajectory has one: every
+rank would receive the same globe and the same deterministic weights and
+compute the same answer N times. Reducing those to a mean and storing it as
+the autoregressive state would also collapse any ensemble that did exist,
+after a single step. It becomes worth wiring when the coupling contract grows
+an explicit ensemble — separate initial states, random states, prescribed
+forcings, autoregressive states and outputs per member — and
+`ReplicaExchange` is the (tested, currently unreachable) piece that will serve
+it. Do not average unless the component asks for an ensemble mean.
+
+**Why `spatial` is gated.** ACE's `ModelTorchDistributed` will build the mesh
+and hand each rank a rectangle, but the two builders a deterministic ACE2
+checkpoint instantiates — `SphericalFourierNeuralOperatorNet`
+(`registry/sfno.py`) and `SFNO-v0.1.0` — construct `torch_harmonics.RealSHT`
+and `InverseRealSHT` **unconditionally** (`models/modulus/sfnonet.py:500`,
+`models/makani/sfnonet.py:479`) rather than through `Distributed.get_sht()`.
+Only `NoiseConditionedSFNO` is wired through the distributed constructors. A
+sharded input therefore reaches a module that still performs global
+transforms, and the result is plausible numbers rather than an error. So the
+mode raises at initialization with that explanation attached, and
+`ace_allow_spatial` is the acknowledgement. The order of work before setting
+it: route every global operator in the builder through the distributed
+constructors, then check one-step *and* multistep output against
+`ace_mode=single` on the same checkpoint at 1, 2, 4 and 8 ranks.
 
 ### The decomposition
 
@@ -231,16 +264,37 @@ all-to-all degenerates into a gather and a scatter. Ranks past the mesh own an
 empty tile, and **do not load the checkpoint** — 64 atmosphere ranks should
 not hold 64 copies of the weights.
 
-`ensemble` is the one case that is not a permutation (every value goes
-everywhere), so it uses an all-gather and holds a full globe per rank. That is
-the price of data parallelism over a model whose sample is the globe, and it
-is only worth paying when the ranks are doing genuinely different work with
-it.
+**In spatial mode the partition is ACE's, not ours.** ACE slices its spatial
+dimensions with `torch_harmonics.distributed.compute_split_shapes`, and our
+columns have to land in exactly those rows. So each rank asks ACE for the
+slice it was given (`Distributed.get_local_slices`), the answers are gathered,
+and the routing plan is built from those — one partitioning algorithm rather
+than two that can drift. `split_bounds` reproduces
+`compute_split_shapes` (remainder to the **low**-numbered ranks, which is also
+`numpy.array_split`'s convention) and is pinned by a unit test, but it is the
+reference and the fallback, not the authority. Getting that convention
+backwards is invisible on an even split and silently wrong on every uneven
+one.
 
 The plan **validates itself**: if the columns do not cover this rank's tile
-exactly once, initialization fails with the counts. This is the one place
-where being loud matters most — a mismatched grid produces a field with holes
-in it, and a model will consume that and return something that looks fine.
+exactly once, initialization fails with the counts, and the reconstructed mesh
+is cross-checked against the slice ACE reported for this rank. This is the one
+place where being loud matters most — a mismatched grid produces a field with
+holes in it, and a model will consume that and return something that looks
+fine.
+
+**The exchange is a genuine all-to-all**, and `TorchComm` implements it with
+one `isend`/`irecv` per peer, so a rank posts up to `P - 1` messages. Packing
+every field into one exchange keeps the message *count* independent of the
+number of variables, but not of `P`. `single` mode is cheap (only rank 0
+receives, so it is a gather), and a blocked E3SM decomposition talks to few
+peers; a round-robin one talks to all of them. The scalable version is to use
+the communicator this layer already holds: duplicate the component `MPI_Comm`
+in C++, expose its Fortran handle, rebuild it with `mpi4py.MPI.Comm.f2py` and
+call `MPI_Alltoallv`, which gets the machine's tuned algorithm and drops the
+extra Gloo group from the redistribution path entirely. PyTorch would still
+need its own group for ACE's *internal* collectives; E3SM-to-model
+redistribution does not. Not done — see "Not done yet".
 
 `infer()` is **collective** whenever the model is distributed: every rank of
 the component communicator must call it the same number of times in the same
@@ -249,8 +303,16 @@ a rank test.
 
 ### Notes on ACE specifically
 
-Read from `mahf708/ace` at `75d8de6` in July 2026; it is a moving target, so
-re-check before relying on any of this.
+**Pinned to `mahf708/ace` at `75d8de6bcb0a30192720a16fc99f4eca0f54dbd2`**, in
+July 2026. This is not decoration: ACE's stepper and distributed APIs both
+move, and a review of this code against a different revision reported that
+`load_stepper` did not exist and that `step()` returned a `StepOutput` —
+neither of which is true at the pinned commit, where `load_stepper` is
+`fme/ace/stepper/single_module.py:1837` and `step()` returns a `TensorDict`.
+Both readings can be right about their own revision, which is the whole
+argument for pinning. `PINNED_ACE_COMMIT` in `ace.py` records it, and the
+adapter checks the two API points it depends on and names the pin when they
+are missing rather than failing somewhere deep inside a load.
 
 - **Call the `Stepper`, not `modules[0]`.** Packing, normalization, residual
   prediction, correctors, prescribed SST, derived forcings and output
@@ -260,16 +322,21 @@ re-check before relying on any of this.
   `fme/core/step/single_module.py` does `module.to(get_device())` then
   `Distributed.get_instance()` then `wrap_module` while loading, so the order
   is: establish rank/device/process group, *then* `load_stepper`.
-- **`spatial` is gated on upstream work.** ACE's `ModelTorchDistributed`, its
-  distributed spherical transforms and `get_local_slices` all exist, but the
-  two registered builders a deterministic ACE2 checkpoint instantiates —
-  `SphericalFourierNeuralOperatorNet` and `SFNO-v0.1.0` — call
-  `th.RealSHT`/`th.InverseRealSHT` **unconditionally**
-  (`models/modulus/sfnonet.py:500`, `models/makani/sfnonet.py:479`). Only
-  `NoiseConditionedSFNO` routes through `dist.get_sht()`. So `spatial` will
-  build the mesh and hand each rank a shard to a module that still performs
-  global transforms. Treat it as infrastructure under integration, not a mode
-  to switch on today.
+- **`Distributed.get_instance()` refuses a multi-rank instance outside
+  `Distributed.context()`** (`distributed.py:125`), and that context also owns
+  the shutdown. A component's init/finalize bracket is exactly that lifetime,
+  so `AceEmulator` enters the context in its constructor via an `ExitStack`
+  and closes it in `finalize()`. One consequence: ACE does not support nesting
+  the context, so two emulator components in one process cannot both drive
+  ACE today.
+- **Device ownership is not inferred.** `local_rank % device_count` looks
+  reasonable and quietly puts two components' rank 0 on device 0 — MCT hands
+  us a communicator and a decomposition, not a GPU ownership map, and our
+  per-component local rank says nothing about what the ocean and land ranks on
+  this node already hold. The supported contract is one visible device per
+  rank (`--gpus-per-task=1 --gpu-bind=closest`, or an equivalent
+  `CUDA_VISIBLE_DEVICES`); anything else has to be stated with
+  `inference.device_id`. An ambiguous binding raises rather than guessing.
 - **A global model can already run without any of this**, by giving the
   component few ranks (`NTASKS_ATM=1`). The coupler regrids and redistributes
   between components, so it performs the gather — correctly, and with no idle
@@ -279,8 +346,13 @@ re-check before relying on any of this.
   does the interpolation. That is its job, already conservative and validated,
   and it leaves the exchange here a pure index permutation.
 - **ACE is autoregressive** and holds prognostic state between calls. The
-  Python object persisting across steps handles that naturally; writing and
-  reading that state at an E3SM restart boundary is **unsolved**.
+  Python object persisting across steps handles that naturally.
+  `AceEmulator.state_for_restart()` returns that state on *columns* rather
+  than on tiles, which is what makes it writable through the component's
+  existing restart path and reloadable under a different rank count — but
+  nothing calls it yet, because the component has no restart plumbing to hand
+  it to. Until then, a run that stops and restarts restarts a different
+  atmosphere.
 
 ## Building
 
@@ -315,13 +387,28 @@ cmake --build build --parallel && (cd build && ctest --output-on-failure)
 
 ## Not done yet
 
-Roughly in the order they are worth doing:
+Roughly in the order they are worth doing. The first three are what stand
+between this and a run you would trust.
 
-- **Wiring the coupling fields.** `EmulatorAtm` builds the backend and calls
-  it every step, but `prepare_inputs`/`process_outputs` are still stubs: they
-  need `init_coupling_indices` to resolve the MCT field lists first.
-- **Restart.** ACE's prognostic state lives in a Python object across steps
-  and is dropped at finalize.
+- **Restart.** `AceEmulator.state_for_restart()` exists and returns the
+  prognostic state on columns; nothing writes or reads it. Until it does, a
+  restarted run continues a different atmosphere.
+- **An end-to-end test through the component.** The pieces are covered
+  separately — the bridge against a numpy fixture, the decomposition across
+  fake ranks, the field packing by inspection — but nothing yet drives
+  `EmulatorAtm` through import → infer → export with a real coupling buffer.
+- **`MPI_Alltoallv` for the redistribution.** Duplicate the component
+  communicator in C++, expose the Fortran handle, rebuild it with
+  `mpi4py.MPI.Comm.f2py`. Replaces `P - 1` point-to-point operations per rank
+  with the machine's tuned collective, and removes the extra Gloo group.
+- **Verify a distributed ACE numerically** before anybody trusts `spatial`:
+  identical one-step results at 1, 2, 4 and 8 ranks against `ace_mode=single`,
+  then multistep trajectories, then restarts — with communication, H2D/D2H and
+  model time measured separately.
+- **Hybrid data-and-spatial meshes.** ACE's `ModelTorchDistributed` builds a
+  `(data, h, w)` mesh; this requires `h * w == world_size`, so `P_data = 1`.
+  Right for one deterministic trajectory, and the thing to relax for a coupled
+  ensemble.
 - **Device-resident tensors.** The container is host memory only, so every GPU
   run pays a host round trip in both directions. This probably matters more to
   total GPU cost than the choice of runtime. It wants a memory space, a device
