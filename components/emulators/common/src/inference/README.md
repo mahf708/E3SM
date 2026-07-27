@@ -474,6 +474,20 @@ are missing rather than failing somewhere deep inside a load.
   exchange's collectives. `agree()` is itself a collective, so it has to be
   reached exactly once per rank on every path; that constraint is why
   validation collects complaints instead of throwing them.
+
+  **What a healthy run pays.** `infer()` reaches four agreement points per
+  timestep, so their cost is multiplied by four and then by every step of a
+  run. `agree()` therefore starts with `any_true()` — one `all_reduce` of a
+  single integer — and returns there when nothing is wrong; the diagnostic
+  text is gathered only once somebody has some. That took the healthy path
+  from eight torch collectives per timestep to four. Note that one
+  `Comm.allgather` is *two* torch collectives (an `all_reduce` for the block
+  sizes, then the `all_gather`), which is why the test pinning this counts at
+  the torch level against a recording stub: counting `Comm` calls shows no
+  difference and pins nothing. Whether four agreement points per step is
+  itself too many is a question for measurement, not for guessing — the
+  reduction is tiny, and combining adjacent validation phases would complicate
+  the API for an unknown gain.
 - **A failed constructor must not leak the context.** `Distributed.context()`
   is entered in `AceEmulator.__init__` and closed in `finalize()`, so anything
   that throws in between — a missing checkpoint, a grid mismatch, an API that

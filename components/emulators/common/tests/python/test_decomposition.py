@@ -478,13 +478,69 @@ class TestRestartExport(unittest.TestCase):
             np.testing.assert_allclose(exported["air_temperature"], 1.0)
 
 
+class _FakeTensor:
+    """A numpy array wearing just enough of the torch.Tensor interface."""
+
+    def __init__(self, array):
+        self.array = np.asarray(array)
+
+    @property
+    def dtype(self):
+        return self.array.dtype
+
+    def __setitem__(self, index, value):
+        self.array[index] = value
+
+    def tolist(self):
+        return self.array.tolist()
+
+    def item(self):
+        return self.array.reshape(-1)[0].item()
+
+    def numpy(self):
+        return self.array
+
+
+class _FakeTorch:
+    """The handful of torch entry points TorchComm actually calls."""
+
+    int64 = np.int64
+    uint8 = np.uint8
+
+    @staticmethod
+    def zeros(n, dtype=None):
+        return _FakeTensor(np.zeros(n, dtype=dtype or np.int64))
+
+    @staticmethod
+    def tensor(values, dtype=None):
+        return _FakeTensor(np.asarray(values, dtype=dtype or np.int64))
+
+    @staticmethod
+    def from_numpy(array):
+        return _FakeTensor(array)
+
+    @staticmethod
+    def empty_like(tensor):
+        return _FakeTensor(np.zeros_like(tensor.array))
+
+
 class _RecordingDist:
-    """Enough of torch.distributed to count what TorchComm puts on the wire."""
+    """torch.distributed for a two-rank world in which rank 0 has failed.
+
+    Deliberately complete enough for TorchComm's length-then-payload gather
+    to run all the way through and produce the right strings.  A stub that
+    threw part way would let a test claim it exercised the failure path when
+    it had only reached the first step of it — which is exactly what the
+    previous version of this test did.
+
+    This rank is rank 1 and healthy; rank 0 contributed ``peer_message``.
+    """
 
     class ReduceOp:
         MAX = "max"
 
-    def __init__(self):
+    def __init__(self, peer_message: str):
+        self.peer = peer_message.encode("utf-8")
         self.calls = []
 
     def is_initialized(self):
@@ -492,9 +548,25 @@ class _RecordingDist:
 
     def all_reduce(self, tensor, op=None, group=None):
         self.calls.append("all_reduce")
+        if op == self.ReduceOp.MAX:
+            # any_true: rank 0 failed, so the maximum is 1.
+            tensor[0] = max(int(tensor.item()), 1 if self.peer else 0)
+        else:
+            # TorchComm.allgather sums the per-rank row counts; rank 0
+            # contributes as many rows as we do.
+            tensor[0] = tensor.array[0] + int(tensor.array[1])
 
     def all_gather(self, out_list, tensor, group=None):
         self.calls.append("all_gather")
+        block = tensor.array
+        out_list[1] = _FakeTensor(np.array(block, copy=True))  # ours
+        peer = np.zeros_like(block)
+        if block.dtype == np.int64:
+            peer[0, 0] = len(self.peer)  # the length gather
+        else:
+            payload = np.frombuffer(self.peer, dtype=np.uint8)
+            peer[: len(payload), 0] = payload  # the payload gather
+        out_list[0] = _FakeTensor(peer)
 
 
 class TestAgreementCost(unittest.TestCase):
@@ -507,43 +579,43 @@ class TestAgreementCost(unittest.TestCase):
     points per timestep, multiplied by every step of a climate run.
     """
 
-    def _torch_comm(self):
+    def _torch_comm(self, peer_message=""):
         from e3sm_emulator.comm import TorchComm
 
-        recorder = _RecordingDist()
+        recorder = _RecordingDist(peer_message)
         comm = TorchComm.__new__(TorchComm)  # bypass group creation
         comm._dist = recorder
         comm._group = None
         comm._owns_group = False
-        comm.rank, comm.size = 0, 4
+        comm.rank, comm.size = 1, 2
         return comm, recorder
-
-    def _fake_torch(self, reduced_value):
-        import unittest.mock as mock
-
-        fake = mock.MagicMock()
-        fake.tensor = lambda values, dtype=None: mock.MagicMock(
-            item=lambda: reduced_value
-        )
-        return fake
 
     def test_a_healthy_agreement_is_one_reduction(self):
         import unittest.mock as mock
 
         comm, recorder = self._torch_comm()
-        with mock.patch.dict(sys.modules, {"torch": self._fake_torch(0)}):
+        with mock.patch.dict(sys.modules, {"torch": _FakeTorch}):
             comm.agree("")
         self.assertEqual(recorder.calls, ["all_reduce"])
 
-    def test_a_failing_agreement_pays_for_the_diagnostic(self):
-        # Only when something is actually wrong is the message worth moving.
+    def test_a_failing_agreement_gathers_the_diagnostic_and_raises(self):
+        # The whole failure path, run to completion: the reduction reports a
+        # failure, the message is gathered, and the intended application error
+        # comes out carrying it.
         import unittest.mock as mock
 
-        comm, recorder = self._torch_comm()
-        with mock.patch.dict(sys.modules, {"torch": self._fake_torch(1)}):
-            with self.assertRaises(BaseException):
-                comm.agree("something broke")
-        self.assertGreater(len(recorder.calls), 1)
+        comm, recorder = self._torch_comm(peer_message="something broke")
+        with mock.patch.dict(sys.modules, {"torch": _FakeTorch}):
+            with self.assertRaises(RuntimeError) as caught:
+                comm.agree("")
+
+        message = str(caught.exception)
+        self.assertIn("rank 0", message)
+        self.assertIn("something broke", message)
+        # One reduction to discover the failure, then the length gather and
+        # the payload gather.
+        self.assertEqual(recorder.calls[0], "all_reduce")
+        self.assertEqual(recorder.calls.count("all_gather"), 2)
 
 
 class TestRestartSchema(unittest.TestCase):
