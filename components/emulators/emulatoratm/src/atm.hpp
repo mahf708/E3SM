@@ -12,6 +12,8 @@
 
 #include "emulator.hpp"
 #include "emulator_c_api.hpp"
+#include "inference/create_inference_backend.hpp"
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -108,10 +110,16 @@ private:
   // =========================================================================
   // Coupling
   // =========================================================================
-  double *m_import_data = nullptr; ///< MCT import buffer pointer
-  double *m_export_data = nullptr; ///< MCT export buffer pointer
+  double *m_import_data = nullptr; ///< MCT import buffer (x2a%rAttr)
+  double *m_export_data = nullptr; ///< MCT export buffer (a2x%rAttr)
   int m_num_imports = 0;           ///< Number of import fields
   int m_num_exports = 0;           ///< Number of export fields
+  int m_field_size = 0;            ///< Columns per coupling field
+
+  /// MCT field name -> its row in x2a%rAttr.
+  std::map<std::string, int> m_import_idx;
+  /// MCT field name -> its row in a2x%rAttr.
+  std::map<std::string, int> m_export_idx;
 
   // =========================================================================
   // Configuration
@@ -122,11 +130,32 @@ private:
   int m_run_type = 0;          ///< Run type (startup/continue/branch)
 
   // =========================================================================
+  // Inference
+  //
+  // The backend is built in init_impl() from the `inference.*` settings in
+  // atm_in, and handed the component communicator together with the columns
+  // the coupler assigned to this rank.  With no such settings the default is
+  // the stub backend, which runs no model and changes nothing.
+  // =========================================================================
+  std::shared_ptr<inference::InferenceBackend> m_inference;
+  std::vector<std::string> m_infer_inputs;  ///< Fields the model consumes
+  std::vector<std::string> m_infer_outputs; ///< Fields the model produces
+  std::vector<double> m_infer_in;  ///< [n_in][ncol], one block per input
+  std::vector<double> m_infer_out; ///< [n_out][ncol], one block per output
+  /// Row in x2a for each inference input, or -1 when the model names a field
+  /// the coupler does not send.
+  std::vector<int> m_input_src;
+  /// Row in a2x for each inference output, or -1 when the model produces a
+  /// field the coupler does not want.
+  std::vector<int> m_output_dst;
+
+  // =========================================================================
   // Helper methods
   // =========================================================================
-  void import_coupling_fields();
-  void export_coupling_fields();
+  void validate_coupling(const std::string &backend,
+                         bool allow_zero_filled_inputs);
   void prepare_inputs();
+  void run_inference();
   void process_outputs();
 };
 
