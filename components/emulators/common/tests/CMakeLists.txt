@@ -66,3 +66,12 @@ if(Python3_EXECUTABLE AND NOT EMULATOR_NUMPY_MISSING)
     ENVIRONMENT
       "PYTHONPATH=${EMULATOR_PYTHON_PACKAGE_DIR}:${CMAKE_CURRENT_SOURCE_DIR}/python")
 endif()
+
+if(Python3_EXECUTABLE AND NOT EMULATOR_NUMPY_MISSING)
+  add_test(NAME inference_decomposition_tests
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/python/test_decomposition.py)
+  set_tests_properties(inference_decomposition_tests PROPERTIES
+    ENVIRONMENT
+      "PYTHONPATH=${EMULATOR_PYTHON_PACKAGE_DIR}:${CMAKE_CURRENT_SOURCE_DIR}/python")
+endif()
