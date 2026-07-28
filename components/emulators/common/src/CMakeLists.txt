@@ -6,6 +6,7 @@ set(EMULATOR_COMMON_CXX_SOURCES
   emulator_c_api.cpp
   inference/tensor.cpp
   inference/inference_config.cpp
+  inference/inference_context.cpp
   inference/stub_inference_backend.cpp
   inference/create_inference_backend.cpp
 )
@@ -38,3 +39,7 @@ target_include_directories(emulator_common PUBLIC
   ${CMAKE_CURRENT_BINARY_DIR}/modules
 )
 
+if(EMULATOR_HAVE_MPI)
+  target_compile_definitions(emulator_common PUBLIC EMULATOR_HAVE_MPI)
+  target_link_libraries(emulator_common PUBLIC MPI::MPI_CXX)
+endif()
