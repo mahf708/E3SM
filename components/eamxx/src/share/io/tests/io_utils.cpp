@@ -59,7 +59,7 @@ TEST_CASE ("io_control") {
 
   IOControl control;
   control.frequency = 2;
-  control.last_write_ts = t0;
+  control.window_beg = t0;
 
   SECTION ("none") {
     control.frequency_units = "none";
@@ -73,7 +73,7 @@ TEST_CASE ("io_control") {
 
   SECTION ("nsteps") {
     control.frequency_units = "nsteps";
-    control.compute_next_write_ts();
+    control.compute_window_end();
     auto t1 = t0 + 1;
     auto t2 = t1 + 1;
     REQUIRE (control.output_enabled());
@@ -83,7 +83,7 @@ TEST_CASE ("io_control") {
 
   SECTION ("nsecs") {
     control.frequency_units = "nsecs";
-    control.compute_next_write_ts();
+    control.compute_window_end();
     auto t1 = t0 + 1;
     auto t2 = t1 + 1;
     REQUIRE (control.output_enabled());
@@ -93,7 +93,7 @@ TEST_CASE ("io_control") {
 
   SECTION ("nmins") {
     control.frequency_units = "nmins";
-    control.compute_next_write_ts();
+    control.compute_window_end();
     auto t1 = t0 + 60;
     auto t2 = t1 + 60;
     REQUIRE (control.output_enabled());
@@ -103,7 +103,7 @@ TEST_CASE ("io_control") {
 
   SECTION ("nhours") {
     control.frequency_units = "nhours";
-    control.compute_next_write_ts();
+    control.compute_window_end();
     auto t1 = t0 + 3600;
     auto t2 = t1 + 3600;
     REQUIRE (control.output_enabled());
@@ -113,7 +113,7 @@ TEST_CASE ("io_control") {
 
   SECTION ("ndays") {
     control.frequency_units = "ndays";
-    control.compute_next_write_ts();
+    control.compute_window_end();
     auto t1 = t0 + 86400;
     auto t2 = t1 + 86400;
     REQUIRE (control.output_enabled());
@@ -123,7 +123,7 @@ TEST_CASE ("io_control") {
 
   SECTION ("nmonths") {
     control.frequency_units = "nmonths";
-    control.compute_next_write_ts();
+    control.compute_window_end();
     util::TimeStamp t1({2023,10,7},{12,0,0});
     util::TimeStamp t2({2023,11,7},{12,0,0});
     util::TimeStamp t3({2023,11,7},{13,0,0});
@@ -135,7 +135,7 @@ TEST_CASE ("io_control") {
 
   SECTION ("nyears") {
     control.frequency_units = "nyears";
-    control.compute_next_write_ts();
+    control.compute_window_end();
     util::TimeStamp t1({2024,9,7},{12,0,0});
     util::TimeStamp t2({2025,9,7},{12,0,0});
     util::TimeStamp t3({2025,9,7},{13,0,0});

@@ -33,36 +33,8 @@ inline std::string e2str(const FileType avg) {
   }
 }
 
-enum class OutputAvgType {
-  Instant,
-  Max,
-  Min,
-  Average,
-  Invalid
-};
-
-inline std::string e2str(const OutputAvgType avg) {
-  using OAT = OutputAvgType;
-  switch (avg) {
-    case OAT::Instant:  return "INSTANT";
-    case OAT::Max:      return "MAX";
-    case OAT::Min:      return "MIN";
-    case OAT::Average:  return "AVERAGE";
-    default:            return "INVALID";
-  }
-}
-
-inline OutputAvgType str2avg (const std::string& s) {
-  auto s_ci = ekat::upper_case(s);
-  using OAT = OutputAvgType;
-  for (auto e : {OAT::Instant, OAT::Max, OAT::Min, OAT::Average}) {
-    if (s_ci==e2str(e)) {
-      return e;
-    }
-  }
-
-  return OAT::Invalid;
-}
+// NOTE: OutputAvgType (and its e2str/str2avg) live in eamxx_io_control.hpp,
+//       which is included above, since IOControl needs them.
 
 // The AD will pass a default constructed control, since it doesn't know the values
 // of REST_N/REST_OPTION used in the previous run

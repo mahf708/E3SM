@@ -43,7 +43,7 @@ OutputManager::initialize(const ekat::Comm &io_comm, const ekat::ParameterList &
 
   // This works if we are not restarting the stream.
   // If we are, it will get adjusted later
-  m_output_control.last_write_ts = m_run_t0;
+  m_output_control.window_beg = m_run_t0;
 }
 
 void OutputManager::
@@ -189,13 +189,13 @@ setup (const std::shared_ptr<fm_type>& field_mgr,
 
       scorpio::register_file(rhist_file,scorpio::Read);
       // From restart file, get the time of last write, as well as the current size of the avg sample
-      m_output_control.last_write_ts = read_timestamp(rhist_file,"last_write",true);
-      m_output_control.compute_next_write_ts();
+      m_output_control.window_beg = read_timestamp(rhist_file,"last_write",true);
+      m_output_control.compute_window_end();
       m_output_control.nsamples_since_last_write = scorpio::get_attribute<int>(rhist_file,"GLOBAL","num_snapshots_since_last_write");
 
       if (m_avg_type!=OutputAvgType::Instant) {
         m_time_bnds.resize(2);
-        m_time_bnds[0] = m_output_control.last_write_ts.days_from(m_case_t0);
+        m_time_bnds[0] = m_output_control.window_beg.days_from(m_case_t0);
       }
 
       // If the type/freq of output needs restart data, we need to restart the streams
@@ -258,7 +258,7 @@ setup (const std::shared_ptr<fm_type>& field_mgr,
       if (m_resume_output_file) {
         m_output_file_specs.storage.num_snapshots_in_file = scorpio::get_attribute<int>(rhist_file,"GLOBAL","last_output_file_num_snaps");
 
-        if (m_output_file_specs.storage.snapshot_fits(m_output_control.next_write_ts)) {
+        if (m_output_file_specs.storage.snapshot_fits(m_output_control.snapshot_ts(m_avg_type))) {
           // The setup_file call will not register any new variable (the file is in Append mode,
           // so all dims/vars must already be in the file). However, it will register decompositions,
           // since those are a property of the run, not of the file.
@@ -272,7 +272,7 @@ setup (const std::shared_ptr<fm_type>& field_mgr,
       scorpio::release_file(rhist_file);
     }
   }
-  m_output_control.compute_next_write_ts();
+  m_output_control.compute_window_end();
 
   // If m_time_bnds.size()>0, it was already inited during restart
   if (m_avg_type!=OutputAvgType::Instant && m_time_bnds.size()==0) {
@@ -284,8 +284,14 @@ setup (const std::shared_ptr<fm_type>& field_mgr,
              not m_is_model_restart_output and
              not m_params.sublist("output_control").get<bool>("skip_t0_output",false)) // This will be true for ERS/ERP tests
   {
-    // In order to trigger a t0 write, we need to have next_write_ts matching run_t0
-    m_output_control.next_write_ts = m_run_t0;
+    // In order to trigger a t0 write, we need to have window_end matching run_t0.
+    // NOTE: this is the one spot where window_end is NOT window_beg+freq, i.e. the
+    //       window is degenerate: [run_t0,run_t0]. That's ok, since only INSTANT
+    //       output writes at t0 (see the if-branch above), and for INSTANT the ts
+    //       identifying the snapshot is window_end (see IOControl::snapshot_ts).
+    //       The window is made regular again by the advance_window call that
+    //       follows the t0 write.
+    m_output_control.window_end = m_run_t0;
     // This is in case some diags need to init the timestep. Their output may be meaningless
     // at t0 (e.g., if their input fields are not in the initial condition fields set,
     // and have yet to be computed), but they may still require the start-of-step timestamp to be valid
@@ -329,13 +335,13 @@ void OutputManager::init_timestep (const util::TimeStamp& start_of_step, const R
     // freq_units=nsteps, and a "large" timestep. E.g., consider storage.type=Daily, Instant output
     // (with t0 output ON), dt=2 days, freq_units=nsteps, and run_t0=Jan 1st. At t=t0, we open a
     // new file (jan01), and write the t=t0 snapshot. At the end of the run method, we also check
-    // if we can go ahead and close the file, by a) computing next_write_ts, and b) checking if
+    // if we can go ahead and close the file, by a) computing window_end, and b) checking if
     // the next snapshot fits in the file. However, since freq_units=nsteps, we need dt>0 to be able
-    // to compute the correct next_write_ts, and we don't have dt until the 1st step of the time
+    // to compute the correct window_end, and we don't have dt until the 1st step of the time
     // loop. Hence, if control.dt==0 (meaning it's the first time we execute init_timestep),
-    // we need to recompute next_write_ts, and also check if the next snap will fit in the file.
+    // we need to recompute window_end, and also check if the next snap will fit in the file.
     // Again, this is ONLY a corner case that happens in unit tests, as dt<<1day in any meaningful run.
-    m_output_control.compute_next_write_ts();
+    m_output_control.compute_window_end();
     if (m_output_file_specs.is_open)
       close_or_flush_if_needed (m_output_file_specs,m_output_control);
   }
@@ -365,11 +371,11 @@ void OutputManager::run(const util::TimeStamp& timestamp)
   // Ensure we did not go past the scheduled write time without hitting it
   EKAT_REQUIRE_MSG (
       (m_output_control.frequency_units=="nsteps"
-          ? timestamp.get_num_steps()<=m_output_control.next_write_ts.get_num_steps()
-          : timestamp<=m_output_control.next_write_ts),
+          ? timestamp.get_num_steps()<=m_output_control.window_end.get_num_steps()
+          : timestamp<=m_output_control.window_end),
       "Error! The input timestamp is past the next scheduled write timestamp.\n"
       "  - current time stamp   : " + timestamp.to_string() + "\n"
-      "  - next write time stamp: " + m_output_control.next_write_ts.to_string() + "\n"
+      "  - next write time stamp: " + m_output_control.window_end.to_string() + "\n"
       "The most likely cause is an output frequency that is faster than the atm timestep.\n"
       "Try to increase 'frequency' and/or 'frequency_units' in your output yaml file.\n");
 
@@ -488,10 +494,9 @@ void OutputManager::run(const util::TimeStamp& timestamp)
     auto write_global_data = [&](IOControl& control, IOFileSpecs& filespecs) {
       m_atm_logger->debug("[OutputManager]: writing globals...\n");
 
-      // Since we wrote to file we need to reset the timestamps
-      control.last_write_ts = timestamp;
-      control.compute_next_write_ts();
-      control.nsamples_since_last_write = 0;
+      // We wrote the snapshot, so close its window and open the next one.
+      // NOTE: from here on, control describes the *next* snapshot.
+      control.advance_window(timestamp);
 
       if (m_is_model_restart_output) {
         // Only write nsteps on model restart
@@ -499,7 +504,7 @@ void OutputManager::run(const util::TimeStamp& timestamp)
       } else {
         if (filespecs.ftype==FileType::HistoryRestart) {
           // Update the date of last write and sample size
-          write_timestamp (filespecs.filename,"last_write",m_output_control.last_write_ts,true);
+          write_timestamp (filespecs.filename,"last_write",m_output_control.window_beg,true);
           scorpio::set_attribute (filespecs.filename,"GLOBAL","num_snapshots_since_last_write",m_output_control.nsamples_since_last_write);
           if (m_output_file_specs.is_open) {
             scorpio::set_attribute (filespecs.filename,"GLOBAL","last_output_file_num_snaps",m_output_file_specs.storage.num_snapshots_in_file);
@@ -559,7 +564,7 @@ void OutputManager::run(const util::TimeStamp& timestamp)
 
     start_timer(timer_root+"::update_snapshot_tally");
     // Important! Process output file first, and hist restart (if any) second.
-    // That's b/c write_global_data will update m_output_control.last_write_ts,
+    // That's b/c write_global_data will update m_output_control.window_beg,
     // which is later written as global data in the hist restart file
     if (is_output_step) {
       write_global_data(m_output_control,m_output_file_specs);
@@ -640,9 +645,14 @@ compute_filename (const IOFileSpecs& file_specs,
     filename += ".np" + std::to_string(m_io_comm.size());
   }
 
-  // Always add a time stamp
-  auto ts = (m_avg_type==OutputAvgType::Instant || file_specs.ftype==FileType::HistoryRestart)
-          ? timestamp : control.last_write_ts;
+  // Always add a time stamp. This must be the ts identifying the snapshot, or else
+  // the file name would disagree with the day/month/year the file is tagged with
+  // (see setup_file). History restart files are instead named after the restart time.
+  // NOTE: for INSTANT, control.snapshot_ts() *predicts* the write time, while
+  //       `timestamp` is the actual one. We use the latter, since for storage type
+  //       NumSnaps the file name embeds the time of day down to the second.
+  auto ts = file_specs.ftype==FileType::HistoryRestart or m_avg_type==OutputAvgType::Instant
+          ? timestamp : control.snapshot_ts(m_avg_type);
 
   int ts_string_len = 0;
   switch (file_specs.storage.type) {
@@ -755,8 +765,8 @@ setup_internals (const std::shared_ptr<fm_type>& field_mgr,
       EKAT_REQUIRE_MSG (m_output_control.frequency>0,
           "Error! Invalid frequency (" + std::to_string(m_checkpoint_control.frequency) + ") in checkpoint_control. Please, use positive number.\n");
 
-      m_checkpoint_control.last_write_ts = m_run_t0;
-      m_checkpoint_control.compute_next_write_ts();
+      m_checkpoint_control.window_beg = m_run_t0;
+      m_checkpoint_control.compute_window_end();
 
       // File specs
       m_checkpoint_file_specs.storage.type = NumSnaps;
@@ -796,7 +806,7 @@ setup_file (      IOFileSpecs& filespecs,
     int ntimes = all_times.size();
     int ngood  = 0;
     for (const auto& t : all_times) {
-      auto keep = t<=m_output_control.last_write_ts.days_from(m_case_t0);
+      auto keep = t<=m_output_control.window_beg.days_from(m_case_t0);
       if (keep) {
         ++ngood;
       } else {
@@ -928,13 +938,9 @@ setup_file (      IOFileSpecs& filespecs,
 
   filespecs.is_open = true;
   if (filespecs.storage.type!=NumSnaps) {
-    // NOTE: use the *start* of the avg window (see the notes in close_or_flush_if_needed),
-    //       or else the file would be tagged with the day/month/year of the *end* of the
-    //       window, and would then accept the next snapshot too. E.g., for monthly avg
-    //       stored one month per file, the Jan file (whose window ends on Feb 1st) would
-    //       be tagged with month=2, and would also accept the Feb average.
-    filespecs.storage.set_time_idx(m_avg_type==OutputAvgType::Instant
-                                   ? control.next_write_ts : control.last_write_ts);
+    // NOTE: this is the *same* quantity used by close_or_flush_if_needed to check
+    //       whether the next snapshot fits, so the two can never disagree.
+    filespecs.storage.set_time_idx(control.snapshot_ts(m_avg_type));
   }
 
   m_resume_output_file = false;
@@ -982,26 +988,15 @@ close_or_flush_if_needed (      IOFileSpecs& file_specs,
   // or if the file needs to be flushed (based on file_specs flush freq)
 
   // NOTES:
-  //  - If output is average/max/min AND we save one file per month/year,
-  //    we don't want to check if the next write timestamp fits in the file, since
-  //    it may be in the next day/month/year even though most of the time averaging
-  //    window is in the right day/month/year. E.g., if the avg is over a month,
-  //    you would end up saving Jan average in the Feb file, since the next write
-  //    timestamp (the end of the window) is Feb 1st 00:00:00. So instead, we use
-  //    the *start* of the avg window. If the avg is such that it spans 2 months (e.g.,
-  //    a 7-day avg), then where we put the avg is arbitrary, so our choice
-  //    is still fine.
-  //  - If you consdier INST output as "average" over [next_write_ts, next_write_ts],
-  //    we can think of next_write_ts as the start of INST averaging window.
-  //  - For storage_type=NumSnaps, which timestamp we pick doesn't matter
-  const util::TimeStamp* window_start_ts;
-  if (m_avg_type==OutputAvgType::Instant) {
-    window_start_ts = &control.next_write_ts;
-  } else {
-    window_start_ts = &control.last_write_ts;
-  }
-
-  if (not file_specs.storage.snapshot_fits(*window_start_ts)) {
+  //  - this runs *after* control.advance_window, so control.snapshot_ts() is the
+  //    ts of the *next* snapshot, which is precisely what we must check here.
+  //  - we use the start of the avg window (see IOControl::snapshot_ts), and not
+  //    the next write ts, since the latter may be in the next day/month/year even
+  //    though most of the averaging window is in the right one. If the avg spans
+  //    2 months (e.g., a 7-day avg), then where we put it is arbitrary, so our
+  //    choice is still fine.
+  //  - for storage_type=NumSnaps, which timestamp we pick doesn't matter
+  if (not file_specs.storage.snapshot_fits(control.snapshot_ts(m_avg_type))) {
     scorpio::release_file(file_specs.filename);
     file_specs.close();
   } else if (file_specs.file_needs_flush()) {
@@ -1026,7 +1021,7 @@ push_to_logger()
   m_atm_logger->info("           Filename prefix: " + m_filename_prefix);
   m_atm_logger->info("                    Run t0: " + m_run_t0.to_string());
   m_atm_logger->info("                   Case t0: " + m_case_t0.to_string());
-  m_atm_logger->info("              Reference t0: " + m_output_control.last_write_ts.to_string());
+  m_atm_logger->info("              Reference t0: " + m_output_control.window_beg.to_string());
   m_atm_logger->info("         Is Restart File ?: " + bool_to_string(m_is_model_restart_output));
   m_atm_logger->info("                 Run type : " + rt_to_string(m_run_type));
   m_atm_logger->info("            averaging_type: " + e2str(m_avg_type));

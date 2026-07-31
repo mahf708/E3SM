@@ -4,11 +4,46 @@
 #include "share/util/eamxx_time_stamp.hpp"
 
 #include <ekat_assert.hpp>
+#include <ekat_string_utils.hpp>
 
 #include <string>
 
 namespace scream
 {
+
+// How to combine multiple snapshots in the output: instant, Max, Min, Average
+// NOTE: this lives here (rather than in eamxx_io_utils.hpp) b/c IOControl needs
+//       it to tell which timestamp identifies the snapshot of the current window
+enum class OutputAvgType {
+  Instant,
+  Max,
+  Min,
+  Average,
+  Invalid
+};
+
+inline std::string e2str(const OutputAvgType avg) {
+  using OAT = OutputAvgType;
+  switch (avg) {
+    case OAT::Instant:  return "INSTANT";
+    case OAT::Max:      return "MAX";
+    case OAT::Min:      return "MIN";
+    case OAT::Average:  return "AVERAGE";
+    default:            return "INVALID";
+  }
+}
+
+inline OutputAvgType str2avg (const std::string& s) {
+  auto s_ci = ekat::upper_case(s);
+  using OAT = OutputAvgType;
+  for (auto e : {OAT::Instant, OAT::Max, OAT::Min, OAT::Average}) {
+    if (s_ci==e2str(e)) {
+      return e;
+    }
+  }
+
+  return OAT::Invalid;
+}
 
 // Mini struct to hold IO frequency info
 struct IOControl {
@@ -19,10 +54,16 @@ struct IOControl {
 
   int nsamples_since_last_write = 0;  // Needed when updating output data, such as with the OAT::Average flag
 
-  util::TimeStamp next_write_ts;
-  util::TimeStamp last_write_ts;
+  // The window of the snapshot that is currently being accumulated:
+  //  - window_beg: when the current window started (i.e., the last write, or the run t0)
+  //  - window_end: when the current window ends (i.e., the next scheduled write)
+  // NOTE: these rotate *inside* OutputManager::run, when advance_window is called
+  //       (right after the snapshot is written). Before that call they describe the
+  //       snapshot being written, after it they describe the next one.
+  util::TimeStamp window_end;
+  util::TimeStamp window_beg;
 
-  // At run time, set dt in the struct, so we can compute next_write_ts correctly,
+  // At run time, set dt in the struct, so we can compute window_end correctly,
   // even if freq_units is "nsteps"
   // NOTE: this ASSUMES dt is constant throughout the run (i.e., no time adaptivity).
   //       An error will be thrown if dt changes, so developers can fix this if we ever support variable dt
@@ -34,9 +75,19 @@ struct IOControl {
 
   bool is_write_step (const util::TimeStamp& ts) const {
     if (not output_enabled()) return false;
-    return frequency_units=="nsteps" ? ts.get_num_steps()==next_write_ts.get_num_steps()
-                                     : (ts.get_date()==next_write_ts.get_date() and
-                                        ts.get_time()==next_write_ts.get_time());
+    return frequency_units=="nsteps" ? ts.get_num_steps()==window_end.get_num_steps()
+                                     : (ts.get_date()==window_end.get_date() and
+                                        ts.get_time()==window_end.get_time());
+  }
+
+  // The timestamp identifying the snapshot of the current window, that is, the
+  // *start* of its averaging window. This is what tells which day/month/year a
+  // snapshot belongs to, for file storage types other than NumSnaps.
+  // NOTE: if you consider INSTANT output as an "average" over the degenerate
+  //       window [window_end,window_end], then its start is window_end. Using
+  //       window_beg for INSTANT would point at the *previous* snapshot instead.
+  const util::TimeStamp& snapshot_ts (const OutputAvgType avg_type) const {
+    return avg_type==OutputAvgType::Instant ? window_end : window_beg;
   }
 
   void set_frequency_units (const std::string& freq_unit) {
@@ -69,26 +120,36 @@ struct IOControl {
     dt = dt_in;
   }
 
-  // Computes next_write_ts from frequency and last_write_ts
-  void compute_next_write_ts () {
-    EKAT_REQUIRE_MSG (last_write_ts.is_valid(),
-        "Error! Cannot compute next_write_ts, since last_write_ts was never set.\n");
-    next_write_ts = last_write_ts;
+  // Closes the current window at ts, and opens the next one.
+  // NOTE: this is the ONLY way the window is meant to rotate. Doing it in a
+  //       single place is what keeps window_beg/window_end consistent with
+  //       each other (and with nsamples_since_last_write).
+  void advance_window (const util::TimeStamp& ts) {
+    window_beg = ts;
+    compute_window_end();
+    nsamples_since_last_write = 0;
+  }
+
+  // Computes window_end from frequency and window_beg
+  void compute_window_end () {
+    EKAT_REQUIRE_MSG (window_beg.is_valid(),
+        "Error! Cannot compute window_end, since window_beg was never set.\n");
+    window_end = window_beg;
     if (frequency_units=="nsteps") {
       // This avoids having an invalid/wrong date/time in StorageSpecs::snapshot_fits
       // if storage type is NumSnaps
-      next_write_ts += dt*frequency;
-      next_write_ts.set_num_steps(last_write_ts.get_num_steps()+frequency);
+      window_end += dt*frequency;
+      window_end.set_num_steps(window_beg.get_num_steps()+frequency);
     } else if (frequency_units=="nsecs") {
-      next_write_ts += frequency;
+      window_end += frequency;
     } else if (frequency_units=="nmins") {
-      next_write_ts += frequency*60;
+      window_end += frequency*60;
     } else if (frequency_units=="nhours") {
-      next_write_ts += frequency*3600;
+      window_end += frequency*3600;
     } else if (frequency_units=="ndays") {
-      next_write_ts += frequency*86400;
+      window_end += frequency*86400;
     } else if (frequency_units=="nmonths") {
-      auto date = last_write_ts.get_date();
+      auto date = window_beg.get_date();
       int temp = date[1] + frequency - 1;
       date[1]  = temp % 12 + 1;
       date[0] += temp / 12;
@@ -102,11 +163,11 @@ struct IOControl {
       auto last_day = month_beg.days_in_curr_month();
       date[2] = std::min(date[2],last_day);
 
-      next_write_ts = util::TimeStamp(date,last_write_ts.get_time());
+      window_end = util::TimeStamp(date,window_beg.get_time());
     } else if (frequency_units=="nyears") {
-      auto date = last_write_ts.get_date();
+      auto date = window_beg.get_date();
       date[0] += frequency;
-      next_write_ts = util::TimeStamp(date,last_write_ts.get_time());
+      window_end = util::TimeStamp(date,window_beg.get_time());
     } else {
       EKAT_ERROR_MSG ("Error! Unrecognized/unsupported frequency unit '" + frequency_units + "'\n");
     }
