@@ -928,7 +928,13 @@ setup_file (      IOFileSpecs& filespecs,
 
   filespecs.is_open = true;
   if (filespecs.storage.type!=NumSnaps) {
-    filespecs.storage.set_time_idx(control.next_write_ts);
+    // NOTE: use the *start* of the avg window (see the notes in close_or_flush_if_needed),
+    //       or else the file would be tagged with the day/month/year of the *end* of the
+    //       window, and would then accept the next snapshot too. E.g., for monthly avg
+    //       stored one month per file, the Jan file (whose window ends on Feb 1st) would
+    //       be tagged with month=2, and would also accept the Feb average.
+    filespecs.storage.set_time_idx(m_avg_type==OutputAvgType::Instant
+                                   ? control.next_write_ts : control.last_write_ts);
   }
 
   m_resume_output_file = false;

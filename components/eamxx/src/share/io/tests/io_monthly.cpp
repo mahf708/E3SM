@@ -37,6 +37,15 @@ util::TimeStamp get_t0 () {
   return util::TimeStamp({2000,1,15},{0,0,0});
 }
 
+// For the monthly-average test, start at the beginning of a month, which
+// is the typical setup of a run producing monthly averages
+util::TimeStamp get_t0_avg () {
+  return util::TimeStamp({2000,1,1},{0,0,0});
+}
+
+// Number of monthly averages written by the monthly-average test
+constexpr int num_months = 3;
+
 std::shared_ptr<const GridsManager>
 get_gm (const ekat::Comm& comm)
 {
@@ -195,6 +204,102 @@ void read (const int seed, const ekat::Comm& comm)
   }
 }
 
+// Same as write, but with monthly *averages*, one per file. The avg window
+// ends on the 1st of the next month, so this checks that the file the snapshot
+// goes in is determined by the *start* of the avg window, and not by its end.
+void write_avg (const int seed, const ekat::Comm& comm)
+{
+  // Create grid
+  auto gm = get_gm(comm);
+  auto grid = gm->get_grid("point_grid");
+
+  // Time advance parameters
+  auto t0 = get_t0_avg();
+  const int dt = 86400; // 1 day
+
+  // Create some fields
+  auto fm = get_fm(grid,t0,seed);
+  std::vector<std::string> fnames;
+  for (auto it : fm->get_repo()) {
+    fnames.push_back(it.second->name());
+  }
+
+  // Create output params
+  ekat::ParameterList om_pl;
+  om_pl.set("filename_prefix",std::string("io_monthly_avg"));
+  om_pl.set("field_names",fnames);
+  om_pl.set("averaging_type", std::string("average"));
+  om_pl.set("file_max_storage_type",std::string("one_month"));
+  om_pl.set("floating_point_precision",std::string("single"));
+  auto& ctrl_pl = om_pl.sublist("output_control");
+  ctrl_pl.set("frequency_units",std::string("nmonths"));
+  ctrl_pl.set("frequency",1);
+  ctrl_pl.set("save_grid_data",false);
+
+  // Create Output manager
+  OutputManager om;
+  om.initialize(comm,om_pl,t0,false);
+  om.setup(fm,gm->get_grid_names());
+
+  // Time loop: one step per day, for num_months months
+  auto t = t0;
+  for (int m=0; m<num_months; ++m) {
+    const int ndays = t.days_in_curr_month();
+    for (int n=0; n<ndays; ++n) {
+      om.init_timestep(t,dt);
+
+      // Update time
+      t += dt;
+
+      // Add 1 to all fields entries
+      for (const auto& name : fnames) {
+        auto f = fm->get_field(name);
+        add(f,1);
+      }
+
+      // Run output manager
+      om.run (t);
+    }
+
+    // Since each file stores one month, and each month stores one avg,
+    // the file must be closed as soon as this month's avg was written
+    REQUIRE (not om.output_file_specs().is_open);
+  }
+
+  // Close file and cleanup
+  om.finalize();
+}
+
+void read_avg (const ekat::Comm& comm)
+{
+  // Get filename from timestamp
+  std::string casename = "io_monthly_avg";
+  auto get_filename = [&](const util::TimeStamp& t) {
+    auto t_str = t.to_string().substr(0,7);
+    std::string fname = casename
+                      + ".AVERAGE.nmonths_x1"
+                      + ".np" + std::to_string(comm.size())
+                      + "." + t_str
+                      + ".nc";
+    return fname;
+  };
+
+  auto t = get_t0_avg();
+  int days = 0;
+  for (int m=0; m<num_months; ++m) {
+    const int ndays = t.days_in_curr_month();
+    days += ndays;
+
+    // The avg of month m must be the ONLY snapshot in the file of month m,
+    // and its timestamp must be the end of the avg window
+    auto times = scorpio::get_all_times(get_filename(t));
+    REQUIRE (times.size()==1);
+    REQUIRE (times[0]==days);
+
+    t += ndays*86400;
+  }
+}
+
 TEST_CASE ("io_monthly") {
   ekat::Comm comm(MPI_COMM_WORLD);
   scorpio::init_subsystem(comm);
@@ -208,6 +313,15 @@ TEST_CASE ("io_monthly") {
   read (seed,comm);
   if (comm.am_i_root()) {
     std::cout << "   -> Testing output with one file per month ... PASS\n";
+  }
+
+  if (comm.am_i_root()) {
+    std::cout << "   -> Testing monthly averages with one file per month ...\n";
+  }
+  write_avg(seed,comm);
+  read_avg (comm);
+  if (comm.am_i_root()) {
+    std::cout << "   -> Testing monthly averages with one file per month ... PASS\n";
   }
   scorpio::finalize_subsystem();
 }
