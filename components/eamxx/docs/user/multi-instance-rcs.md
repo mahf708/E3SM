@@ -330,6 +330,34 @@ distribution is an empirical calibration of your exact configuration on your
 exact data — if the observed count sits comfortably inside it, the pipeline is
 behaving as advertised.
 
+##### Measured behavior on synthetic ensembles
+
+On synthetic ensembles with 4+4 members, 20 independent variables and
+`--analysis_type member` (60 trials per arm):
+
+| | `variable_count` + Bonferroni | `calibrated_count` |
+| --- | --- | --- |
+| False positives (no difference) | 0.00 | 0.00 |
+| Detections at a 1.5 sigma shift | 0.00 | 0.85 |
+
+The zero in the bottom-left is not sampling noise, it is arithmetic. With four
+members per ensemble the best a KS test can do is complete separation, which
+gives `p = 0.0286`; a Bonferroni threshold over 20 variables at `alpha = 0.01`
+is `5.0e-4`. No variable can clear it no matter how large the difference is,
+so the per-variable route has power identically zero at this ensemble size —
+which is why `rcs_stats.py` treats that configuration as an error rather than
+letting it report PASS.
+
+The false-positive rate for `calibrated_count` is nominally 0.05 but
+structurally much lower: rejecting requires the true grouping to be the strict
+maximum over all 35 complementary member-pairs, which caps the rate near
+`1/35`. A combinatorial simulation puts it at about 0.013 for 20 variables,
+consistent with the 0/60 measured.
+
+These numbers come from idealized synthetic data with independent variables.
+Real output is correlated, which the permutation null handles but which will
+shift both columns.
+
 ##### `--global_alpha` (default: 0.05)
 
 Used both to screen each variable and to judge the resulting count. If the
