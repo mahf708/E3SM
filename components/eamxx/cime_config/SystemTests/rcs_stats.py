@@ -1,65 +1,100 @@
 #!/usr/bin/env python3
 
 """
-Modular statistical comparison framework for RCS system test.
+Statistical comparison engine for the RCS (Reproducible Climate Statistics)
+system test.
 
-This module provides a comprehensive suite of two-sample statistical tests
-for comparing ensemble climate model simulations to determine if they are
-statistically equivalent.
+RCS asks a narrow question: given two ensembles of short EAMxx simulations
+that differ only by the random seed used to perturb the initial condition,
+is there evidence that the two ensembles were produced by *different* models?
 
-Test Categories:
-----------------
-1. DISTRIBUTION TESTS: Compare entire probability distributions
-   - Kolmogorov-Smirnov (ks): General-purpose, moderate sensitivity
-   - Anderson-Darling (ad): High sensitivity, emphasizes tails
-   - Cramer-von Mises (cvm): Moderate-high sensitivity
-   - Epps-Singleton (epps): Detects location and scale differences
-   - Energy Distance (energy): Powerful for any type of difference
+What the sample actually is
+---------------------------
+Each ensemble member is one simulation. A member contributes a vector of
+numbers per variable; how that vector is built is controlled by
+``analysis_type``:
 
-2. LOCATION TESTS: Compare central tendencies (mean/median)
-   - Mann-Whitney U (mw): Non-parametric, compares medians
-   - Welch's t-test (ttest): Parametric, compares means
-   - Brunner-Munzel (brunner): Robust alternative to t-test
+- ``spatiotemporal`` (default): area-weighted global mean at each output
+  time, so a member contributes ``n_time`` values.
+- ``temporal``: time mean at each column, so a member contributes ``n_col``
+  values.
+- ``member``: a single area-weighted, time-averaged value, so a member
+  contributes exactly one value.
 
-3. SCALE TESTS: Compare variability/spread
-   - Levene (levene): Tests equality of variances
-   - Ansari-Bradley (ansari): Non-parametric scale test
-   - Mood (mood): Non-parametric dispersion test
+The crucial point -- and the reason this module tracks members explicitly
+instead of dumping everything into one flat array -- is that **the values
+contributed by a single member are not independent of each other**. Global
+monthly means from one simulation are serially correlated and share a
+seasonal cycle; column means from one simulation are spatially correlated.
+The *members*, on the other hand, are genuinely independent draws, and under
+the null hypothesis (same model, different seed) the members of the two
+ensembles are exchangeable.
 
-Usage:
-------
-From command line:
-    python new_test.py /run/dir /base/dir --test_type ks
+Calibration: how p-values are computed
+--------------------------------------
+- ``asymptotic`` (default): scipy's closed-form/asymptotic p-value applied to
+  the pooled values. Fast, and the historical RCS behavior, but it treats
+  every pooled value as an independent observation. Because the pooled values
+  are correlated, the effective sample size is smaller than the nominal one
+  and these p-values are **anti-conservative** (too eager to reject). The
+  report prints an estimated effective sample size so the size of that
+  inflation is visible.
+- ``member``: the test statistic is recalibrated by permuting whole members
+  between the two ensembles. This is exact under the exchangeability of
+  members and makes no independence assumption about values *within* a
+  member. It is the statistically defensible mode, but its resolution is
+  bounded by the number of members: with ``n`` members per ensemble the
+  smallest attainable p-value is about ``2 / C(2n, n)`` (0.029 for n=4,
+  0.0079 for n=5, 1.6e-4 for n=8). The report states this bound and warns
+  when the configured decision threshold is below it.
 
-From Python code:
-    from new_test import run_stats_comparison
-    comments, status = run_stats_comparison(
-        run_dir, base_dir,
-        analysis_type='spatiotemporal',
-        test_type='ks'
-    )
+Test categories
+---------------
+1. DISTRIBUTION: ks, ad, cvm, epps, energy
+2. LOCATION:     mw, ttest, brunner
+3. SCALE:        levene, ansari, mood
 
-Choosing a Test:
-----------------
-- For general comparison: Use 'ks' (Kolmogorov-Smirnov) - balanced sensitivity
-- For detecting subtle differences: Use 'ad' (Anderson-Darling) - very sensitive
-- For comparing means only: Use 'ttest' or 'mw'
-- For comparing variability: Use 'levene' or 'ansari'
-- When unsure about distribution: Use 'mw' or 'energy' (non-parametric)
+Interpreting the outcome
+------------------------
+A variable that is not rejected has *not* been shown to be equivalent; it has
+merely failed to be shown different. If you need a positive equivalence claim,
+set ``equivalence_margin`` to run a TOST (two one-sided tests) on the
+member-level means in addition to the difference test.
 
-References:
------------
-All tests implemented using scipy.stats:
-https://docs.scipy.org/doc/scipy/reference/stats.html
+Usage
+-----
+From the command line::
+
+    rcs_stats.py /run/dir /base/dir --test_type ks
+    rcs_stats.py /run/dir /base/dir --calibration member --json_output ~/rcs
+
+From Python::
+
+    from rcs_stats import run_stats_comparison
+    comments, status = run_stats_comparison(run_dir, base_dir)
+
+References
+----------
+scipy.stats: https://docs.scipy.org/doc/scipy/reference/stats.html
+statsmodels multiple testing:
+https://www.statsmodels.org/stable/generated/statsmodels.stats.multitest.multipletests.html
 """
 
+# The module is long because each test and each diagnostic carries the
+# explanation a reader needs to judge whether it is the right tool.
+# pylint: disable=too-many-lines
+
 import os
+import re
 import glob
 import json
+import math
 import sys
 import logging
+import tempfile
 import warnings
 from abc import ABC, abstractmethod
+from itertools import combinations
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../scripts"))
 
@@ -74,6 +109,7 @@ try:
     import numpy as np
     import xarray as xr
     from scipy import stats
+    from statsmodels.stats.multitest import multipletests
 except ImportError as e:
     raise ImportError(f"Could not ensure Python packages: {e}") from e
 
@@ -81,1227 +117,1800 @@ logger = logging.getLogger(__name__)
 
 
 # ==========================================================
-# Abstract Base Test
+# Constants
 # ==========================================================
 
-# pylint: disable=too-few-public-methods
-class StatisticalTest(ABC):
-    """Base class for statistical comparison tests."""
+#: Coordinate-like variables that are never candidates for testing.
+SKIP_VARS = frozenset(
+    {
+        "time", "time_bnds", "time_bounds", "date", "datesec", "ndcur",
+        "nscur", "nsteph", "lat", "lon", "ncol", "lev", "ilev", "hyam",
+        "hybm", "hyai", "hybi", "P0", "area", "dyn_dof", "hyai_dyn",
+    }
+)
 
-    def __init__(self, alpha=0.01, magnitude_threshold=None):
-        self.alpha = alpha
-        self.magnitude_threshold = magnitude_threshold
+#: Default per-ensemble file glob; ``????`` marks the 4-digit instance number.
+DEFAULT_FILE_PATTERN = "*.scream_????.h.AVERAGE.*.nc"
 
-    @abstractmethod
-    def _compute_test_statistic(self, a, b):
-        """Return (statistic, pvalue)."""
+#: Default RNG seed so that permutation-based p-values are reproducible.
+DEFAULT_SEED = 20250101
 
-    def compare(self, a, b):
-        """Run the test with preprocessing and standardized output."""
-        a_orig, b_orig = a, b
-        a, b = self._clean_data(a, b)
+#: Enumerate member permutations exhaustively when there are no more than
+#: this many; otherwise draw random ones.
+MAX_EXACT_PERMUTATIONS = 20000
 
-        # Compute descriptive statistics
-        desc_stats = self._compute_descriptive_stats(a, b, a_orig, b_orig)
+#: Denominator floor used when forming relative differences.
+_TINY = 1.0e-30
 
-        if len(a) < 2 or len(b) < 2:
-            return {
-                "statistic": np.nan,
-                "pvalue": 1.0,
-                "hypothesis": "PASS",
-                **desc_stats,
-                "reason": "Insufficient samples",
-            }
+TEST_FULL_NAMES = {
+    "ks": "Kolmogorov-Smirnov",
+    "ad": "Anderson-Darling",
+    "cvm": "Cramer-von Mises",
+    "epps": "Epps-Singleton",
+    "energy": "Energy distance",
+    "mw": "Mann-Whitney U",
+    "ttest": "Welch's t-test",
+    "brunner": "Brunner-Munzel",
+    "levene": "Levene",
+    "ansari": "Ansari-Bradley",
+    "mood": "Mood",
+}
 
-        if np.allclose(a, b, equal_nan=True):
-            return {
-                "statistic": 0.0,
-                "pvalue": 1.0,
-                "hypothesis": "PASS",
-                **desc_stats,
-                "reason": "Samples identical",
-            }
+ANALYSIS_FULL_NAMES = {
+    "spatiotemporal": "area-weighted global mean per output time",
+    "temporal": "time mean per column",
+    "member": "one area-weighted, time-averaged value per member",
+}
 
-        stat, pval = self._compute_test_statistic(a, b)
-        reject = pval < self.alpha
+#: Map the user-facing correction names onto statsmodels method names.
+CORRECTION_METHODS = {
+    "bonferroni": ("bonferroni", "Bonferroni (controls family-wise error rate)"),
+    "holm": ("holm", "Holm-Bonferroni (controls FWER, uniformly stronger than Bonferroni)"),
+    "fdr": ("fdr_bh", "Benjamini-Hochberg (controls false discovery rate)"),
+    "fdr_by": ("fdr_by", "Benjamini-Yekutieli (controls FDR under dependence)"),
+    "none": (None, "none (no multiple-testing correction)"),
+}
 
-        # Check magnitude threshold
-        magnitude_check = None
-        if self.magnitude_threshold is not None:
-            rel_diff = self._relative_diff(a, b)
-            magnitude_check = {
-                "relative_difference": float(rel_diff),
-                "magnitude_threshold": self.magnitude_threshold,
-                "exceeds_threshold": rel_diff > self.magnitude_threshold,
-            }
-            reject = reject and (rel_diff > self.magnitude_threshold)
 
-        result = {
-            "statistic": float(stat),
-            "pvalue": float(pval),
-            "hypothesis": "FAIL" if reject else "PASS",
-            **desc_stats,
-        }
+# ==========================================================
+# Ensemble discovery
+# ==========================================================
 
-        if magnitude_check:
-            result["magnitude_check"] = magnitude_check
 
-        # Add interpretive reason
-        if reject:
-            result["reason"] = self._explain_failure(pval, desc_stats)
+def _glob_chunk_to_regex(chunk):
+    """Translate the literal part of a glob pattern into a regex fragment."""
+    out = []
+    for ch in chunk:
+        if ch == "*":
+            out.append("[^/]*")
+        elif ch == "?":
+            out.append("[^/]")
         else:
-            result["reason"] = self._explain_pass(pval, desc_stats)
+            out.append(re.escape(ch))
+    return "".join(out)
 
-        return result
 
-    @staticmethod
-    def _clean_data(a, b):
-        """Remove NaNs and flatten arrays."""
-        a = np.asarray(a).ravel()
-        b = np.asarray(b).ravel()
-        return a[~np.isnan(a)], b[~np.isnan(b)]
+def _instance_regex(pattern):
+    """
+    Build a regex that captures the instance number out of a file pattern.
 
-    @staticmethod
-    def _relative_diff(a, b):
-        """Compute relative mean difference."""
-        mean1, mean2 = np.nanmean(a), np.nanmean(b)
-        denom = (abs(mean1) + abs(mean2)) / 2.0 + 1e-20
-        return abs(mean1 - mean2) / denom
+    ``pattern`` must contain exactly one ``????`` placeholder, which is where
+    the 4-digit instance number lives. Everything else is treated as an
+    ordinary glob.
+    """
+    parts = pattern.split("????")
+    if len(parts) != 2:
+        raise ValueError(
+            f"File pattern must contain exactly one '????' placeholder: {pattern}"
+        )
+    prefix, suffix = parts
+    return re.compile(
+        "^"
+        + _glob_chunk_to_regex(prefix)
+        + r"(?P<inst>\d{4})"
+        + _glob_chunk_to_regex(suffix)
+        + "$"
+    )
 
-    @staticmethod
-    def _compute_descriptive_stats(a, b, a_orig, b_orig):
-        """Compute comprehensive descriptive statistics for both samples."""
-        return {
-            "sample1": {
-                "n": len(a),
-                "n_original": len(np.asarray(a_orig).ravel()),
-                "n_nan": len(np.asarray(a_orig).ravel()) - len(a),
-                "mean": float(np.mean(a)) if len(a) > 0 else np.nan,
-                "median": float(np.median(a)) if len(a) > 0 else np.nan,
-                "std": float(np.std(a, ddof=1)) if len(a) > 1 else np.nan,
-                "min": float(np.min(a)) if len(a) > 0 else np.nan,
-                "max": float(np.max(a)) if len(a) > 0 else np.nan,
-                "q25": float(np.percentile(a, 25)) if len(a) > 0 else np.nan,
-                "q75": float(np.percentile(a, 75)) if len(a) > 0 else np.nan,
-            },
-            "sample2": {
-                "n": len(b),
-                "n_original": len(np.asarray(b_orig).ravel()),
-                "n_nan": len(np.asarray(b_orig).ravel()) - len(b),
-                "mean": float(np.mean(b)) if len(b) > 0 else np.nan,
-                "median": float(np.median(b)) if len(b) > 0 else np.nan,
-                "std": float(np.std(b, ddof=1)) if len(b) > 1 else np.nan,
-                "min": float(np.min(b)) if len(b) > 0 else np.nan,
-                "max": float(np.max(b)) if len(b) > 0 else np.nan,
-                "q25": float(np.percentile(b, 25)) if len(b) > 0 else np.nan,
-                "q75": float(np.percentile(b, 75)) if len(b) > 0 else np.nan,
-            },
-            "difference": {
-                "mean_diff": (
-                    float(np.mean(a) - np.mean(b))
-                    if len(a) > 0 and len(b) > 0
-                    else np.nan
-                ),
-                "mean_diff_pct": (
-                    float(100 * (np.mean(a) - np.mean(b)) /
-                          (abs(np.mean(b)) + 1e-20))
-                    if len(a) > 0 and len(b) > 0
-                    else np.nan
-                ),
-                "median_diff": (
-                    float(np.median(a) - np.median(b))
-                    if len(a) > 0 and len(b) > 0
-                    else np.nan
-                ),
-                "std_ratio": (
-                    float(np.std(a, ddof=1) / (np.std(b, ddof=1) + 1e-20))
-                    if len(a) > 1 and len(b) > 1
-                    else np.nan
-                ),
-            },
-        }
 
-    def _explain_failure(self, pval, desc_stats):
-        """Generate human-readable explanation for test failure."""
-        diff = desc_stats["difference"]
+def discover_instances(directory, pattern):
+    """
+    Find the ensemble members under ``directory``.
 
-        parts = [f"p={pval:.4e} < alpha={self.alpha}"]
+    Returns a dict mapping the 4-digit instance string to the sorted list of
+    files belonging to that instance. Raises FileNotFoundError when nothing
+    matches, since a silently empty ensemble is far worse than a hard error.
+    """
+    files = sorted(glob.glob(os.path.join(directory, pattern)))
+    if not files:
+        raise FileNotFoundError(
+            f"No files matching '{pattern}' under '{directory}'"
+        )
 
-        # Add context about differences
-        if not np.isnan(diff["mean_diff"]):
-            parts.append(
-                f"mean difference: {diff['mean_diff']:.4e} "
-                f"({diff['mean_diff_pct']:.2f}%)"
+    rgx = _instance_regex(pattern)
+    instances = {}
+    for path in files:
+        match = rgx.match(os.path.basename(path))
+        if match is None:
+            continue
+        instances.setdefault(match.group("inst"), []).append(path)
+
+    if not instances:
+        raise FileNotFoundError(
+            f"Found {len(files)} file(s) under '{directory}' matching "
+            f"'{pattern}', but none carried a 4-digit instance number where "
+            f"the '????' placeholder is. Check --run_file_pattern / "
+            f"--base_file_pattern."
+        )
+
+    return {inst: sorted(paths) for inst, paths in sorted(instances.items())}
+
+
+def open_ensemble(directory, pattern):
+    """Open every member of an ensemble as a lazily-loaded xarray Dataset."""
+    instances = discover_instances(directory, pattern)
+    datasets = {}
+    for inst, paths in instances.items():
+        datasets[inst] = xr.open_mfdataset(
+            paths,
+            decode_times=False,
+            data_vars="all",
+            combine="by_coords" if len(paths) > 1 else "nested",
+            concat_dim=None if len(paths) > 1 else "time",
+        )
+    return datasets
+
+
+# ==========================================================
+# Sample construction
+# ==========================================================
+
+
+def _vertical_reduce(var):
+    """
+    Collapse vertical dimensions with an unweighted mean.
+
+    NOTE: this is a mass-unweighted average, and it can hide a difference that
+    changes sign with height. Variables whose signal is confined to a few
+    levels are therefore harder to detect than column-integrated ones. This is
+    a deliberate simplification to keep one test per variable.
+    """
+    for dim in ("lev", "ilev"):
+        if dim in var.dims:
+            var = var.mean(dim=dim, skipna=True)
+    return var
+
+
+def get_area_weights(dataset):
+    """Return the ``area`` field as an xarray DataArray, or None."""
+    for name in ("area",):
+        if name in dataset.variables:
+            weights = dataset[name]
+            if "ncol" in weights.dims:
+                return weights.astype("float64")
+    return None
+
+
+def _weighted_spatial_mean(var, weights):
+    """
+    Area-weighted mean over ``ncol`` that renormalizes over valid points.
+
+    The naive ``(var * weights).sum()`` is biased low wherever ``var`` is
+    masked, because the weight of the masked cells is still in the
+    denominator. Dividing by the weight actually used fixes that.
+    """
+    valid = var.notnull()
+    numerator = (var.fillna(0.0) * weights).sum(dim="ncol", skipna=True)
+    denominator = (weights * valid).sum(dim="ncol", skipna=True)
+    return (numerator / denominator).where(denominator > 0)
+
+
+def _member_values(dataset, var, analysis_type, weights):
+    """Reduce one member's data for one variable down to a 1-D float array."""
+    data = _vertical_reduce(dataset[var])
+
+    if analysis_type == "temporal":
+        if "time" not in data.dims:
+            raise ValueError("no time dimension")
+        values = data.mean(dim="time", skipna=True).values
+        return np.asarray(values, dtype="float64").ravel()
+
+    # spatiotemporal and member both start from a global mean time series
+    if weights is not None and "ncol" in data.dims:
+        series = _weighted_spatial_mean(data, weights)
+    else:
+        spatial_dims = [d for d in data.dims if d != "time"]
+        series = data.mean(dim=spatial_dims, skipna=True) if spatial_dims else data
+
+    values = np.asarray(series.values, dtype="float64").ravel()
+
+    if analysis_type == "member":
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", "Mean of empty slice")
+            values = np.array([np.nanmean(values)]) if values.size else values
+
+    return values
+
+
+class Sample:
+    """
+    One ensemble's data for one variable, with member structure preserved.
+
+    ``rows`` is a list with one 1-D array per member. ``pooled`` is the
+    concatenation, which is what the test statistics actually consume.
+    """
+
+    __slots__ = ("rows", "pooled", "member_means")
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.pooled = np.concatenate(rows) if rows else np.empty(0)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", "Mean of empty slice")
+            self.member_means = np.array(
+                [np.nanmean(r) if r.size else np.nan for r in rows]
             )
 
-        if not np.isnan(diff["std_ratio"]) and abs(diff["std_ratio"] - 1) > 0.1:
-            parts.append(f"std ratio: {diff['std_ratio']:.3f}")
+    @property
+    def n_members(self):
+        """Number of ensemble members contributing to this sample."""
+        return len(self.rows)
 
-        return "; ".join(parts)
+    @property
+    def size(self):
+        """Number of pooled values."""
+        return self.pooled.size
 
-    def _explain_pass(self, pval, desc_stats):
-        """Generate human-readable explanation for test pass."""
-        diff = desc_stats["difference"]
 
-        parts = [f"p={pval:.4e} >= alpha={self.alpha}"]
+def _apply_common_mask(rows_run, rows_base):
+    """
+    Drop positions that are not finite in *every* member.
 
-        if not np.isnan(diff["mean_diff_pct"]):
-            parts.append(f"mean diff: {diff['mean_diff_pct']:.2f}%")
+    A per-member ``isnan`` filter followed by truncation (what RCS used to do)
+    silently compares position ``i`` of one member against a different
+    physical location in another. Masking on the intersection keeps positions
+    aligned across members, which is what the paired reduction assumes.
+    """
+    notes = []
+    lengths = {r.size for r in rows_run + rows_base}
+    if len(lengths) > 1:
+        shortest = min(lengths)
+        notes.append(
+            f"members had unequal sample lengths {sorted(lengths)}; "
+            f"truncated to {shortest}"
+        )
+        rows_run = [r[:shortest] for r in rows_run]
+        rows_base = [r[:shortest] for r in rows_base]
 
-        return "; ".join(parts)
+    stacked = np.vstack(rows_run + rows_base)
+    mask = np.isfinite(stacked).all(axis=0)
+    n_dropped = int(mask.size - mask.sum())
+    if n_dropped:
+        notes.append(
+            f"dropped {n_dropped}/{mask.size} positions that were not finite "
+            f"in every member"
+        )
+    if not mask.any():
+        raise ValueError("no position is finite across all members")
+
+    return (
+        [r[mask] for r in rows_run],
+        [r[mask] for r in rows_base],
+        notes,
+    )
+
+
+def build_samples(var, run_ens, base_ens, analysis_type, weights):
+    """Build aligned Sample objects for one variable, or raise ValueError."""
+    rows_run, rows_base = [], []
+    for label, ensemble, rows in (
+        ("run", run_ens, rows_run),
+        ("baseline", base_ens, rows_base),
+    ):
+        for inst, dataset in sorted(ensemble.items()):
+            if var not in dataset.variables:
+                raise ValueError(
+                    f"absent from {label} member {inst}"
+                )
+            rows.append(_member_values(dataset, var, analysis_type, weights))
+
+    if not rows_run or not rows_base:
+        raise ValueError("one of the ensembles has no members")
+
+    rows_run, rows_base, notes = _apply_common_mask(rows_run, rows_base)
+    return Sample(rows_run), Sample(rows_base), notes
 
 
 # ==========================================================
-# Concrete Implementations
+# Descriptive statistics, effect sizes and diagnostics
 # ==========================================================
 
-# Distribution-Based Tests (compare entire distributions)
-# --------------------------------------------------------
+
+def _describe(sample):
+    """Summary statistics for one sample."""
+    values = sample.pooled
+    if values.size == 0:
+        return {"n": 0, "n_members": sample.n_members}
+    return {
+        "n": int(values.size),
+        "n_members": sample.n_members,
+        "n_per_member": int(values.size // max(sample.n_members, 1)),
+        "mean": float(np.mean(values)),
+        "median": float(np.median(values)),
+        "std": float(np.std(values, ddof=1)) if values.size > 1 else float("nan"),
+        "min": float(np.min(values)),
+        "max": float(np.max(values)),
+        "q25": float(np.percentile(values, 25)),
+        "q75": float(np.percentile(values, 75)),
+        "member_mean_std": (
+            float(np.std(sample.member_means, ddof=1))
+            if sample.n_members > 1
+            else float("nan")
+        ),
+    }
+
+
+def _lag1_autocorrelation(rows):
+    """Average lag-1 autocorrelation within members (0.0 if not estimable)."""
+    correlations = []
+    for row in rows:
+        if row.size < 4:
+            continue
+        centered = row - row.mean()
+        denominator = float(np.dot(centered, centered))
+        if denominator <= _TINY:
+            continue
+        correlations.append(float(np.dot(centered[:-1], centered[1:])) / denominator)
+    if not correlations:
+        return 0.0
+    return float(np.clip(np.mean(correlations), -0.99, 0.99))
+
+
+def _effective_sample_size(sample):
+    """
+    Estimate how many independent observations the pooled sample is worth.
+
+    Uses the standard AR(1) deflation ``n_eff = n * (1 - r) / (1 + r)`` applied
+    within each member. Values contributed by different members *are*
+    independent, so no deflation is applied across members. This is a
+    diagnostic, not a correction: it exists so that an anti-conservative
+    asymptotic p-value is at least visibly labelled as such.
+    """
+    rho = _lag1_autocorrelation(sample.rows)
+    deflation = (1.0 - rho) / (1.0 + rho) if rho > 0 else 1.0
+    per_member = [max(1.0, r.size * deflation) for r in sample.rows]
+    return float(sum(per_member)), rho
+
+
+def _effect_sizes(run, base):
+    """
+    Effect-size measures that do not depend on the sample size.
+
+    ``snr`` is the one climate scientists usually care about: the difference
+    in ensemble-mean divided by the baseline ensemble's own member-to-member
+    spread. A statistically significant difference with snr << 1 is buried
+    inside the ensemble's internal variability.
+    """
+    a, b = run.pooled, base.pooled
+    mean_a, mean_b = float(np.mean(a)), float(np.mean(b))
+    std_a = float(np.std(a, ddof=1)) if a.size > 1 else float("nan")
+    std_b = float(np.std(b, ddof=1)) if b.size > 1 else float("nan")
+
+    scale = (abs(mean_a) + abs(mean_b)) / 2.0
+    pooled_std = float("nan")
+    if a.size > 1 and b.size > 1:
+        dof = a.size + b.size - 2
+        pooled_var = ((a.size - 1) * std_a**2 + (b.size - 1) * std_b**2) / dof
+        pooled_std = math.sqrt(pooled_var) if pooled_var > 0 else float("nan")
+
+    spread = (
+        float(np.std(base.member_means, ddof=1)) if base.n_members > 1 else float("nan")
+    )
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", "ks_2samp: Exact calculation unsuccessful")
+        ks_distance = float(stats.ks_2samp(a, b).statistic)
+
+    return {
+        "mean_diff": mean_a - mean_b,
+        "relative_diff": abs(mean_a - mean_b) / (scale + _TINY),
+        "mean_diff_pct": 100.0 * (mean_a - mean_b) / (abs(mean_b) + _TINY),
+        "median_diff": float(np.median(a) - np.median(b)),
+        "std_ratio": std_a / (std_b + _TINY),
+        "cohens_d": (
+            (mean_a - mean_b) / pooled_std if pooled_std and pooled_std > 0 else float("nan")
+        ),
+        "snr": (
+            abs(mean_a - mean_b) / spread if spread and spread > 0 else float("nan")
+        ),
+        "ks_distance": ks_distance,
+    }
+
+
+# ==========================================================
+# Statistical tests
+# ==========================================================
+
+
+class StatisticalTest(ABC):
+    """
+    A two-sample statistic plus, where scipy offers one, an asymptotic p-value.
+
+    Subclasses implement ``_statistic_and_pvalue``. The p-value may be None,
+    in which case the caller must use permutation calibration.
+    """
+
+    #: Minimum number of pooled values per sample for the test to be defined.
+    min_samples = 2
+
+    #: True when large |statistic| means "more different" in both directions,
+    #: which is what the permutation calibration needs to know.
+    two_sided_statistic = True
+
+    #: False when scipy offers no null distribution, so that an incompatible
+    #: calibration can be rejected before any data is read.
+    provides_asymptotic_pvalue = True
+
+    def __init__(self, alpha):
+        self.alpha = alpha
+
+    @abstractmethod
+    def _statistic_and_pvalue(self, a, b):
+        """Return ``(statistic, pvalue_or_None)``."""
+
+    def evaluate(self, a, b):
+        """Compute the statistic and, if available, the asymptotic p-value."""
+        if a.size < self.min_samples or b.size < self.min_samples:
+            raise ValueError(
+                f"{type(self).__name__} needs at least {self.min_samples} "
+                f"values per sample (got {a.size} and {b.size})"
+            )
+        statistic, pvalue = self._statistic_and_pvalue(a, b)
+        return float(statistic), (None if pvalue is None else float(pvalue))
+
+    def statistic(self, a, b):
+        """Statistic only; used inside the permutation loop."""
+        return self._statistic_and_pvalue(a, b)[0]
+
+
+# --- Distribution tests ---------------------------------------------------
 
 
 class KSTest(StatisticalTest):
     """
     Kolmogorov-Smirnov two-sample test.
-    Tests if two samples come from the same distribution.
-    - Sensitivity: Moderate
-    - Best for: Detecting overall distribution differences
-    - Assumption: Continuous distributions
+
+    Sensitive to the largest vertical gap between the two empirical CDFs, so
+    it responds mostly to shifts in the bulk of the distribution and is weak
+    in the tails. Reasonable default.
     """
 
-    def _compute_test_statistic(self, a, b):
-        # Suppress expected warning about switching to asymptotic method
-        # This is normal for large samples and doesn't affect validity
+    def _statistic_and_pvalue(self, a, b):
         with warnings.catch_warnings():
-            warnings.filterwarnings(
-                'ignore',
-                'ks_2samp: Exact calculation unsuccessful'
-            )
-            return stats.ks_2samp(a, b)
+            warnings.filterwarnings("ignore", "ks_2samp: Exact calculation unsuccessful")
+            result = stats.ks_2samp(a, b)
+        return result.statistic, result.pvalue
 
 
 class AndersonDarlingTest(StatisticalTest):
     """
-    Anderson-Darling k-sample test.
-    More sensitive than K-S, especially to differences in tails.
-    - Sensitivity: High (especially in distribution tails)
-    - Best for: Detecting subtle distributional differences
-    - Assumption: Continuous distributions
-    - Note: Returns approximate p-values in range [0.001, 0.25]
+    Anderson-Darling k-sample test, weighted towards the distribution tails.
+
+    scipy's ``significance_level`` is already a p-value and is clipped to
+    [0.001, 0.25]; that clipping makes it useless against a corrected
+    threshold, so a permutation p-value is requested whenever scipy supports
+    it and the returned value is honestly flagged as clipped otherwise.
     """
 
-    def _compute_test_statistic(self, a, b):
-        if np.unique(a).size < 2 or np.unique(b).size < 2:
-            return np.nan, 1.0
+    min_samples = 3
 
+    def _statistic_and_pvalue(self, a, b):
+        if np.unique(a).size < 2 and np.unique(b).size < 2:
+            raise ValueError("both samples are constant")
+
+        kwargs = {"midrank": True}
+        if hasattr(stats, "PermutationMethod"):
+            kwargs["method"] = stats.PermutationMethod(
+                n_resamples=999,
+                rng=np.random.default_rng(DEFAULT_SEED),
+            )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
-            res = stats.anderson_ksamp([a, b])
-
-        # anderson_ksamp returns significance_level as a percentage (0.1 to 25)
-        # Convert to p-value (0.001 to 0.25). Values outside this range are
-        # capped by scipy, so we respect those bounds.
-        pvalue = res.significance_level / 100.0
-
-        # Note: AD test is inherently more sensitive than KS.
-        # Consider using a stricter alpha (e.g., 0.0001) for AD tests.
-        return float(res.statistic), float(pvalue)
+            try:
+                result = stats.anderson_ksamp([a, b], **kwargs)
+            except TypeError:
+                result = stats.anderson_ksamp([a, b], midrank=True)
+        # significance_level IS the p-value (not a percentage).
+        return result.statistic, result.significance_level
 
 
 class CramerVonMisesTest(StatisticalTest):
     """
-    Cramér-von Mises two-sample test.
-    Similar to K-S but gives more weight to tail differences.
-    - Sensitivity: Moderate to High
-    - Best for: Overall distribution comparison with tail sensitivity
-    - Assumption: Continuous distributions
+    Cramer-von Mises two-sample test.
+
+    Integrates the squared CDF gap rather than taking its maximum, so it uses
+    the whole distribution instead of one point. Generally a bit more powerful
+    than KS against diffuse differences.
     """
 
-    def _compute_test_statistic(self, a, b):
-        res = stats.cramervonmises_2samp(a, b)
-        return res.statistic, res.pvalue
+    def _statistic_and_pvalue(self, a, b):
+        result = stats.cramervonmises_2samp(a, b)
+        return result.statistic, result.pvalue
 
 
 class EppsSingletonTest(StatisticalTest):
     """
-    Epps-Singleton two-sample test.
-    Tests for differences in both location and scale.
-    - Sensitivity: Moderate
-    - Best for: Detecting differences in mean AND variance
-    - Assumption: Works well for non-normal distributions
+    Epps-Singleton test, comparing empirical characteristic functions.
+
+    Unlike KS/CvM it is valid for discrete data and it picks up location and
+    scale differences together. Needs a reasonable number of observations.
     """
 
-    def _compute_test_statistic(self, a, b):
-        res = stats.epps_singleton_2samp(a, b)
-        return res.statistic, res.pvalue
+    min_samples = 5
 
-
-# Location Tests (compare medians/means)
-# ----------------------------------------
-
-
-class MannWhitneyUTest(StatisticalTest):
-    """
-    Mann-Whitney U test (Wilcoxon rank-sum test).
-    Non-parametric test for difference in central tendency.
-    - Sensitivity: Moderate
-    - Best for: Comparing medians of non-normal distributions
-    - Assumption: None (distribution-free)
-    """
-
-    def _compute_test_statistic(self, a, b):
-        res = stats.mannwhitneyu(a, b, alternative="two-sided")
-        return res.statistic, res.pvalue
-
-
-class TTest(StatisticalTest):
-    """
-    Welch's t-test (unequal variance t-test).
-    Parametric test for difference in means.
-    - Sensitivity: Moderate to High (for mean differences)
-    - Best for: Comparing means of approximately normal distributions
-    - Assumption: Approximately normal distributions (robust to violations)
-    """
-
-    def _compute_test_statistic(self, a, b):
-        res = stats.ttest_ind(a, b, equal_var=False)
-        return res.statistic, res.pvalue
-
-
-# Scale/Variance Tests
-# ----------------------
-
-
-class LeveneTest(StatisticalTest):
-    """
-    Levene's test for equality of variances.
-    Tests if two samples have equal variances.
-    - Sensitivity: Moderate
-    - Best for: Detecting differences in variability/spread
-    - Assumption: Robust to non-normality
-    """
-
-    def _compute_test_statistic(self, a, b):
-        stat, pval = stats.levene(a, b)
-        return stat, pval
-
-
-class AnsariBradleyTest(StatisticalTest):
-    """
-    Ansari-Bradley test for equal scale parameters.
-    Non-parametric test for differences in spread.
-    - Sensitivity: Moderate
-    - Best for: Comparing variability when distributions have similar medians
-    - Assumption: Samples differ primarily in scale, not location
-    """
-
-    def _compute_test_statistic(self, a, b):
-        res = stats.ansari(a, b)
-        return res.statistic, res.pvalue
-
-
-class MoodTest(StatisticalTest):
-    """
-    Mood's test for equal scale parameters.
-    Non-parametric alternative to variance comparison.
-    - Sensitivity: Moderate
-    - Best for: Comparing spread/dispersion
-    - Assumption: None (distribution-free)
-    """
-
-    def _compute_test_statistic(self, a, b):
-        res = stats.mood(a, b)
-        return res.statistic, res.pvalue
-
-
-# Energy-Based Test
-# ------------------
+    def _statistic_and_pvalue(self, a, b):
+        result = stats.epps_singleton_2samp(a, b)
+        return result.statistic, result.pvalue
 
 
 class EnergyDistanceTest(StatisticalTest):
     """
-    Energy distance test (statistical energy).
-    Powerful test based on energy statistics.
-    - Sensitivity: High
-    - Best for: Detecting any type of distributional difference
-    - Assumption: None (works for any distribution)
-    - Note: Computationally intensive for large samples
+    Energy distance between the two empirical distributions.
+
+    Consistent against *any* difference in distribution, but scipy provides no
+    null distribution, so this statistic is only meaningful with permutation
+    calibration.
     """
 
-    def _compute_test_statistic(self, a, b):
-        res = stats.energy_distance(a, b)
-        # energy_distance returns only the statistic, need permutation
-        # for p-value. Use bootstrap approximation.
-        n_permutations = 1000
-        observed = res
+    provides_asymptotic_pvalue = False
 
-        # Combine samples for permutation test
-        combined = np.concatenate([a, b])
-        n_a = len(a)
-
-        # Permutation test
-        count = 0
-        for _ in range(n_permutations):
-            perm_combined = np.random.permutation(combined)
-            perm_a = perm_combined[:n_a]
-            perm_b = perm_combined[n_a:]
-            perm_stat = stats.energy_distance(perm_a, perm_b)
-            if perm_stat >= observed:
-                count += 1
-
-        pvalue = (count + 1) / (n_permutations + 1)
-        return observed, pvalue
+    def _statistic_and_pvalue(self, a, b):
+        return stats.energy_distance(a, b), None
 
 
-# Quantile-Based Test
-# ---------------------
+# --- Location tests -------------------------------------------------------
+
+
+class MannWhitneyUTest(StatisticalTest):
+    """
+    Mann-Whitney U. Distribution-free test of stochastic dominance; in
+    practice, a rank-based comparison of central tendency.
+    """
+
+    two_sided_statistic = False
+
+    def _statistic_and_pvalue(self, a, b):
+        result = stats.mannwhitneyu(a, b, alternative="two-sided")
+        return result.statistic, result.pvalue
+
+    def statistic(self, a, b):
+        # U is bounded by n1*n2; recenter so that "far from the middle in
+        # either direction" maps to a large positive number.
+        u_statistic = stats.mannwhitneyu(a, b, alternative="two-sided").statistic
+        return abs(u_statistic - a.size * b.size / 2.0)
+
+
+class TTest(StatisticalTest):
+    """Welch's unequal-variance t-test on the means."""
+
+    def _statistic_and_pvalue(self, a, b):
+        result = stats.ttest_ind(a, b, equal_var=False)
+        return result.statistic, result.pvalue
 
 
 class BrunnerMunzelTest(StatisticalTest):
     """
-    Brunner-Munzel test (generalized Wilcoxon test).
-    Non-parametric test for stochastic equality.
-    - Sensitivity: Moderate to High
-    - Best for: Robust alternative to t-test for ordinal data
-    - Assumption: None (distribution-free)
+    Brunner-Munzel test of stochastic equality. Unlike Mann-Whitney it does
+    not assume equal shapes, so it stays valid when the variances differ.
     """
 
-    def _compute_test_statistic(self, a, b):
-        res = stats.brunnermunzel(a, b)
-        return res.statistic, res.pvalue
+    min_samples = 3
+
+    def _statistic_and_pvalue(self, a, b):
+        result = stats.brunnermunzel(a, b)
+        return result.statistic, result.pvalue
+
+
+# --- Scale tests ----------------------------------------------------------
+
+
+class LeveneTest(StatisticalTest):
+    """Levene's test (median-centered) for equality of variances."""
+
+    def _statistic_and_pvalue(self, a, b):
+        statistic, pvalue = stats.levene(a, b, center="median")
+        return statistic, pvalue
+
+
+class AnsariBradleyTest(StatisticalTest):
+    """
+    Ansari-Bradley rank test for equal scale. Assumes the two samples share a
+    location, so pair it with a location test rather than using it alone.
+    """
+
+    def _statistic_and_pvalue(self, a, b):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            result = stats.ansari(a, b)
+        return result.statistic, result.pvalue
+
+
+class MoodTest(StatisticalTest):
+    """Mood's rank test for a difference in scale."""
+
+    min_samples = 3
+
+    def _statistic_and_pvalue(self, a, b):
+        result = stats.mood(a, b)
+        return result.statistic, result.pvalue
+
+
+TEST_REGISTRY = {
+    "ks": KSTest,
+    "ad": AndersonDarlingTest,
+    "cvm": CramerVonMisesTest,
+    "epps": EppsSingletonTest,
+    "energy": EnergyDistanceTest,
+    "mw": MannWhitneyUTest,
+    "ttest": TTest,
+    "brunner": BrunnerMunzelTest,
+    "levene": LeveneTest,
+    "ansari": AnsariBradleyTest,
+    "mood": MoodTest,
+}
+
+TEST_ALIASES = {
+    "kolmogorov-smirnov": "ks",
+    "anderson-darling": "ad",
+    "cm": "cvm",
+    "cramer": "cvm",
+    "cramer-von-mises": "cvm",
+    "epps-singleton": "epps",
+    "energy-distance": "energy",
+    "mannwhitney": "mw",
+    "mann-whitney": "mw",
+    "t-test": "ttest",
+    "welch": "ttest",
+    "brunnermunzel": "brunner",
+    "brunner-munzel": "brunner",
+    "ansari-bradley": "ansari",
+}
+
+
+def normalize_test_type(test_type):
+    """Resolve aliases and validate a test identifier."""
+    key = TEST_ALIASES.get(test_type.lower(), test_type.lower())
+    if key not in TEST_REGISTRY:
+        raise ValueError(
+            f"Unknown test type: '{test_type}'\n"
+            f"  Distribution: ks, ad, cvm, epps, energy\n"
+            f"  Location:     mw, ttest, brunner\n"
+            f"  Scale:        levene, ansari, mood"
+        )
+    return key
+
+
+def get_test(test_type, alpha=0.01):
+    """Instantiate the requested statistical test."""
+    return TEST_REGISTRY[normalize_test_type(test_type)](alpha)
 
 
 # ==========================================================
-# Test Factory
+# Calibration
 # ==========================================================
 
 
-# pylint: disable=too-many-return-statements
-def get_test(test_type: str, alpha=0.01, magnitude_threshold=None):
+def _n_member_partitions(n_run, n_base):
+    """Number of ways to split the pooled members back into two groups."""
+    return math.comb(n_run + n_base, n_run)
+
+
+def decision_threshold(alpha, correction_method, n_tests):
     """
-    Factory function for selecting statistical test type.
+    The smallest p-value threshold any variable can be judged against.
 
-    Available tests organized by category:
-
-    DISTRIBUTION TESTS (compare entire distributions):
-    - 'ks': Kolmogorov-Smirnov (recommended default, moderate sensitivity)
-    - 'ad': Anderson-Darling (high sensitivity, especially in tails)
-    - 'cvm': Cramér-von Mises (moderate-high sensitivity)
-    - 'epps': Epps-Singleton (detects location and scale differences)
-    - 'energy': Energy distance (high sensitivity, any difference type)
-
-    LOCATION TESTS (compare means/medians):
-    - 'mw': Mann-Whitney U (non-parametric, compares medians)
-    - 'ttest': Welch's t-test (parametric, compares means)
-    - 'brunner': Brunner-Munzel (robust alternative to t-test)
-
-    SCALE TESTS (compare variances/spread):
-    - 'levene': Levene's test (variance equality)
-    - 'ansari': Ansari-Bradley (non-parametric scale test)
-    - 'mood': Mood's test (non-parametric dispersion test)
-
-    Recommended alpha values:
-    - Most tests: 0.01 (default)
-    - Anderson-Darling: 0.001 (auto-adjusted due to high sensitivity)
-    - Energy distance: 0.01 (already uses permutation testing)
+    Bonferroni and Holm both bottom out at ``alpha / n``; so does
+    Benjamini-Hochberg, whose most stringent critical value (the one applied
+    to the smallest p-value) is also ``alpha / n``. Without a correction the
+    threshold is just ``alpha``.
     """
-    test_type = test_type.lower()
+    if correction_method == "none" or n_tests < 1:
+        return alpha
+    if correction_method == "fdr_by":
+        harmonic = sum(1.0 / (i + 1) for i in range(n_tests))
+        return alpha / (n_tests * harmonic)
+    return alpha / n_tests
 
-    # Distribution tests
-    if test_type in ("ks", "kolmogorov-smirnov"):
-        return KSTest(alpha, magnitude_threshold)
-    if test_type in ("ad", "anderson-darling"):
-        ad_alpha = alpha if alpha != 0.01 else 0.001
-        return AndersonDarlingTest(ad_alpha, magnitude_threshold)
-    if test_type in ("cvm", "cm", "cramer-von-mises", "cramer"):
-        return CramerVonMisesTest(alpha, magnitude_threshold)
-    if test_type in ("epps", "epps-singleton"):
-        return EppsSingletonTest(alpha, magnitude_threshold)
-    if test_type in ("energy", "energy-distance"):
-        return EnergyDistanceTest(alpha, magnitude_threshold)
 
-    # Location tests
-    if test_type in ("mw", "mannwhitney", "mann-whitney"):
-        return MannWhitneyUTest(alpha, magnitude_threshold)
-    if test_type in ("ttest", "t-test", "welch"):
-        return TTest(alpha, magnitude_threshold)
-    if test_type in ("brunner", "brunnermunzel", "brunner-munzel"):
-        return BrunnerMunzelTest(alpha, magnitude_threshold)
+def permutation_resolution(n_run, n_base, n_resamples):
+    """
+    Smallest p-value a member permutation test can produce.
 
-    # Scale tests
-    if test_type in ("levene",):
-        return LeveneTest(alpha, magnitude_threshold)
-    if test_type in ("ansari", "ansari-bradley"):
-        return AnsariBradleyTest(alpha, magnitude_threshold)
-    if test_type in ("mood",):
-        return MoodTest(alpha, magnitude_threshold)
+    Exhaustive enumeration bottoms out at ``2 / C(n1+n2, n1)`` because a
+    partition and its complement give the same two-sided statistic; random
+    sampling bottoms out at ``1 / (n_resamples + 1)``.
+    """
+    total = _n_member_partitions(n_run, n_base)
+    if total <= MAX_EXACT_PERMUTATIONS:
+        return 2.0 / total, int(total), True
+    return 1.0 / (n_resamples + 1), int(n_resamples), False
 
-    # Error message with helpful suggestions
-    raise ValueError(
-        f"Unknown test type: '{test_type}'\n"
-        f"Available tests:\n"
-        f"  Distribution: ks, ad, cvm, epps, energy\n"
-        f"  Location: mw, ttest, brunner\n"
-        f"  Scale: levene, ansari, mood\n"
-        f"Run with --help for detailed descriptions."
+
+# pylint: disable=too-many-locals
+def member_permutation_pvalue(test, run, base, n_resamples, rng):
+    """
+    Recalibrate ``test`` by permuting whole members between the ensembles.
+
+    Exact under the null that members are exchangeable across ensembles, and
+    -- unlike the asymptotic p-values -- indifferent to serial or spatial
+    correlation *within* a member.
+    """
+    rows = run.rows + base.rows
+    n_run, n_total = run.n_members, len(rows)
+    observed = abs(test.statistic(run.pooled, base.pooled))
+
+    _, n_used, exhaustive = permutation_resolution(n_run, base.n_members, n_resamples)
+
+    if exhaustive:
+        assignments = combinations(range(n_total), n_run)
+    else:
+        assignments = (
+            tuple(rng.permutation(n_total)[:n_run]) for _ in range(n_resamples)
+        )
+
+    count = 0
+    evaluated = 0
+    for selection in assignments:
+        chosen = set(selection)
+        left = np.concatenate([rows[i] for i in range(n_total) if i in chosen])
+        right = np.concatenate([rows[i] for i in range(n_total) if i not in chosen])
+        try:
+            candidate = abs(test.statistic(left, right))
+        except (ValueError, ZeroDivisionError, FloatingPointError):
+            continue
+        evaluated += 1
+        if candidate >= observed - 1e-15:
+            count += 1
+
+    if evaluated == 0:
+        raise ValueError("no member permutation produced a usable statistic")
+
+    if exhaustive:
+        # The observed assignment is itself one of the enumerated partitions.
+        pvalue = count / evaluated
+    else:
+        pvalue = (count + 1.0) / (evaluated + 1.0)
+
+    return float(pvalue), int(n_used), exhaustive
+
+
+# ==========================================================
+# Equivalence testing (TOST)
+# ==========================================================
+
+
+# pylint: disable=too-many-locals
+def tost_equivalence(run, base, margin_in_sigma, alpha):
+    """
+    Two one-sided tests for equivalence of the ensemble means.
+
+    Operates on member-level means, which are the only values here that are
+    genuinely independent. The equivalence margin is expressed in units of the
+    baseline ensemble's own member-to-member standard deviation, so
+    ``margin_in_sigma=1`` reads "the ensemble means agree to within one
+    baseline ensemble sigma".
+
+    Returns None when the margin cannot be formed (too few members, or a
+    degenerate baseline spread).
+    """
+    x, y = run.member_means, base.member_means
+    if x.size < 2 or y.size < 2:
+        return None
+
+    sigma = float(np.std(y, ddof=1))
+    if not np.isfinite(sigma) or sigma <= _TINY:
+        return None
+
+    margin = margin_in_sigma * sigma
+    difference = float(np.mean(x) - np.mean(y))
+    standard_error = math.sqrt(
+        np.var(x, ddof=1) / x.size + np.var(y, ddof=1) / y.size
+    )
+    if standard_error <= _TINY:
+        return None
+
+    # Welch-Satterthwaite degrees of freedom
+    var_x, var_y = np.var(x, ddof=1) / x.size, np.var(y, ddof=1) / y.size
+    dof = (var_x + var_y) ** 2 / (
+        var_x**2 / (x.size - 1) + var_y**2 / (y.size - 1)
     )
 
+    t_lower = (difference + margin) / standard_error
+    t_upper = (difference - margin) / standard_error
+    p_lower = float(stats.t.sf(t_lower, dof))
+    p_upper = float(stats.t.cdf(t_upper, dof))
+    p_tost = max(p_lower, p_upper)
+
+    return {
+        "margin_in_sigma": margin_in_sigma,
+        "margin": margin,
+        "baseline_member_sigma": sigma,
+        "mean_difference": difference,
+        "dof": float(dof),
+        "p_tost": p_tost,
+        "equivalent": bool(p_tost < alpha),
+    }
+
 
 # ==========================================================
-# Multiple Testing Correction
+# Multiple-testing correction
 # ==========================================================
 
 
-# pylint: disable=too-many-branches
 def apply_multiple_testing_correction(results, alpha, method="bonferroni"):
     """
-    Apply multiple testing correction to p-values.
+    Correct the p-values across variables and refresh the decisions.
 
-    Args:
-        results: Dictionary of {variable: test_result_dict}
-        alpha: Significance level
-        method: Correction method - 'bonferroni', 'fdr', or 'none'
+    Two properties this deliberately guarantees, and which the previous
+    hand-rolled implementation did not:
 
-    Returns:
-        Updated results dictionary with corrected hypothesis decisions
+    1. A correction can only ever *remove* rejections. It never turns a
+       variable that passed into one that failed.
+    2. Gates that sit downstream of the p-value (the magnitude threshold, the
+       equivalence requirement) are re-applied afterwards, so a correction
+       cannot resurrect a decision they had already settled.
     """
-    if method == "none":
+    statsmodels_method, _ = CORRECTION_METHODS[method]
+    if statsmodels_method is None:
+        for result in results.values():
+            result["correction_method"] = "none"
+            result["pvalue_corrected"] = result.get("pvalue")
         return results
 
-    # Extract p-values and variable names
-    var_names = []
-    pvalues = []
-    for var, res in results.items():
-        if "pvalue" in res and not np.isnan(res["pvalue"]):
-            var_names.append(var)
-            pvalues.append(res["pvalue"])
-
-    if len(pvalues) == 0:
+    names = [
+        name
+        for name, result in results.items()
+        if result.get("pvalue") is not None and np.isfinite(result["pvalue"])
+    ]
+    if not names:
         return results
 
-    n_tests = len(pvalues)
-    pvalues = np.array(pvalues)
+    pvalues = np.array([results[name]["pvalue"] for name in names])
+    reject, corrected, _, _ = multipletests(
+        pvalues, alpha=alpha, method=statsmodels_method
+    )
 
-    if method == "bonferroni":
-        # Bonferroni correction: divide alpha by number of tests
-        corrected_alpha = alpha / n_tests
-        reject = pvalues < corrected_alpha
-
-        # Update results with corrected decisions
-        for i, var in enumerate(var_names):
-            original_result = results[var]["hypothesis"]
-            results[var]["corrected_alpha"] = corrected_alpha
-            results[var]["correction_method"] = "bonferroni"
-
-            # Re-evaluate hypothesis with corrected alpha
-            if reject[i]:
-                results[var]["hypothesis"] = "FAIL"
-                if original_result == "PASS":
-                    results[var]["reason"] += " (failed after Bonferroni correction)"
-            else:
-                results[var]["hypothesis"] = "PASS"
-                if original_result == "FAIL":
-                    results[var]["reason"] += " (passed after Bonferroni correction)"
-
-    elif method == "fdr":
-        # Benjamini-Hochberg FDR correction
-        # Sort p-values in ascending order
-        sorted_indices = np.argsort(pvalues)
-        sorted_pvalues = pvalues[sorted_indices]
-
-        # Find largest i where p(i) <= (i/m) * alpha
-        reject = np.zeros(n_tests, dtype=bool)
-        for i in range(n_tests - 1, -1, -1):
-            if sorted_pvalues[i] <= ((i + 1) / n_tests) * alpha:
-                # Reject this and all smaller p-values
-                reject[sorted_indices[: i + 1]] = True
-                break
-
-        # Update results with FDR-corrected decisions
-        for i, var in enumerate(var_names):
-            original_result = results[var]["hypothesis"]
-            critical_value = ((np.where(sorted_indices == i)
-                              [0][0] + 1) / n_tests) * alpha
-            results[var]["fdr_critical_value"] = float(critical_value)
-            results[var]["correction_method"] = "fdr"
-
-            # Re-evaluate hypothesis with FDR
-            if reject[i]:
-                results[var]["hypothesis"] = "FAIL"
-                if original_result == "PASS":
-                    results[var]["reason"] += " (failed after FDR correction)"
-            else:
-                results[var]["hypothesis"] = "PASS"
-                if original_result == "FAIL":
-                    results[var]["reason"] += " (passed after FDR correction)"
+    for i, name in enumerate(names):
+        result = results[name]
+        result["correction_method"] = method
+        result["n_tests_corrected"] = len(names)
+        result["pvalue_corrected"] = float(corrected[i])
+        result["rejected_uncorrected"] = bool(result["rejected"])
+        # Property 1: intersect, never union.
+        result["rejected"] = bool(result["rejected"] and reject[i])
 
     return results
 
 
+def _finalize_decision(result, magnitude_threshold, equivalence_margin):
+    """Turn a rejection flag plus the downstream gates into PASS/FAIL."""
+    reasons = []
+    fail = bool(result.get("rejected", False))
+
+    if fail and magnitude_threshold is not None:
+        relative = result["effect_size"]["relative_diff"]
+        result["magnitude_check"] = {
+            "relative_difference": relative,
+            "magnitude_threshold": magnitude_threshold,
+            "exceeds_threshold": bool(relative > magnitude_threshold),
+        }
+        if relative <= magnitude_threshold:
+            fail = False
+            reasons.append(
+                f"difference is statistically detectable but below the "
+                f"magnitude threshold ({relative:.3e} <= {magnitude_threshold:.3e})"
+            )
+
+    equivalence = result.get("equivalence")
+    if equivalence_margin is not None:
+        if equivalence is None:
+            fail = True
+            reasons.append("equivalence could not be assessed (too few members)")
+        elif not equivalence["equivalent"]:
+            fail = True
+            reasons.append(
+                f"equivalence within +/-{equivalence_margin} sigma not "
+                f"demonstrated (p_TOST={equivalence['p_tost']:.3e})"
+            )
+
+    result["hypothesis"] = "FAIL" if fail else "PASS"
+    result["decision_notes"] = reasons
+    return result
+
+
 # ==========================================================
-# Main entry: run_stats_comparison
+# Per-variable comparison
 # ==========================================================
 
 
-# pylint: disable=too-many-locals, too-many-statements
+def _select_variables(run_ens, base_ens, requested=None):
+    """
+    Choose the variables to test.
+
+    Only variables present in *every* member of *both* ensembles are testable;
+    anything else is reported as skipped rather than quietly ignored. The
+    all-NaN / constant screening happens later, on the reduced samples, so
+    that we never pull a full 4-D field into memory just to decide whether to
+    look at it.
+    """
+    reference = next(iter(run_ens.values()))
+    candidates = [
+        str(name)
+        for name in reference.data_vars
+        if str(name) not in SKIP_VARS
+        and "time" in reference[name].dims
+        and np.issubdtype(reference[name].dtype, np.floating)
+    ]
+
+    if requested:
+        missing = sorted(set(requested) - set(candidates))
+        if missing:
+            raise ValueError(
+                f"Requested variable(s) not testable in the run ensemble: "
+                f"{', '.join(missing)}"
+            )
+        candidates = [name for name in candidates if name in requested]
+
+    skipped = {}
+    testable = []
+    for name in candidates:
+        absent = [
+            f"{label}:{inst}"
+            for label, ensemble in (("run", run_ens), ("base", base_ens))
+            for inst, dataset in sorted(ensemble.items())
+            if name not in dataset.variables
+        ]
+        if absent:
+            skipped[name] = f"absent from member(s) {', '.join(absent)}"
+        else:
+            testable.append(name)
+
+    return sorted(testable), skipped
+
+
 # pylint: disable=too-many-arguments, too-many-positional-arguments
+# pylint: disable=too-many-locals, too-many-branches
+def compare_variable(
+    var,
+    run_ens,
+    base_ens,
+    test,
+    analysis_type,
+    weights,
+    calibration,
+    n_resamples,
+    rng,
+    equivalence_margin,
+):
+    """Run the full comparison for a single variable."""
+    run, base, notes = build_samples(var, run_ens, base_ens, analysis_type, weights)
+
+    if run.size == 0 or base.size == 0:
+        raise ValueError("no finite data")
+
+    result = {
+        "variable": var,
+        "sample1": _describe(run),
+        "sample2": _describe(base),
+        "notes": notes,
+    }
+
+    run_neff, run_rho = _effective_sample_size(run)
+    base_neff, base_rho = _effective_sample_size(base)
+    result["independence"] = {
+        "lag1_autocorrelation_run": run_rho,
+        "lag1_autocorrelation_base": base_rho,
+        "effective_n_run": run_neff,
+        "effective_n_base": base_neff,
+        "nominal_n_run": run.size,
+        "nominal_n_base": base.size,
+    }
+
+    result["effect_size"] = _effect_sizes(run, base)
+
+    if equivalence_margin is not None:
+        result["equivalence"] = tost_equivalence(
+            run, base, equivalence_margin, test.alpha
+        )
+
+    # Degenerate cases resolve before any test is attempted.
+    if run.size == base.size and np.array_equal(run.pooled, base.pooled):
+        result.update(
+            statistic=0.0,
+            pvalue=1.0,
+            rejected=False,
+            calibration="exact",
+            reason="samples are bit-identical",
+        )
+        return _finalize_decision(result, None, equivalence_margin)
+
+    constant_run = np.unique(run.pooled).size < 2
+    constant_base = np.unique(base.pooled).size < 2
+    if constant_run and constant_base:
+        identical = math.isclose(float(run.pooled[0]), float(base.pooled[0]))
+        result.update(
+            statistic=0.0 if identical else float("inf"),
+            pvalue=1.0 if identical else 0.0,
+            rejected=not identical,
+            calibration="exact",
+            reason=(
+                "both samples are constant and equal"
+                if identical
+                else "both samples are constant but differ"
+            ),
+        )
+        return _finalize_decision(result, None, equivalence_margin)
+
+    statistic, asymptotic_p = test.evaluate(run.pooled, base.pooled)
+    result["statistic"] = statistic
+    result["pvalue_asymptotic"] = asymptotic_p
+
+    if calibration == "member":
+        pvalue, n_used, exhaustive = member_permutation_pvalue(
+            test, run, base, n_resamples, rng
+        )
+        result["calibration"] = "member_permutation"
+        result["n_permutations"] = n_used
+        result["permutation_exhaustive"] = exhaustive
+    else:
+        if asymptotic_p is None:
+            raise ValueError(
+                f"test '{type(test).__name__}' has no asymptotic p-value; "
+                f"use --calibration member"
+            )
+        pvalue = asymptotic_p
+        result["calibration"] = "asymptotic"
+
+    result["pvalue"] = float(pvalue)
+    result["rejected"] = bool(np.isfinite(pvalue) and pvalue < test.alpha)
+    return result
+
+
+# ==========================================================
+# JSON output location
+# ==========================================================
+
+
+def resolve_json_path(json_output, run_dir, test_type, analysis_type):
+    """
+    Work out where the JSON report should go.
+
+    Precedence: explicit argument, then ``$RCS_JSON_OUTPUT``, then the run
+    directory (the historical behavior). The value may be
+
+    - a path ending in ``.json``: used verbatim, parents created as needed;
+    - a directory (existing, or with a trailing separator): the report is
+      written inside it under a generated name;
+    - ``none`` / ``off`` / ``""``: no JSON report is written.
+
+    Returns None when writing is disabled.
+    """
+    if json_output is None:
+        json_output = os.environ.get("RCS_JSON_OUTPUT")
+    if json_output is None:
+        json_output = run_dir
+
+    target = str(json_output).strip()
+    if target.lower() in ("", "none", "off", "no", "disable", "disabled"):
+        return None
+
+    target = os.path.abspath(os.path.expanduser(os.path.expandvars(target)))
+    filename = f"rcs_{test_type}_{analysis_type}_results.json"
+
+    if target.endswith(".json"):
+        return target
+    return os.path.join(target, filename)
+
+
+def write_json_report(path, payload):
+    """
+    Write the JSON report, degrading gracefully when the location is not
+    writable.
+
+    RUNDIR is frequently on a shared filesystem the caller cannot write to, so
+    a failure here falls back to the temporary directory and, if that also
+    fails, is reported and swallowed. Losing the report must never turn a
+    passing comparison into a failing one.
+    """
+    if path is None:
+        return None, None
+
+    def _attempt(candidate):
+        os.makedirs(os.path.dirname(candidate) or ".", exist_ok=True)
+        with open(candidate, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, default=str)
+        return candidate
+
+    try:
+        return _attempt(path), None
+    except OSError as first_error:
+        fallback = os.path.join(tempfile.gettempdir(), os.path.basename(path))
+        logger.warning(
+            "Could not write JSON report to %s (%s); trying %s",
+            path, first_error, fallback,
+        )
+        try:
+            return _attempt(fallback), (
+                f"could not write to {path} ({first_error}); "
+                f"wrote to {fallback} instead"
+            )
+        except OSError as second_error:
+            return None, (
+                f"could not write JSON report to {path} ({first_error}) "
+                f"or {fallback} ({second_error})"
+            )
+
+
+# ==========================================================
+# Reporting
+# ==========================================================
+
+
+def _rule(char="="):
+    return char * 78
+
+
+# pylint: disable=too-many-locals, too-many-branches, too-many-statements
+def format_report(config, ensemble_info, results, skipped, errors, summary):
+    """Render the human-readable report."""
+    lines = ["", _rule(), "RCS STATISTICAL COMPARISON", _rule()]
+
+    test_type = config["test_type"]
+    lines += [
+        f"Statistical test     : {TEST_FULL_NAMES[test_type]} ({test_type})",
+        f"Analysis type        : {config['analysis_type']} "
+        f"({ANALYSIS_FULL_NAMES[config['analysis_type']]})",
+        f"Calibration          : {config['calibration']}",
+        f"Significance level   : alpha = {config['alpha']}",
+        f"Multiple testing     : {CORRECTION_METHODS[config['correction_method']][1]}",
+        f"Max failed variables : {config['max_failed_vars']}",
+        f"Max failed fraction  : {config['max_failed_fraction']}",
+    ]
+    if config["magnitude_threshold"] is not None:
+        lines.append(
+            f"Magnitude threshold  : {config['magnitude_threshold']} "
+            f"(relative mean difference required to count as a failure)"
+        )
+    if config["equivalence_margin"] is not None:
+        lines.append(
+            f"Equivalence margin   : {config['equivalence_margin']} baseline sigma "
+            f"(TOST; PASS requires demonstrated equivalence)"
+        )
+    lines += [
+        f"RNG seed             : {config['seed']}",
+        f"Run file pattern     : {config['run_file_pattern']}",
+        f"Baseline pattern     : {config['base_file_pattern']}",
+    ]
+
+    lines += ["", _rule("-"), "ENSEMBLES", _rule("-")]
+    lines += [
+        f"Run      : {ensemble_info['n_run']} member(s) "
+        f"[{', '.join(ensemble_info['run_instances'])}]",
+        f"Baseline : {ensemble_info['n_base']} member(s) "
+        f"[{', '.join(ensemble_info['base_instances'])}]",
+        f"Variables tested : {len(results)}",
+    ]
+    if skipped:
+        lines.append(f"Variables skipped: {len(skipped)}")
+    if errors:
+        lines.append(f"Variables errored: {len(errors)}")
+
+    # --- What this configuration can and cannot resolve -------------------
+    lines += ["", _rule("-"), "RESOLUTION AND POWER", _rule("-")]
+    n_run, n_base = ensemble_info["n_run"], ensemble_info["n_base"]
+    effective_alpha = decision_threshold(
+        config["alpha"], config["correction_method"], len(results)
+    )
+    if config["correction_method"] != "none" and results:
+        lines.append(
+            f"Strictest per-variable threshold after correction: "
+            f"{effective_alpha:.3e} (alpha={config['alpha']} over "
+            f"{len(results)} variables)"
+        )
+
+    p_min, n_perms, exhaustive = permutation_resolution(
+        n_run, n_base, config["n_resamples"]
+    )
+    lines.append(
+        f"Member permutation resolution: smallest attainable p-value is "
+        f"{p_min:.3e} with {n_run}+{n_base} members "
+        f"({'all ' if exhaustive else ''}{n_perms} "
+        f"{'partitions' if exhaustive else 'random resamples'})"
+    )
+
+    if config["calibration"] == "member" and p_min > effective_alpha:
+        lines += [
+            "",
+            "*** WARNING: with this many members the permutation test can",
+            f"*** never reach the decision threshold {effective_alpha:.3e},",
+            "*** so no variable can fail and the comparison is vacuous.",
+            "*** Remedies, in order of preference:",
+            "***   - add ensemble members (the resolution improves roughly",
+            "***     like 2/C(2n,n): 9 per ensemble reaches ~4e-5)",
+            "***   - test fewer variables (--variables) to soften the",
+            "***     correction; every correction here bottoms out at alpha/n",
+            "***   - relax --alpha",
+        ]
+    if config["calibration"] == "asymptotic":
+        neffs = [
+            r["independence"]["effective_n_run"] / max(r["independence"]["nominal_n_run"], 1)
+            for r in results.values()
+            if "independence" in r
+        ]
+        if neffs:
+            lines += [
+                "",
+                f"Median effective/nominal sample size: {np.median(neffs):.2f}",
+                "  Asymptotic p-values assume every pooled value is an",
+                "  independent observation. Values below 1.0 mean they are",
+                "  anti-conservative; --calibration member removes the",
+                "  assumption at the cost of resolution.",
+            ]
+
+    # --- Summary ----------------------------------------------------------
+    total = summary["total"]
+    lines += ["", _rule("-"), "SUMMARY", _rule("-")]
+    if total:
+        lines += [
+            f"Passed : {summary['passed']:5d} ({100.0 * summary['passed'] / total:5.1f}%)",
+            f"Failed : {summary['failed']:5d} ({100.0 * summary['failed'] / total:5.1f}%)",
+        ]
+    else:
+        lines.append("No variable could be tested.")
+
+    failed = summary["failed_variables"]
+    if failed:
+        lines += ["", _rule("-"), "FAILED VARIABLES", _rule("-")]
+        ranked = sorted(failed, key=lambda v: results[v].get("pvalue", 1.0))
+        for var in ranked[:20]:
+            result = results[var]
+            effect = result["effect_size"]
+            sample1, sample2 = result["sample1"], result["sample2"]
+            pvalue = result.get("pvalue", float("nan"))
+            corrected = result.get("pvalue_corrected")
+            lines.append(f"\n{var}:")
+            line = f"  p = {pvalue:.4e}"
+            if corrected is not None and corrected != pvalue:
+                line += f" (corrected {corrected:.4e})"
+            line += f"  alpha = {config['alpha']}  [{result.get('calibration', '?')}]"
+            lines.append(line)
+            lines.append(
+                f"  run      : n={sample1['n']:7d}  mean={sample1.get('mean', float('nan')):13.6e}"
+                f"  std={sample1.get('std', float('nan')):13.6e}"
+            )
+            lines.append(
+                f"  baseline : n={sample2['n']:7d}  mean={sample2.get('mean', float('nan')):13.6e}"
+                f"  std={sample2.get('std', float('nan')):13.6e}"
+            )
+            lines.append(
+                f"  effect   : dmean={effect['mean_diff']:.6e} "
+                f"({effect['mean_diff_pct']:+.3f}%)  "
+                f"d={effect['cohens_d']:.3f}  snr={effect['snr']:.3f}  "
+                f"KS={effect['ks_distance']:.4f}"
+            )
+            for note in result.get("decision_notes", []):
+                lines.append(f"  note     : {note}")
+            for note in result.get("notes", []):
+                lines.append(f"  data     : {note}")
+        if len(ranked) > 20:
+            lines.append(f"\n  ... and {len(ranked) - 20} more failed variable(s)")
+
+    # Variables that pass but show a large effect deserve a look even though
+    # they did not trip the threshold.
+    watchlist = sorted(
+        (
+            (results[v]["effect_size"]["snr"], v)
+            for v in summary["passed_variables"]
+            if np.isfinite(results[v]["effect_size"]["snr"])
+            and results[v]["effect_size"]["snr"] > 1.0
+        ),
+        reverse=True,
+    )
+    if watchlist:
+        lines += ["", _rule("-"), "PASSED BUT NOTABLE (snr > 1)", _rule("-")]
+        lines.append("  Not rejected, but the ensemble means differ by more than the")
+        lines.append("  baseline ensemble's own member spread.")
+        for snr, var in watchlist[:10]:
+            effect = results[var]["effect_size"]
+            lines.append(
+                f"  {var}: snr={snr:.2f}  dmean={effect['mean_diff_pct']:+.3f}%  "
+                f"p={results[var].get('pvalue', float('nan')):.3e}"
+            )
+
+    # Sample-construction notes are material even when everything passes: a
+    # comparison that quietly threw away most of the domain is not the
+    # comparison the caller thinks they ran.
+    noted = {v: r["notes"] for v, r in results.items() if r.get("notes")}
+    if noted:
+        lines += ["", _rule("-"), "DATA NOTES", _rule("-")]
+        for var, notes in sorted(noted.items())[:20]:
+            for note in notes:
+                lines.append(f"  {var}: {note}")
+        if len(noted) > 20:
+            lines.append(f"  ... and {len(noted) - 20} more variable(s) with notes")
+
+    if skipped:
+        lines += ["", _rule("-"), "SKIPPED VARIABLES", _rule("-")]
+        for var, reason in sorted(skipped.items())[:20]:
+            lines.append(f"  {var}: {reason}")
+        if len(skipped) > 20:
+            lines.append(f"  ... and {len(skipped) - 20} more")
+
+    if errors:
+        lines += ["", _rule("-"), "ERRORED VARIABLES", _rule("-")]
+        lines.append("  These variables could not be tested and are NOT counted")
+        lines.append("  as passing. Investigate before trusting the result.")
+        for var, reason in sorted(errors.items())[:20]:
+            lines.append(f"  {var}: {reason}")
+        if len(errors) > 20:
+            lines.append(f"  ... and {len(errors) - 20} more")
+
+    lines += ["", _rule(), f"OVERALL: {summary['test_status']}", _rule()]
+    lines.append(f"  {summary['status_reason']}")
+    if summary.get("json_path"):
+        lines.append(f"  Detailed results: {summary['json_path']}")
+    if summary.get("json_note"):
+        lines.append(f"  NOTE: {summary['json_note']}")
+
+    return "\n".join(lines)
+
+
+# ==========================================================
+# Main entry point
+# ==========================================================
+
+
+# pylint: disable=too-many-arguments, too-many-positional-arguments
+# pylint: disable=too-many-locals, too-many-branches, too-many-statements
 def run_stats_comparison(
     run_dir,
     base_dir,
     analysis_type="spatiotemporal",
     test_type="ks",
     alpha=None,
-    critical_fraction=0.001,
     correction_method="bonferroni",
+    calibration="asymptotic",
+    n_resamples=2000,
     max_failed_vars=0,
+    max_failed_fraction=None,
     magnitude_threshold=None,
+    equivalence_margin=None,
+    variables=None,
     run_file_pattern=None,
     base_file_pattern=None,
+    json_output=None,
+    seed=DEFAULT_SEED,
+    fail_on_error=False,
+    critical_fraction=None,
 ):
     """
-    Compare ensembles using configurable statistical tests.
+    Compare two ensembles and return ``(report_text, "PASS"|"FAIL")``.
 
     Args:
-        run_dir: Directory containing run ensemble output
-        base_dir: Directory containing baseline ensemble output
-        analysis_type: 'spatiotemporal' (area-weighted means) or
-                      'temporal' (per-column means)
-        test_type: Statistical test identifier:
-            - 'ks': Kolmogorov-Smirnov (recommended, moderate sensitivity)
-            - 'mw': Mann-Whitney U (non-parametric, moderate sensitivity)
-            - 'ad': Anderson-Darling (very sensitive, use with caution)
-            - 'cvm': Cramér-von Mises (moderate to high sensitivity)
-        alpha: Significance level (default: 0.01 for most tests, 0.001 for AD)
-        critical_fraction: Fraction of variables that can fail before overall
-                          test fails (default: 0.001)
-        correction_method: Multiple testing correction method:
-            - 'bonferroni': Conservative, controls family-wise error rate
-            - 'fdr': False Discovery Rate (Benjamini-Hochberg), less conservative
-            - 'none': No correction applied
-        max_failed_vars: Maximum number of variables allowed to fail
-                        (default: 0)
-        magnitude_threshold: Minimum relative difference to consider
-                            significant (default: None, all differences count)
-        run_file_pattern: File pattern for run ensemble files. Use '????' as
-                         placeholder for instance number
-                         (default: '*.scream_????.h.AVERAGE.*.nc')
-        base_file_pattern: File pattern for baseline ensemble files.
-                          Use '????' as placeholder for instance number
-                          (default: '*.scream_????.h.AVERAGE.*.nc')
-
-    Note: Anderson-Darling is significantly more sensitive than K-S and will
-          detect smaller distributional differences. It uses a stricter default
-          alpha (0.001 vs 0.01) to compensate.
+        run_dir: Directory holding the run ensemble output.
+        base_dir: Directory holding the baseline ensemble output.
+        analysis_type: ``spatiotemporal`` (area-weighted global mean per output
+            time), ``temporal`` (time mean per column) or ``member`` (one value
+            per ensemble member).
+        test_type: One of ks, ad, cvm, epps, energy, mw, ttest, brunner,
+            levene, ansari, mood.
+        alpha: Significance level (default 0.01).
+        correction_method: bonferroni, holm, fdr, fdr_by or none. A correction
+            can only remove rejections, never add them.
+        calibration: ``asymptotic`` for scipy's closed-form p-value on the
+            pooled values, or ``member`` to permute whole members. ``member``
+            is exact under exchangeability of members but its resolution is
+            capped by the member count -- see ``permutation_resolution``.
+        n_resamples: Number of random member permutations when exhaustive
+            enumeration is impractical.
+        max_failed_vars: Overall test fails when more variables than this
+            fail. Default 0.
+        max_failed_fraction: Overall test also fails when the failing fraction
+            exceeds this. None disables the fraction criterion.
+        magnitude_threshold: Relative mean difference below which a
+            statistically detectable difference is not counted as a failure.
+        equivalence_margin: When set, additionally require a TOST at this many
+            baseline-ensemble sigma to demonstrate equivalence; PASS then means
+            "shown equivalent" rather than "not shown different".
+        variables: Optional explicit list of variables to test.
+        run_file_pattern / base_file_pattern: Globs with a single ``????``
+            placeholder marking the 4-digit instance number.
+        json_output: Where to write the JSON report -- a ``.json`` path, a
+            directory, or ``none`` to disable. Falls back to
+            ``$RCS_JSON_OUTPUT`` and then to ``run_dir``.
+        seed: RNG seed for permutation calibration.
+        fail_on_error: Treat a variable that could not be tested as a failure.
+        critical_fraction: Deprecated alias for ``max_failed_fraction``. The
+            original parameter documented a per-variable, per-column threshold
+            that was never implemented; it now controls the overall failing
+            fraction.
     """
-    # Configuration parameters
-    ALPHA = alpha if alpha is not None else 0.01
-    CRITICAL_FRACTION = critical_fraction
-    CORRECTION_METHOD = correction_method.lower()
-    MAX_FAILED_VARS = max_failed_vars
-    MAGNITUDE_THRESHOLD = magnitude_threshold
-    RUN_FILE_PATTERN = run_file_pattern
-    BASE_FILE_PATTERN = base_file_pattern
-
-    # Map test type to full name for reporting
-    test_names = {
-        "ks": "Kolmogorov-Smirnov",
-        "ad": "Anderson-Darling",
-        "cvm": "Cramer-von Mises",
-        "epps": "Epps-Singleton",
-        "energy": "Energy Distance",
-        "mw": "Mann-Whitney U",
-        "ttest": "Welch's t-test",
-        "brunner": "Brunner-Munzel",
-        "levene": "Levene",
-        "ansari": "Ansari-Bradley",
-        "mood": "Mood",
-    }
-    test_full_name = test_names.get(test_type.lower(), test_type.upper())
-
-    # Map analysis type to full description
-    analysis_names = {
-        "spatiotemporal": "Spatiotemporal (area-weighted global means)",
-        "temporal": "Temporal (per-column means)",
-    }
-    analysis_full_name = analysis_names.get(
-        analysis_type, analysis_type
-    )
-
-    # Map correction method to full description
-    correction_names = {
-        "bonferroni": "Bonferroni (family-wise error rate control)",
-        "fdr": "FDR - Benjamini-Hochberg (false discovery rate control)",
-        "none": "None (no multiple testing correction)",
-    }
-    correction_full_name = correction_names.get(
-        CORRECTION_METHOD, CORRECTION_METHOD.upper()
-    )
-
-    comments = [
-        "",
-        "=" * 70,
-        "TEST CONFIGURATION",
-        "=" * 70,
-        f"Statistical Test: {test_full_name}",
-        "  (Two-sample test comparing ensemble distributions)",
-        "",
-        f"Analysis Type: {analysis_full_name}",
-        "  (Method for aggregating spatial and temporal data)",
-        "",
-        f"Significance Level (Alpha): {ALPHA}",
-        "  (Probability threshold for rejecting null hypothesis)",
-        "",
-        f"Multiple Testing Correction: {correction_full_name}",
-        "  (Adjusts p-value thresholds when testing many variables)",
-        "",
-        f"Critical Fraction: {CRITICAL_FRACTION}",
-        "  (Maximum fraction of sub-tests allowed to fail per variable)",
-        "",
-        f"Max Failed Variables: {MAX_FAILED_VARS}",
-        "  (Maximum number of variables that can fail before test fails)",
-    ]
-    if MAGNITUDE_THRESHOLD is not None:
-        comments.extend([
-            "",
-            f"Magnitude Threshold: {MAGNITUDE_THRESHOLD}",
-            "  (Minimum relative difference required for practical ",
-            "significance)",
-        ])
-
-    comments.extend([
-        "",
-        f"Run File Pattern: {RUN_FILE_PATTERN}",
-        "  (Glob pattern for run ensemble files)",
-        "",
-        f"Baseline File Pattern: {BASE_FILE_PATTERN}",
-        "  (Glob pattern for baseline ensemble files)",
-    ])
-
-    # Load ensemble datasets using configurable patterns
-    run_files = glob.glob(os.path.join(run_dir, RUN_FILE_PATTERN))
-    base_files = glob.glob(os.path.join(base_dir, BASE_FILE_PATTERN))
-
-    if not run_files or not base_files:
-        raise FileNotFoundError(
-            f"Missing scream output in {run_dir} or {base_dir}")
-
-    run_instances = _extract_instance_nums(run_files, RUN_FILE_PATTERN)
-    base_instances = _extract_instance_nums(base_files, BASE_FILE_PATTERN)
-
-    comments.extend([
-        "",
-        "=" * 70,
-        "ENSEMBLE INFORMATION",
-        "=" * 70,
-        f"Run Ensemble Instances: {len(run_instances)}",
-        "  (Number of perturbed ensemble members in current run)",
-        "",
-        f"Baseline Ensemble Instances: {len(base_instances)}",
-        "  (Number of perturbed ensemble members in baseline)",
-    ])
-
-    ensemble_1 = {
-        i: xr.open_mfdataset(
-            os.path.join(run_dir, RUN_FILE_PATTERN.replace("????", i)),
-            decode_times=False,
-            data_vars="all",
-        )
-        for i in run_instances
-    }
-    ensemble_2 = {
-        i: xr.open_mfdataset(
-            os.path.join(base_dir, BASE_FILE_PATTERN.replace("????", i)),
-            decode_times=False,
-            data_vars="all",
-        )
-        for i in base_instances
-    }
-
-    sample_ds = list(ensemble_1.values())[0]
-    test_vars = _get_testable_variables(sample_ds)
-
-    comments.extend([
-        "",
-        f"Variables to Test: {len(test_vars)}",
-        "  (Number of suitable variables with time and spatial dimensions)",
-        "",
-        "=" * 70,
-    ])
-
-    area_weights = (
-        _get_area_weights(
-            sample_ds) if analysis_type == "spatiotemporal" else None
-    )
-    test_obj = get_test(test_type, alpha=ALPHA,
-                        magnitude_threshold=MAGNITUDE_THRESHOLD)
-    results = {}
-
-    # Simplified test loop
-    for var in test_vars:
-        try:
-            a, b = _extract_data_for_var(
-                var, ensemble_1, ensemble_2, analysis_type, area_weights
-            )
-            results[var] = test_obj.compare(a, b)
-        except (ValueError, KeyError, OSError, IndexError, TypeError) as e:
-            # Log expected data- or IO-related errors and continue testing
-            # other variables; allow truly unexpected exceptions to propagate
-            # for visibility.
-            logger.warning("Error testing %s: %s", var, e)
-
-    # Apply multiple testing correction if requested
-    if CORRECTION_METHOD != "none":
-        results = apply_multiple_testing_correction(
-            results, ALPHA, method=CORRECTION_METHOD
-        )
-
-    failed = [v for v, r in results.items() if r["hypothesis"] == "FAIL"]
-    passed = [v for v, r in results.items() if r["hypothesis"] == "PASS"]
-
-    # Build detailed comments with statistics
-    comments.append("\n" + "=" * 70)
-    comments.append("TEST RESULTS SUMMARY")
-    comments.append("=" * 70)
-    comments.append(
-        f"Variables Passed: {len(passed)} "
-        f"({100.0 * len(passed) / len(results):.1f}%)"
-    )
-    comments.append(
-        "  (Variables where null hypothesis was NOT rejected)"
-    )
-    comments.append("")
-    comments.append(
-        f"Variables Failed: {len(failed)} "
-        f"({100.0 * len(failed) / len(results):.1f}%)"
-    )
-    comments.append(
-        "  (Variables where distributions are statistically different)"
-    )
-
-    # Show details for failed variables
-    if failed:
-        comments.append("\n" + "=" * 70)
-        comments.append("FAILED VARIABLES (detailed)")
-        comments.append("=" * 70)
-        for var in failed[:10]:  # Limit to first 10
-            r = results[var]
-            comments.append(f"\n{var}:")
-            comments.append(f"  Result: {r.get('reason', 'Failed')}")
-
-            # Show sample statistics
-            s1 = r.get("sample1", {})
-            s2 = r.get("sample2", {})
-            diff = r.get("difference", {})
-
-            if s1 and s2:
-                comments.append(
-                    f"  Sample 1 (run):      "
-                    f"n={s1.get('n', 0):6d}, "
-                    f"mean={s1.get('mean', np.nan):12.6e}, "
-                    f"std={s1.get('std', np.nan):12.6e}"
-                )
-                comments.append(
-                    f"  Sample 2 (baseline): "
-                    f"n={s2.get('n', 0):6d}, "
-                    f"mean={s2.get('mean', np.nan):12.6e}, "
-                    f"std={s2.get('std', np.nan):12.6e}"
-                )
-
-            if diff:
-                comments.append(
-                    f"  Difference: "
-                    f"Δmean={diff.get('mean_diff', np.nan):12.6e} "
-                    f"({diff.get('mean_diff_pct', np.nan):+.2f}%), "
-                    f"std_ratio={diff.get('std_ratio', np.nan):.3f}"
-                )
-
-        if len(failed) > 10:
-            comments.append(
-                f"\n  ... and {len(failed) - 10} more failed variables")
-
-    # Show sample of passed variables
-    if passed and len(passed) <= 10:
-        comments.append("\n" + "=" * 70)
-        comments.append("PASSED VARIABLES (sample)")
-        comments.append("=" * 70)
-        for var in passed[:5]:
-            r = results[var]
-            diff = r.get("difference", {})
-            comments.append(
-                f"  {var}: {r.get('reason', 'Passed')} | "
-                f"Δmean={diff.get('mean_diff_pct', np.nan):+.2f}%"
-            )
-
-    test_status = "PASS" if len(failed) <= MAX_FAILED_VARS else "FAIL"
-
-    output_file = os.path.join(run_dir, f"{test_type}_test_results.json")
-    with open(output_file, "w", encoding="utf-8") as f:
-        output_data = {
-            "test_type": test_type,
-            "analysis_type": analysis_type,
-            "configuration": {
-                "alpha": ALPHA,
-                "correction_method": CORRECTION_METHOD,
-                "critical_fraction": CRITICAL_FRACTION,
-                "max_failed_vars": MAX_FAILED_VARS,
-            },
-            "summary": {
-                "passed": len(passed),
-                "failed": len(failed),
-                "total": len(results),
-                "test_status": test_status,
-            },
-            "failed_variables": failed,
-            "passed_variables": passed,
-            "details": results,
-        }
-        if MAGNITUDE_THRESHOLD is not None:
-            output_data["configuration"]["magnitude_threshold"] = MAGNITUDE_THRESHOLD
-        json.dump(output_data, f, indent=2)
-    comments.append(f"\nDetailed results saved to: {output_file}")
-
-    return "\n".join(comments), test_status
-
-
-# ==========================================================
-# Shared helper functions (simplified versions)
-# ==========================================================
-
-
-def _extract_instance_nums(files, pattern):
-    """
-    Extract instance numbers from filenames based on a pattern.
-
-    Args:
-        files: List of file paths
-        pattern: File pattern with '????' as placeholder for instance number
-
-    Returns:
-        Sorted list of unique instance numbers as 4-digit strings
-    """
-    instance_nums = []
-
-    # Find the position of '????' in the pattern
-    if "????" not in pattern:
-        # If no placeholder, try legacy method
-        for f in files:
-            parts = os.path.basename(f).split(".scream_")
-            if len(parts) > 1:
-                inst = parts[1].split(".")[0]
-                if inst.isdigit() and len(inst) == 4:
-                    instance_nums.append(inst)
-        return sorted(set(instance_nums))
-
-    # Split pattern to get parts before and after the placeholder
-    parts = pattern.split("????")
-    if len(parts) != 2:
+    alpha = 0.01 if alpha is None else float(alpha)
+    test_type = normalize_test_type(test_type)
+    correction_method = correction_method.lower()
+    if correction_method not in CORRECTION_METHODS:
         raise ValueError(
-            f"Pattern must contain exactly one '????' placeholder: {pattern}"
+            f"Unknown correction_method '{correction_method}'; expected one of "
+            f"{', '.join(sorted(CORRECTION_METHODS))}"
+        )
+    if analysis_type not in ANALYSIS_FULL_NAMES:
+        raise ValueError(
+            f"Unknown analysis_type '{analysis_type}'; expected one of "
+            f"{', '.join(sorted(ANALYSIS_FULL_NAMES))}"
+        )
+    if calibration not in ("asymptotic", "member"):
+        raise ValueError(
+            f"Unknown calibration '{calibration}'; expected asymptotic or member"
+        )
+    if calibration == "asymptotic" and not TEST_REGISTRY[
+        test_type
+    ].provides_asymptotic_pvalue:
+        raise ValueError(
+            f"Test '{test_type}' has no asymptotic null distribution in scipy; "
+            f"it can only be used with calibration='member'."
         )
 
-    prefix, suffix = parts
+    if critical_fraction is not None and max_failed_fraction is None:
+        logger.warning(
+            "critical_fraction is deprecated; it is now interpreted as "
+            "max_failed_fraction (overall fraction of failing variables)."
+        )
+        max_failed_fraction = critical_fraction
 
-    for f in files:
-        basename = os.path.basename(f)
+    run_file_pattern = run_file_pattern or DEFAULT_FILE_PATTERN
+    base_file_pattern = base_file_pattern or DEFAULT_FILE_PATTERN
 
-        # Remove the prefix
-        if prefix.startswith("*"):
-            # Handle wildcard prefix
-            prefix_pattern = prefix.lstrip("*")
-            if prefix_pattern and prefix_pattern not in basename:
-                continue
-            # Find where the fixed part of prefix starts
-            if prefix_pattern:
-                idx = basename.find(prefix_pattern)
-                if idx == -1:
-                    continue
-                start_pos = idx + len(prefix_pattern)
-            else:
-                start_pos = 0
-        else:
-            if not basename.startswith(prefix):
-                continue
-            start_pos = len(prefix)
+    config = {
+        "test_type": test_type,
+        "analysis_type": analysis_type,
+        "calibration": calibration,
+        "alpha": alpha,
+        "correction_method": correction_method,
+        "n_resamples": n_resamples,
+        "max_failed_vars": max_failed_vars,
+        "max_failed_fraction": max_failed_fraction,
+        "magnitude_threshold": magnitude_threshold,
+        "equivalence_margin": equivalence_margin,
+        "seed": seed,
+        "fail_on_error": fail_on_error,
+        "run_file_pattern": run_file_pattern,
+        "base_file_pattern": base_file_pattern,
+        "run_dir": str(run_dir),
+        "base_dir": str(base_dir),
+    }
 
-        # Extract potential instance number
-        remaining = basename[start_pos:]
+    run_ens = open_ensemble(str(run_dir), run_file_pattern)
+    base_ens = open_ensemble(str(base_dir), base_file_pattern)
 
-        # Remove the suffix
-        if suffix.startswith("."):
-            # Find the suffix part
-            suffix_parts = suffix.split("*")
-            # Get the fixed part after the instance number
-            fixed_suffix = suffix_parts[0] if suffix_parts else suffix
+    ensemble_info = {
+        "n_run": len(run_ens),
+        "n_base": len(base_ens),
+        "run_instances": sorted(run_ens),
+        "base_instances": sorted(base_ens),
+    }
+    if len(run_ens) < 2 or len(base_ens) < 2:
+        logger.warning(
+            "RCS is comparing ensembles of %d and %d member(s); with fewer "
+            "than 2 members per side the ensemble spread is unknown and the "
+            "comparison has essentially no diagnostic value.",
+            len(run_ens), len(base_ens),
+        )
 
-            if fixed_suffix and fixed_suffix in remaining:
-                end_pos = remaining.find(fixed_suffix)
-                inst = remaining[:end_pos]
-            else:
-                # Try to extract first 4 digits
-                inst = remaining[:4] if len(remaining) >= 4 else remaining
-        else:
-            inst = remaining[:4] if len(remaining) >= 4 else remaining
+    testable, skipped = _select_variables(run_ens, base_ens, variables)
+    weights = (
+        get_area_weights(next(iter(run_ens.values())))
+        if analysis_type in ("spatiotemporal", "member")
+        else None
+    )
+    if analysis_type in ("spatiotemporal", "member") and weights is None:
+        logger.warning(
+            "No 'area' field found; falling back to an unweighted spatial "
+            "mean, which over-weights small grid cells."
+        )
 
-        # Validate instance number
-        if inst.isdigit() and len(inst) == 4:
-            instance_nums.append(inst)
+    test = get_test(test_type, alpha=alpha)
+    rng = np.random.default_rng(seed)
 
-    return sorted(set(instance_nums))
-
-
-def _extract_data_for_var(var, ensemble_1, ensemble_2, analysis_type, area_weights):
-    """Extract comparable arrays for given variable and analysis type."""
-    data1, data2 = [], []
-
-    for ens, coll in ((ensemble_1, data1), (ensemble_2, data2)):
-        for ds in coll_from_dict(ens):
-            if var not in ds:
-                continue
-            v = _prepare_variable_data(ds[var])
-
-            if analysis_type == "spatiotemporal":
-                if area_weights is not None and "ncol" in v.dims:
-                    arr = (v * area_weights).sum(dim="ncol", skipna=True).values
-                else:
-                    spatial_dims = [d for d in v.dims if d != "time"]
-                    arr = v.mean(dim=spatial_dims, skipna=True).values
-            else:  # temporal
-                # Compute temporal mean along time axis (axis=0)
-                with warnings.catch_warnings():
-                    warnings.filterwarnings('ignore', 'Mean of empty slice')
-                    arr = np.nanmean(v.values, axis=0)
-
-                # Remove any remaining dimensions and flatten
-                arr = arr.ravel()
-
-                # Filter out NaN values for this instance
-                arr = arr[~np.isnan(arr)]
-
-            coll.append(arr)
-
-    # For temporal analysis, we don't concatenate because arrays may have
-    # different lengths due to masking. Instead, we need to ensure we're
-    # comparing the same spatial locations.
-    if analysis_type == "temporal":
-        # Check if all arrays have the same length
-        lengths1 = [len(a) for a in data1]
-        lengths2 = [len(a) for a in data2]
-
-        if len(set(lengths1)) > 1 or len(set(lengths2)) > 1:
-            # Variable length arrays - likely due to different masking
-            # Use the intersection of valid points
-            min1 = min(lengths1)
-            min2 = min(lengths2)
-            min_len = min(min1, min2)
-            logger.debug(
-                "Variable %s has inconsistent spatial dimensions. "
-                "Ensemble 1 lengths: %s, Ensemble 2 lengths: %s. "
-                "Truncating to %d points.",
-                var, lengths1, lengths2, min_len
-            )
-            data1 = [a[:min_len] for a in data1]
-            data2 = [a[:min_len] for a in data2]
-
-    # Check if we have any data after processing
-    if not data1 or not data2:
-        raise ValueError(f"No valid data for variable {var}")
-
-    return np.concatenate(data1), np.concatenate(data2)
-
-
-def coll_from_dict(d):
-    """Helper for dataset iteration."""
-    return [ds for _, ds in sorted(d.items())]
-
-
-def _get_testable_variables(dataset):
-    skip_vars = {"time", "lat", "lon", "ncol", "lev", "ilev", "area"}
-    vars_out = []
-    for v in dataset.data_vars:
-        if v in skip_vars or "time" not in dataset[v].dims:
-            continue
+    results, errors = {}, {}
+    for var in testable:
         try:
-            arr = dataset[v].values
-            if not np.all(np.isnan(arr)) and not np.allclose(arr, arr.flat[0]):
-                vars_out.append(v)
-        except (ValueError, TypeError):
-            continue
-    return vars_out
+            results[var] = compare_variable(
+                var, run_ens, base_ens, test, analysis_type, weights,
+                calibration, n_resamples, rng, equivalence_margin,
+            )
+        except (ValueError, KeyError, OSError, IndexError, TypeError,
+                ZeroDivisionError, FloatingPointError) as error:
+            logger.warning("Could not test %s: %s", var, error)
+            errors[var] = str(error)
+
+    if results:
+        results = apply_multiple_testing_correction(results, alpha, correction_method)
+    for result in results.values():
+        _finalize_decision(result, magnitude_threshold, equivalence_margin)
+
+    failed = sorted(v for v, r in results.items() if r["hypothesis"] == "FAIL")
+    passed = sorted(v for v, r in results.items() if r["hypothesis"] == "PASS")
+    total = len(results)
+
+    # --- Overall verdict --------------------------------------------------
+    status_reasons = []
+    test_status = "PASS"
+    if total == 0:
+        test_status = "FAIL"
+        status_reasons.append(
+            "no variable could be tested; the comparison is vacuous"
+        )
+    else:
+        if len(failed) > max_failed_vars:
+            test_status = "FAIL"
+            status_reasons.append(
+                f"{len(failed)} variable(s) failed, more than the allowed "
+                f"{max_failed_vars}"
+            )
+        if max_failed_fraction is not None:
+            fraction = len(failed) / total
+            if fraction > max_failed_fraction:
+                test_status = "FAIL"
+                status_reasons.append(
+                    f"failing fraction {fraction:.4f} exceeds "
+                    f"{max_failed_fraction}"
+                )
+    # A permutation test whose finest attainable p-value sits above the
+    # decision threshold cannot reject anything, no matter what the model
+    # does. Reporting PASS in that situation is worse than useless, so treat
+    # it as the configuration error it is.
+    if calibration == "member" and total:
+        threshold = decision_threshold(alpha, correction_method, total)
+        p_min, _, _ = permutation_resolution(
+            len(run_ens), len(base_ens), n_resamples
+        )
+        if p_min > threshold:
+            test_status = "FAIL"
+            status_reasons.append(
+                f"configuration cannot resolve a difference: member "
+                f"permutation bottoms out at p={p_min:.3e} but the decision "
+                f"threshold is {threshold:.3e}, so no variable could ever "
+                f"fail. Add ensemble members, relax --alpha, or switch "
+                f"--correction_method"
+            )
+
+    if errors and fail_on_error:
+        test_status = "FAIL"
+        status_reasons.append(f"{len(errors)} variable(s) could not be tested")
+    elif errors:
+        status_reasons.append(
+            f"{len(errors)} variable(s) could not be tested (not counted; "
+            f"use fail_on_error to make this fatal)"
+        )
+    if not status_reasons:
+        status_reasons.append(
+            f"all {total} tested variable(s) are consistent with the baseline "
+            f"ensemble at alpha={alpha}"
+        )
+
+    summary = {
+        "passed": len(passed),
+        "failed": len(failed),
+        "total": total,
+        "skipped": len(skipped),
+        "errored": len(errors),
+        "test_status": test_status,
+        "status_reason": "; ".join(status_reasons),
+        "failed_variables": failed,
+        "passed_variables": passed,
+    }
+
+    json_path = resolve_json_path(json_output, str(run_dir), test_type, analysis_type)
+    written_path, json_note = write_json_report(
+        json_path,
+        {
+            "configuration": config,
+            "ensembles": ensemble_info,
+            "summary": summary,
+            "skipped_variables": skipped,
+            "errored_variables": errors,
+            "details": results,
+        },
+    )
+    summary["json_path"] = written_path
+    summary["json_note"] = json_note
+
+    report = format_report(config, ensemble_info, results, skipped, errors, summary)
+    return report, test_status
 
 
-def _get_area_weights(dataset):
-    if "area" in dataset:
-        area = dataset["area"].values
-        return area / np.nansum(area)
-    return None
-
-
-def _prepare_variable_data(var):
-    if "lev" in var.dims:
-        var = var.mean(dim="lev", skipna=True)
-    if "ilev" in var.dims:
-        var = var.mean(dim="ilev", skipna=True)
-    return var
+# ==========================================================
+# Command line interface
+# ==========================================================
 
 
 ###############################################################################
 def parse_command_line(args, description):
 ###############################################################################
+    """Build and run the argument parser."""
+    # pylint: disable=import-outside-toplevel
     import argparse
     from pathlib import Path
 
+    program = Path(args[0]).name
     parser = argparse.ArgumentParser(
-        usage="""\n{0} run_dir base_dir [options]
+        usage=f"""\n{program} run_dir base_dir [options]
 OR
-{0} --help
+{program} --help
 
 \033[1mEXAMPLES:\033[0m
-    \033[1;32m# Default: KS test with Bonferroni correction\033[0m
-    > {0} /path/to/run /path/to/baseline
+    \033[1;32m# Default: KS on area-weighted global means, Bonferroni corrected\033[0m
+    > {program} /path/to/run /path/to/baseline
 
-    \033[1;32m# Anderson-Darling with temporal analysis\033[0m
-    > {0} /path/to/run /path/to/baseline --test_type ad \\
-          --analysis_type temporal
+    \033[1;32m# Exact member-level permutation calibration (no iid assumption)\033[0m
+    > {program} /path/to/run /path/to/baseline --calibration member
 
-    \033[1;32m# Custom significance level with FDR correction\033[0m
-    > {0} /path/to/run /path/to/baseline --test_type ks \\
-          --alpha 0.001 --correction_method fdr
+    \033[1;32m# Write the JSON report somewhere writable\033[0m
+    > {program} /path/to/run /path/to/baseline --json_output ~/rcs_reports
 
-    \033[1;32m# No multiple testing correction\033[0m
-    > {0} /path/to/run /path/to/baseline \\
-          --correction_method none --magnitude_threshold 0.01
+    \033[1;32m# Positively demonstrate equivalence within one ensemble sigma\033[0m
+    > {program} /path/to/run /path/to/baseline --equivalence_margin 1.0
 
     \033[1;32m# Custom file patterns\033[0m
-    > {0} /path/to/run /path/to/baseline \\
-          --run_file_pattern "*.eam_????.h0.*.nc" \\
-          --base_file_pattern "*.scream_????.h.AVERAGE.*.nc"
-""".format(Path(args[0]).name),
+    > {program} /path/to/run /path/to/baseline \\
+          --run_file_pattern "*.eam_????.h0.*.nc"
+""",
         description=description,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 \033[1mAVAILABLE STATISTICAL TESTS:\033[0m
 
-  \033[1mDISTRIBUTION TESTS\033[0m (compare entire distributions):
-    ks          Kolmogorov-Smirnov (recommended default)
-    ad          Anderson-Darling (high sensitivity, especially tails)
-    cvm         Cramér-von Mises (moderate-high sensitivity)
-    epps        Epps-Singleton (location + scale)
-    energy      Energy distance (powerful, any difference)
+  \033[1mDISTRIBUTION\033[0m (compare the whole distribution):
+    ks          Kolmogorov-Smirnov (default; largest CDF gap)
+    ad          Anderson-Darling (tail-weighted)
+    cvm         Cramer-von Mises (integrated CDF gap)
+    epps        Epps-Singleton (characteristic functions; valid for discrete)
+    energy      Energy distance (requires --calibration member)
 
-  \033[1mLOCATION TESTS\033[0m (compare means/medians):
-    mw          Mann-Whitney U (non-parametric median test)
-    ttest       Welch's t-test (parametric mean test)
-    brunner     Brunner-Munzel (robust alternative to t-test)
+  \033[1mLOCATION\033[0m (compare means/medians):
+    mw          Mann-Whitney U
+    ttest       Welch's t-test
+    brunner     Brunner-Munzel
 
-  \033[1mSCALE TESTS\033[0m (compare variances/spread):
-    levene      Levene's test (variance equality)
-    ansari      Ansari-Bradley (non-parametric scale)
-    mood        Mood's test (non-parametric dispersion)
+  \033[1mSCALE\033[0m (compare spread):
+    levene      Levene's test
+    ansari      Ansari-Bradley
+    mood        Mood's test
+
+\033[1mA NOTE ON RIGOR:\033[0m
+  The default asymptotic calibration treats every pooled value as an
+  independent observation. It is not: global means from one simulation are
+  serially correlated. Use --calibration member for a p-value that is exact
+  under exchangeability of ensemble members, and read the RESOLUTION AND
+  POWER section of the report to see what your member count can resolve.
 """,
     )
 
-    parser.add_argument("run_dir", type=str,
-                        help="Directory of the new run ensemble")
-    parser.add_argument("base_dir", type=str,
-                        help="Directory of the baseline ensemble")
+    parser.add_argument("run_dir", help="Directory of the new run ensemble")
+    parser.add_argument("base_dir", help="Directory of the baseline ensemble")
     parser.add_argument(
         "--analysis_type",
-        type=str,
         default="spatiotemporal",
-        choices=["spatiotemporal", "temporal"],
-        help="Analysis type: spatiotemporal (area-weighted "
-        "global means) or temporal (per-column means)",
+        choices=sorted(ANALYSIS_FULL_NAMES),
+        help="How each member is reduced to a sample (default: spatiotemporal)",
     )
     parser.add_argument(
         "--test_type",
-        type=str,
         default="ks",
-        choices=[
-            "ks",
-            "ad",
-            "cvm",
-            "epps",
-            "energy",
-            "mw",
-            "ttest",
-            "brunner",
-            "levene",
-            "ansari",
-            "mood",
-        ],
+        choices=sorted(TEST_REGISTRY),
         help="Statistical test identifier (default: ks)",
     )
     parser.add_argument(
-        "--alpha",
-        type=float,
-        default=None,
-        help="Significance level (default: 0.01 for most, " "0.001 for AD)",
+        "--calibration",
+        default="asymptotic",
+        choices=["asymptotic", "member"],
+        help="How p-values are computed: scipy's asymptotic formula on the "
+        "pooled values, or exact permutation of whole members "
+        "(default: asymptotic)",
     )
     parser.add_argument(
-        "--critical_fraction",
-        type=float,
-        default=0.001,
-        help="Fraction of variables allowed to fail (default: 0.001)",
+        "--n_resamples",
+        type=int,
+        default=2000,
+        help="Random member permutations to draw when exhaustive enumeration "
+        "is impractical (default: 2000)",
+    )
+    parser.add_argument(
+        "--alpha", type=float, default=None,
+        help="Significance level (default: 0.01)",
     )
     parser.add_argument(
         "--correction_method",
-        type=str,
         default="bonferroni",
-        choices=["bonferroni", "fdr", "none"],
-        help="Multiple testing correction: bonferroni (conservative), "
-        "fdr (Benjamini-Hochberg), or none (default: bonferroni)",
+        choices=sorted(CORRECTION_METHODS),
+        help="Multiple-testing correction across variables (default: bonferroni)",
     )
     parser.add_argument(
-        "--max_failed_vars",
-        type=int,
-        default=0,
-        help="Maximum number of variables allowed to fail (default: 0)",
+        "--max_failed_vars", type=int, default=0,
+        help="Number of failing variables tolerated (default: 0)",
     )
     parser.add_argument(
-        "--magnitude_threshold",
-        type=float,
-        default=None,
-        help="Minimum relative difference to consider significant "
-        "(default: None, all differences count)",
+        "--max_failed_fraction", type=float, default=None,
+        help="Fraction of failing variables tolerated (default: unset)",
     )
     parser.add_argument(
-        "--run_file_pattern",
-        type=str,
-        default="*.scream_????.h.AVERAGE.*.nc",
-        help="File pattern for run ensemble (use ???? for instance number, "
-        "default: *.scream_????.h.AVERAGE.*.nc)",
+        "--critical_fraction", type=float, default=None,
+        help="Deprecated alias for --max_failed_fraction. The original "
+        "parameter documented a per-variable, per-column threshold that was "
+        "never implemented; it now controls the overall failing fraction.",
     )
     parser.add_argument(
-        "--base_file_pattern",
-        type=str,
-        default="*.scream_????.h.AVERAGE.*.nc",
-        help="File pattern for baseline ensemble (use ???? for instance "
-        "number, default: *.scream_????.h.AVERAGE.*.nc)",
+        "--magnitude_threshold", type=float, default=None,
+        help="Relative mean difference required before a detectable "
+        "difference counts as a failure (default: unset)",
+    )
+    parser.add_argument(
+        "--equivalence_margin", type=float, default=None,
+        help="Run a TOST equivalence test with this margin, in units of the "
+        "baseline ensemble's member-to-member sigma. PASS then requires "
+        "demonstrated equivalence (default: unset)",
+    )
+    parser.add_argument(
+        "--variables", nargs="+", default=None,
+        help="Restrict the comparison to these variables (default: all)",
+    )
+    parser.add_argument(
+        "--run_file_pattern", default=DEFAULT_FILE_PATTERN,
+        help=f"Run ensemble glob, '????' marks the instance number "
+        f"(default: {DEFAULT_FILE_PATTERN})",
+    )
+    parser.add_argument(
+        "--base_file_pattern", default=DEFAULT_FILE_PATTERN,
+        help=f"Baseline ensemble glob (default: {DEFAULT_FILE_PATTERN})",
+    )
+    parser.add_argument(
+        "--json_output", default=None,
+        help="Where to write the JSON report: a .json path, a directory, or "
+        "'none' to disable. Falls back to $RCS_JSON_OUTPUT and then to "
+        "run_dir. Use this when run_dir is not writable.",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=DEFAULT_SEED,
+        help=f"RNG seed for permutation calibration (default: {DEFAULT_SEED})",
+    )
+    parser.add_argument(
+        "--fail_on_error", action="store_true",
+        help="Treat a variable that could not be tested as a failure",
+    )
+    parser.add_argument(
+        "--verbose", action="store_true", help="Emit debug-level logging",
     )
 
-    return parser.parse_args(args[1:])
+    parsed = parser.parse_args(args[1:])
+    logging.basicConfig(
+        level=logging.DEBUG if parsed.verbose else logging.INFO,
+        format="%(levelname)s: %(message)s",
+    )
+    del parsed.verbose
+    return parsed
 
 
 ###############################################################################
 def _main_func(description):
 ###############################################################################
-    cli_comments, cli_status = run_stats_comparison(
+    comments, status = run_stats_comparison(
         **vars(parse_command_line(sys.argv, description))
     )
-
-    print("\n")
-    print("=" * 70)
-    print(f"OVERALL TEST STATUS: {cli_status}")
-    print("=" * 70)
-
-    print("\n")
-    print("=" * 70)
-    print("DETAILS BELOW ...")
-    print("=" * 70)
-    print("\n")
-    print(cli_comments)
+    print(comments)
+    return 0 if status == "PASS" else 1
 
 
 ###############################################################################
 
-if (__name__ == "__main__"):
-    _main_func(__doc__)
+if __name__ == "__main__":
+    sys.exit(_main_func(__doc__))

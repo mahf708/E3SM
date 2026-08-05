@@ -34,496 +34,521 @@ for each `NINST`.
 
 ## RCS testing
 
-The Reproducible Climate Statistics (RCS) test performs a rigorous
-statistical comparison between two ensembles of one-year runs to
-verify climate reproducibility in not-bit-for-bit (NBFB) cases
-using advanced statistical methods.
+The Reproducible Climate Statistics (RCS) test compares two ensembles of
+short simulations that differ only in the random seed used to perturb the
+initial condition, and asks whether there is evidence that they were
+produced by *different* models.
 
-### Available Statistical Tests
+The statistical machinery lives in
+`components/eamxx/cime_config/SystemTests/rcs_stats.py`, which can be driven
+by the CIME system test or run standalone on any two directories of ensemble
+output.
 
-RCS provides a comprehensive suite of 11 two-sample statistical tests organized
-into three categories; all tests are implemented in SciPy's stats module
-([SciPy stats](https://docs.scipy.org/doc/scipy/reference/stats.html)).
+### What the sample actually is
 
-#### Distribution Tests (Compare Entire Distributions)
+This is the single most important thing to understand about RCS, because it
+determines what the p-values mean.
 
-These tests assess whether two samples come from the same probability distribution:
+Each ensemble member is one simulation. For a given variable, a member
+contributes a *vector* of numbers; how that vector is built is set by
+`--analysis_type`. The values within one member's vector are **not**
+independent of one another: global monthly means from a single simulation are
+serially correlated and share a seasonal cycle, and column means from a single
+simulation are spatially correlated.
 
-##### `ks` - Kolmogorov-Smirnov (default)
+The *members*, by contrast, are genuinely independent draws, and under the null
+hypothesis (same model, different seed) the members of the two ensembles are
+exchangeable. `rcs_stats.py` therefore keeps track of which values came from
+which member instead of flattening everything into one anonymous array, and it
+offers a calibration mode that exploits exactly that structure.
 
-- Sensitivity: Moderate
-- Best for: General-purpose distribution comparison
-- Assumption: Continuous distributions
-- **Use this for routine testing**
+#### `spatiotemporal` (default)
 
-##### `ad` - Anderson-Darling
+Area-weighted global mean at each output time, so a member contributes
+`n_time` values.
 
-- Sensitivity: High (especially in distribution tails)
-- Best for: Detecting subtle distributional differences
-- Assumption: Continuous distributions
-- Note: Uses stricter alpha (0.001) due to high sensitivity
-- **Use this for sensitivity analysis**
-
-##### `cvm` - Cramér-von Mises
-
-- Sensitivity: Moderate to High
-- Best for: Overall distribution comparison with tail sensitivity
-- Assumption: Continuous distributions
-
-##### `epps` - Epps-Singleton
-
-- Sensitivity: Moderate
-- Best for: Detecting differences in both mean AND variance
-- Assumption: Works well for non-normal distributions
-
-##### `energy` - Energy Distance
-
-- Sensitivity: High
-- Best for: Detecting any type of distributional difference
-- Assumption: None (distribution-free)
-- Note: Computationally intensive, uses permutation testing
-
-#### Location Tests (Compare Means/Medians)
-
-These tests focus on differences in central tendency:
-
-##### `mw` - Mann-Whitney U Test
-
-- Sensitivity: Moderate
-- Best for: Comparing medians of non-normal distributions
-- Assumption: None (non-parametric)
-- **Use when distributions may be non-normal**
-
-##### `ttest` - Welch's t-test
-
-- Sensitivity: Moderate to High
-- Best for: Comparing means of approximately normal distributions
-- Assumption: Approximately normal distributions (robust to violations)
-
-##### `brunner` - Brunner-Munzel
-
-- Sensitivity: Moderate to High
-- Best for: Robust alternative to t-test for ordinal data
-- Assumption: None (non-parametric)
-
-#### Scale Tests (Compare Variances/Spread)
-
-These tests focus on differences in variability:
-
-##### `levene` - Levene's Test
-
-- Sensitivity: Moderate
-- Best for: Testing equality of variances
-- Assumption: Robust to non-normality
-
-##### `ansari` - Ansari-Bradley
-
-- Sensitivity: Moderate
-- Best for: Non-parametric scale comparison
-- Assumption: Samples differ primarily in scale, not location
-
-##### `mood` - Mood's Test
-
-- Sensitivity: Moderate
-- Best for: Non-parametric dispersion comparison
-- Assumption: None (distribution-free)
-
-### Statistical Test Methodology
-
-RCS supports two complementary analysis modes for comprehensive climate validation:
-
-#### Spatiotemporal Analysis (Default, Recommended)
-
-This mode computes area-weighted global spatial means at each timestep, then
-performs a single statistical test per variable comparing the distributions of
-these global means across all instances and timesteps.
-
-**Procedure:**
-
-1. For each instance in each ensemble:
-   - Variables with vertical dimensions (lev/ilev) are averaged vertically
-   - Compute spatial mean at each timestep using grid cell areas as weights
-2. Concatenate all timesteps from all instances
-3. Remove NaN values from both distributions
-4. Perform selected statistical test comparing the two distributions
-5. Variable fails if p-value < α (default: 0.01, or 0.001 for Anderson-Darling)
-
-**Characteristics:**
-
+- Vertical dimensions (`lev`, `ilev`) are collapsed with an unweighted mean
+- The area weighting is renormalized over the valid (non-masked) cells at each
+  time, so a partial land/ocean mask does not bias the global mean low
 - Sensitive to global systematic biases
-- Single test per variable (more conservative, reduces multiple testing issues)
-- Requires area weights for proper spatial averaging
-- Handles NaN values from land/ocean masks gracefully
-- **Recommended for most use cases**
+- **Recommended default**
 
-#### Temporal Analysis (Alternative)
+#### `temporal`
 
-This mode computes temporal means at each spatial column, then performs
-per-column statistical tests comparing the distributions across instances.
+Time mean at each column, so a member contributes `n_col` values.
 
-**Procedure:**
+- Detects spatially localized differences that a global mean would average away
+- Columns are strongly spatially correlated, so the nominal sample size badly
+  overstates the information content; pair this with `--calibration member`
+- A column is used only if it is finite in *every* member of *both* ensembles,
+  which keeps positions aligned across members
 
-1. For each instance in each ensemble:
-   - Variables with vertical dimensions are averaged vertically
-   - Compute temporal mean at each spatial column
-2. For each column, perform selected statistical test comparing distributions
-3. Apply multiple testing correction (Bonferroni or FDR) across all columns
-4. Variable fails if more than CRITICAL_FRACTION (default: 0.1%) of columns reject
+#### `member` (analysis type)
 
-**Characteristics:**
+A single area-weighted, time-averaged value per member, so a member
+contributes exactly one value.
 
-- Detects spatially-localized differences
-- More tests per variable (requires multiple testing correction)
-- Can identify regional changes that global averages might miss
-- **Use for detecting localized numerical changes**
+- The cleanest sample: one independent observation per member, no
+  within-member correlation to worry about
+- Removes the seasonal cycle from the noise, which can make it *more*
+  powerful against a steady bias than `spatiotemporal` despite the far
+  smaller sample
+- With only a handful of members it has little power against subtle changes
 
-### Configuration Parameters
+### Calibration: how p-values are computed
 
-All configuration parameters can be adjusted via command-line arguments when
-running `rcs_stats.py` standalone, or programmatically when calling
-`run_stats_comparison()`. Parameters control test sensitivity, multiple testing
-corrections, and failure thresholds.
+`--calibration` selects how the test statistic is turned into a p-value.
 
-#### Core Statistical Parameters
+#### `asymptotic` (default)
 
-##### `--alpha` (default: 0.01 for most tests, 0.001 for Anderson-Darling)
+SciPy's closed-form or asymptotic p-value, applied to the pooled values.
 
-- Significance level for hypothesis tests
-- Lower values make tests stricter (fewer false positives)
-- Higher values increase power (fewer false negatives)
-- Example: `--alpha 0.001` for very strict testing
-  
+Fast, and the historical RCS behavior, but it treats every pooled value as an
+independent observation. Because the pooled values are correlated, the
+effective sample size is smaller than the nominal one and these p-values are
+**anti-conservative** — they reject more readily than their nominal level
+suggests. The report prints an estimated effective sample size (from the
+within-member lag-1 autocorrelation) so the size of that inflation is visible
+rather than hidden.
+
+#### `member` (calibration)
+
+The test statistic is recalibrated by permuting *whole members* between the two
+ensembles.
+
+This is exact under exchangeability of members and makes no independence
+assumption about the values within a member. It is the statistically
+defensible mode. Its cost is resolution: with `n` members per ensemble the
+smallest attainable p-value is about `2 / C(2n, n)`, because a partition and
+its complement give the same two-sided statistic.
+
+| Members per ensemble | Partitions `C(2n,n)` | Smallest attainable p |
+| -------------------- | -------------------- | --------------------- |
+| 2                    | 6                    | 0.33                  |
+| 3                    | 20                   | 0.10                  |
+| 4                    | 70                   | 0.029                 |
+| 5                    | 252                  | 0.0079                |
+| 6                    | 924                  | 0.0022                |
+| 8                    | 12870                | 1.6e-4                |
+| 9                    | 48620                | 4.1e-5                |
+
+Up to 8 members per ensemble the enumeration is exhaustive. Beyond that,
+`rcs_stats.py` draws `--n_resamples` random permutations instead and the
+resolution becomes `1 / (n_resamples + 1)`.
+
+This matters in practice. A Bonferroni-corrected `alpha = 0.01` over ~100
+variables puts the decision threshold at `1e-4`, which needs roughly **9
+members per ensemble** to be reachable at all. A default `RCS_P4_C4` test has
+4, where the finest attainable p-value is 0.029 — well above the threshold, so
+no variable could ever fail.
+
+Rather than silently reporting `PASS` in that situation, `rcs_stats.py` treats
+it as a configuration error and fails the comparison with an explanation. A
+test that cannot fail provides no assurance, and reporting success for it is
+worse than reporting nothing.
+
+Remedies, in order of preference: add ensemble members; test fewer variables
+with `--variables`; relax `--alpha`. Note that changing `--correction_method`
+does not help much, since every correction offered here bottoms out at
+`alpha / n` for the smallest p-value.
+
+```shell
+# exact calibration, drawing 5000 random member permutations
+rcs_stats.py /run/dir /base/dir --calibration member --n_resamples 5000
+```
+
+### Available statistical tests
+
+RCS provides 11 two-sample tests in three categories, all built on
+[SciPy stats](https://docs.scipy.org/doc/scipy/reference/stats.html).
+
+#### Distribution tests
+
+Compare the entire distribution.
+
+| id | Test | Notes |
+| ---- | ------ | ------- |
+| `ks` | Kolmogorov-Smirnov | Largest gap between the empirical CDFs. Responds mostly to shifts in the bulk; weak in the tails. **Default.** |
+| `ad` | Anderson-Darling | Tail-weighted. See the caveat below. |
+| `cvm` | Cramér-von Mises | Integrates the squared CDF gap rather than taking its maximum, so it uses the whole distribution. Usually a little more powerful than KS against diffuse differences. |
+| `epps` | Epps-Singleton | Compares empirical characteristic functions. Unlike KS/CvM it is valid for discrete data, and it picks up location and scale together. Needs at least 5 values per sample. |
+| `energy` | Energy distance | Consistent against *any* distributional difference, but SciPy provides no null distribution, so it **requires `--calibration member`**. Requesting it with asymptotic calibration is rejected up front. |
+
+!!! note "Anderson-Darling p-values are clipped"
+    SciPy's `anderson_ksamp` reports a `significance_level` that is already a
+    p-value (not a percentage) and that is clipped to the range
+    `[0.001, 0.25]`. That clipping makes it useless against a corrected
+    threshold below 0.001, so `rcs_stats.py` asks SciPy for a permutation
+    p-value where the installed version supports it. Earlier versions of this
+    module divided `significance_level` by 100, treating it as a percentage;
+    that was wrong, and it made the `ad` path report `FAIL` for two samples
+    drawn from *identical* distributions.
+
+#### Location tests
+
+Compare central tendency.
+
+| id | Test | Notes |
+| ---- | ------ | ------- |
+| `mw` | Mann-Whitney U | Distribution-free; in practice a rank-based comparison of central tendency. |
+| `ttest` | Welch's t-test | Unequal-variance t-test on the means. |
+| `brunner` | Brunner-Munzel | Tests stochastic equality. Unlike Mann-Whitney it does not assume equal shapes, so it stays valid when the variances differ. |
+
+#### Scale tests
+
+Compare spread.
+
+| id | Test | Notes |
+| ---- | ------ | ------- |
+| `levene` | Levene (median-centered) | Robust to non-normality. |
+| `ansari` | Ansari-Bradley | Assumes the two samples share a location, so pair it with a location test rather than using it alone. |
+| `mood` | Mood | Rank test for a difference in scale. |
+
+### Configuration parameters
+
+All parameters are available as command-line arguments to `rcs_stats.py` and
+as keyword arguments to `run_stats_comparison()`.
+
+#### Core
+
 ##### `--test_type` (default: `ks`)
 
-- Statistical test identifier
-- Distribution tests: `ks`, `ad`, `cvm`, `epps`, `energy`
-- Location tests: `mw`, `ttest`, `brunner`
-- Scale tests: `levene`, `ansari`, `mood`
-- Example: `--test_type ad` for high sensitivity
+Statistical test identifier, from the tables above.
 
 ##### `--analysis_type` (default: `spatiotemporal`)
 
-- Analysis mode for data aggregation
-- `spatiotemporal`: Area-weighted global means (recommended)
-- `temporal`: Per-column temporal means
-- Example: `--analysis_type temporal` for localized detection
+How each member is reduced to a sample: `spatiotemporal`, `temporal` or
+`member`.
 
-#### Multiple Testing Correction
+##### `--calibration` (default: `asymptotic`)
 
-When testing hundreds of variables simultaneously, the chance of false positives
-increases. Multiple testing corrections adjust significance thresholds to control
-error rates across all tests.
+`asymptotic` for SciPy's formula on the pooled values, or `member` for exact
+permutation of whole members.
 
-##### `--correction_method` (default: `bonferroni`)
+##### `--alpha` (default: `0.01`)
 
-Method for correcting multiple comparisons.
-Example: `--correction_method bonferroni`
+Significance level. Lower values reject less readily.
 
-###### `bonferroni`: Conservative, controls family-wise error rate (FWER)
+##### `--n_resamples` (default: `2000`)
 
-- Divides alpha by number of tests
-- Use for: Strict validation, production BFB testing
-- Guarantees overall false positive rate ≤ alpha
+Number of random member permutations to draw when exhaustive enumeration is
+impractical (more than 8 members per ensemble).
 
-###### `fdr`: False Discovery Rate (Benjamini-Hochberg procedure)
+##### `--seed` (default: `20250101`)
 
-- Controls expected proportion of false discoveries
-- Less conservative than Bonferroni, better power
-- Use for: Exploratory analysis, detecting subtle changes
-- Allows more true positives while controlling false positives
+RNG seed for permutation calibration. Fixed by default so that repeated runs
+on the same data give the same answer; the previous implementation used an
+unseeded global RNG, which made the `energy` test non-reproducible.
 
-###### `none`: No correction applied
+##### `--variables` (default: all)
 
-- Use for: Single variable analysis, pre-screened tests
-- Caution: High false positive rate with many tests
+Restrict the comparison to an explicit list of variables. Useful both for
+debugging and for reducing the multiple-testing penalty.
 
-#### Failure Thresholds
+##### `--verbose` (default: off)
 
-##### `--critical_fraction` (default: 0.001)
+Emit debug-level logging while the comparison runs.
 
-- Maximum fraction of failed sub-tests per variable
-- Only used in temporal analysis (per-column tests)
-- Variable fails if more than this fraction of columns reject null hypothesis
-- Range: 0.0 to 1.0
-- Example: `--critical_fraction 0.01` allows 1% of columns to fail
-  
-##### `--max_failed_vars` (default: 0)
+#### Multiple-testing correction
 
-- Maximum number of variables allowed to fail before overall test fails
-- Overall test status = FAIL if failed_vars > max_failed_vars
-- Use 0 for strict BFB testing (no failures allowed)
-- Use higher values for regression testing or exploratory work
-- Example: `--max_failed_vars 5` allows up to 5 variable failures
+Testing hundreds of variables at `alpha = 0.01` will produce failures by
+chance alone. `--correction_method` (default: `bonferroni`) adjusts for that.
 
-#### Effect Size Filtering
+| value | Method | Controls |
+| ------- | -------- | ---------- |
+| `bonferroni` | Bonferroni | Family-wise error rate. Conservative. |
+| `holm` | Holm-Bonferroni | Family-wise error rate, uniformly more powerful than Bonferroni at the same guarantee. Prefer this over `bonferroni`. |
+| `fdr` | Benjamini-Hochberg | False discovery rate. Less conservative; better power. |
+| `fdr_by` | Benjamini-Yekutieli | False discovery rate, valid under arbitrary dependence between tests. Appropriate when variables are strongly correlated. |
+| `none` | — | No correction. High false-positive rate with many variables. |
 
-##### `--magnitude_threshold` (default: None)
+The correction is applied through
+[statsmodels' `multipletests`](https://www.statsmodels.org/stable/generated/statsmodels.stats.multitest.multipletests.html)
+and is guaranteed to only ever *remove* rejections. It can never turn a
+variable that passed into one that failed. (The previous hand-rolled
+implementation could do exactly that, by re-deciding each variable from its
+p-value alone and discarding the magnitude threshold that had already settled
+the question.)
 
-- Minimum relative difference to consider significant
-- Requires BOTH statistical significance (p < alpha) AND practical
-  significance (relative difference > threshold)
-- Computed as: |mean1 - mean2| / ((|mean1| + |mean2|) / 2)
-- Range: 0.0 to 1.0 (e.g., 0.01 = 1% difference)
-- Use to filter out statistically significant but tiny differences
-- Example: `--magnitude_threshold 0.01` requires >1% mean difference
+#### Failure thresholds
 
-### Variable Selection
+##### `--max_failed_vars` (default: `0`)
 
-The test automatically identifies suitable variables based on:
+The overall test fails when more variables than this fail. Use `0` for strict
+NBFB validation.
 
-- Must have `time` dimension
-- Must have spatial dimensions (`ncol`)
-- Must not be coordinate variables (time, lat, lon, lev, etc.)
-- Must not be entirely NaN or constant-valued
+##### `--max_failed_fraction` (default: unset)
 
-This ensures all physically meaningful prognostic and diagnostic variables
-are tested without manual specification.
+The overall test also fails when the *fraction* of failing variables exceeds
+this. Unset by default, which disables the criterion.
 
-### NaN Handling
+!!! warning "`--critical_fraction` has changed meaning"
+    `critical_fraction` is still accepted as a deprecated alias for
+    `--max_failed_fraction`, but it now controls the overall failing fraction.
+    It previously documented a per-variable, per-column threshold that was
+    never actually implemented — the parameter was accepted, printed in the
+    report, and then ignored. Existing callers should move to
+    `--max_failed_fraction`.
 
-The implementation robustly handles missing values (NaN) throughout:
+##### `--fail_on_error` (default: off)
 
-- All mean calculations use `nanmean`/`nansum`
-- NaN values are filtered before K-S tests
-- Columns/variables with insufficient valid data are skipped with warnings
-- Spatial means properly account for partial land/ocean masks
+Treat a variable that could not be tested as a failure. Errored variables are
+always listed in the report and are never counted as passing; this flag makes
+them fatal. If *no* variable could be tested, the comparison fails regardless,
+since a vacuous comparison must not report success.
+
+#### Effect size filtering
+
+##### `--magnitude_threshold` (default: unset)
+
+Minimum relative mean difference, computed as
+`|mean1 - mean2| / ((|mean1| + |mean2|) / 2)`, required before a statistically
+detectable difference is counted as a failure. Use it to ignore differences
+that are real but physically negligible.
+
+#### Equivalence testing
+
+##### `--equivalence_margin` (default: unset)
+
+A variable that is not rejected has **not** been shown to be equivalent; it has
+merely failed to be shown different. With few members, almost nothing gets
+rejected, and a `PASS` mostly reflects low power rather than agreement.
+
+Setting `--equivalence_margin` adds a TOST (two one-sided tests) on the
+member-level means — the only values in the analysis that are genuinely
+independent. The margin is expressed in units of the baseline ensemble's own
+member-to-member standard deviation, so `--equivalence_margin 1.0` reads "the
+ensemble means agree to within one baseline ensemble sigma".
+
+When it is set, `PASS` means *shown equivalent* rather than *not shown
+different*, which is the logic a reproducibility claim actually needs. It is
+also demanding: demonstrating equivalence takes more members than failing to
+detect a difference does.
+
+### Variable selection
+
+A variable is testable when it
+
+- has a `time` dimension,
+- has a floating-point type,
+- is not a coordinate or grid-description variable (`time`, `lat`, `lon`,
+  `lev`, `ilev`, `area`, the hybrid coefficients, and so on), and
+- is present in **every** member of **both** ensembles.
+
+Variables that fail the last condition are reported in a `SKIPPED VARIABLES`
+section rather than being quietly ignored. The all-NaN and constant screening
+happens on the reduced sample, so a full 4-D field is never pulled into memory
+just to decide whether to look at it.
+
+### Missing-value handling
+
+- Area-weighted means renormalize over the valid cells at each time, so a
+  partial mask does not bias the result
+- For `temporal`, a position is used only if it is finite in every member of
+  both ensembles, which keeps positions aligned across members. The previous
+  implementation dropped NaNs per member and then truncated to the shortest
+  array, which silently compared one member's column *i* against a different
+  physical location in another member
+- Every position dropped this way is reported in a `DATA NOTES` section, so a
+  comparison that threw away most of the domain is visible even when it passes
 
 ### Output
 
-The test produces comprehensive diagnostic information:
+#### Console and test log
 
-#### Console output: Summary with configuration details and test results
+The report is appended to the CIME test log and printed by the standalone
+script. It contains:
 
-- Test type, analysis mode, and all configuration parameters
-- Alpha level, correction method, and failure thresholds
-- Number of instances and variables tested
-- Summary counts of passed/failed variables
+- the full configuration, including the RNG seed and file patterns
+- the member counts and instance numbers of both ensembles
+- a `RESOLUTION AND POWER` section: the strictest per-variable threshold after
+  correction, the smallest attainable permutation p-value for the member count
+  at hand, and (for asymptotic calibration) the median ratio of effective to
+  nominal sample size
+- a pass/fail summary
+- per-variable detail for the worst failures, with sample statistics, p-values
+  before and after correction, and effect sizes
+- a `PASSED BUT NOTABLE` section listing variables that were not rejected but
+  whose ensemble means differ by more than the baseline ensemble's own member
+  spread (`snr > 1`) — these are the near-misses worth a human look
+- `DATA NOTES`, `SKIPPED VARIABLES` and `ERRORED VARIABLES` sections
+- the overall verdict with the reason it was reached
 
-It also offers detailed statistics for failed variables including:
+Effect sizes are reported for every variable, not just the failing ones,
+because they answer a different question than the p-value does:
 
-- Sample sizes and descriptive statistics (mean, std, median, quartiles)
-- Mean differences (absolute and percentage)
-- Standard deviation ratios
-- Human-readable reasons for pass/fail decisions
-- Correction method effects (if applicable)
+- `mean_diff`, `mean_diff_pct`, `median_diff`, `std_ratio`
+- `cohens_d` — mean difference in pooled standard deviations
+- `snr` — mean difference divided by the baseline ensemble's member-to-member
+  spread. This is usually the number a climate scientist wants: a
+  statistically significant difference with `snr << 1` is buried inside the
+  ensemble's own internal variability
+- `ks_distance` — the KS statistic, as a scale-free summary of distributional
+  distance, regardless of which test was selected
 
-#### Test log: Detailed comments appended to CIME test status
+#### JSON report
 
-#### JSON file (`{test_type}_test_results.json`): Complete structured results
+A structured report is written to `rcs_<test>_<analysis>_results.json`
+containing `configuration`, `ensembles`, `summary`, `skipped_variables`,
+`errored_variables` and per-variable `details`.
 
-##### configuration: All parameters used for the test
+##### Choosing where the JSON report is written
 
-- `alpha`: Significance level
-- `correction_method`: Multiple testing correction method
-- `critical_fraction`: Failure threshold for sub-tests
-- `max_failed_vars`: Maximum allowed variable failures
-- `magnitude_threshold`: Effect size threshold (if set)
+`RUNDIR` frequently lives on a shared filesystem that the person running the
+comparison cannot write to. `--json_output` controls the destination:
 
-##### summary: Overall test results
+| value | Behavior |
+| ------- | ---------- |
+| a path ending in `.json` | Used verbatim; parent directories are created as needed |
+| a directory | The report is written inside it under the generated name |
+| `none` (or `off`, `no`, `disabled`) | No JSON report is written |
+| unset | Falls back to `$RCS_JSON_OUTPUT`, then to `run_dir` |
 
-- `passed`: Number of variables that passed
-- `failed`: Number of variables that failed
-- `total`: Total number of variables tested
-- `test_status`: Overall PASS/FAIL status
+```shell
+# explicit file
+rcs_stats.py /run/dir /base/dir --json_output ~/reports/rcs_run42.json
 
-##### details: Per-variable comprehensive statistics
+# directory
+rcs_stats.py /run/dir /base/dir --json_output ~/reports
 
-- Test statistic and p-value
-- Sample1/Sample2 descriptive statistics (n, mean, median, std, min, max, quartiles)
-- Differences (mean_diff, mean_diff_pct, median_diff, std_ratio)
-- Hypothesis result (PASS/FAIL) with explanation
-- Correction metadata (corrected_alpha, fdr_critical_value, correction_method)
+# skip it entirely
+rcs_stats.py /run/dir /base/dir --json_output none
 
-##### failed_variables: List of variable names that failed
+# or set it once for a whole session
+export RCS_JSON_OUTPUT=$HOME/rcs_reports
+```
 
-##### passed_variables: List of variable names that passed
+If the chosen location turns out to be unwritable, the report falls back to the
+system temporary directory and the substitution is noted in the console output.
+If that also fails, the failure is reported and the comparison continues:
+losing the report never turns a passing comparison into a failing one.
 
-### Running RCS Tests
+Within the CIME system test, the report defaults to the **case directory**
+rather than `RUNDIR`, since the user necessarily owns the case directory.
+Setting `RCS_JSON_OUTPUT` in the environment overrides that.
 
-#### Within CIME System Test Framework
+### Running RCS tests
 
-In order to run RCS as a CIME system test, you must request multiple instances.
-This can be achieved by adjusting runtime settings as discussed above.
-Or if using the `RCS` "System Test", you can simply append the name
-of the test with `_N#` (same driver) or `_C#` (multiple drivers).
+#### Within the CIME system test framework
 
-The user must also enable a perturbation across instances.
-A simple addition to `scream` configuration to perturb the initial
-condition file (e.g., initial_conditions::perturbed_fields="T_mid")
-should suffice. The RCS test will then ensure each instance has a
-different seed, and thus follow a different trajectory.
-RCS is designed such that it returns identical seeds and thus identical results,
-unless code or configuration changes introduce numerical or climate differences.
+To run RCS as a CIME system test you must request multiple instances, either
+by adjusting the runtime settings discussed above, or by appending `_N#` (same
+driver) or `_C#` (multiple drivers) to the test name.
 
-For convenience, there exists a "testmod" that can enable the perturbation for
-the user and can set a monthly average output stream that the RCS test will
-copy across instances. With CIME's create_test, the following is recommended:
+You must also enable a perturbation across instances. Adding a perturbed field
+to the `scream` configuration (e.g.
+`initial_conditions::perturbed_fields="T_mid"`) suffices. The RCS test then
+gives each instance a different seed so that each follows a different
+trajectory. RCS is designed to return identical seeds, and therefore identical
+results, unless code or configuration changes introduce numerical or climate
+differences.
+
+A testmod exists that enables the perturbation and sets up the monthly average
+output stream that RCS copies across instances:
 
 ```shell
 ./cime/scripts/create_test RCS_P4_C4.$RES.$COMPSET.$MACH.eamxx-perturb
 ```
 
-where `RCS_P4_C4` will result in 4 multi-driver instances all using a pelayout
-of 4, and will use the eamxx-perturb testmod as a helper in the setup phase.
-The rest of the options ($RES, $COMPSET, $MACH) should be familiar to users.
+`RCS_P4_C4` gives 4 multi-driver instances each using a pelayout of 4, with the
+`eamxx-perturb` testmod applied during setup. `$RES`, `$COMPSET` and `$MACH`
+are the usual create_test arguments.
 
-#### Standalone Command-Line Usage
+!!! tip "Four members is a small ensemble"
+    `_C4` is cheap and catches gross errors, but see the resolution table
+    above: with 4 members per ensemble the permutation calibration cannot
+    reach a corrected threshold, and even the asymptotic calibration has
+    limited power against subtle changes. For a result you intend to rely on,
+    prefer 8 or more members per ensemble.
 
-The statistical comparison can also be run independently from the command line
-for custom analysis or debugging. This is useful for:
+#### Standalone command-line usage
 
-- Testing different statistical methods on existing data
-- Adjusting significance thresholds without re-running simulations
-- Analyzing archived test results
-- Developing and validating new test configurations
-
-**Basic Usage:**
+The comparison runs independently of CIME on any two directories of ensemble
+output, which is useful for re-analyzing archived results, trying different
+statistical settings without re-running simulations, and debugging.
 
 ```text
-# Default: Kolmogorov-Smirnov test with spatiotemporal analysis
+# Default: KS on area-weighted global means, Bonferroni corrected
 rcs_stats.py /run/dir /base/dir
 ```
 
 ```text
-# Specify different statistical test
+# Exact member-level permutation calibration
+rcs_stats.py /run/dir /base/dir --calibration member
+```
+
+```text
+# Per-member scalars, which removes the seasonal cycle from the noise
+rcs_stats.py /run/dir /base/dir --analysis_type member --calibration member
+```
+
+```text
+# Positively demonstrate equivalence within one ensemble sigma
 rcs_stats.py /run/dir /base/dir \
-    --test_type ad
+    --analysis_type member \
+    --equivalence_margin 1.0
 ```
 
 ```text
-# Use temporal analysis instead of spatiotemporal
+# Holm correction, report to a writable location
 rcs_stats.py /run/dir /base/dir \
-    --analysis_type temporal
+    --correction_method holm \
+    --json_output ~/rcs_reports
 ```
 
 ```text
-# Custom significance level
+# Require practical as well as statistical significance
 rcs_stats.py /run/dir /base/dir \
-    --test_type ks --alpha 0.001
+    --magnitude_threshold 0.01
 ```
 
 ```text
-# Combine options
+# Focus on a few variables to soften the multiple-testing penalty
 rcs_stats.py /run/dir /base/dir \
-    --test_type mw --analysis_type temporal --alpha 0.005
-```
-
-**Available Options:**
-
-- `run_dir`: Directory containing current run ensemble output files
-- `base_dir`: Directory containing baseline ensemble output files
-
-**Statistical Test Selection:**
-
-`--test_type`: Statistical test identifier (default: `ks`)
-
-- Distribution tests: `ks`, `ad`, `cvm`, `epps`, `energy`
-- Location tests: `mw`, `ttest`, `brunner`
-- Scale tests: `levene`, `ansari`, `mood`
-
-`--analysis_type`: Analysis mode (default: `spatiotemporal`)
-
-- `spatiotemporal`: Area-weighted global means
-- `temporal`: Per-column temporal means
-
-`--alpha`: Significance level (default: 0.01, or 0.001 for AD)
-
-**Multiple Testing Correction:**
-
-`--correction_method`: Correction method (default: `bonferroni`)
-
-- `bonferroni`: Conservative, controls family-wise error rate
-- `fdr`: False Discovery Rate (Benjamini-Hochberg), less conservative
-- `none`: No correction applied
-
-`--critical_fraction`: Fraction of sub-tests allowed to fail (default: 0.001)
-
-**Failure Thresholds:**
-
-`--max_failed_vars`: Maximum variables allowed to fail (default: 0)
-`--magnitude_threshold`: Minimum relative difference threshold (default: None)
-
-**File Pattern Customization:**
-
-`--run_file_pattern`: File pattern for run ensemble files
-(default: `*.scream_????.h.AVERAGE.*.nc`)
-
-- Use `????` as placeholder for 4-digit instance number
-- Supports wildcards (`*`) for flexible matching
-
-`--base_file_pattern`: File pattern for baseline ensemble files
-(default: `*.scream_????.h.AVERAGE.*.nc`)
-
-- Use `????` as placeholder for 4-digit instance number
-- Supports wildcards (`*`) for flexible matching
-
-**Complete Examples:**
-
-```text
-# Basic usage with defaults
-rcs_stats.py /run/dir /base/dir
+    --variables T_mid ps surf_flux \
+    --calibration member
 ```
 
 ```text
-# High-sensitivity Anderson-Darling test
-rcs_stats.py /run/dir /base/dir \
-    --test_type ad
-```
-
-```text
-# Use FDR correction for better power
-rcs_stats.py /run/dir /base/dir \
-    --test_type ks \
-    --correction_method fdr \
-    --alpha 0.05
-```
-
-```text
-# Combine multiple options for custom analysis
-rcs_stats.py /run/dir /base/dir \
-    --test_type mw \
-    --analysis_type temporal \
-    --correction_method fdr \
-    --alpha 0.01 \
-    --max_failed_vars 3
-```
-
-```text
-# Require practical significance (>1% difference)
-rcs_stats.py /run/dir /base/dir \
-    --test_type ks \
-    --magnitude_threshold 0.01 \
-    --correction_method none
-```
-
-```text
-# Exploratory analysis with relaxed thresholds
-rcs_stats.py /run/dir /base/dir \
-    --test_type energy \
-    --alpha 0.05 \
-    --correction_method fdr \
-    --max_failed_vars 10
-```
-
-```text
-# Compare ensembles with different output formats
+# Compare ensembles written with different filename conventions
 rcs_stats.py /run/dir /base/dir \
     --run_file_pattern "*.eam_????.h0.*.nc" \
     --base_file_pattern "*.scream_????.h.AVERAGE.*.nc"
 ```
 
+The exit status is 0 for `PASS` and 1 for `FAIL`, so the script can be used
+directly in a shell pipeline.
+
+##### File pattern customization
+
+`--run_file_pattern` and `--base_file_pattern` (both defaulting to
+`*.scream_????.h.AVERAGE.*.nc`) accept an ordinary glob containing exactly one
+`????` placeholder marking the 4-digit instance number. Files that match the
+glob but do not carry a 4-digit number in that position are ignored, and a
+pattern with no placeholder is rejected with a clear error.
+
+##### Getting help
+
 ```text
-# Custom instance number patterns
-rcs_stats.py /run/dir /base/dir \
-    --run_file_pattern "output.????.nc" \
-    --base_file_pattern "baseline.????.nc"
+rcs_stats.py --help
 ```
 
-**Getting Help:**
+### Known limitations
 
-```text
-python rcs_stats.py --help
-```
+These are properties of the method, not bugs, and they bound what a `PASS`
+means.
 
-This displays complete documentation including all available tests with
-descriptions, usage examples, and parameter explanations.
+- **Vertical averaging is mass-unweighted.** `lev` and `ilev` are collapsed
+  with a plain mean, so a difference that changes sign with height can cancel
+  itself out. Variables whose signal is confined to a few levels are harder to
+  detect than column-integrated ones.
+- **Asymptotic p-values are anti-conservative.** They assume independence that
+  the pooled values do not have. The reported effective sample size shows how
+  far off they are; `--calibration member` removes the assumption at the cost
+  of resolution.
+- **Power is set by the member count, not the number of timesteps.** Adding
+  output frequency inflates the nominal sample size without adding much
+  information. Adding members is what actually helps.
+- **A `PASS` is not a proof of equivalence** unless `--equivalence_margin` is
+  set. Without it, `PASS` means only that the configured test did not detect a
+  difference.

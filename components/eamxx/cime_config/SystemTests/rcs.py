@@ -17,6 +17,7 @@ RCS relies on two util files:
 
 import glob
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -36,6 +37,10 @@ class RCS(SystemTestsCommon):
     # File pattern for multi-instance ensemble output files
     # Use ???? as placeholder for 4-digit instance number
     ENSEMBLE_FILE_PATTERN = "*.scream_????.h.AVERAGE.*.nc"
+
+    # Environment variable a user can set to redirect the JSON report.
+    # Accepts a .json path, a directory, or "none" to skip writing it.
+    JSON_OUTPUT_ENV = "RCS_JSON_OUTPUT"
 
     # pylint: disable=too-many-arguments, too-many-positional-arguments
     def setup_phase(
@@ -174,6 +179,15 @@ class RCS(SystemTestsCommon):
             # because we want to avoid import errors of needed pkgs
             # pylint: disable=import-outside-toplevel
             import rcs_stats as rcss
+
+            # Decide where the JSON report goes. RUNDIR often lives on a
+            # shared filesystem the user cannot write to, so default to the
+            # case directory, which they necessarily own. An explicit
+            # RCS_JSON_OUTPUT always wins.
+            json_output = os.environ.get(
+                self.JSON_OUTPUT_ENV, self._orig_caseroot
+            )
+
             # now, launch
             comments, new_ts = rcss.run_stats_comparison(
                 run_dir,
@@ -183,6 +197,7 @@ class RCS(SystemTestsCommon):
                 alpha=0.01,
                 run_file_pattern=self.ENSEMBLE_FILE_PATTERN,
                 base_file_pattern=self.ENSEMBLE_FILE_PATTERN,
+                json_output=json_output,
             )
 
             if new_ts == "PASS":
