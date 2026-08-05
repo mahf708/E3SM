@@ -2108,15 +2108,22 @@ def run_stats_comparison(
                 f"fail. Add ensemble members, relax --alpha, switch "
                 f"--correction_method, or use --global_test calibrated_count"
             )
-    if global_test == "calibrated_count" and global_alpha * len(
-        assignments or [1]
-    ) < 1.0:
-        test_status = "FAIL"
-        status_reasons.append(
-            f"configuration cannot resolve a difference: {len(assignments)} "
-            f"member assignments cannot produce a p-value below "
-            f"global_alpha={global_alpha}. Add members or raise --global_alpha"
+    if global_test == "calibrated_count" and total:
+        # Same resolution floor as any permutation test: 2/C(2n,n) when the
+        # assignments are enumerated, because a partition and its complement
+        # give identical counts. Comparing against 1/n_assignments here would
+        # miss configurations that fall between the two.
+        p_min, n_perms, _ = permutation_resolution(
+            len(run_ens), len(base_ens), n_resamples
         )
+        if p_min > global_alpha:
+            test_status = "FAIL"
+            status_reasons.append(
+                f"configuration cannot resolve a difference: the global test "
+                f"bottoms out at p={p_min:.3e} over {n_perms} member "
+                f"assignments, above global_alpha={global_alpha}, so it could "
+                f"never reject. Add members or raise --global_alpha"
+            )
 
     if unmatched:
         status_reasons.append(
