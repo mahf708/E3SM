@@ -280,6 +280,23 @@ def open_ensemble(directory, pattern):
     return datasets
 
 
+def close_ensemble(datasets):
+    """
+    Close every dataset in an ensemble.
+
+    xarray caches open file handles keyed by path, so a caller that runs
+    several comparisons in one process -- a driver script sweeping settings,
+    or a test harness -- will otherwise both leak descriptors and risk reading
+    a stale handle if a path is rewritten between calls. Closing is cheap and
+    removes both problems.
+    """
+    for dataset in (datasets or {}).values():
+        try:
+            dataset.close()
+        except (OSError, RuntimeError, AttributeError) as error:
+            logger.debug("Could not close dataset: %s", error)
+
+
 # ==========================================================
 # Sample construction
 # ==========================================================
@@ -1961,221 +1978,226 @@ def run_stats_comparison(
     run_ens = open_ensemble(str(run_dir), run_file_pattern)
     base_ens = open_ensemble(str(base_dir), base_file_pattern)
 
-    ensemble_info = {
-        "n_run": len(run_ens),
-        "n_base": len(base_ens),
-        "run_instances": sorted(run_ens),
-        "base_instances": sorted(base_ens),
-    }
-    if len(run_ens) < 2 or len(base_ens) < 2:
-        logger.warning(
-            "RCS is comparing ensembles of %d and %d member(s); with fewer "
-            "than 2 members per side the ensemble spread is unknown and the "
-            "comparison has essentially no diagnostic value.",
-            len(run_ens), len(base_ens),
-        )
+    try:
 
-    requested = list(variables) if variables else None
-    if variables_file:
-        from_file = load_variable_list(variables_file, variable_set)
-        requested = sorted(set(requested or []) | set(from_file))
-
-    testable, skipped, unmatched = _select_variables(run_ens, base_ens, requested)
-    weights = (
-        get_area_weights(next(iter(run_ens.values())))
-        if analysis_type in ("spatiotemporal", "member")
-        else None
-    )
-    if analysis_type in ("spatiotemporal", "member") and weights is None:
-        logger.warning(
-            "No 'area' field found; falling back to an unweighted spatial "
-            "mean, which over-weights small grid cells."
-        )
-
-    test = get_test(test_type, alpha=alpha)
-    rng = np.random.default_rng(seed)
-
-    # One shared assignment list for every variable, so the global test can
-    # see the correlation between variables.
-    assignments, exhaustive = (None, None)
-    if calibration == "member" or global_test == "calibrated_count":
-        assignments, exhaustive = build_assignments(
-            len(run_ens), len(base_ens), n_resamples, rng
-        )
-        logger.info(
-            "Calibrating with %d member assignments (%s)",
-            len(assignments),
-            "exhaustive" if exhaustive else "randomly sampled",
-        )
-
-    mde_threshold = (
-        decision_threshold(alpha, correction_method, max(len(testable), 1))
-        if power_analysis
-        else None
-    )
-
-    results, errors, perm_pvalues = {}, {}, {}
-    for var in testable:
-        try:
-            result, per_assignment = compare_variable(
-                var, run_ens, base_ens, test, analysis_type, weights,
-                calibration, assignments, equivalence_margin, mde_threshold,
+        ensemble_info = {
+            "n_run": len(run_ens),
+            "n_base": len(base_ens),
+            "run_instances": sorted(run_ens),
+            "base_instances": sorted(base_ens),
+        }
+        if len(run_ens) < 2 or len(base_ens) < 2:
+            logger.warning(
+                "RCS is comparing ensembles of %d and %d member(s); with fewer "
+                "than 2 members per side the ensemble spread is unknown and the "
+                "comparison has essentially no diagnostic value.",
+                len(run_ens), len(base_ens),
             )
-            results[var] = result
-            if per_assignment is not None:
-                perm_pvalues[var] = per_assignment
-            elif assignments is not None:
-                # Bit-identical or constant: never rejects, under any grouping.
-                perm_pvalues[var] = np.ones(len(assignments))
-        except (ValueError, KeyError, OSError, IndexError, TypeError,
-                ZeroDivisionError, FloatingPointError) as error:
-            logger.warning("Could not test %s: %s", var, error)
-            errors[var] = str(error)
 
-    if results:
-        results = apply_multiple_testing_correction(results, alpha, correction_method)
-    for result in results.values():
-        _finalize_decision(result, magnitude_threshold, equivalence_margin)
+        requested = list(variables) if variables else None
+        if variables_file:
+            from_file = load_variable_list(variables_file, variable_set)
+            requested = sorted(set(requested or []) | set(from_file))
 
-    global_result = None
-    if global_test == "calibrated_count":
-        global_result = calibrated_count_test(perm_pvalues, global_alpha)
-
-    failed = sorted(v for v, r in results.items() if r["hypothesis"] == "FAIL")
-    passed = sorted(v for v, r in results.items() if r["hypothesis"] == "PASS")
-    total = len(results)
-
-    # --- Overall verdict --------------------------------------------------
-    status_reasons = []
-    test_status = "PASS"
-    if total == 0:
-        test_status = "FAIL"
-        status_reasons.append(
-            "no variable could be tested; the comparison is vacuous"
+        testable, skipped, unmatched = _select_variables(run_ens, base_ens, requested)
+        weights = (
+            get_area_weights(next(iter(run_ens.values())))
+            if analysis_type in ("spatiotemporal", "member")
+            else None
         )
-    elif global_test == "calibrated_count":
-        # The count of rejections, judged against its own permutation null.
-        if global_result["rejected"]:
+        if analysis_type in ("spatiotemporal", "member") and weights is None:
+            logger.warning(
+                "No 'area' field found; falling back to an unweighted spatial "
+                "mean, which over-weights small grid cells."
+            )
+
+        test = get_test(test_type, alpha=alpha)
+        rng = np.random.default_rng(seed)
+
+        # One shared assignment list for every variable, so the global test can
+        # see the correlation between variables.
+        assignments, exhaustive = (None, None)
+        if calibration == "member" or global_test == "calibrated_count":
+            assignments, exhaustive = build_assignments(
+                len(run_ens), len(base_ens), n_resamples, rng
+            )
+            logger.info(
+                "Calibrating with %d member assignments (%s)",
+                len(assignments),
+                "exhaustive" if exhaustive else "randomly sampled",
+            )
+
+        mde_threshold = (
+            decision_threshold(alpha, correction_method, max(len(testable), 1))
+            if power_analysis
+            else None
+        )
+
+        results, errors, perm_pvalues = {}, {}, {}
+        for var in testable:
+            try:
+                result, per_assignment = compare_variable(
+                    var, run_ens, base_ens, test, analysis_type, weights,
+                    calibration, assignments, equivalence_margin, mde_threshold,
+                )
+                results[var] = result
+                if per_assignment is not None:
+                    perm_pvalues[var] = per_assignment
+                elif assignments is not None:
+                    # Bit-identical or constant: never rejects, under any grouping.
+                    perm_pvalues[var] = np.ones(len(assignments))
+            except (ValueError, KeyError, OSError, IndexError, TypeError,
+                    ZeroDivisionError, FloatingPointError) as error:
+                logger.warning("Could not test %s: %s", var, error)
+                errors[var] = str(error)
+
+        if results:
+            results = apply_multiple_testing_correction(results, alpha, correction_method)
+        for result in results.values():
+            _finalize_decision(result, magnitude_threshold, equivalence_margin)
+
+        global_result = None
+        if global_test == "calibrated_count":
+            global_result = calibrated_count_test(perm_pvalues, global_alpha)
+
+        failed = sorted(v for v, r in results.items() if r["hypothesis"] == "FAIL")
+        passed = sorted(v for v, r in results.items() if r["hypothesis"] == "PASS")
+        total = len(results)
+
+        # --- Overall verdict --------------------------------------------------
+        status_reasons = []
+        test_status = "PASS"
+        if total == 0:
             test_status = "FAIL"
             status_reasons.append(
-                f"{global_result['observed_rejections']} of "
-                f"{global_result['n_variables']} variables rejected at "
-                f"p<{global_alpha}, more than member exchangeability explains "
-                f"(global p={global_result['pvalue']:.4f}; null median "
-                f"{global_result['null_rejections_median']:.1f}, 95th "
-                f"percentile {global_result['null_rejections_p95']:.1f})"
+                "no variable could be tested; the comparison is vacuous"
             )
-        else:
-            status_reasons.append(
-                f"{global_result['observed_rejections']} of "
-                f"{global_result['n_variables']} variables rejected at "
-                f"p<{global_alpha}, consistent with the permutation null "
-                f"(global p={global_result['pvalue']:.4f})"
-            )
-    else:
-        if len(failed) > max_failed_vars:
-            test_status = "FAIL"
-            status_reasons.append(
-                f"{len(failed)} variable(s) failed, more than the allowed "
-                f"{max_failed_vars}"
-            )
-        if max_failed_fraction is not None:
-            fraction = len(failed) / total
-            if fraction > max_failed_fraction:
+        elif global_test == "calibrated_count":
+            # The count of rejections, judged against its own permutation null.
+            if global_result["rejected"]:
                 test_status = "FAIL"
                 status_reasons.append(
-                    f"failing fraction {fraction:.4f} exceeds "
-                    f"{max_failed_fraction}"
+                    f"{global_result['observed_rejections']} of "
+                    f"{global_result['n_variables']} variables rejected at "
+                    f"p<{global_alpha}, more than member exchangeability explains "
+                    f"(global p={global_result['pvalue']:.4f}; null median "
+                    f"{global_result['null_rejections_median']:.1f}, 95th "
+                    f"percentile {global_result['null_rejections_p95']:.1f})"
+                )
+            else:
+                status_reasons.append(
+                    f"{global_result['observed_rejections']} of "
+                    f"{global_result['n_variables']} variables rejected at "
+                    f"p<{global_alpha}, consistent with the permutation null "
+                    f"(global p={global_result['pvalue']:.4f})"
+                )
+        else:
+            if len(failed) > max_failed_vars:
+                test_status = "FAIL"
+                status_reasons.append(
+                    f"{len(failed)} variable(s) failed, more than the allowed "
+                    f"{max_failed_vars}"
+                )
+            if max_failed_fraction is not None:
+                fraction = len(failed) / total
+                if fraction > max_failed_fraction:
+                    test_status = "FAIL"
+                    status_reasons.append(
+                        f"failing fraction {fraction:.4f} exceeds "
+                        f"{max_failed_fraction}"
+                    )
+
+        # A permutation test whose finest attainable p-value sits above the
+        # decision threshold cannot reject anything, no matter what the model
+        # does. Reporting PASS in that situation is worse than useless, so treat
+        # it as the configuration error it is. The global test escapes this,
+        # because it spends its resolution on a single p-value rather than on one
+        # per variable.
+        if calibration == "member" and total and global_test != "calibrated_count":
+            threshold = decision_threshold(alpha, correction_method, total)
+            p_min, _, _ = permutation_resolution(
+                len(run_ens), len(base_ens), n_resamples
+            )
+            if p_min > threshold:
+                test_status = "FAIL"
+                status_reasons.append(
+                    f"configuration cannot resolve a difference: member "
+                    f"permutation bottoms out at p={p_min:.3e} but the decision "
+                    f"threshold is {threshold:.3e}, so no variable could ever "
+                    f"fail. Add ensemble members, relax --alpha, switch "
+                    f"--correction_method, or use --global_test calibrated_count"
+                )
+        if global_test == "calibrated_count" and total:
+            # Same resolution floor as any permutation test: 2/C(2n,n) when the
+            # assignments are enumerated, because a partition and its complement
+            # give identical counts. Comparing against 1/n_assignments here would
+            # miss configurations that fall between the two.
+            p_min, n_perms, _ = permutation_resolution(
+                len(run_ens), len(base_ens), n_resamples
+            )
+            if p_min > global_alpha:
+                test_status = "FAIL"
+                status_reasons.append(
+                    f"configuration cannot resolve a difference: the global test "
+                    f"bottoms out at p={p_min:.3e} over {n_perms} member "
+                    f"assignments, above global_alpha={global_alpha}, so it could "
+                    f"never reject. Add members or raise --global_alpha"
                 )
 
-    # A permutation test whose finest attainable p-value sits above the
-    # decision threshold cannot reject anything, no matter what the model
-    # does. Reporting PASS in that situation is worse than useless, so treat
-    # it as the configuration error it is. The global test escapes this,
-    # because it spends its resolution on a single p-value rather than on one
-    # per variable.
-    if calibration == "member" and total and global_test != "calibrated_count":
-        threshold = decision_threshold(alpha, correction_method, total)
-        p_min, _, _ = permutation_resolution(
-            len(run_ens), len(base_ens), n_resamples
-        )
-        if p_min > threshold:
-            test_status = "FAIL"
+        if unmatched:
             status_reasons.append(
-                f"configuration cannot resolve a difference: member "
-                f"permutation bottoms out at p={p_min:.3e} but the decision "
-                f"threshold is {threshold:.3e}, so no variable could ever "
-                f"fail. Add ensemble members, relax --alpha, switch "
-                f"--correction_method, or use --global_test calibrated_count"
-            )
-    if global_test == "calibrated_count" and total:
-        # Same resolution floor as any permutation test: 2/C(2n,n) when the
-        # assignments are enumerated, because a partition and its complement
-        # give identical counts. Comparing against 1/n_assignments here would
-        # miss configurations that fall between the two.
-        p_min, n_perms, _ = permutation_resolution(
-            len(run_ens), len(base_ens), n_resamples
-        )
-        if p_min > global_alpha:
-            test_status = "FAIL"
-            status_reasons.append(
-                f"configuration cannot resolve a difference: the global test "
-                f"bottoms out at p={p_min:.3e} over {n_perms} member "
-                f"assignments, above global_alpha={global_alpha}, so it could "
-                f"never reject. Add members or raise --global_alpha"
+                f"{len(unmatched)} requested variable(s) are not present in the "
+                f"output and were not tested"
             )
 
-    if unmatched:
-        status_reasons.append(
-            f"{len(unmatched)} requested variable(s) are not present in the "
-            f"output and were not tested"
+        if errors and fail_on_error:
+            test_status = "FAIL"
+            status_reasons.append(f"{len(errors)} variable(s) could not be tested")
+        elif errors:
+            status_reasons.append(
+                f"{len(errors)} variable(s) could not be tested (not counted; "
+                f"use fail_on_error to make this fatal)"
+            )
+        if not status_reasons:
+            status_reasons.append(
+                f"all {total} tested variable(s) are consistent with the baseline "
+                f"ensemble at alpha={alpha}"
+            )
+
+        summary = {
+            "global_test": global_result,
+            "passed": len(passed),
+            "failed": len(failed),
+            "total": total,
+            "unmatched": unmatched,
+            "skipped": len(skipped),
+            "errored": len(errors),
+            "test_status": test_status,
+            "status_reason": "; ".join(status_reasons),
+            "failed_variables": failed,
+            "passed_variables": passed,
+        }
+
+        json_path = resolve_json_path(json_output, str(run_dir), test_type, analysis_type)
+        written_path, json_note = write_json_report(
+            json_path,
+            {
+                "configuration": config,
+                "ensembles": ensemble_info,
+                "summary": summary,
+                "skipped_variables": skipped,
+                "errored_variables": errors,
+                "details": results,
+            },
         )
+        summary["json_path"] = written_path
+        summary["json_note"] = json_note
 
-    if errors and fail_on_error:
-        test_status = "FAIL"
-        status_reasons.append(f"{len(errors)} variable(s) could not be tested")
-    elif errors:
-        status_reasons.append(
-            f"{len(errors)} variable(s) could not be tested (not counted; "
-            f"use fail_on_error to make this fatal)"
-        )
-    if not status_reasons:
-        status_reasons.append(
-            f"all {total} tested variable(s) are consistent with the baseline "
-            f"ensemble at alpha={alpha}"
-        )
-
-    summary = {
-        "global_test": global_result,
-        "passed": len(passed),
-        "failed": len(failed),
-        "total": total,
-        "unmatched": unmatched,
-        "skipped": len(skipped),
-        "errored": len(errors),
-        "test_status": test_status,
-        "status_reason": "; ".join(status_reasons),
-        "failed_variables": failed,
-        "passed_variables": passed,
-    }
-
-    json_path = resolve_json_path(json_output, str(run_dir), test_type, analysis_type)
-    written_path, json_note = write_json_report(
-        json_path,
-        {
-            "configuration": config,
-            "ensembles": ensemble_info,
-            "summary": summary,
-            "skipped_variables": skipped,
-            "errored_variables": errors,
-            "details": results,
-        },
-    )
-    summary["json_path"] = written_path
-    summary["json_note"] = json_note
-
-    report = format_report(config, ensemble_info, results, skipped, errors, summary)
-    return report, test_status
+        report = format_report(config, ensemble_info, results, skipped, errors, summary)
+        return report, test_status
+    finally:
+        close_ensemble(run_ens)
+        close_ensemble(base_ens)
 
 
 # ==========================================================
