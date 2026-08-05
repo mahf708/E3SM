@@ -330,6 +330,60 @@ distribution is an empirical calibration of your exact configuration on your
 exact data — if the observed count sits comfortably inside it, the pipeline is
 behaving as advertised.
 
+##### How many members do I need?
+
+Measured on synthetic ensembles of 20 independent variables, where the change
+is a uniform shift applied to every variable. Effect size is in units of the
+realized member-to-member standard deviation of the annual global mean — the
+internal variability a real change has to beat. Entries are rejection rates;
+the `0` column is the false-positive rate.
+
+| members | configuration | 0 | 0.27σ | 0.53σ | 1.06σ | 1.59σ |
+| --- | --- | --- | --- | --- | --- | --- |
+| 4+4 | default (pooled + Bonferroni) | 0.000 | 0.000 | 0.000 | 0.003 | 0.020 |
+| 4+4 | member + Bonferroni | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 4+4 | **member + calibrated_count** | 0.003 | 0.030 | 0.097 | 0.500 | 0.927 |
+| 6+6 | default (pooled + Bonferroni) | 0.000 | 0.000 | 0.000 | 0.020 | 0.050 |
+| 6+6 | member + Bonferroni | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+| 6+6 | **member + calibrated_count** | 0.020 | 0.055 | 0.185 | 0.895 | 1.000 |
+| 8+8 | default (pooled + Bonferroni) | 0.000 | 0.000 | 0.000 | 0.033 | 0.183 |
+| 8+8 | member + Bonferroni | 0.000 | 0.008 | 0.033 | 0.250 | 0.858 |
+| 8+8 | **member + calibrated_count** | 0.017 | 0.067 | 0.208 | 0.958 | 1.000 |
+| 12+12 | default (pooled + Bonferroni) | 0.000 | 0.000 | 0.013 | 0.037 | 0.750 |
+| 12+12 | member + Bonferroni | 0.013 | 0.025 | 0.113 | 0.575 | 1.000 |
+| 12+12 | **member + calibrated_count** | 0.013 | 0.062 | 0.600 | 1.000 | 1.000 |
+
+Reading this table:
+
+- **`member + calibrated_count` dominates at every member count.** It is the
+  only configuration with usable power at 4 or 6 members.
+- **`member + Bonferroni` is identically zero below 8 members**, and the
+  switch-on point is arithmetic rather than luck. The smallest p-value a
+  permutation-respecting test can produce is `2/C(2n,n)`: at 6+6 that is
+  `2.2e-3`, above the Bonferroni threshold of `0.01/20 = 5e-4`; at 8+8 it is
+  `1.6e-4`, below it. Power appears exactly where the floor drops under the
+  threshold.
+- **The pooled default is weak everywhere.** Pooling months inflates the
+  nominal sample size but puts the seasonal cycle into the variance the change
+  has to beat.
+- **False positives stay well under 0.05** for the calibrated count at every
+  member count, so the power above is not bought with loose sizing.
+
+Rules of thumb, at `--analysis_type member --global_test calibrated_count`:
+
+| you want to catch | members per ensemble |
+| --- | --- |
+| ~1.5σ or larger (gross errors) | 4 |
+| ~1σ | 6 |
+| ~0.5σ | 12 or more |
+
+Two caveats. Real variables are correlated, which reduces the effective number
+of independent tests; the permutation null handles that correctly but the
+numbers will move. And this models a change that shifts *every* variable — a
+change confined to one or two variables plays to the per-variable route's
+strengths rather than the global count's, so at 8+ members it is worth running
+both.
+
 ##### Measured behavior on synthetic ensembles
 
 On synthetic ensembles with 4+4 members, 20 independent variables and
