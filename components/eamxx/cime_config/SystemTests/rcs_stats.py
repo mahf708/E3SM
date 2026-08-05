@@ -54,12 +54,31 @@ Test categories
 2. LOCATION:     mw, ttest, brunner
 3. SCALE:        levene, ansari, mood
 
+Combining the per-variable verdicts
+-----------------------------------
+``global_test`` decides how many per-variable answers become one answer.
+
+- ``variable_count`` (default): correct the p-values across variables and
+  count the failures.
+- ``calibrated_count``: judge the *number* of rejections against its own
+  member-permutation null distribution. This accounts for correlation between
+  variables -- which Bonferroni and Benjamini-Hochberg do not -- and, because
+  it spends its resolution on a single p-value instead of one per variable, it
+  remains usable at the small member counts RCS is normally run with. It is
+  also the more sensitive choice against a diffuse change that nudges many
+  variables slightly, which is what a climate-altering bug usually looks like.
+
 Interpreting the outcome
 ------------------------
 A variable that is not rejected has *not* been shown to be equivalent; it has
-merely failed to be shown different. If you need a positive equivalence claim,
-set ``equivalence_margin`` to run a TOST (two one-sided tests) on the
-member-level means in addition to the difference test.
+merely failed to be shown different. Two things help turn that into a
+statement with content:
+
+- ``power_analysis`` (on by default) reports, per variable, the smallest
+  injected shift this configuration would actually have rejected.
+- ``equivalence_margin`` runs a TOST (two one-sided tests) on the member-level
+  means, so that a pass means "shown equivalent" rather than "not shown
+  different".
 
 Usage
 -----
@@ -836,52 +855,204 @@ def permutation_resolution(n_run, n_base, n_resamples):
     return 1.0 / (n_resamples + 1), int(n_resamples), False
 
 
-# pylint: disable=too-many-locals
-def member_permutation_pvalue(test, run, base, n_resamples, rng):
+def build_assignments(n_run, n_base, n_resamples, rng):
     """
-    Recalibrate ``test`` by permuting whole members between the ensembles.
+    Build the set of member re-assignments used to calibrate by permutation.
 
-    Exact under the null that members are exchangeable across ensembles, and
-    -- unlike the asymptotic p-values -- indifferent to serial or spatial
-    correlation *within* a member.
+    The list is built **once** and reused for every variable. That is not just
+    an optimization: applying the same member re-assignment to all variables
+    simultaneously is what lets the global test in ``calibrated_count_test``
+    see the correlation *between* variables. Recomputing an independent
+    permutation per variable would destroy exactly the structure that makes
+    the global null distribution correct.
+
+    Element 0 is always the identity assignment -- the members as they
+    actually are -- so the observed statistic is one of the permuted ones and
+    needs no special casing.
+    """
+    n_total = n_run + n_base
+    total = _n_member_partitions(n_run, n_base)
+    if total <= MAX_EXACT_PERMUTATIONS:
+        # combinations() yields (0, 1, ..., n_run-1) first, which is exactly
+        # the identity assignment.
+        return [tuple(sel) for sel in combinations(range(n_total), n_run)], True
+
+    assignments = [tuple(range(n_run))]
+    assignments.extend(
+        tuple(sorted(rng.permutation(n_total)[:n_run].tolist()))
+        for _ in range(n_resamples)
+    )
+    return assignments, False
+
+
+def permuted_statistics(test, run, base, assignments):
+    """
+    Evaluate the test statistic under every member assignment.
+
+    Returns an array aligned with ``assignments``; entry 0 is the observed
+    statistic. Assignments whose statistic cannot be computed become NaN
+    rather than silently shifting the others.
     """
     rows = run.rows + base.rows
-    n_run, n_total = run.n_members, len(rows)
-    observed = abs(test.statistic(run.pooled, base.pooled))
+    n_total = len(rows)
+    values = np.full(len(assignments), np.nan)
 
-    _, n_used, exhaustive = permutation_resolution(n_run, base.n_members, n_resamples)
-
-    if exhaustive:
-        assignments = combinations(range(n_total), n_run)
-    else:
-        assignments = (
-            tuple(rng.permutation(n_total)[:n_run]) for _ in range(n_resamples)
-        )
-
-    count = 0
-    evaluated = 0
-    for selection in assignments:
+    for j, selection in enumerate(assignments):
         chosen = set(selection)
         left = np.concatenate([rows[i] for i in range(n_total) if i in chosen])
         right = np.concatenate([rows[i] for i in range(n_total) if i not in chosen])
         try:
-            candidate = abs(test.statistic(left, right))
+            values[j] = abs(test.statistic(left, right))
         except (ValueError, ZeroDivisionError, FloatingPointError):
             continue
-        evaluated += 1
-        if candidate >= observed - 1e-15:
-            count += 1
 
-    if evaluated == 0:
+    if not np.isfinite(values).any():
         raise ValueError("no member permutation produced a usable statistic")
+    return values
 
-    if exhaustive:
-        # The observed assignment is itself one of the enumerated partitions.
-        pvalue = count / evaluated
-    else:
-        pvalue = (count + 1.0) / (evaluated + 1.0)
 
-    return float(pvalue), int(n_used), exhaustive
+def permutation_pvalues(values):
+    """
+    Turn permuted statistics into a permutation p-value for each assignment.
+
+    ``p_j`` is the fraction of assignments whose statistic is at least as
+    extreme as assignment ``j``'s. Entry 0 is therefore the ordinary
+    permutation p-value of the observed data, and the remaining entries are
+    the p-values the *same* pipeline would have produced had the members been
+    grouped differently -- which is what the global test needs.
+
+    Ranking is used rather than an asymptotic formula so that this works
+    identically for every statistic, including those (like energy distance)
+    that have no closed-form null distribution.
+    """
+    finite = np.isfinite(values)
+    n_valid = int(finite.sum())
+    pvalues = np.ones(values.size)
+    # rankdata on the negated statistic with method="max" counts, for each
+    # entry, how many entries are >= it (ties included).
+    pvalues[finite] = stats.rankdata(-values[finite], method="max") / n_valid
+    return pvalues, n_valid
+
+
+def calibrated_count_test(perm_pvalues, global_alpha):
+    """
+    Judge the ensemble of per-variable tests as a whole.
+
+    Instead of asking "did any single variable reject after a Bonferroni-style
+    correction", this asks "is the *number* of rejecting variables larger than
+    member exchangeability can explain". The null distribution of that count is
+    obtained by re-grouping the members and re-counting, so it automatically
+    accounts for the correlation between variables -- which Bonferroni and
+    Benjamini-Hochberg both ignore, and which Benjamini-Yekutieli only handles
+    by giving up a lot of power.
+
+    Two properties make this worth having:
+
+    - It is far more sensitive to a diffuse change that nudges many variables
+      slightly than a per-variable correction is, and that is the signature of
+      a climate-altering bug.
+    - It needs only one p-value, so it is judged against ``global_alpha``
+      rather than ``global_alpha / n_variables``. With 4+4 members the finest
+      attainable p-value is 0.029, which is below 0.05 -- so unlike the
+      per-variable permutation test, this one can actually reject at the
+      ensemble sizes RCS is usually run with.
+
+    ``perm_pvalues`` maps a variable to its per-assignment p-value array; all
+    arrays must come from the same assignment list.
+    """
+    if not perm_pvalues:
+        return None
+
+    matrix = np.vstack(list(perm_pvalues.values()))
+    counts = (matrix < global_alpha).sum(axis=0)
+    observed = int(counts[0])
+    n_perm = counts.size
+    pvalue = float((counts >= observed).sum() / n_perm)
+
+    return {
+        "n_variables": int(matrix.shape[0]),
+        "n_assignments": int(n_perm),
+        "per_variable_alpha": global_alpha,
+        "observed_rejections": observed,
+        "null_rejections_median": float(np.median(counts)),
+        "null_rejections_p95": float(np.percentile(counts, 95)),
+        "null_rejections_max": int(counts.max()),
+        "expected_by_chance": float(matrix.shape[0] * global_alpha),
+        "pvalue": pvalue,
+        "rejected": bool(pvalue < global_alpha),
+    }
+
+
+# ==========================================================
+# Power: what change would this configuration have caught?
+# ==========================================================
+
+#: Effect sizes probed by the power analysis, in units of the baseline
+#: ensemble's member-to-member standard deviation.
+MDE_GRID = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
+
+
+def minimum_detectable_effect(test, run, base, threshold, grid=MDE_GRID):
+    """
+    Smallest injected shift this configuration would have rejected.
+
+    A ``PASS`` is only as meaningful as the change it would have caught. This
+    shifts the run sample by increasing multiples of the baseline ensemble's
+    member-to-member standard deviation and reports the first multiple whose
+    p-value falls below ``threshold``. The answer turns "no difference
+    detected" into "no difference detected, and a shift of 2 sigma would have
+    been".
+
+    Uses the asymptotic p-value, so it is cheap (one extra test evaluation per
+    grid point) but inherits that p-value's optimism -- treat it as a lower
+    bound on the shift genuinely needed. Returns None when the ensemble spread
+    is degenerate or the test has no asymptotic p-value.
+    """
+    if not test.provides_asymptotic_pvalue or base.n_members < 2:
+        return None
+
+    sigma = float(np.std(base.member_means, ddof=1))
+    if not np.isfinite(sigma) or sigma <= _TINY:
+        return None
+
+    probed = {}
+    for delta in grid:
+        try:
+            _, pvalue = test.evaluate(run.pooled + delta * sigma, base.pooled)
+        except (ValueError, ZeroDivisionError, FloatingPointError):
+            continue
+        if pvalue is None:
+            return None
+        probed[delta] = float(pvalue)
+
+    if not probed:
+        return None
+
+    # Rank-based statistics are step functions of the injected shift, so the
+    # p-value is not strictly monotone: a small shift can land on a flat spot
+    # and score worse than an even smaller one. Report the smallest shift from
+    # which every *larger* probed shift is also rejected, which is the
+    # threshold a reader would actually rely on, rather than the first lucky
+    # crossing.
+    ordered = sorted(probed)
+    detected = None
+    for i, delta in enumerate(ordered):
+        if all(probed[d] < threshold for d in ordered[i:]):
+            detected = delta
+            break
+
+    return {
+        "sigma": sigma,
+        "threshold": threshold,
+        "mde_in_sigma": detected,
+        "mde_absolute": None if detected is None else detected * sigma,
+        # A list, not a dict keyed by float: JSON would stringify those keys
+        # and they would no longer sort numerically on the way back in.
+        "probed": [
+            {"shift_in_sigma": shift, "pvalue": pvalue}
+            for shift, pvalue in sorted(probed.items())
+        ],
+    }
 
 
 # ==========================================================
@@ -1033,6 +1204,54 @@ def _finalize_decision(result, magnitude_threshold, equivalence_margin):
 # ==========================================================
 
 
+def load_variable_list(path, variable_set=None):
+    """
+    Read a curated variable list.
+
+    Accepts a JSON list, a JSON object mapping a set name to a list (the shape
+    evv4esm's ``ks_vars.json`` uses, which carries both a ``default`` and a
+    ``scream`` set), or a plain text file with one name per line.
+
+    Fixing the variable set matters more than it looks. When the tested set is
+    "whatever happened to be in the output stream", the multiple-testing
+    penalty -- and therefore the meaning of a PASS -- silently changes every
+    time someone edits the output yaml. A curated list keeps the criterion
+    comparable across runs and across time.
+    """
+    with open(path, "r", encoding="utf-8") as handle:
+        text = handle.read()
+
+    if os.path.splitext(path)[1].lower() == ".json":
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            if variable_set is None:
+                if len(payload) == 1:
+                    variable_set = next(iter(payload))
+                elif "default" in payload:
+                    variable_set = "default"
+                else:
+                    raise ValueError(
+                        f"{path} holds several named sets "
+                        f"({', '.join(sorted(payload))}); pick one with "
+                        f"--variable_set"
+                    )
+            if variable_set not in payload:
+                raise ValueError(
+                    f"Variable set '{variable_set}' not in {path}; available: "
+                    f"{', '.join(sorted(payload))}"
+                )
+            names = payload[variable_set]
+        else:
+            names = payload
+    else:
+        names = [line.strip() for line in text.splitlines()]
+
+    names = [str(name).strip() for name in names if str(name).strip()]
+    if not names:
+        raise ValueError(f"No variable names found in {path}")
+    return names
+
+
 def _select_variables(run_ens, base_ens, requested=None):
     """
     Choose the variables to test.
@@ -1042,6 +1261,11 @@ def _select_variables(run_ens, base_ens, requested=None):
     all-NaN / constant screening happens later, on the reduced samples, so
     that we never pull a full 4-D field into memory just to decide whether to
     look at it.
+
+    Returns ``(testable, skipped, unmatched)``. A curated list will normally
+    name variables that a given output stream does not carry; those come back
+    in ``unmatched`` and are reported rather than being fatal, since the same
+    list is meant to serve several configurations.
     """
     reference = next(iter(run_ens.values()))
     candidates = [
@@ -1052,14 +1276,23 @@ def _select_variables(run_ens, base_ens, requested=None):
         and np.issubdtype(reference[name].dtype, np.floating)
     ]
 
+    unmatched = []
     if requested:
-        missing = sorted(set(requested) - set(candidates))
-        if missing:
-            raise ValueError(
-                f"Requested variable(s) not testable in the run ensemble: "
-                f"{', '.join(missing)}"
-            )
+        unmatched = sorted(set(requested) - set(candidates))
         candidates = [name for name in candidates if name in requested]
+        if not candidates:
+            raise ValueError(
+                f"None of the {len(requested)} requested variable(s) are "
+                f"testable in the run ensemble. Check the names and the "
+                f"output stream."
+            )
+        if unmatched:
+            logger.warning(
+                "%d requested variable(s) are not in the output and will not "
+                "be tested: %s",
+                len(unmatched),
+                ", ".join(unmatched[:10]) + (" ..." if len(unmatched) > 10 else ""),
+            )
 
     skipped = {}
     testable = []
@@ -1075,7 +1308,7 @@ def _select_variables(run_ens, base_ens, requested=None):
         else:
             testable.append(name)
 
-    return sorted(testable), skipped
+    return sorted(testable), skipped, unmatched
 
 
 # pylint: disable=too-many-arguments, too-many-positional-arguments
@@ -1088,11 +1321,18 @@ def compare_variable(
     analysis_type,
     weights,
     calibration,
-    n_resamples,
-    rng,
+    assignments,
     equivalence_margin,
+    mde_threshold=None,
 ):
-    """Run the full comparison for a single variable."""
+    """
+    Run the full comparison for a single variable.
+
+    Returns ``(result, perm_pvalues)``. ``perm_pvalues`` is the p-value the
+    variable would have had under each member assignment, or None when the
+    variable never reached the test (bit-identical or constant samples). The
+    caller collects these to run the global calibrated-count test.
+    """
     run, base, notes = build_samples(var, run_ens, base_ens, analysis_type, weights)
 
     if run.size == 0 or base.size == 0:
@@ -1132,7 +1372,7 @@ def compare_variable(
             calibration="exact",
             reason="samples are bit-identical",
         )
-        return _finalize_decision(result, None, equivalence_margin)
+        return _finalize_decision(result, None, equivalence_margin), None
 
     constant_run = np.unique(run.pooled).size < 2
     constant_base = np.unique(base.pooled).size < 2
@@ -1149,19 +1389,21 @@ def compare_variable(
                 else "both samples are constant but differ"
             ),
         )
-        return _finalize_decision(result, None, equivalence_margin)
+        return _finalize_decision(result, None, equivalence_margin), None
 
     statistic, asymptotic_p = test.evaluate(run.pooled, base.pooled)
     result["statistic"] = statistic
     result["pvalue_asymptotic"] = asymptotic_p
 
+    perm_pvalues = None
+    if assignments is not None:
+        values = permuted_statistics(test, run, base, assignments)
+        perm_pvalues, n_valid = permutation_pvalues(values)
+        result["n_permutations"] = n_valid
+
     if calibration == "member":
-        pvalue, n_used, exhaustive = member_permutation_pvalue(
-            test, run, base, n_resamples, rng
-        )
+        pvalue = float(perm_pvalues[0])
         result["calibration"] = "member_permutation"
-        result["n_permutations"] = n_used
-        result["permutation_exhaustive"] = exhaustive
     else:
         if asymptotic_p is None:
             raise ValueError(
@@ -1173,7 +1415,11 @@ def compare_variable(
 
     result["pvalue"] = float(pvalue)
     result["rejected"] = bool(np.isfinite(pvalue) and pvalue < test.alpha)
-    return result
+
+    if mde_threshold is not None:
+        result["power"] = minimum_detectable_effect(test, run, base, mde_threshold)
+
+    return result, perm_pvalues
 
 
 # ==========================================================
@@ -1273,9 +1519,18 @@ def format_report(config, ensemble_info, results, skipped, errors, summary):
         f"Calibration          : {config['calibration']}",
         f"Significance level   : alpha = {config['alpha']}",
         f"Multiple testing     : {CORRECTION_METHODS[config['correction_method']][1]}",
-        f"Max failed variables : {config['max_failed_vars']}",
-        f"Max failed fraction  : {config['max_failed_fraction']}",
+        f"Global test          : {config['global_test']}"
+        + (
+            f" (global_alpha = {config['global_alpha']})"
+            if config["global_test"] == "calibrated_count"
+            else ""
+        ),
     ]
+    if config["global_test"] == "variable_count":
+        lines += [
+            f"Max failed variables : {config['max_failed_vars']}",
+            f"Max failed fraction  : {config['max_failed_fraction']}",
+        ]
     if config["magnitude_threshold"] is not None:
         lines.append(
             f"Magnitude threshold  : {config['magnitude_threshold']} "
@@ -1358,6 +1613,63 @@ def format_report(config, ensemble_info, results, skipped, errors, summary):
             ]
 
     # --- Summary ----------------------------------------------------------
+    # --- What a PASS would have caught ------------------------------------
+    mdes = [
+        r["power"]["mde_in_sigma"]
+        for r in results.values()
+        if r.get("power") and r["power"].get("mde_in_sigma") is not None
+    ]
+    n_with_power = sum(1 for r in results.values() if r.get("power"))
+    if n_with_power:
+        undetectable = n_with_power - len(mdes)
+        lines += ["", _rule("-"), "MINIMUM DETECTABLE EFFECT", _rule("-")]
+        lines.append(
+            "  Smallest injected shift, in baseline ensemble sigma, that this"
+        )
+        lines.append(
+            "  configuration would have rejected. This is what a PASS is worth."
+        )
+        if mdes:
+            lines.append(
+                f"  Median across {len(mdes)} variable(s): "
+                f"{np.median(mdes):.2f} sigma  "
+                f"(best {min(mdes):.2f}, worst {max(mdes):.2f})"
+            )
+        if undetectable:
+            lines.append(
+                f"  {undetectable} variable(s) would not have been rejected "
+                f"even at {MDE_GRID[-1]:.0f} sigma"
+            )
+        lines.append(
+            "  Estimated with asymptotic p-values, so treat it as a lower "
+            "bound."
+        )
+
+    # --- Global test ------------------------------------------------------
+    global_result = summary.get("global_test")
+    if global_result:
+        lines += ["", _rule("-"), "GLOBAL TEST (calibrated rejection count)", _rule("-")]
+        lines += [
+            f"  Variables rejecting at p < {global_result['per_variable_alpha']}: "
+            f"{global_result['observed_rejections']} of "
+            f"{global_result['n_variables']}",
+            f"  Expected by chance alone       : "
+            f"{global_result['expected_by_chance']:.1f}",
+            f"  Permutation null               : median "
+            f"{global_result['null_rejections_median']:.1f}, 95th pct "
+            f"{global_result['null_rejections_p95']:.1f}, max "
+            f"{global_result['null_rejections_max']}",
+            f"  Global p-value                 : "
+            f"{global_result['pvalue']:.4f} over "
+            f"{global_result['n_assignments']} member assignments",
+            "",
+            "  The null distribution above is an empirical calibration of this",
+            "  exact configuration on this exact data: it is how many",
+            "  rejections the pipeline produces when the members are regrouped",
+            "  under the null. It accounts for correlation between variables,",
+            "  which Bonferroni and Benjamini-Hochberg do not.",
+        ]
+
     total = summary["total"]
     lines += ["", _rule("-"), "SUMMARY", _rule("-")]
     if total:
@@ -1486,6 +1798,11 @@ def run_stats_comparison(
     magnitude_threshold=None,
     equivalence_margin=None,
     variables=None,
+    variables_file=None,
+    variable_set=None,
+    global_test="variable_count",
+    global_alpha=0.05,
+    power_analysis=True,
     run_file_pattern=None,
     base_file_pattern=None,
     json_output=None,
@@ -1523,6 +1840,20 @@ def run_stats_comparison(
             baseline-ensemble sigma to demonstrate equivalence; PASS then means
             "shown equivalent" rather than "not shown different".
         variables: Optional explicit list of variables to test.
+        variables_file: Path to a curated variable list -- a JSON list, a JSON
+            object of named lists (evv4esm's ``ks_vars.json`` shape), or a
+            plain text file with one name per line.
+        variable_set: Which named list to take from a JSON object.
+        global_test: How the per-variable verdicts become one verdict.
+            ``variable_count`` applies a multiple-testing correction and
+            counts failures; ``calibrated_count`` compares the number of
+            rejections against its member-permutation null distribution, which
+            accounts for correlation between variables and stays usable at
+            small member counts.
+        global_alpha: Significance level for ``calibrated_count``, used both to
+            screen each variable and to judge the resulting count.
+        power_analysis: Estimate, per variable, the smallest injected shift
+            this configuration would have rejected.
         run_file_pattern / base_file_pattern: Globs with a single ``????``
             placeholder marking the 4-digit instance number.
         json_output: Where to write the JSON report -- a ``.json`` path, a
@@ -1559,6 +1890,11 @@ def run_stats_comparison(
             f"Test '{test_type}' has no asymptotic null distribution in scipy; "
             f"it can only be used with calibration='member'."
         )
+    if global_test not in ("variable_count", "calibrated_count"):
+        raise ValueError(
+            f"Unknown global_test '{global_test}'; expected variable_count "
+            f"or calibrated_count"
+        )
 
     if critical_fraction is not None and max_failed_fraction is None:
         logger.warning(
@@ -1581,6 +1917,9 @@ def run_stats_comparison(
         "max_failed_fraction": max_failed_fraction,
         "magnitude_threshold": magnitude_threshold,
         "equivalence_margin": equivalence_margin,
+        "global_test": global_test,
+        "global_alpha": global_alpha,
+        "power_analysis": power_analysis,
         "seed": seed,
         "fail_on_error": fail_on_error,
         "run_file_pattern": run_file_pattern,
@@ -1606,7 +1945,12 @@ def run_stats_comparison(
             len(run_ens), len(base_ens),
         )
 
-    testable, skipped = _select_variables(run_ens, base_ens, variables)
+    requested = list(variables) if variables else None
+    if variables_file:
+        from_file = load_variable_list(variables_file, variable_set)
+        requested = sorted(set(requested or []) | set(from_file))
+
+    testable, skipped, unmatched = _select_variables(run_ens, base_ens, requested)
     weights = (
         get_area_weights(next(iter(run_ens.values())))
         if analysis_type in ("spatiotemporal", "member")
@@ -1621,13 +1965,38 @@ def run_stats_comparison(
     test = get_test(test_type, alpha=alpha)
     rng = np.random.default_rng(seed)
 
-    results, errors = {}, {}
+    # One shared assignment list for every variable, so the global test can
+    # see the correlation between variables.
+    assignments, exhaustive = (None, None)
+    if calibration == "member" or global_test == "calibrated_count":
+        assignments, exhaustive = build_assignments(
+            len(run_ens), len(base_ens), n_resamples, rng
+        )
+        logger.info(
+            "Calibrating with %d member assignments (%s)",
+            len(assignments),
+            "exhaustive" if exhaustive else "randomly sampled",
+        )
+
+    mde_threshold = (
+        decision_threshold(alpha, correction_method, max(len(testable), 1))
+        if power_analysis
+        else None
+    )
+
+    results, errors, perm_pvalues = {}, {}, {}
     for var in testable:
         try:
-            results[var] = compare_variable(
+            result, per_assignment = compare_variable(
                 var, run_ens, base_ens, test, analysis_type, weights,
-                calibration, n_resamples, rng, equivalence_margin,
+                calibration, assignments, equivalence_margin, mde_threshold,
             )
+            results[var] = result
+            if per_assignment is not None:
+                perm_pvalues[var] = per_assignment
+            elif assignments is not None:
+                # Bit-identical or constant: never rejects, under any grouping.
+                perm_pvalues[var] = np.ones(len(assignments))
         except (ValueError, KeyError, OSError, IndexError, TypeError,
                 ZeroDivisionError, FloatingPointError) as error:
             logger.warning("Could not test %s: %s", var, error)
@@ -1637,6 +2006,10 @@ def run_stats_comparison(
         results = apply_multiple_testing_correction(results, alpha, correction_method)
     for result in results.values():
         _finalize_decision(result, magnitude_threshold, equivalence_margin)
+
+    global_result = None
+    if global_test == "calibrated_count":
+        global_result = calibrated_count_test(perm_pvalues, global_alpha)
 
     failed = sorted(v for v, r in results.items() if r["hypothesis"] == "FAIL")
     passed = sorted(v for v, r in results.items() if r["hypothesis"] == "PASS")
@@ -1650,6 +2023,25 @@ def run_stats_comparison(
         status_reasons.append(
             "no variable could be tested; the comparison is vacuous"
         )
+    elif global_test == "calibrated_count":
+        # The count of rejections, judged against its own permutation null.
+        if global_result["rejected"]:
+            test_status = "FAIL"
+            status_reasons.append(
+                f"{global_result['observed_rejections']} of "
+                f"{global_result['n_variables']} variables rejected at "
+                f"p<{global_alpha}, more than member exchangeability explains "
+                f"(global p={global_result['pvalue']:.4f}; null median "
+                f"{global_result['null_rejections_median']:.1f}, 95th "
+                f"percentile {global_result['null_rejections_p95']:.1f})"
+            )
+        else:
+            status_reasons.append(
+                f"{global_result['observed_rejections']} of "
+                f"{global_result['n_variables']} variables rejected at "
+                f"p<{global_alpha}, consistent with the permutation null "
+                f"(global p={global_result['pvalue']:.4f})"
+            )
     else:
         if len(failed) > max_failed_vars:
             test_status = "FAIL"
@@ -1665,11 +2057,14 @@ def run_stats_comparison(
                     f"failing fraction {fraction:.4f} exceeds "
                     f"{max_failed_fraction}"
                 )
+
     # A permutation test whose finest attainable p-value sits above the
     # decision threshold cannot reject anything, no matter what the model
     # does. Reporting PASS in that situation is worse than useless, so treat
-    # it as the configuration error it is.
-    if calibration == "member" and total:
+    # it as the configuration error it is. The global test escapes this,
+    # because it spends its resolution on a single p-value rather than on one
+    # per variable.
+    if calibration == "member" and total and global_test != "calibrated_count":
         threshold = decision_threshold(alpha, correction_method, total)
         p_min, _, _ = permutation_resolution(
             len(run_ens), len(base_ens), n_resamples
@@ -1680,9 +2075,24 @@ def run_stats_comparison(
                 f"configuration cannot resolve a difference: member "
                 f"permutation bottoms out at p={p_min:.3e} but the decision "
                 f"threshold is {threshold:.3e}, so no variable could ever "
-                f"fail. Add ensemble members, relax --alpha, or switch "
-                f"--correction_method"
+                f"fail. Add ensemble members, relax --alpha, switch "
+                f"--correction_method, or use --global_test calibrated_count"
             )
+    if global_test == "calibrated_count" and global_alpha * len(
+        assignments or [1]
+    ) < 1.0:
+        test_status = "FAIL"
+        status_reasons.append(
+            f"configuration cannot resolve a difference: {len(assignments)} "
+            f"member assignments cannot produce a p-value below "
+            f"global_alpha={global_alpha}. Add members or raise --global_alpha"
+        )
+
+    if unmatched:
+        status_reasons.append(
+            f"{len(unmatched)} requested variable(s) are not present in the "
+            f"output and were not tested"
+        )
 
     if errors and fail_on_error:
         test_status = "FAIL"
@@ -1699,9 +2109,11 @@ def run_stats_comparison(
         )
 
     summary = {
+        "global_test": global_result,
         "passed": len(passed),
         "failed": len(failed),
         "total": total,
+        "unmatched": unmatched,
         "skipped": len(skipped),
         "errored": len(errors),
         "test_status": test_status,
@@ -1755,6 +2167,14 @@ OR
     \033[1;32m# Exact member-level permutation calibration (no iid assumption)\033[0m
     > {program} /path/to/run /path/to/baseline --calibration member
 
+    \033[1;32m# Global test on the rejection count; works with few members\033[0m
+    > {program} /path/to/run /path/to/baseline \\
+          --analysis_type member --global_test calibrated_count
+
+    \033[1;32m# Reuse evv4esm's curated EAMxx variable list\033[0m
+    > {program} /path/to/run /path/to/baseline \\
+          --variables_file ks_vars.json --variable_set scream
+
     \033[1;32m# Write the JSON report somewhere writable\033[0m
     > {program} /path/to/run /path/to/baseline --json_output ~/rcs_reports
 
@@ -1793,6 +2213,13 @@ OR
   serially correlated. Use --calibration member for a p-value that is exact
   under exchangeability of ensemble members, and read the RESOLUTION AND
   POWER section of the report to see what your member count can resolve.
+
+  Pooling timesteps can also cost more power than it adds, because the
+  seasonal cycle ends up in the sample variance. --analysis_type member uses
+  one value per ensemble member instead, which is the sampling choice
+  evv4esm's MVK test makes.
+
+  Always read MINIMUM DETECTABLE EFFECT before trusting a PASS.
 """,
     )
 
@@ -1863,6 +2290,40 @@ OR
     parser.add_argument(
         "--variables", nargs="+", default=None,
         help="Restrict the comparison to these variables (default: all)",
+    )
+    parser.add_argument(
+        "--variables_file", default=None,
+        help="Path to a curated variable list: a JSON list, a JSON object of "
+        "named lists (evv4esm's ks_vars.json shape), or one name per line. "
+        "Fixing the variable set keeps the multiple-testing penalty, and so "
+        "the meaning of a PASS, stable across runs.",
+    )
+    parser.add_argument(
+        "--variable_set", default=None,
+        help="Which named list to take from a JSON object of sets "
+        "(e.g. 'scream' in evv4esm's ks_vars.json)",
+    )
+    parser.add_argument(
+        "--global_test",
+        default="variable_count",
+        choices=["variable_count", "calibrated_count"],
+        help="How per-variable verdicts become one verdict. variable_count "
+        "corrects the p-values and counts failures. calibrated_count judges "
+        "the NUMBER of rejections against its member-permutation null, which "
+        "accounts for correlation between variables and, because it spends "
+        "its resolution on a single p-value, still works with few members "
+        "(default: variable_count)",
+    )
+    parser.add_argument(
+        "--global_alpha", type=float, default=0.05,
+        help="Significance level for --global_test calibrated_count, used "
+        "both to screen each variable and to judge the count (default: 0.05)",
+    )
+    parser.add_argument(
+        "--no_power_analysis", dest="power_analysis", action="store_false",
+        default=True,
+        help="Skip estimating the smallest injected shift this configuration "
+        "would have rejected",
     )
     parser.add_argument(
         "--run_file_pattern", default=DEFAULT_FILE_PATTERN,

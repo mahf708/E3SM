@@ -245,14 +245,104 @@ unseeded global RNG, which made the `energy` test non-reproducible.
 Restrict the comparison to an explicit list of variables. Useful both for
 debugging and for reducing the multiple-testing penalty.
 
+##### `--variables_file` and `--variable_set`
+
+Read a curated variable list from a file: a JSON list, a JSON object mapping
+set names to lists, or a plain text file with one name per line.
+
+Fixing the variable set matters more than it looks. When the tested set is
+"whatever happened to be in the output stream", the multiple-testing penalty —
+and therefore the meaning of a PASS — silently changes every time someone
+edits the output YAML. A curated list keeps the criterion comparable across
+runs and across time. It is the approach
+[evv4esm](https://github.com/LIVVkit/evv4esm) takes for its MVK test, and its
+`ks_vars.json` ships both a `default` set and a 63-variable `scream` set that
+can be used directly:
+
+```shell
+rcs_stats.py /run/dir /base/dir \
+    --variables_file /path/to/evv4esm/extensions/ks_vars.json \
+    --variable_set scream
+```
+
+Names in the list that the output stream does not carry are reported and
+skipped rather than treated as an error, since one list is meant to serve
+several configurations. If *nothing* in the list matches, that is an error.
+
+##### `--no_power_analysis`
+
+Skip the minimum-detectable-effect estimate described under
+[Output](#output). The estimate is on by default and costs one extra test
+evaluation per variable per grid point.
+
 ##### `--verbose` (default: off)
 
 Emit debug-level logging while the comparison runs.
+
+#### Combining the per-variable verdicts
+
+`--global_test` (default: `variable_count`) chooses how the per-variable
+results become a single verdict.
+
+##### `variable_count` (default)
+
+Correct the p-values across variables, then fail if more than
+`--max_failed_vars` (or more than `--max_failed_fraction`) fail. This is the
+familiar behavior.
+
+##### `calibrated_count`
+
+Judge the *number* of rejections against its own permutation null
+distribution. Members are regrouped between the two ensembles, the whole
+pipeline is re-run for every regrouping, and the resulting counts form an
+empirical null for "how many variables reject when nothing is wrong".
+
+This is worth having for two reasons.
+
+First, **it accounts for correlation between variables**. Bonferroni and
+Benjamini-Hochberg assume the tests are independent or positively dependent in
+a specific way; climate variables are neither. Benjamini-Yekutieli is valid
+under arbitrary dependence but pays for it with a large loss of power. The
+permutation null measures the dependence actually present in your output, so
+nothing has to be assumed.
+
+Second, **it stays usable with few members**. It spends its resolution on a
+single p-value rather than one per variable, so it is judged against
+`--global_alpha` (default 0.05) rather than `alpha / n_variables`. With 4+4
+members the finest attainable p-value is 0.029, which is below 0.05 — so
+unlike the per-variable permutation test, this one can actually reject at the
+ensemble sizes RCS is usually run at.
+
+It is also markedly more sensitive to a *diffuse* change that nudges many
+variables a little, which is the characteristic signature of a
+climate-altering bug; a per-variable correction is tuned to find a single
+large outlier instead.
+
+```shell
+rcs_stats.py /run/dir /base/dir \
+    --analysis_type member \
+    --global_test calibrated_count
+```
+
+The report prints the observed count, the number expected by chance, and the
+median, 95th percentile and maximum of the permutation null. That null
+distribution is an empirical calibration of your exact configuration on your
+exact data — if the observed count sits comfortably inside it, the pipeline is
+behaving as advertised.
+
+##### `--global_alpha` (default: 0.05)
+
+Used both to screen each variable and to judge the resulting count. If the
+number of available member assignments cannot produce a p-value this small,
+the comparison fails as a configuration error rather than reporting a PASS it
+could not have avoided.
 
 #### Multiple-testing correction
 
 Testing hundreds of variables at `alpha = 0.01` will produce failures by
 chance alone. `--correction_method` (default: `bonferroni`) adjusts for that.
+It applies to `--global_test variable_count`; `calibrated_count` handles
+multiplicity through its permutation null instead.
 
 | value | Method | Controls |
 | ------- | -------- | ---------- |
@@ -368,6 +458,17 @@ script. It contains:
 - a pass/fail summary
 - per-variable detail for the worst failures, with sample statistics, p-values
   before and after correction, and effect sizes
+- a `MINIMUM DETECTABLE EFFECT` section: the smallest injected shift, in
+  baseline ensemble sigma, that this configuration would actually have
+  rejected. This is what turns a bare `PASS` into a statement with content —
+  "no difference detected, and a 2 sigma shift would have been". It is
+  computed by shifting the run sample by increasing multiples of the baseline
+  ensemble's member spread and re-running the test, and it reports the
+  smallest shift from which *every* larger probed shift is also rejected
+  (rank statistics are step functions of the shift, so the first crossing
+  alone would be unreliable). Because it uses asymptotic p-values it is a
+  lower bound on the shift genuinely needed
+- a `GLOBAL TEST` section when `--global_test calibrated_count` is in use
 - a `PASSED BUT NOTABLE` section listing variables that were not rejected but
   whose ensemble means differ by more than the baseline ensemble's own member
   spread (`snr > 1`) — these are the near-misses worth a human look
@@ -533,6 +634,43 @@ pattern with no placeholder is rejected with a clear error.
 rcs_stats.py --help
 ```
 
+### What RCS does not test
+
+RCS compares two *climates*: it asks whether the long-run statistics of the
+two ensembles differ. That is the question that matters scientifically, but it
+is an expensive and blunt instrument — every verdict costs a year of
+simulation per member, and a change has to survive being averaged over a year
+and a globe before RCS can see it.
+
+Two complementary approaches in
+[evv4esm](https://github.com/LIVVkit/evv4esm) test the *model operator*
+instead of the attractor it produces, and they are far cheaper and far more
+sensitive. Neither is implemented here; they need different run
+configurations, not different post-processing, so they belong in separate
+system tests.
+
+#### Perturbation growth (PGN)
+
+Perturb the initial condition at the level of machine epsilon and compare how
+that perturbation grows through each physics parameterization within a
+*single* time step, against the spread the unmodified code produces. Because
+it looks at one step rather than one year, essentially any change to the
+equations shows up, and the failure is localized to the parameterization that
+caused it. Cost: one time step.
+
+#### Time step convergence (TSC)
+
+Run a truth ensemble at a 1-second time step and reference and test ensembles
+at 2 seconds for 10 simulated minutes, compute each ensemble's RMSD against
+truth, and test whether the mean difference of those RMSDs is zero. This
+checks that the *discretization error behaves the same way*, which catches
+changes RCS would need many ensemble members to resolve. Cost: 10 simulated
+minutes.
+
+A complete NBFB verification story wants all three: PGN and TSC to catch
+changes to the model operator quickly and diagnostically, and RCS to answer
+the question they cannot — whether the climate itself moved.
+
 ### Known limitations
 
 These are properties of the method, not bugs, and they bound what a `PASS`
@@ -548,7 +686,17 @@ means.
   of resolution.
 - **Power is set by the member count, not the number of timesteps.** Adding
   output frequency inflates the nominal sample size without adding much
-  information. Adding members is what actually helps.
+  information. Adding members is what actually helps. For reference,
+  evv4esm's MVK test defaults to **30 members per ensemble**, against RCS's
+  usual 4.
+- **Pooling timesteps can destroy the very power it appears to add.** The
+  default `spatiotemporal` mode puts the seasonal cycle into the sample
+  variance, so a steady offset has to compete against a spread it does not
+  belong to. On synthetic ensembles where `--analysis_type member` detects a
+  4 sigma shift, `spatiotemporal` can fail to detect 16 sigma in the same
+  variable. If in doubt, read the `MINIMUM DETECTABLE EFFECT` section of the
+  report — and consider `--analysis_type member`, which is the sampling
+  choice MVK makes.
 - **A `PASS` is not a proof of equivalence** unless `--equivalence_margin` is
   set. Without it, `PASS` means only that the configured test did not detect a
   difference.
