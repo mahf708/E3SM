@@ -1677,6 +1677,14 @@ def format_report(config, ensemble_info, results, skipped, errors, summary):
             f"Passed : {summary['passed']:5d} ({100.0 * summary['passed'] / total:5.1f}%)",
             f"Failed : {summary['failed']:5d} ({100.0 * summary['failed'] / total:5.1f}%)",
         ]
+        if global_result:
+            lines += [
+                "",
+                "  These per-variable counts are diagnostic only. The overall",
+                "  verdict comes from the global test above, so they need not",
+                "  agree with it -- and any magnitude or equivalence gate",
+                "  shapes this table without reaching that verdict.",
+            ]
     else:
         lines.append("No variable could be tested.")
 
@@ -1895,6 +1903,28 @@ def run_stats_comparison(
             f"Unknown global_test '{global_test}'; expected variable_count "
             f"or calibrated_count"
         )
+    if global_test == "calibrated_count":
+        # The calibrated count is built from p-values, so gates that sit
+        # downstream of the p-value do not reach it. They still shape the
+        # per-variable table, which is why they are allowed rather than
+        # rejected -- but the user must not assume they bound the verdict.
+        ignored = [
+            name
+            for name, value in (
+                ("magnitude_threshold", magnitude_threshold),
+                ("equivalence_margin", equivalence_margin),
+                ("max_failed_vars", max_failed_vars if max_failed_vars else None),
+                ("max_failed_fraction", max_failed_fraction),
+            )
+            if value is not None
+        ]
+        if ignored:
+            logger.warning(
+                "global_test='calibrated_count' decides the overall verdict "
+                "from the rejection count, so %s affect the per-variable "
+                "table but not the PASS/FAIL result.",
+                " and ".join(ignored),
+            )
 
     if critical_fraction is not None and max_failed_fraction is None:
         logger.warning(

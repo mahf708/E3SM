@@ -337,6 +337,14 @@ number of available member assignments cannot produce a p-value this small,
 the comparison fails as a configuration error rather than reporting a PASS it
 could not have avoided.
 
+!!! warning "Downstream gates do not reach this verdict"
+    `calibrated_count` builds its verdict from p-values, so anything that acts
+    *after* the p-value — `--magnitude_threshold`, `--equivalence_margin`,
+    `--max_failed_vars`, `--max_failed_fraction` — still shapes the
+    per-variable table but does not bound the overall PASS/FAIL. A warning is
+    emitted when they are combined. Use `--global_test variable_count` if you
+    need those gates to be decisive.
+
 #### Multiple-testing correction
 
 Testing hundreds of variables at `alpha = 0.01` will produce failures by
@@ -608,6 +616,20 @@ rcs_stats.py /run/dir /base/dir \
 rcs_stats.py /run/dir /base/dir \
     --variables T_mid ps surf_flux \
     --calibration member
+```
+
+```text
+# Global test on the rejection count, which works at small member counts
+rcs_stats.py /run/dir /base/dir \
+    --analysis_type member \
+    --global_test calibrated_count
+```
+
+```text
+# Reuse evv4esm's curated EAMxx variable set
+rcs_stats.py /run/dir /base/dir \
+    --variables_file /path/to/evv4esm/extensions/ks_vars.json \
+    --variable_set scream
 ```
 
 ```text
