@@ -20,6 +20,15 @@ if (NOT SCREAM_ONLY_GENERATE_BASELINES)
     LABELS io
   )
 
+  # Test translation of DSL expressions into diag name + params.
+  # NOTE: links only eamxx_diag_dsl, which pulls in the parser and nothing
+  #       else. No grids, fields, or MPI needed to check the translation.
+  CreateUnitTest(diag_dsl
+    SOURCES diag_dsl.cpp
+    LIBS eamxx_diag_dsl
+    LABELS io diagnostics
+  )
+
   # Test creation of diagnostic from diag_field_name
   CreateUnitTest(create_diag
     SOURCES create_diag.cpp
