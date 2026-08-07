@@ -26,6 +26,7 @@ nav:
   - 'Developer Guide':
     - 'Quick-start Guide': 'developer/dev_quickstart.md'
     - 'Code Structure and Organization': 'developer/code_structure.md'
+    - 'Diagnostics DSL (design)': 'developer/diags_dsl.md'
     - 'Style Guide':
       - 'Overview': 'developer/style/style_guide_overview.md'
       - 'Code Formatting Standards': 'developer/style/format.md'
