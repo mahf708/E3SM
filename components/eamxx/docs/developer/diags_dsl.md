@@ -287,6 +287,38 @@ succeeds and the recursion terminates.
 Keeping `output_name = name` in step 2 for legacy inputs means existing runs
 keep byte-identical netCDF variable names. That is worth protecting.
 
+**Correction to "step 2 hands bare identifiers to the legacy shim".** Sorting
+the current regexes by what they actually do, they fall into two groups that
+deserve very different fates, and lumping both into a deprecated shim would be
+wrong:
+
+- *Parameterized legacy syntax* — `X_at_500hPa`, `X_horiz_avg`,
+  `A_minus_B`, `X_where_Y_gt_0`, `X_vert_avg_dp_weighted`, `X_prev`,
+  `X_over_dt`, `X_zonal_avg_20_bins`, `X_histogram_...`,
+  `X_pvert_derivative`, `X_atm_backtend`. These are the ones the DSL
+  replaces, and only these belong in `legacy_diag_names.cpp`. Deletable.
+- *Named diagnostics that happen to carry a parameter* — `LiqWaterPath`,
+  `IceNumberPath`, `MeridionalVapFlux`, `LiqPotentialTemperature`,
+  `precip_liq_surf_mass_flux`, `AeroComCldTop`, `z_mid`, `geopotential_int`,
+  `dz`. These are not syntax at all; they are the canonical, user-facing names
+  of specific diagnostics, and they stay exactly as they are under the DSL.
+
+The second group still needs a lookup, because the factory is keyed on the
+class name (`WaterPath`) rather than the requested name (`LiqWaterPath`), and
+the `water_kind=Liq` param has to come from somewhere. But that lookup is a
+permanent part of identifier resolution, not a compatibility shim.
+
+So the `Identifier` case of the walker resolves in this order:
+
+1. a registered factory product (`RelativeHumidity`, `SeaLevelPressure`, ...)
+2. the **named-diagnostic table** — permanent, maps
+   `LiqWaterPath` → `WaterPath{water_kind=Liq}`
+3. the **legacy shim** — deprecated, maps `X_at_500hPa` → a DSL string that is
+   re-parsed
+4. otherwise: error naming the unknown field or diagnostic
+
+Only step 3 carries a deprecation clock.
+
 One accepted wart: if a user requests both `f_minus_f_prev` (legacy) and the
 equivalent DSL expression in the same stream, the FM holds two entries
 computing the same thing under different names. Wasteful, not wrong.
