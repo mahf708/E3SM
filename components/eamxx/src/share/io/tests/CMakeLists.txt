@@ -24,7 +24,7 @@ if (NOT SCREAM_ONLY_GENERATE_BASELINES)
   # NOTE: links only eamxx_diag_dsl, which pulls in the parser and nothing
   #       else. No grids, fields, or MPI needed to check the translation.
   CreateUnitTest(diag_dsl
-    SOURCES diag_dsl.cpp
+    SOURCES diag_dsl.cpp diag_names.cpp
     LIBS eamxx_diag_dsl
     LABELS io diagnostics
   )

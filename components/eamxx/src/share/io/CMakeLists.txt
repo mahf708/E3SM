@@ -17,6 +17,7 @@ add_subdirectory(edp)
 # That is what lets the translation be unit tested without a model build.
 add_library(eamxx_diag_dsl
   eamxx_diag_dsl.cpp
+  eamxx_diag_names.cpp
 )
 target_link_libraries(eamxx_diag_dsl PUBLIC e3sm_diags_parser)
 target_include_directories(eamxx_diag_dsl PUBLIC ${SCREAM_SRC_DIR})
