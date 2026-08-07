@@ -226,14 +226,163 @@ PR 3 slips.
 18. Docs: rewrite `parsing_precedence.md` around the grammar, add a DSL
     reference page, mark legacy names deprecated.
 
-## 8. Open decisions
+## 8. Integration design for `create_diagnostic`
+
+### 8.1 The unlock: an optional `output_name` param
+
+§2 said diags name themselves, so a parent's param string must equal the
+child's self-chosen name. That is what would otherwise force the walker to
+render sub-expressions back into legacy names.
+
+There is a much cheaper way out. Add one protected helper to
+`AbstractDiagnostic`:
+
+```cpp
+// Name of the diag output field. Defaults to the legacy auto-generated name;
+// the DSL walker overrides it so that a diag's output name matches the string
+// its parent asked for.
+std::string output_name (const std::string& default_name) {
+  return m_params.get<std::string>("output_name", default_name);
+}
+```
+
+and change each diag's one naming line:
+
+```cpp
+-  auto diag_name = m_field_name + "_at_" + location;
++  auto diag_name = output_name(m_field_name + "_at_" + location);
+```
+
+That is ~15 mechanical one-line edits with **zero behavior change when
+`output_name` is absent**. `m_params` is already protected and the two-argument
+`ParameterList::get` is already used elsewhere (`vert_contract.cpp` does it for
+`weighting_method`). This is emphatically *not* the big "decouple names from
+diags" project I recommended deferring — that one changes call sites and
+signatures. This is a defaulted opt-in.
+
+With it, the DSL string itself becomes the canonical name and no
+legacy-name rendering is needed anywhere.
+
+### 8.2 Resolution flow
+
+```text
+create_diagnostic(name, grid):
+  1. expr = edp::parser::Parser{edp::Lexer{name}}.parse()      # throws on garbage
+  2. if expr is a bare Identifier:
+        - if it is a registered diag product  -> build it directly (z_mid, LiqWaterPath)
+        - else                                -> legacy_to_dsl(name), re-parse, but keep
+                                                 output_name = name (the legacy string)
+  3. spec = walk(expr, grid)                                   # -> (diag_name, params)
+  4. params.set("output_name", canonical(expr))
+  5. DiagnosticFactory::instance().create(spec.diag_name, comm, params, grid)
+```
+
+Step 4 is what closes the loop in `scorpio_output.cpp`. The walker sets a
+child's `field_name` param to `canonical(child_expr)`; the output loop finds
+that name missing from the FM and calls `create_diagnostic` on it; that call
+parses the DSL string directly (no shim round-trip) and produces a diag whose
+output field is named with the *same* canonical string. The FM lookup then
+succeeds and the recursion terminates.
+
+Keeping `output_name = name` in step 2 for legacy inputs means existing runs
+keep byte-identical netCDF variable names. That is worth protecting.
+
+One accepted wart: if a user requests both `f_minus_f_prev` (legacy) and the
+equivalent DSL expression in the same stream, the FM holds two entries
+computing the same thing under different names. Wasteful, not wrong.
+
+### 8.3 Canonical form must be idempotent
+
+`canonical(expr)` is the string identity of a diagnostic, so it must satisfy
+
+```text
+canonical(parse(s)) == canonical(parse(canonical(parse(s))))
+```
+
+or the recursion in 8.2 never converges. For v1, reuse the existing
+`ast::to_string` (it is fully parenthesized and therefore unambiguous) and add
+a **property test** asserting idempotency over a corpus of expressions. A
+precedence-aware pretty printer that emits `T_mid.mean(dim='lev')` instead of
+`(t_mid.mean((dim='lev')))` is a nice-to-have, not a blocker — these strings
+are internal and get aliased before reaching netCDF.
+
+### 8.4 What the AST actually looks like
+
+Method chains do **not** produce a dedicated node. `T.mean(dim='lev')` parses
+as `Infix(left=T, op=Dot, right=Func(function=mean, args=[...]))`, because
+`LeftParen` has `Call` precedence, which binds tighter than `Dot`'s `Prefix`
+precedence. Chains nest left-associatively:
+
+```text
+T.weighted('dp').sum(dim='lev')
+  -> Infix(Infix(T, Dot, Func(weighted, ['dp'])), Dot, Func(sum, [dim='lev']))
+```
+
+Keyword arguments are `Infix(Identifier, Assign, <literal>)` inside the args
+vector. So the walker needs one shared helper that splits an args vector into
+positional and keyword arguments; everything else is a dispatch table on the
+method name.
+
+### 8.5 Dispatch table
+
+| DSL | Diag | Params |
+|-----|------|--------|
+| `X.isel(lev=N)` | `FieldAtLevel` | `vertical_location` = `lev_N`; `N=0` → `model_top`, `N=-1` → `model_bot` |
+| `X.interp(plev=V, units='hPa')` | `FieldAtPressureLevel` | `pressure_value`, `pressure_units` (default `Pa`) |
+| `X.interp(z=V, reference='surface')` | `FieldAtHeight` | `height_value`, `height_units='m'`, `surface_reference` |
+| `X.mean(dim='col')` | `HorizAvg` | `field_name` |
+| `X.mean/sum(dim='lev')` | `VertContract` | `contract_method` = `avg`/`sum` |
+| `X.min/max/std/var(dim='lev')` | `VertContract` | needs the hbc2 port |
+| `X.weighted(W).mean(dim='lev')` | `VertContract` | `weighting_method` = `dp`/`dz` |
+| `X.where(Y > 0)` | `ConditionalSampling` | `condition_lhs`, `condition_cmp`, `condition_rhs` |
+| `X.shift(time=1)` | `FieldPrev` | `field_name` |
+| `X.differentiate('p')` | `VertDerivative` | `derivative_method` |
+| `X.histogram(bins=[a,b,c])` | `Histogram` | `bin_configuration` = `a_b_c` |
+| `X.zonal_mean(bins=N)` | `ZonalAvg` | `number_of_zonal_bins` |
+| `A + B`, `A - B`, `A * B`, `A / B` | `BinaryOp` | `arg1`, `arg2`, `binary_op` |
+| `X / dt` | `FieldOverDt` | special-cased before `BinaryOp` |
+| `log/exp/sqrt/abs(X)` | `UnaryOps` | needs the hbc2 port |
+| `X.tend()` | expands to `(X - X.shift(time=1)) / dt` | built-in alias |
+
+Notes on the awkward corners:
+
+- **`.weighted()` is a modifier, not a diagnostic.** Mirroring xarray, it has
+  no standalone meaning. Handle it inside the reduction handler: when walking
+  `.mean(dim='lev')`, check whether the receiver is `X.weighted(W)`; if so,
+  consume it, set `weighting_method`, and use `X` as `field_name`. Error
+  clearly if `.weighted()` appears anywhere else.
+- **`X / dt` must be checked before generic `BinaryOp`.** This is the same
+  ordering constraint the regexes had — but now it is three lines with a
+  comment in one function, keyed on the *identifier* `dt`, rather than an
+  implicit dependency between two regexes. `dt` becomes a reserved identifier.
+- **Comparisons are only legal inside `.where()`.** `T > 0` at top level is an
+  error, not a diagnostic.
+- **Unary minus has no home.** `-X` needs either a `neg` op on the ported
+  `UnaryOps` diag, or lowering to `BinaryOp(X, times, -1)`. Prefer adding
+  `neg`; note that BinaryOp's constant path goes through
+  `physics::Constants<Real>::dictionary()`, which will not have `-1`.
+- Constants (`Rgas`, `gravit`, ...) need no walker support: `BinaryOp` already
+  resolves bare identifiers against the physics-constants dictionary.
+
+### 8.6 Effect on the plan in §7
+
+Steps 14-17 refine to:
+
+- 14a. Add `AbstractDiagnostic::output_name` + the ~15 one-line diag edits.
+  Standalone, no-op commit.
+- 14b. Add the AST walker (`diag_from_ast.cpp`) with the args helper, the
+  dispatch table, and the canonical-form idempotency property test. Unit
+  tested without touching `create_diagnostic`.
+- 15-17 as written.
+
+## 9. Open decisions
 
 - **Deprecation window for legacy names.** Indefinite support, or a stated
   release after which `legacy_diag_names.cpp` is deleted? This changes whether
   the shim is a permanent fixture or scaffolding.
-- **Do diags stop naming themselves?** §2's string ABI is why the canonical
-  name printer in step 14 is needed. Removing it means changing ~15 diag
-  classes to take an explicit output name. Cleaner, much larger, and not
-  required for any of the above. Recommend deferring.
+- ~~**Do diags stop naming themselves?**~~ Resolved by §8.1: the optional
+  `output_name` param gets us what the DSL needs for ~15 defaulted one-line
+  edits, without the larger refactor. That larger refactor is no longer on the
+  critical path at all.
 - **`_bins` vs `groupby_bins`.** `X.zonal_mean(bins=20)` now, or go straight to
   the more xarray-faithful `X.groupby_bins('lat', 20).mean()`?
