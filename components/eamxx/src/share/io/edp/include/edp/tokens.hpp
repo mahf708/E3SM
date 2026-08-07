@@ -48,9 +48,15 @@ enum class TokenTypes {
 
 std::string_view to_string(TokenTypes type);
 
+// NOTE: `line` and `column` are 1-based and record where the token *starts*.
+//       They carry default member initializers on purpose, so that the
+//       aggregate initializations used everywhere ({TokenTypes::X, "lit"}) keep
+//       compiling; a Token built that way simply claims to sit at 1:1.
 struct Token {
-  TokenTypes type;
+  TokenTypes type = TokenTypes::Illegal;
   std::string literal;
+  int line = 1;
+  int column = 1;
 };
 std::string to_string(const Token& tok);
 

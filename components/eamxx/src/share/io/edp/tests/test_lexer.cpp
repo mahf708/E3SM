@@ -5,7 +5,9 @@
 #include <edp/tokens.hpp>
 #include <edp/lexer.hpp>
 
+#include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace edp {
@@ -165,6 +167,77 @@ TEST_CASE("unterminated string literal terminates") {
                             {TokenTypes::EndofFile, ""}});
   check_tokens("'lev'",
                {{TokenTypes::String, "lev"}, {TokenTypes::EndofFile, ""}});
+}
+
+// Tokens carry the 1-based line/column of their *first* character. Upstream
+// tracked no position at all, so a parse error could not say where it was.
+TEST_CASE("tokens carry their source position") {
+  {
+    // Column is the start of the token, not where the lexer ended up: "T_mid"
+    // is five characters but starts at column 1, and "<=" starts at 9.
+    const auto tokens = lex_all("T_mid + q <= 2");
+    REQUIRE(tokens.size() == 6);
+    const std::vector<std::pair<int, int>> expected{
+        {1, 1}, {1, 7}, {1, 9}, {1, 11}, {1, 14}, {1, 15}};
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+      INFO("Token " << i << ": " << to_string(tokens[i]));
+      CHECK(tokens[i].line == expected[i].first);
+      CHECK(tokens[i].column == expected[i].second);
+    }
+  }
+  {
+    // Column resets on a newline; skip_whitespace eats '\n' before the switch
+    // ever sees it, so this only works because read_char() does the counting.
+    const auto tokens = lex_all("a +\n  bc\n   *");
+    REQUIRE(tokens.size() == 5);
+    CHECK(tokens[0].column == 1); // a
+    CHECK(tokens[0].line == 1);
+    CHECK(tokens[1].column == 3); // +
+    CHECK(tokens[2].line == 2);   // bc
+    CHECK(tokens[2].column == 3);
+    CHECK(tokens[3].line == 3); // *
+    CHECK(tokens[3].column == 4);
+    CHECK(tokens[4].type == TokenTypes::EndofFile);
+  }
+  {
+    // A keyword is looked up in a table of position-less literals; the
+    // position of the identifier that was actually scanned must survive.
+    const auto tokens = lex_all("x and y");
+    REQUIRE(tokens.size() == 4);
+    CHECK(tokens[1].type == TokenTypes::And);
+    CHECK(tokens[1].column == 3);
+  }
+  {
+    // The offending character of an Illegal token is where it is reported.
+    const auto tokens = lex_all("T_mid + @foo");
+    REQUIRE(tokens.size() >= 3);
+    CHECK(tokens[2].type == TokenTypes::Illegal);
+    CHECK(tokens[2].column == 9);
+  }
+}
+
+// Aggregate initialization without a position still has to compile: the new
+// members carry default member initializers precisely so that the many
+// `{TokenTypes::X, "lit"}` literals in this file (and in `keywords`) keep
+// working.
+TEST_CASE("Token aggregate initialization stays valid") {
+  const Token tok{TokenTypes::Identifier, "T_mid"};
+  CHECK(tok.line == 1);
+  CHECK(tok.column == 1);
+  const Token positioned{TokenTypes::Identifier, "T_mid", 3, 7};
+  CHECK(positioned.line == 3);
+  CHECK(positioned.column == 7);
+}
+
+TEST_CASE("colons lex") {
+  check_tokens("0:10", {{TokenTypes::Integer, "0"},
+                        {TokenTypes::Colon, ":"},
+                        {TokenTypes::Integer, "10"},
+                        {TokenTypes::EndofFile, ""}});
+  check_tokens("::2", {{TokenTypes::Colon, ":"},
+                       {TokenTypes::Colon, ":"},
+                       {TokenTypes::Integer, "2"},
+                       {TokenTypes::EndofFile, ""}});
 }
 
 TEST_CASE("realistic field expressions lex") {

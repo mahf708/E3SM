@@ -86,7 +86,12 @@ std::string to_string(const Token& tok) {
 Token identifier_lookup(const Token& tok) {
   /*This function checks to see if an identifier is a keyword*/
   if (const auto it = keywords.find(tok.literal); it != keywords.end()) {
-    return it->second;
+    // The `keywords` table entries are literals with no meaningful position;
+    // keep the position of the identifier that was actually scanned.
+    Token keyword = it->second;
+    keyword.line = tok.line;
+    keyword.column = tok.column;
+    return keyword;
   }
   return tok;
 }

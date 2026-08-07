@@ -33,11 +33,22 @@ namespace edp {
 //       therefore lower-case only, which matches Python.
 Lexer::Lexer(std::string input)
     : input_{std::move(input)}, position_{0}, read_position_{0},
-      current_char_{'\0'} {
+      current_char_{'\0'}, line_{1}, column_{1} {
   read_char();
 }
 
 void Lexer::read_char() {
+  // Advance the 1-based source position *before* moving on, i.e. account for
+  // the character we are about to leave behind. On the very first call there
+  // is no such character yet, so 1:1 (the position of input_[0]) stands.
+  if (read_position_ > 0) {
+    if (current_char_ == '\n') {
+      line_ += 1;
+      column_ = 1;
+    } else if (current_char_ != '\0') {
+      column_ += 1;
+    }
+  }
   if (static_cast<std::size_t>(read_position_) >= input_.length()) {
     current_char_ = '\0';
   } else {
@@ -132,9 +143,22 @@ std::string Lexer::read_identifier() {
   return input_.substr(start_pos, length);
 }
 
+// Every token is stamped with the position of its *first* character, which is
+// where the lexer sits after skipping whitespace and before scan_token()
+// consumes anything. Doing the stamping in one place here keeps scan_token()'s
+// many early returns from each having to remember to do it.
 Token Lexer::next_token() {
-
   skip_whitespace();
+  const int start_line = line_;
+  const int start_column = column_;
+
+  Token tok = scan_token();
+  tok.line = start_line;
+  tok.column = start_column;
+  return tok;
+}
+
+Token Lexer::scan_token() {
 
   Token tok;
 

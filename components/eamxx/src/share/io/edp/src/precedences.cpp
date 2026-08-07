@@ -7,11 +7,11 @@ namespace edp::parser {
 
   // Lowest,
   // Equal,
+  // Bounds,
   // LessGreater,
   // Sum,
   // Product,
   // Prefix,
-  // Bounds,
   // Call,
 
 Precedence token_precedence(TokenTypes type) {

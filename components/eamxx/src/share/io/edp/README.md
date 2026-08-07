@@ -24,6 +24,18 @@ way — any code that bridges the parser AST to EAMxx types (fields, grids,
 
 Read this before writing anything against `edp::ast` or `edp::parser`:
 
+- **`ast::ExpressionVariant` has a new alternative, `ast::SliceExpression`**
+  (patch 19). *This breaks every exhaustive visitor over the AST.* A
+  `std::visit` with one overload per alternative, or an overload set with no
+  catch-all, will fail to compile until a `SliceExpression` case is added. Its
+  three members `start`, `stop` and `step` are each an `ExprPtr` **that may be
+  null**, meaning "component omitted" — not "zero". Null-check before
+  dereferencing.
+- **`Token` gained two members, `line` and `column`** (patch 17), both 1-based
+  and pointing at the token's *first* character. They have default member
+  initializers, so existing `{TokenTypes::X, "lit"}` aggregate initializations
+  still compile (and claim position 1:1). `Token::type` also gained a default
+  (`Illegal`) so a default-constructed `Token` is no longer indeterminate.
 - **`ast::FloatLiteral::value` is now a `double`, not a `float`** (patch 13).
   Any future AST consumer — visitor, `std::visit` lambda, structured binding —
   sees a `double`. A visitor written against upstream that takes `float` by
@@ -42,6 +54,15 @@ Read this before writing anything against `edp::ast` or `edp::parser`:
 - **The library never writes to `stdout`/`stderr`** (patch 12). Every failure
   is reported through `ParserError`. (`tools/edp.cpp` is a CLI and still
   prints.)
+- **`ParserError::what()` is now multi-line per error** (patch 17): each entry
+  is `line L, column C: <message>` followed by the offending source line and a
+  caret. Anything that string-matches on the message text needs to cope with
+  the position prefix; `find()` on the message body still works.
+- **`Precedence::Bounds` moved** (patch 19), from between `Prefix` and `Call`
+  to between `Lowest` and `Equal`. The enumerator values of `Equal` through
+  `Prefix` therefore shifted by one. Nothing serializes these, but a caller
+  that hard-coded an integer would be wrong.
+- **`a = b = c` is now a parse error** (patch 18).
 
 ## Local patches vs. upstream
 
@@ -227,6 +248,143 @@ by a test in `tests/`.
     the symbolic operators which are printed tight (`(a+b)`), matching the
     existing convention.
 
+Patches 17-19 are the error-reporting and syntax additions made while
+preparing the parser to replace the hand-rolled regexes in `create_diagnostic`.
+Two of them change the public API; see the section above.
+
+17. `include/edp/tokens.hpp`, `include/edp/lexer.hpp`, `src/lexer.cpp`,
+    `src/tokens.cpp`, `include/edp/parser.hpp`, `src/parser.cpp` — **no error
+    ever said *where* the problem was.** The `Lexer` tracked only a byte
+    offset, `Token` carried no position, and so every `ParserError` message was
+    of the form `Illegal token in input: '@'` with nothing to locate it.
+    Symptom: for a user-authored YAML entry like
+    `T_mid.weighted('dp').mean(dim='lev'` the message named a token the user
+    then had to hunt for by eye. Fix, in three parts:
+
+    - `Token` gained `int line` and `int column`, both 1-based, both with
+      default member initializers so the `{TokenTypes::X, "lit"}` aggregate
+      initializations used throughout the sources and tests still compile.
+      **This changes a public header** — see the API section above.
+    - `Lexer` gained `line_`/`column_`, updated inside `read_char()` (the only
+      place that consumes a character), with `column_` resetting on `'\n'`.
+      This has to live in `read_char()` rather than in the `case '\n'` of
+      `next_token`, because `skip_whitespace` eats newlines before that case
+      can ever be reached. `next_token()` now records the position *after*
+      skipping whitespace and *before* scanning, and stamps the result — the
+      scanning body moved to a new private `scan_token()` so that its dozen
+      early returns do not each have to remember to do it. The recorded
+      position is therefore where the token *starts*, not where the lexer
+      ended up. `identifier_lookup` also had to be fixed: it returns entries of
+      the `keywords` table, which are position-less literals, so it now copies
+      the scanned identifier's position onto the keyword token (`x and y`
+      reports `and` at column 3, not column 1).
+    - `Parser` gained `error_at(tok, msg)` / `add_error_at(tok, msg)`, and
+      every error site — the `Illegal` branch of `next_token`,
+      `expect_peek_and_advance`, `parse_expression`'s unexpected-prefix throw,
+      the two numeric-literal validators, `parse_list_of_expressions` and
+      `parse()`'s end-of-input check — routes through them. The rendering is
+      `line L, column C: <msg>` plus a compiler-style caret snippet:
+
+      ```
+      Parser errors:
+        - line 1, column 9: Illegal token in input: '@'
+            T_mid + @foo
+                    ^
+      ```
+
+      The snippet needs the original text, so `Lexer` gained a
+      `const std::string& input() const` accessor (the `Parser` already owns
+      the `Lexer` by value). Multi-line input shows only the offending line,
+      with the column relative to that line; tabs are rendered as one space so
+      the caret stays aligned; an end-of-input token parks the caret one past
+      the last character; and an input with no such line (an empty string, say)
+      degrades to the `line L, column C:` prefix with no snippet. Nothing is
+      printed anywhere — it all goes into the `ParserError` message.
+
+    Folded in: `parse_expression` used to `throw ParserError({one_message})`,
+    discarding everything already recorded in `errors_`. For `T_mid + @foo`
+    that threw away the *interesting* error (`Illegal token in input: '@'`) and
+    kept only its consequence (`Unexpected Prefix Token {Type: Illegal, ...}`).
+    It now appends and throws `ParserError(errors_)`. Also: the
+    `expect_peek_and_advance` message read `Expected XGot {...}` (no
+    separator); it now reads `Expected X, got {...}`.
+
+18. `include/edp/parser.hpp`, `src/parser.cpp` — **`a = b = c` parsed
+    happily.** `Assign` is registered as an ordinary infix operator, because
+    that is how a keyword argument (`dim='lev'`) is spelled, and nothing
+    stopped it from chaining. Symptom: `a = b = c` produced a nested
+    `InfixExpression`, `((a=b)=c)`, that is meaningless in this DSL and that a
+    later translation layer would have to detect and reject. Fix: `Assign` is
+    now bound to a dedicated `parse_assign_expression` instead of the generic
+    `parse_infix_expression`, and that function rejects the nesting
+    structurally, in the parse path, rather than by post-walking the tree. It
+    checks *both* operands, because the two spellings land on opposite sides:
+    `Assign` is left-associative under the Pratt loop, so `a = b = c` arrives
+    with an `Assign` on the **left**, while parenthesizing (`a = (b = c)`) puts
+    one on the **right**. Both record
+    `Chained assignment is not allowed: '=' is non-associative`, positioned at
+    the offending `=`. Testing what kind of node an operand is needs the
+    variant, which is private to `ast::Expression`, so a small `NodeKind`
+    visitor goes through the public `visit`. `dim='lev'`, `f(a=1, b=2)` and
+    `T_mid.mean(dim='lev', skipna=1)` are unaffected. `Equal` (`==`) is a
+    different operator and is deliberately left alone: `a == b == c` still
+    parses.
+
+19. `include/edp/ast.hpp`, `src/ast_print.cpp`, `include/edp/precedences.hpp`,
+    `src/precedences.cpp`, `include/edp/parser.hpp`, `src/parser.cpp` —
+    **`TokenTypes::Colon` had a precedence but no parse function**, so no slice
+    syntax parsed. Symptom: `T_mid.isel(lev=0:10)` failed with
+    `Unexpected token after end of expression: {Type: Colon, Literal: :}`;
+    upstream's intent survived only as a commented-out two-member
+    `BoundsExpression` in `ast.hpp`. Fix, in four parts:
+
+    - **A new AST node, `ast::SliceExpression { start; stop; step; }`, added to
+      `ExpressionVariant`.** Three members, not upstream's two, so that
+      `a[::2]` is expressible. Each is an `ExprPtr` that may be **null**,
+      meaning the component was omitted (Python's `a[:10]`, `a[1:]`, `a[::2]`)
+      — null is *not* zero, and `stop == nullptr` is materially different from
+      `stop == IntegerLiteral{0}`. **Adding a variant alternative is a public
+      API change for every AST visitor**; see the API section above.
+    - `Precedence::Bounds` moved from between `Prefix` and `Call` down to
+      between `Lowest` and `Equal`. Where it was, `:` bound *tighter* than
+      unary minus and than `+`, so `-1:2` would have parsed as `-(1:2)` and
+      `1+2:3` as `1+(2:3)`. Python binds the slice colon looser than every
+      arithmetic and comparison operator, which is what the new position gives:
+      `-1:2` is `(-1):2` and `1+2:3` is `(1+2):3`. It still binds tighter than
+      `Assign`, so `lev=0:10` is the keyword argument `lev` with a slice value
+      rather than a slice of `(lev=0)`.
+    - `Colon` is registered in **both** parse maps, the way `LeftParen`
+      already is: infix (`1:10`) and prefix (`:10`, `::2`, `:`). Both funnel
+      into one `parse_slice_tail`, which consumes `stop` and an optional
+      `:step` itself so the whole thing becomes a *single* `SliceExpression` —
+      leaving the colon as plain left-associative infix would have turned
+      `1:2:3` into `slice(slice(1,2),3)`. A component is present iff the token
+      after the colon can begin an expression, which is asked of the prefix
+      table rather than by enumerating terminators; that makes `)`, `]`, `,`,
+      end-of-input and an `Illegal` token all answer "omitted" for free. A
+      fourth component (`1:2:3:4`) records `Too many ':' in slice` rather than
+      being silently dropped. Only syntax is enforced here; whether a given
+      slice makes *sense* is the translation layer's problem. `slice(1, 10)`
+      keeps parsing as the ordinary function call it always was.
+    - **The printing trap.** `ast::to_string` output is the canonical identity
+      string for an expression and gets re-parsed, so whatever a slice prints
+      must read back as the *same* tree. Printed bare in Python form
+      (`1:10`, `:10`, `1:`, `::2`, `1:10:2`, `:`), a slice is ambiguous
+      wherever a neighbouring operator could steal the colon back: `(1:2)*3`
+      would have printed `(1:2*3)` and re-parsed as `1:(2*3)`, and `-(1:2)`
+      would have printed `(-1:2)` and re-parsed as `(-1):2`. So the *containing*
+      node parenthesizes a slice child: `ToStringVisitor` routes the operands of
+      `PrefixExpression`, `InfixExpression` and `FuncExpression`, and the
+      components of a nested `SliceExpression`, through an `operand_to_string`
+      that wraps slices in parentheses. Already-delimited contexts — call
+      arguments and array elements — keep the bare form. A standalone slice
+      therefore still prints exactly the Python spelling, `T_mid.isel(lev=0:10)`
+      prints as `(T_mid.isel((lev=(0:10))))`, and `canonical(canonical(s))`
+      remains equal to `canonical(s)` for every form. Note that an explicitly
+      empty trailing component normalizes: `1::` and `1:10:` print as `1:` and
+      `1:10`, and `::` prints as `:`. Those are the same slices in Python, and
+      the normalized text is a fixed point.
+
 Upstream's empty `tests/test_list_supported_functions.cpp` was not copied.
 
 ## Building / testing
@@ -241,6 +399,10 @@ ctest -R edp_parser
 each numbered patch above, plus end-to-end checks on the expression shapes this
 parser exists to handle (`T_mid.weighted('dp').mean(dim='lev')`,
 `T_mid.isel(lev=-1)`, `T_mid.where(qc > 1e-5)`, `(A + B) / C`, `abs(X)`).
+One of them, "to_string round-trips (canonical form is a fixed point)", asserts
+`canonical(canonical(s)) == canonical(s)` over a corpus that includes every
+slice form; keep it green, because the translation layer treats the canonical
+string as an expression's identity.
 Because the package has no dependencies, it can also be built and tested
 outside EAMxx with a plain compiler invocation over `src/*.cpp`, `tests/*.cpp`
 and a TU defining `CATCH_CONFIG_MAIN`.
@@ -262,22 +424,31 @@ work is intentionally not part of this vendoring commit.
 
 What the parser *can* now do, which it could not as vendored: handle real
 EAMxx field names (case-preserving, digits allowed), parse grouped and prefix
-expressions, produce `!=`, and — most importantly for a translation layer —
-fail loudly instead of silently returning a truncated expression. A caller can
-rely on "either `parse()` returns an AST for the whole input, or it throws
-`ParserError`".
+expressions, produce `!=`, parse Python-style colon slices, reject chained
+assignment, point at the offending line and column of a bad input, and — most
+importantly for a translation layer — fail loudly instead of silently returning
+a truncated expression. A caller can rely on "either `parse()` returns an AST
+for the whole input, or it throws `ParserError`", and on
+`to_string(parse(s))` being a fixed point, so the canonical string can be used
+as an expression's identity.
 
 Known remaining rough edges, none of which are regressions and none of which
 were fixed here:
 
 - `TokenTypes::Newline`, `Concat`, `Semicolon`, `Percent` and `DoubleColon` are
   never produced by the lexer (`'\n'` is eaten by `skip_whitespace` before the
-  `case '\n'` can be reached).
-- `TokenTypes::Colon` has a precedence (`Bounds`) but no parse function, so
-  slice syntax such as `lev=0:10` does not parse.
-- `Assign` is parsed as an ordinary infix operator, so `a = b = c` and a
-  keyword argument in a non-call position both parse without complaint. The
-  translation layer, not the parser, will have to reject those.
-- Error messages carry the offending token but no line/column, because the
-  `Lexer` does not track one. For single-expression YAML entries that is
-  tolerable; it would not be for multi-line input.
+  `case '\n'` can be reached). A `::` is two `Colon` tokens, which is what the
+  slice parser wants anyway.
+- A keyword argument in a non-call position (`dim='lev'` on its own) still
+  parses, as does a comparison chain (`a == b == c`, left-associatively).
+  Only `=` was made non-associative; the translation layer, not the parser,
+  decides where a keyword argument is meaningful.
+- Slices are accepted anywhere an expression is, so syntactically valid but
+  semantically empty things like `T_mid.:` or `T_mid:` parse. That is
+  deliberate — the parser enforces syntax, the translation layer enforces
+  meaning — but it means the translation layer must reject a `SliceExpression`
+  in a position it cannot use, rather than assuming the parser did.
+- The caret snippet renders the offending line in full, with no windowing. A
+  pathologically long single-line input produces a pathologically long error
+  message. YAML diagnostic entries are short, so this has not been worth
+  fixing.

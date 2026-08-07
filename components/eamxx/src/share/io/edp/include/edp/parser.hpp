@@ -55,6 +55,17 @@ private:
 
   // Functions
   void add_error(std::string msg);
+  // Renders "line L, column C: <msg>" followed by the offending source line
+  // and a caret under the offending column, e.g.
+  //
+  //   line 1, column 9: Illegal token in input: '@'
+  //       T_mid + @foo
+  //               ^
+  //
+  // The snippet is omitted when the position does not name a non-empty line of
+  // the input (which is the case for an empty input, for instance).
+  std::string error_at(const Token& tok, const std::string& msg) const;
+  void add_error_at(const Token& tok, const std::string& msg);
   void next_token();
 
   bool cur_token_is(TokenTypes expected_type);
@@ -75,8 +86,14 @@ private:
   ast::ExprPtr parse_grouped_expression();
   ast::ExprPtr parse_array_expression();
 
+  ast::ExprPtr parse_slice_prefix();
+  ast::ExprPtr parse_slice_tail(ast::ExprPtr start);
+  bool at_slice_component() const;
+
   // infix member functions:
   ast::ExprPtr parse_infix_expression(ast::ExprPtr left_expr);
+  ast::ExprPtr parse_assign_expression(ast::ExprPtr left_expr);
+  ast::ExprPtr parse_slice_expression(ast::ExprPtr left_expr);
   ast::ExprPtr parse_function_expression(ast::ExprPtr expr);
   std::vector<ast::ExprPtr> parse_list_of_expressions(TokenTypes end_token);
 };

@@ -22,6 +22,22 @@ std::string parse_to_string(const std::string& input) {
   return ast::to_string(*expr);
 }
 
+// The message of the ParserError a failing input produces.
+std::string parse_error(const std::string& input) {
+  parser::Parser parser{Lexer{input}};
+  try {
+    auto expr = parser.parse();
+  } catch (const parser::ParserError& e) {
+    return e.what();
+  }
+  FAIL("Expected a ParserError for input: " << input);
+  return {};
+}
+
+bool contains(const std::string& haystack, const std::string& needle) {
+  return haystack.find(needle) != std::string::npos;
+}
+
 } // namespace
 
 TEST_CASE("Test Parse expressions") {
@@ -116,6 +132,138 @@ TEST_CASE("float literals round-trip") {
     const auto printed = parse_to_string(input);
     CHECK(std::strtod(printed.c_str(), nullptr) ==
           std::strtod(input.c_str(), nullptr));
+  }
+}
+
+// Regression: errors used to name the offending token but not where it was.
+TEST_CASE("errors carry line, column and a caret snippet") {
+  {
+    const auto msg = parse_error("T_mid + @foo");
+    INFO(msg);
+    // '@' is the 9th character.
+    CHECK(contains(msg, "line 1, column 9: Illegal token in input: '@'"));
+    // ... and the caret sits under it, on the line below the source snippet.
+    CHECK(contains(msg, "\n      T_mid + @foo\n              ^"));
+  }
+  {
+    // Multi-line input reports the offending line only, with a reset column.
+    const auto msg = parse_error("T_mid +\n  q @ 3");
+    INFO(msg);
+    CHECK(contains(msg, "line 2, column 5:"));
+    CHECK(contains(msg, "\n        q @ 3\n          ^"));
+    CHECK(!contains(msg, "T_mid +\n"));
+  }
+  {
+    // An unterminated string points at the quote that opened it.
+    const auto msg = parse_error("T_mid.mean(dim='lev");
+    INFO(msg);
+    CHECK(contains(msg, "line 1, column 16:"));
+  }
+  {
+    // An empty input has no line to show; the prefix must still be there and
+    // the caret rendering must not read past the end of the string.
+    const auto msg = parse_error("");
+    INFO(msg);
+    CHECK(contains(msg, "line 1, column 1:"));
+  }
+  {
+    // A token at end-of-input parks the caret just past the last character.
+    const auto msg = parse_error("(T + q");
+    INFO(msg);
+    CHECK(contains(msg, "line 1, column 7:"));
+  }
+}
+
+// Regression: `=` is registered as an ordinary infix operator so that it can
+// spell a keyword argument, which also made "a = b = c" parse happily.
+TEST_CASE("chained assignment is rejected") {
+  // The forms that must keep working.
+  CHECK(parse_to_string("dim='lev'") == "(dim='lev')");
+  CHECK(parse_to_string("f(a=1, b=2)") == "f((a=1), (b=2))");
+  CHECK(parse_to_string("T_mid.mean(dim='lev', skipna=1)") ==
+        "(T_mid.mean((dim='lev'), (skipna=1)))");
+
+  for (const std::string input :
+       {"a = b = c", "a = (b = c)", "a = b = c = d", "f(a=1, b=2=3)"}) {
+    INFO("Input: " << input);
+    parser::Parser parser{Lexer{input}};
+    CHECK_THROWS_AS(parser.parse(), parser::ParserError);
+  }
+  CHECK(contains(parse_error("a = b = c"), "Chained assignment is not allowed"));
+
+  // Equal (==) is a different operator and is deliberately left alone.
+  CHECK_NOTHROW(parse_to_string("a == b == c"));
+}
+
+// Regression: TokenTypes::Colon had a precedence but no parse function, so
+// "0:10" could not parse at all.
+TEST_CASE("colon slices parse and print in Python form") {
+  CHECK(parse_to_string("1:10") == "1:10");
+  CHECK(parse_to_string(":10") == ":10");
+  CHECK(parse_to_string("1:") == "1:");
+  CHECK(parse_to_string("::2") == "::2");
+  CHECK(parse_to_string("1:10:2") == "1:10:2");
+  CHECK(parse_to_string(":10:2") == ":10:2");
+  CHECK(parse_to_string(":") == ":");
+
+  // An omitted component is omitted, not zero: ":" and "::" are the same
+  // slice, and so are "1:" and "1::".
+  CHECK(parse_to_string("::") == ":");
+  CHECK(parse_to_string("1::") == "1:");
+  CHECK(parse_to_string("1:10:") == "1:10");
+
+  // The colon binds looser than every arithmetic/comparison operator (Python
+  // semantics), so a leading minus belongs to the bound, not to the slice.
+  CHECK(parse_to_string("-1:2") == "(-1):2");
+  CHECK(parse_to_string("1:-1") == "1:(-1)");
+  CHECK(parse_to_string("1+2:3") == "(1+2):3");
+  CHECK(parse_to_string("1:2+3") == "1:(2+3)");
+
+  // ... but tighter than '=', so a slice-valued keyword argument works.
+  CHECK(parse_to_string("T_mid.isel(lev=0:10)") ==
+        "(T_mid.isel((lev=(0:10))))");
+  CHECK(parse_to_string("T_mid.isel(lev=::2)") == "(T_mid.isel((lev=(::2))))");
+  CHECK(parse_to_string("T_mid.isel(lev=:)") == "(T_mid.isel((lev=(:))))");
+  CHECK(parse_to_string("[1:2, 3, ::2]") == "[1:2, 3, ::2]");
+
+  // slice(1,10) is an ordinary function call and stays valid.
+  CHECK(parse_to_string("slice(1,10)") == "slice(1, 10)");
+
+  // A fourth component is a syntax error, not a silently dropped one.
+  parser::Parser parser{Lexer{"1:2:3:4"}};
+  CHECK_THROWS_AS(parser.parse(), parser::ParserError);
+  CHECK(contains(parse_error("1:2:3:4"), "Too many ':' in slice"));
+
+  // A stray colon must produce a clean error, not a crash or a truncation.
+  for (const std::string input : {"f(1, :, )", "1: @", "(1:2"}) {
+    INFO("Input: " << input);
+    parser::Parser bad{Lexer{input}};
+    CHECK_THROWS_AS(bad.parse(), parser::ParserError);
+  }
+}
+
+// CRITICAL: to_string() output is the canonical identity string for an
+// expression and is re-parsed, so canonical(canonical(s)) must equal
+// canonical(s) for everything the parser accepts.
+TEST_CASE("to_string round-trips (canonical form is a fixed point)") {
+  for (const std::string input :
+       {"T_mid", "T_mid.weighted('dp').mean(dim='lev')", "T_mid.isel(lev=-1)",
+        "(A - B) / C", "A - B / C", "T.where(qc > 0.5 and ni >= 1e-5)",
+        "T.histogram(bins=[0,1,2])", "T.interp(plev=500.0, units='hPa')",
+        "abs(X)", "(A + B) / C", "-T", "not x", "bc_a1 + so4_a2",
+        // every slice form
+        "1:10", ":10", "1:", "::2", "1:10:2", ":10:2", ":", "::", "1::",
+        "1:10:", "-1:2", "1:-1", "1+2:3", "1:2+3", "1:(2:3)",
+        "T_mid.isel(lev=0:10)", "T_mid.isel(lev=:10)", "T_mid.isel(lev=1:)",
+        "T_mid.isel(lev=::2)", "T_mid.isel(lev=:)", "[1:2, 3, ::2]",
+        "(1:2)*3", "-(1:2)", "f(1:)", "f(:)", "slice(1,10)",
+        "T_mid.isel(lev=1:10:2).mean(dim='ncol')"}) {
+    INFO("Input: " << input);
+    const auto once = parse_to_string(input);
+    INFO("canonical: " << once);
+    const auto twice = parse_to_string(once);
+    CHECK(once == twice);
+    CHECK(parse_to_string(twice) == once);
   }
 }
 

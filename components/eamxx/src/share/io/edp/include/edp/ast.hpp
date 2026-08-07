@@ -45,10 +45,17 @@ struct FuncExpression {
   std::vector<ExprPtr> args;
 };
 
-// struct BoundsExpression {
-//   ExprPtr start;
-//   ExprPtr stop;
-// };
+// A Python-style slice: `start:stop`, `start:stop:step`, and every form with
+// one or more components omitted (`:10`, `1:`, `::2`, `:`).
+//
+// NOTE: any of the three members may be null, which means "omitted" -- *not*
+//       "zero". A visitor must null-check before dereferencing. (This replaces
+//       upstream's commented-out two-member BoundsExpression.)
+struct SliceExpression {
+  ExprPtr start;
+  ExprPtr stop;
+  ExprPtr step;
+};
 
 struct ArrayExpression {
   std::vector<ExprPtr> elements;
@@ -74,9 +81,12 @@ struct IntegerLiteral {
 //   bool value;
 // };
 
+// NOTE: SliceExpression is a *new* alternative vs. upstream. Every exhaustive
+//       visitor over this variant must handle it or it will not compile.
 using ExpressionVariant =
     std::variant<Identifier, PrefixExpression, InfixExpression, FuncExpression,
-                 ArrayExpression, StringLiteral, FloatLiteral, IntegerLiteral>;
+                 SliceExpression, ArrayExpression, StringLiteral, FloatLiteral,
+                 IntegerLiteral>;
 
 template <typename T>
 concept ExpressionNode = std::constructible_from<ExpressionVariant, T&&>;
