@@ -1,7 +1,15 @@
 # Diagnostics DSL: replacing the name regexes with a real parser
 
-Status: **design / scope**. Nothing here is implemented yet beyond the vendored
-parser itself (see `src/share/io/edp/README.md`).
+Status: **implemented**. PRs 1-3 below are done; `create_diagnostic` no longer
+uses regexes. The user-facing syntax is documented in
+[Requesting diagnostics](../user/diags/dsl.md); this page is the design record
+of how and why, kept because the constraints in §2 and §8 are the ones that
+will bite anyone changing this code.
+
+Not yet done: the hbc2 diagnostics in §6 (unary ops, below/above interface,
+vert_contract min/max/var/std, PBL entrainment budget, isccp_meanptop). Until
+those land, the operations that need them parse and report exactly what is
+missing.
 
 ## Goal
 

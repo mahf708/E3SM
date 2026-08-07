@@ -1,108 +1,101 @@
-# Diagnostic parsing precedence
+# Legacy names
 
-EAMxx resolves diagnostic field names through a series of pattern tests applied
-in a fixed priority order.  Understanding this order lets you predict — and
-control — how composite names are parsed.
+Before EAMxx parsed diagnostic requests as expressions, a diagnostic was
+requested by writing a composite *name* — `T_mid_at_500hPa`,
+`T_mid_vert_avg_dp_weighted`, `f_minus_f_prev_over_dt` — which was matched
+against a list of patterns in a fixed order.
 
-## Priority order (highest to lowest)
+Those names still work, and still write identically-named output. They are
+deprecated: new work should use the [expression syntax](dsl.md), which says
+what it means instead of relying on the ordering rules below.
 
-1. **Plain model field** — the output layer first checks whether the name
-   exists directly in the model field manager (FM).  If it does, no diagnostic
-   parsing is performed at all; the field is used as-is.
+## How a request is resolved
 
-2. **User-defined `:=` aliases** — if the name was declared as a `:=` alias in
-   the output YAML, it is resolved to the aliased field or expression before
-   any diagnostic parsing.
+1. **Plain model field.** If the name is a field in the model, it is used
+   as-is and nothing is parsed.
+2. **User `:=` alias.** Resolved to whatever it aliases.
+3. **Parsed as an expression.** Anything that is not a single bare name is
+   handled entirely by the grammar — see [Requesting diagnostics](dsl.md).
+4. A single bare name is then resolved in this order:
+   1. a registered diagnostic (`RelativeHumidity`, `SeaLevelPressure`, ...)
+   2. a canonical named diagnostic (`LiqWaterPath`, `z_mid`, `dz`, ...)
+   3. a legacy composite name, rewritten to the equivalent expression and
+      re-parsed
+   4. otherwise an error naming the unknown field or diagnostic
 
-   Items 3–9 below apply only when the name is not found by steps 1–2, i.e.
-   they describe the priority order *inside* the diagnostic parser
-   (`create_diagnostic`).
+## Mapping
 
-3. **Built-in aliases** — recognized shorthands expand before anything else.
-   E.g., `X_atm_backtend` → `X_minus_X_prev_over_dt`.
-   See [Built-in aliases](builtin_aliases.md).
+| Legacy name | Expression |
+|---|---|
+| `X_at_lev_10` | `X.isel(lev=10)` |
+| `X_at_model_top` | `X.isel(lev=0)` |
+| `X_at_model_bot` | `X.isel(lev=-1)` |
+| `X_at_500hPa` | `X.interp(plev=500, units='hPa')` |
+| `X_at_10m_above_surface` | `X.interp(z=10, reference='surface')` |
+| `X_horiz_avg` | `X.mean(dim='col')` |
+| `X_vert_avg` | `X.mean(dim='lev')` |
+| `X_vert_sum` | `X.sum(dim='lev')` |
+| `X_vert_avg_dp_weighted` | `X.weighted('dp').mean(dim='lev')` |
+| `X_zonal_avg_20_bins` | `X.zonal_mean(bins=20)` |
+| `X_where_Y_gt_0` | `X.where(Y > 0)` |
+| `A_plus_B` | `A + B` |
+| `A_minus_B` | `A - B` |
+| `A_times_B` | `A * B` |
+| `A_over_B` | `A / B` |
+| `X_prev` | `X.shift(time=1)` |
+| `X_over_dt` | `X / dt` |
+| `X_atm_backtend` | `X.tend()` |
+| `X_pvert_derivative` | `X.differentiate('p')` |
+| `X_zvert_derivative` | `X.differentiate('z')` |
+| `X_histogram_0_1_2` | `X.histogram(bins=[0,1,2])` |
 
-4. **`_over_dt` suffix** — checked before binary ops to prevent `X_over_dt`
-   from being misinterpreted as `BinaryOpsDiag(X, over, dt)`.
+## The precedence quirks, and why they are the reason to stop
 
-5. **Specific named patterns** — `_at_<level>`, `_at_<pressure>`, `_at_<height>`,
-   `_horiz_avg`, `_vert_avg`, `_vert_sum`, `_zonal_avg`, `_pvert_derivative`,
-   `_zvert_derivative`, `_where_..._op_<val|field>` (conditional sampling), etc.
+Composite names are ambiguous, because the separator between parts is the same
+`_` that appears inside field names. Three ordering rules were needed to
+disambiguate them, and all three are still applied to legacy names so that they
+keep meaning what they always meant.
 
-6. **Binary ops** — `A_(plus|minus|times|over)_B`.
-   The first capture group is *greedy*, so the left operand extends as far as
-   possible: `A_minus_B_over_C` parses as `(A_minus_B) over C`, i.e., `(A−B)/C`.
-   Binary ops are checked **before** `_prev` so that `X_minus_X_prev` correctly
-   resolves as `BinaryOpsDiag(X, minus, X_prev)` rather than
-   `FieldPrevDiag(X_minus_X)`.
+**`_over_dt` is matched before binary ops.** Otherwise `X_over_dt` reads as
+"X over dt", a division by a field named `dt`.
 
-7. **`_prev` suffix** — checked after binary ops so that the right-hand operand
-   of a binary op can itself be a `_prev` field.
+**The left operand is greedy, so the *rightmost* operator word is the outermost
+operation.** `A_minus_B_over_C` means `(A − B) / C`. There is no way to write
+`A − (B / C)` as a composite name at all. In the expression syntax you write
+whichever you meant, and the parentheses are the answer.
 
-8. **Histograms** — `X_histogram_<bin_config>`.
+**Binary ops are matched before `_prev`.** Otherwise `X_minus_X_prev` reads as
+`FieldPrev(X_minus_X)` rather than `X − X_prev`.
 
-9. **Plain diagnostic name** — the string is looked up directly in the
-   atmosphere-diagnostic factory.
+None of this applies to expressions. `A - B / C` and `(A - B) / C` are
+different requests, and both are expressible.
 
-## Key rules
+## Worked example
 
-### Rule 1: greedy left operand for binary ops
-
-The binary-ops regex is:
-
-```none
-([A-Za-z0-9_.+\-\*\÷]+)_(plus|minus|times|over)_([A-Za-z0-9_.+\-\*\÷]+)$
-```
-
-The first group is greedy.  For a string with multiple operator tokens, the
-**rightmost** operator becomes the outermost (lowest-precedence) operation:
-
-```none
-A_minus_B_over_C  →  (A_minus_B) over C  →  (A − B) / C
-```
-
-### Rule 2: `_prev` is resolved after binary ops
-
-`binary_ops` is tested before `field_prev`, so `X_minus_X_prev` parses
-as `BinaryOpsDiag(X, minus, X_prev)`.  Then `X_prev` recurses and is
-resolved as `FieldPrevDiag(X)`.  A bare `X_prev` (no operator keyword)
-still resolves as `FieldPrevDiag(X)` because `binary_ops` does not match
-(there is no operator keyword in the string).
-
-## Worked example: the `bt` family
+The backward-tendency family, in both spellings:
 
 ```yaml
 fields:
   physics_pg2:
     aliases:
-      # bt1 is an intermediate — needed by bt2 and bt_prod but not written to NC
-      - bt1:=f_minus_f_prev_over_dt
-      # Parsing:
-      #   _over_dt suffix matched first → FieldOverDtDiag( f_minus_f_prev )
-      #   f_minus_f_prev → BinaryOpsDiag( f, minus, f_prev )
-      #   f_prev → FieldPrevDiag( f )
-      # Result: (f(t1) − f(t0)) / (t1 − t0)
-
-      # bt2 = tendency of the tendency (also intermediate)
-      - bt2:=bt1_minus_bt1_prev
-      # Only one "minus" token → BinaryOpsDiag( bt1, minus, bt1_prev )
-      # bt1_prev → FieldPrevDiag( bt1 )
-
+      # Intermediates: needed by the fields below, not written to the file
+      - bt1 := T_mid.tend()
+      - bt2 := bt1 - bt1.shift(time=1)
     field_names:
-      # bt_prod = product of the two tendencies — IS written to NC
-      - bt_prod:=bt1_times_bt2
-
-      # bt_osc_count = indicator that bt_prod is negative (tendency oscillating)
-      - bt_osc_count:=mask_where_bt_prod_lt_0
-      # ConditionalSampling: input=mask, condition_lhs=bt_prod, condition_cmp=lt, condition_rhs=0
+      - bt_prod      := bt1 * bt2
+      - bt_osc_count := mask.where(bt_prod < 0)
 ```
 
-The `aliases` section names intermediate sub-expressions that are needed
-as inputs to other diagnostics but should not appear in the output file.
-The `field_names` section lists what actually gets written to NetCDF.
-Use `:=` in both sections to give a convenient name to a complex expression.
+The legacy equivalent, which still works:
 
-## Avoiding ambiguity
+```yaml
+    aliases:
+      - bt1 := T_mid_minus_T_mid_prev_over_dt
+      - bt2 := bt1_minus_bt1_prev
+    field_names:
+      - bt_prod      := bt1_times_bt2
+      - bt_osc_count := mask_where_bt_prod_lt_0
+```
 
-Use `:=` aliases to break complex expressions into named sub-expressions.
-This is always clearer than relying on implicit precedence.
+Note that `bt1` in the legacy form relies on `_over_dt` being matched first and
+on the greedy left operand; the expression form does not rely on anything.

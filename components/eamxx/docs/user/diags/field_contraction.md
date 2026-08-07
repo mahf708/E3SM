@@ -1,5 +1,8 @@
 # Field contraction diagnostics
 
+Tables below list each reduction in both the legacy name form and the
+expression form; see [Requesting diagnostics](dsl.md) for the latter.
+
 In EAMxx, we can automatically calculate field reductions
 across the horizontal columns and across the model vertical levels.
 We call these horizontal and vertical reductions.
@@ -24,11 +27,12 @@ The weight $w$ is defined as the area fraction in column $i$,
 that is, the area in column $i$ divided by the total area in all columns.
 
 To select the horizontal reduction, you only need to suffix
-a field name `X` with `_horiz_avg` in the output requests.
+a field name `X` with `_horiz_avg` in the output requests,
+or by writing `X.mean(dim='col')`.
 
 | Reduction | Weight | Description |
 | --------- | ------ | ----------- |
-| `X_horiz_avg` | Area fraction | Average across all columns |
+| `X_horiz_avg` &middot; `X.mean(dim='col')` | Area fraction | Average across all columns |
 
 ## Vertical reduction
 
@@ -43,16 +47,17 @@ and $w_{k}$ is the weight at level $k$.
 
 To select the vertical reduction, you only need to suffix
 a field name `X` with `_vert_(avg|sum)_(dp|dz)_weighted` or
-`_vert_(avg|sum)` in the output yaml files.
+`_vert_(avg|sum)` in the output yaml files,
+or by writing `X.mean(dim='lev')` / `X.sum(dim='lev')`.
 
 | Reduction | Weight | Description |
 | --------- | ------ | ----------- |
-| `X_vert_avg_dp_weighted` | $\Delta p_{k}$ | Average across all levels, weighted by $\Delta p_{k}$ |
-| `X_vert_sum_dp_weighted` | $\Delta p_{k}$ | Sum across all levels, weighted by $\Delta p_{k}$ |
-| `X_vert_avg_dz_weighted` | $\Delta z_{k}$ | Average across all levels, weighted by $\Delta z_{k}$ |
-| `X_vert_sum_dz_weighted` | $\Delta z_{k}$ | Sum across all levels, weighted by $\Delta z_{k}$ |
-| `X_vert_avg` | 1 | Average across all levels |
-| `X_vert_sum` | 1 | Sum across all levels |
+| `X_vert_avg_dp_weighted` &middot; `X.weighted('dp').mean(dim='lev')` | $\Delta p_{k}$ | Average across all levels, weighted by $\Delta p_{k}$ |
+| `X_vert_sum_dp_weighted` &middot; `X.weighted('dp').sum(dim='lev')` | $\Delta p_{k}$ | Sum across all levels, weighted by $\Delta p_{k}$ |
+| `X_vert_avg_dz_weighted` &middot; `X.weighted('dz').mean(dim='lev')` | $\Delta z_{k}$ | Average across all levels, weighted by $\Delta z_{k}$ |
+| `X_vert_sum_dz_weighted` &middot; `X.weighted('dz').sum(dim='lev')` | $\Delta z_{k}$ | Sum across all levels, weighted by $\Delta z_{k}$ |
+| `X_vert_avg` &middot; `X.mean(dim='lev')` | 1 | Average across all levels |
+| `X_vert_sum` &middot; `X.sum(dim='lev')` | 1 | Sum across all levels |
 
 The supported weighting options for now are
 
@@ -83,7 +88,7 @@ And so on...
 
 | Reduction | Weight | Description |
 | --------- | ------ | ----------- |
-| `X_zonal_avg_Y_bins` | Area fraction | Average across the zonal direction |
+| `X_zonal_avg_Y_bins` &middot; `X.zonal_mean(bins=Y)` | Area fraction | Average across the zonal direction |
 
 ## Histograms
 
@@ -96,7 +101,7 @@ separated by `_`. For example, the histogram specified by
 
 | Reduction | Weight | Description |
 | --------- | ------ | ----------- |
-| `X_histogram_V0_V1_..._VN` | 1 or 0 | Count of field values within each range |
+| `X_histogram_V0_V1_..._VN` &middot; `X.histogram(bins=[V0,V1,...,VN])` | 1 or 0 | Count of field values within each range |
 
 ## Example
 

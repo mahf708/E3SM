@@ -17,10 +17,15 @@ nav:
     - 'EAMxx runtime parameters': 'user/eamxx_params.md'
     - 'Diagnostics':
       - 'Overview': 'user/diags/index.md'
+      - 'Requesting diagnostics': 'user/diags/dsl.md'
+      - 'Legacy names': 'user/diags/parsing_precedence.md'
+      - 'Built-in aliases': 'user/diags/builtin_aliases.md'
       - 'Field contraction': 'user/diags/field_contraction.md'
       - 'Conditional sampling': 'user/diags/conditional_sampling.md'
       - 'Binary arithmetics': 'user/diags/binary_ops.md'
       - 'Vertical derivative': 'user/diags/vert_derivative.md'
+      - 'Previous-timestep field': 'user/diags/field_prev.md'
+      - 'Field divided by timestep': 'user/diags/field_over_dt.md'
     - 'Presentations': 'user/presentations.md'
     - 'IO Aliases': 'user/io_aliases.md'
   - 'Developer Guide':

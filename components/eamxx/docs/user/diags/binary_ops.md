@@ -8,12 +8,24 @@ you to compute element-wise arithmetic operations between two fields.
 
 The binary operations diagnostic supports four basic arithmetic operations:
 
-| Operator | Symbol | Description |
-| -------- | ------ | ----------- |
-| Addition | `plus` | Element-wise addition of two fields |
-| Subtraction | `minus` | Element-wise subtraction of two fields |
-| Multiplication | `times` | Element-wise multiplication of two fields |
-| Division | `over` | Element-wise division of two fields |
+| Operator | Symbol | Legacy word | Description |
+| -------- | ------ | ----------- | ----------- |
+| Addition | `+` | `plus` | Element-wise addition of two fields |
+| Subtraction | `-` | `minus` | Element-wise subtraction of two fields |
+| Multiplication | `*` | `times` | Element-wise multiplication of two fields |
+| Division | `/` | `over` | Element-wise division of two fields |
+
+```yaml
+field_names:
+  - qt   := qc + qr
+  - dens := p_mid / (Rgas * T_mid)
+```
+
+Precedence is the usual arithmetic precedence, and parentheses group. This
+matters: `A - B / C` is `A - (B/C)`, whereas the legacy name
+`A_minus_B_over_C` always meant `(A - B) / C` and there was no way to express
+the other reading. The legacy `A_plus_B` spellings still work but are
+deprecated; see [Legacy names](parsing_precedence.md).
 
 ## Requirements
 

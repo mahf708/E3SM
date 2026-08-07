@@ -5,12 +5,16 @@ This is useful for converting accumulated differences into per-second rates.
 
 ## Configuration
 
-Append `_over_dt` to any field name `X`:
+Divide any field `X` by the reserved name `dt`:
 
 ```yaml
 field_names:
-  - X_over_dt
+  - rate := X / dt
 ```
+
+`dt` is not a field: dividing by it is recognized as this diagnostic. The older
+spelling `X_over_dt` still works but is deprecated; see
+[Legacy names](parsing_precedence.md).
 
 The output field has the same layout and grid as `X`, with units `[X_units / s]`.
 
@@ -47,4 +51,4 @@ built-in alias system (see [Built-in aliases](builtin_aliases.md)).
 - The suffix `_over_dt` is matched *before* binary-op patterns, so
   `A_minus_B_over_dt` parses as `FieldOverDtDiag(A_minus_B)`, not
   `BinaryOpsDiag(A_minus_B, over, dt)`.
-  See [Parsing precedence](parsing_precedence.md) for details.
+  See [Legacy names](parsing_precedence.md) for details.

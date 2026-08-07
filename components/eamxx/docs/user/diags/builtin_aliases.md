@@ -1,41 +1,38 @@
 # Built-in aliases
 
-EAMxx recognises certain diagnostic name patterns as **built-in aliases**.
-A built-in alias is expanded to a canonical composable expression *before*
-any other regex is tested.  The expansion recurses, so the resulting name
-is itself parsed normally.
+Some requests are shorthand: rather than naming a diagnostic directly, they
+expand to an equivalent expression, which is then resolved normally.
 
 ## Reference table
 
-| User request     | Expands to               | Meaning                                               |
-|------------------|--------------------------|-------------------------------------------------------|
-| `X_atm_backtend` | `X_minus_X_prev_over_dt` | Atmospheric backward tendency of X: (X − X_prev) / dt |
+| Request | Expands to | Meaning |
+|---|---|---|
+| `X.tend()` | `(X - X.shift(time=1)) / dt` | Backward tendency of X |
+| `X_atm_backtend` | `X.tend()` | Legacy spelling of the same thing |
 
 ## Example
 
 ```yaml
 field_names:
-  - T_mid_atm_backtend   # expands to T_mid_minus_T_mid_prev_over_dt
+  - dTdt := T_mid.tend()
 ```
 
-This is equivalent to requesting:
+which chains:
 
-```yaml
-field_names:
-  - T_mid_minus_T_mid_prev_over_dt
-```
+- `FieldPrev(T_mid)` → the value at the previous timestep
+- `BinaryOp(T_mid, minus, ...)` → the difference
+- `FieldOverDt(...)` → the difference divided by the timestep
 
-which in turn chains:
-
-- `FieldPrevDiag(T_mid)` → `T_mid_prev`
-- `BinaryOpsDiag(T_mid, minus, T_mid_prev)` → `T_mid_minus_T_mid_prev`
-- `FieldOverDtDiag(T_mid_minus_T_mid_prev)` → `T_mid_minus_T_mid_prev_over_dt`
+The intermediates are computed and shared, but only `dTdt` is written to the
+output file. If you want one of them in the file too, give it a name in the
+`aliases:` section — see [IO aliases](../io_aliases.md).
 
 ## Notes
 
-- Built-in aliases are checked before all other pattern rules (including suffix
-  operators and binary ops), so they always take precedence.
-- The match is greedy on the field-name part, so `T_mid_at_500hPa_atm_backtend`
-  expands to `T_mid_at_500hPa_minus_T_mid_at_500hPa_prev_over_dt`.
-- Additional built-in aliases may be added in `eamxx_io_utils.cpp` in the
-  dedicated block at the top of `create_diagnostic()`.
+- Expansion is recursive: `X_atm_backtend` expands to `X.tend()`, which expands
+  again. Anything a request expands to must itself be a valid expression.
+- `.tend()` composes like any other operation, so
+  `T_mid.tend().mean(dim='col')` is the column average of the tendency.
+- To add an alias, return the expansion from `spec_from_ast` in
+  `share/io/eamxx_diag_dsl.cpp` via `DiagSpec::rewrite_to`. Legacy name
+  spellings live in `legacy_to_dsl` in `share/io/eamxx_diag_names.cpp`.

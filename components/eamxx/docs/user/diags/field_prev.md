@@ -6,12 +6,15 @@ before and after a process updates a field within a single timestep.
 
 ## Configuration
 
-To use this diagnostic, suffix a field name `X` with `_prev` in the output
-requests:
+To use this diagnostic, call `.shift(time=1)` on a field `X`:
 
-```none
-X_prev
+```yaml
+field_names:
+  - T_before := T_mid.shift(time=1)
 ```
+
+The older spelling `X_prev` still works but is deprecated; see
+[Legacy names](parsing_precedence.md).
 
 The output field has the same layout, units, and grid as the input field `X`.
 

@@ -17,18 +17,31 @@ Conditional sampling creates a new field where:
 - Fill values (default: large number) are used
   where the condition is **false**
 
-The general syntax is: `<input>_where_<condition>_<operator>_<value>`
+The syntax is `<input>.where(<condition>)`:
+
+```yaml
+field_names:
+  - warm := T_mid.where(qv > 0.01)
+  - cold := p_mid.where(T_mid <= 273.15)
+```
+
+The legacy spelling `<input>_where_<condition>_<operator>_<value>` still works
+but is deprecated; see [Legacy names](parsing_precedence.md). Examples further
+down this page are written in that older form.
 
 ## Supported operators
 
-| Operator | Aliases | Description |
-| -------- | ------- | ----------- |
-| `eq` | `==` | Equal to |
-| `ne` | `!=` | Not equal to |
-| `gt` | `>` | Greater than |
-| `ge` | `>=` | Greater than or equal to |
-| `lt` | `<` | Less than |
-| `le` | `<=` | Less than or equal to |
+| Operator | Legacy word | Description |
+| -------- | ----------- | ----------- |
+| `==` | `eq` | Equal to |
+| `!=` | `ne` | Not equal to |
+| `>` | `gt` | Greater than |
+| `>=` | `ge` | Greater than or equal to |
+| `<` | `lt` | Less than |
+| `<=` | `le` | Less than or equal to |
+
+Only a single comparison is supported. For more than one, chain `.where()`
+calls.
 
 ## Field-based conditional sampling
 
