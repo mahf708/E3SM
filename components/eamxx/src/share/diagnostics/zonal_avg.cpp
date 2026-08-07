@@ -215,7 +215,7 @@ void ZonalAvg::initialize_impl()
       });
 
   // Create the diagnostic
-  auto diag_name = m_field_name + "_zonal_avg_" + std::to_string(m_num_zonal_bins) + "_bins";
+  auto diag_name = output_name(m_field_name + "_zonal_avg_" + std::to_string(m_num_zonal_bins) + "_bins");
   auto diagnostic_layout = field_layout.clone().strip_dim(COL).prepend_dim(CMP, m_num_zonal_bins, "bin");
   auto diagnostic_id = field_id.clone(diag_name).reset_layout(diagnostic_layout);
   m_diagnostic_output = Field(diagnostic_id,true);

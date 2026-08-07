@@ -93,6 +93,22 @@ protected:
   // Derived classes implement this to compute the output from the inputs.
   virtual void compute_impl () = 0;
 
+  // Name to give the diagnostic output field.
+  //
+  // Composable diags historically derive this by concatenating the name of
+  // their input field with a suffix describing the operation (e.g.
+  // "T_mid_at_500hPa"), and the IO layer relies on the result matching the
+  // string the *requesting* diag (or the user) asked for: dependencies between
+  // diags are expressed as field names, and scorpio_output resolves them by
+  // looking the name up in the field manager.
+  //
+  // That coupling means a caller who names a diag differently must be able to
+  // say so. Pass the historical concatenation as 'default_name' and it is used
+  // unchanged unless the caller set an explicit 'output_name' param.
+  std::string output_name (const std::string& default_name) {
+    return m_params.get<std::string>("output_name",default_name);
+  }
+
   // MPI communicator
   ekat::Comm              m_comm;
 

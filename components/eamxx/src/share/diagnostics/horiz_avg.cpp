@@ -38,7 +38,7 @@ void HorizAvg::initialize_impl()
       " - field layout: " + layout.to_string() + "\n");
 
   const auto &fname = m_params.get<std::string>("field_name");
-  const auto dname  = fname + "_horiz_avg";
+  const auto dname  = output_name(fname + "_horiz_avg");
 
   auto d_fid = fid.clone(dname).reset_layout(layout.clone().strip_dim(COL));
   m_diagnostic_output = Field(d_fid,true);

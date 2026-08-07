@@ -31,7 +31,7 @@ FieldAtPressureLevel (const ekat::Comm& comm, const ekat::ParameterList& params,
     m_pressure_level = std::stod(p_value);
   }
 
-  m_diag_name = m_field_name + "_at_" + p_value + units;
+  m_diag_name = output_name(m_field_name + "_at_" + p_value + units);
 
   m_field_in_names.push_back(m_field_name);
 

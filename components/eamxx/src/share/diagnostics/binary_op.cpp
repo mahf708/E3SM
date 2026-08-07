@@ -232,7 +232,7 @@ void BinaryOp::initialize_impl()
                                    : dict.at(m_arg2_name).units;
   auto diag_units = apply_binary_op(u1, u2, m_binary_op_code);
   auto gn = m_params.get<std::string>("grid_name");
-  auto diag_name = m_arg1_name + "_" + m_binary_op_str + "_" + m_arg2_name;
+  auto diag_name = output_name(m_arg1_name + "_" + m_binary_op_str + "_" + m_arg2_name);
   FieldIdentifier d_fid(diag_name, dl, diag_units, gn);
   m_diagnostic_output = Field(d_fid,true);
 

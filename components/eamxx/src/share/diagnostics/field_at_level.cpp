@@ -66,7 +66,7 @@ initialize_impl ()
   }
 
   // All good, create the diag output
-  auto diag_name = m_field_name + "_at_" + location;
+  auto diag_name = output_name(m_field_name + "_at_" + location);
   auto d_fid = fid.clone(diag_name).reset_layout(layout.clone().strip_dim(tag));
   m_diagnostic_output = Field(d_fid,true);
   if (f.has_valid_mask()) {

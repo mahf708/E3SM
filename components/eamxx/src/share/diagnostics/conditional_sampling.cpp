@@ -120,7 +120,7 @@ ConditionalSampling(const ekat::Comm &comm, const ekat::ParameterList &params,
 
   m_diag_is_mask = m_input_f == "mask";
 
-  m_diag_name = m_input_f + "_where_" + m_condition_lhs + "_" + cmp2str(m_condition_cmp) + "_" + m_condition_rhs;
+  m_diag_name = output_name(m_input_f + "_where_" + m_condition_lhs + "_" + cmp2str(m_condition_cmp) + "_" + m_condition_rhs);
 
   using namespace ShortFieldTagsNames;
 

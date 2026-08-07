@@ -35,7 +35,7 @@ void FieldPrev::initialize_impl() {
   const auto &layout = fid.get_layout();
 
   // Output has the same layout and units as the input field
-  FieldIdentifier d_fid(m_name + "_prev", layout.clone(), fid.get_units(), gn);
+  FieldIdentifier d_fid(output_name(m_name + "_prev"), layout.clone(), fid.get_units(), gn);
   m_diagnostic_output = Field(d_fid,true);
 
   // NOTE: even if the input field is masked, we must use a different one, since

@@ -92,9 +92,10 @@ void VertContract::initialize_impl()
     diag_units = diag_units / w_units;
   }
 
-  auto diag_name = m_field_name + "_vert_" + m_contract_method;
+  auto legacy_name = m_field_name + "_vert_" + m_contract_method;
   if (m_weighting_method != "none")
-    diag_name += "_" + m_weighting_method + "_weighted";
+    legacy_name += "_" + m_weighting_method + "_weighted";
+  auto diag_name = output_name(legacy_name);
 
   auto d_fid = fid.clone(diag_name).reset_layout(layout.clone().strip_dim(LEV)).reset_units(diag_units);
   m_diagnostic_output = Field(d_fid,true);

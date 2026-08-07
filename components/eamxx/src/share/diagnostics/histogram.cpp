@@ -44,7 +44,7 @@ void Histogram::initialize_impl()
   // allocate histogram field
   const int num_bins = m_bin_reals.size()-1;
   const auto& bin_config = m_params.get<std::string>("bin_configuration");
-  auto diag_name = m_field_name + "_histogram_" + bin_config;
+  auto diag_name = output_name(m_field_name + "_histogram_" + bin_config);
   FieldLayout diagnostic_layout({CMP}, {num_bins}, {"bin"});
   FieldIdentifier diagnostic_id(diag_name, diagnostic_layout,
                                 ekat::units::none, field_id.get_grid_name());

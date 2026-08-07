@@ -32,7 +32,7 @@ void FieldOverDt::initialize_impl() {
   using namespace ekat::units;
   auto diag_units = fid.get_units() / s;
 
-  FieldIdentifier d_fid(m_name + "_over_dt", layout.clone(), diag_units, gn);
+  FieldIdentifier d_fid(output_name(m_name + "_over_dt"), layout.clone(), diag_units, gn);
   m_diagnostic_output = Field(d_fid,true);
   if (f.has_valid_mask()) {
     m_diagnostic_output.set_valid_mask(f.get_valid_mask());

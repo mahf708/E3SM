@@ -58,7 +58,7 @@ void VertDerivative::initialize_impl()
     diag_units = fid.get_units() / m;
   }
 
-  auto diag_name = m_field_name + "_" + m_derivative_method + "vert_derivative";
+  auto diag_name = output_name(m_field_name + "_" + m_derivative_method + "vert_derivative");
   auto d_fid = fid.clone(diag_name).reset_units(diag_units);
   m_diagnostic_output = Field(d_fid);
   m_diagnostic_output.allocate_view();
