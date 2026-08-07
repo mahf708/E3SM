@@ -59,7 +59,9 @@ struct StringLiteral {
 };
 
 struct FloatLiteral {
-  float value;
+  // NOTE: upstream stored a `float`. Diagnostic thresholds and pressure levels
+  //       need double precision, so the value is kept as parsed.
+  double value;
 };
 
 struct IntegerLiteral {

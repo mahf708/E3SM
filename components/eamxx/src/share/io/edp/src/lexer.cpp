@@ -1,31 +1,39 @@
 #include <edp/lexer.hpp>
 #include <edp/tokens.hpp>
-#include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <string>
 #include <utility>
 
 namespace {
 
-bool is_valid_identifier(const char ch) {
+// Python identifier rules: the first character may be a letter or an
+// underscore, but *not* a digit; every subsequent character may additionally
+// be a digit. EAMxx field names rely on this (`bc_a1`, `so4_a2`, `O3`).
+bool is_identifier_start(const char ch) {
   return std::isalpha(static_cast<unsigned char>(ch)) || ch == '_';
+}
+
+bool is_identifier_char(const char ch) {
+  return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_';
 }
 
 bool is_numeric(const char ch) {
   return std::isdigit(static_cast<unsigned char>(ch));
 }
 
+bool is_exponent_marker(const char ch) { return ch == 'e' || ch == 'E'; }
+
 } // namespace
 
 namespace edp {
 
+// NOTE: the input is deliberately *not* lower-cased (upstream did). EAMxx
+//       field names are case sensitive (`T_mid`, `LiqWaterPath`). Keywords are
+//       therefore lower-case only, which matches Python.
 Lexer::Lexer(std::string input)
     : input_{std::move(input)}, position_{0}, read_position_{0},
       current_char_{'\0'} {
-
-  std::transform(
-      input_.begin(), input_.end(), input_.begin(),
-      [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   read_char();
 }
 
@@ -57,9 +65,12 @@ Token Lexer::make_token(TokenTypes kind) const {
   return {kind, std::string(1, current_char_)};
 }
 
+// Reads up to (and consumes) the closing delimiter `ch`. If the input runs out
+// first the scan stops at end-of-input rather than looping forever; the caller
+// detects that case by checking that `current_char_` is the delimiter.
 std::string Lexer::read_to_delim(char ch) {
   auto start_pos = position_+1;
-  while (peek_char() != ch) {
+  while (peek_char() != ch && peek_char() != '\0') {
     read_char();
   }
   read_char();
@@ -69,34 +80,52 @@ std::string Lexer::read_to_delim(char ch) {
 
 std::string Lexer::read_number() {
   auto start_pos = position_;
-  while (is_numeric(current_char_)) {
-    read_char();
+  // At most one '.' belongs to the literal, so that "1.2.3" does not lex as a
+  // single (silently truncated) number.
+  bool seen_dot = false;
+  while (is_numeric(current_char_) || (current_char_ == '.' && !seen_dot)) {
     if (current_char_ == '.') {
-      read_char();
+      seen_dot = true;
     }
+    read_char();
   }
   check_precision();
   return input_.substr(start_pos, position_ - start_pos);
 }
 
 void Lexer::check_precision() {
-  const auto peek_ch = peek_char();
-  if (std::isspace(static_cast<unsigned char>(peek_ch))) {
+  if (!is_exponent_marker(current_char_)) {
     return;
   }
-  if (current_char_ == 'e') {
+  // An 'e'/'E' only belongs to the number when an optionally signed digit
+  // sequence follows it. Upstream consumed it unconditionally (and then read
+  // one character too many), so "1e" walked `position_` past the end of the
+  // input and the substr in read_number threw std::out_of_range.
+  auto idx = static_cast<std::size_t>(read_position_);
+  if (idx < input_.length() && (input_[idx] == '+' || input_[idx] == '-')) {
+    ++idx;
+  }
+  if (idx >= input_.length() || !is_numeric(input_[idx])) {
+    return;
+  }
+
+  read_char(); // the exponent marker
+  if (current_char_ == '+' || current_char_ == '-') {
     read_char();
-    if (current_char_ == '+' || current_char_ == '-') {
-      read_char();
-    }
+  }
+  while (is_numeric(current_char_)) {
     read_char();
-    read_number();
   }
 }
 
 std::string Lexer::read_identifier() {
   auto start_pos = position_;
-  while (is_valid_identifier(current_char_)) {
+  // The caller only enters here on an identifier-start character; digits are
+  // legal from the second character on.
+  if (is_identifier_start(current_char_)) {
+    read_char();
+  }
+  while (is_identifier_char(current_char_)) {
     read_char();
   }
   auto length = position_ - start_pos;
@@ -153,6 +182,14 @@ Token Lexer::next_token() {
       tok = make_token(TokenTypes::Asterisk);
     }
     break;
+  case '!':
+    if (peek_char() == '=') {
+      read_char();
+      tok = {TokenTypes::NotEqual, "!="};
+    } else {
+      tok = make_token(TokenTypes::Bang);
+    }
+    break;
   case '<':
     if (peek_char() == '=') {
       read_char();
@@ -176,9 +213,16 @@ Token Lexer::next_token() {
     tok = make_token(TokenTypes::Colon);
     break;
   case '"':
-  case '\'':
-    tok = {TokenTypes::String, read_to_delim(current_char_)};
+  case '\'': {
+    const char delim = current_char_;
+    auto value = read_to_delim(delim);
+    if (current_char_ != delim) {
+      // Unterminated string literal: the lexer is now at end-of-input.
+      return {TokenTypes::Illegal, value};
+    }
+    tok = {TokenTypes::String, std::move(value)};
     break;
+  }
   case '.': {
     if (is_numeric(peek_char())) {
       read_char();
@@ -192,18 +236,25 @@ Token Lexer::next_token() {
   }
   default: {
 
-    if (is_valid_identifier(current_char_)) {
+    if (is_identifier_start(current_char_)) {
       return identifier_lookup({TokenTypes::Identifier, read_identifier()});
     } else if (is_numeric(current_char_)) {
       auto number = read_number();
 
-      if (number.find('e') != std::string::npos) {
+      // A '.' or an exponent marker makes it a Float; anything else is an
+      // Integer. (Upstream only looked for 'e', so "0.5" became an Integer
+      // token and std::stoi silently truncated it to 0.)
+      if (number.find_first_of(".eE") != std::string::npos) {
         return {TokenTypes::Float, number};
       } else {
         return {TokenTypes::Integer, number};
       }
     } else {
-      return make_token(TokenTypes::Illegal);
+      // NOTE: consume the offending character, otherwise the lexer is stuck
+      //       returning the same Illegal token forever.
+      auto illegal = make_token(TokenTypes::Illegal);
+      read_char();
+      return illegal;
     }
 
   } // default

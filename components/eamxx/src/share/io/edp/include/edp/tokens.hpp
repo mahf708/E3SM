@@ -54,6 +54,9 @@ struct Token {
 };
 std::string to_string(const Token& tok);
 
+// NOTE: keywords are matched case-sensitively (Python keywords are lower-case
+//       only). The lexer no longer lower-cases its input, since EAMxx field
+//       names are case sensitive, so "AND" is an identifier, not an operator.
 const std::unordered_map<std::string, Token> keywords{
     {"or", {TokenTypes::Or, "or"}},
     {"and", {TokenTypes::And, "and"}},

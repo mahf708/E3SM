@@ -2,7 +2,9 @@
 #include <edp/tokens.hpp>
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <span>
+#include <string>
 
 /**
  * @file ast_print.cpp
@@ -66,11 +68,25 @@ std::string ToStringVisitor::operator()(const IntegerLiteral& expr) const {
   return std::to_string(expr.value);
 };
 std::string ToStringVisitor::operator()(const FloatLiteral& expr) const {
-  // NOTE: equivalent to std::format("{:e}", expr.value), but <format> is not
-  //       available in all the stdlib versions EAMxx must build against.
-  char buf[32];
-  std::snprintf(buf, sizeof(buf), "%e", static_cast<double>(expr.value));
-  return std::string(buf);
+  // Print the shortest of these formats that reads back as the same double.
+  // NOTE: neither std::format nor floating-point std::to_chars can be used
+  //       here -- both are missing from stdlib versions EAMxx must build
+  //       against -- hence snprintf + strtod.
+  // NOTE: upstream printed "%e" from a float, so "500.0" round-tripped as
+  //       "5.000000e+02".
+  char buf[64];
+  for (const char* fmt : {"%g", "%.9g", "%.16g", "%.17g"}) {
+    std::snprintf(buf, sizeof(buf), fmt, expr.value);
+    if (std::strtod(buf, nullptr) == expr.value) {
+      break;
+    }
+  }
+  std::string result{buf};
+  // Keep the output lexable as a Float rather than an Integer ("500" -> "500").
+  if (result.find_first_of(".eEnif") == std::string::npos) {
+    result += ".0";
+  }
+  return result;
 };
 
 } // namespace

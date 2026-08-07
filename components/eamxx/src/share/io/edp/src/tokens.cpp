@@ -114,6 +114,17 @@ std::string binary_op_to_string(const TokenTypes type) {
     return "<";
   case TokenTypes::GreaterThan:
     return ">";
+  // NOTE: these four are registered as infix operators by the parser but were
+  //       missing here, so ast::to_string() threw on a perfectly valid AST
+  //       (e.g. "qc >= 1e-5", "a and b").
+  case TokenTypes::LessEq:
+    return "<=";
+  case TokenTypes::GreaterEqual:
+    return ">=";
+  case TokenTypes::And:
+    return " and ";
+  case TokenTypes::Or:
+    return " or ";
   case TokenTypes::Assign:
     return "=";
   case TokenTypes::Exp:

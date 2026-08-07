@@ -2,9 +2,10 @@
 #include <edp/ast.hpp>
 #include <edp/precedences.hpp>
 #include <edp/tokens.hpp>
-#include <iostream>
+#include <cstddef>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace edp::parser {
 
@@ -35,11 +36,16 @@ Precedence Parser::peek_precedence() {
 
 bool Parser::has_errors() { return !errors_.empty(); }
 
+void Parser::add_error(std::string msg) { errors_.push_back(std::move(msg)); }
+
 void Parser::next_token() {
   cur_token_ = peek_token_;
   peek_token_ = lexer_.next_token();
   if (peek_token_is(TokenTypes::Illegal)) {
-    std::cout << "Encountered Illegal Token: " << to_string(peek_token_);
+    // NOTE: upstream printed this to std::cout and carried on, so garbage
+    //       input silently produced a valid-looking (but wrong) expression.
+    //       This is a library: record the error instead, so parse() throws.
+    add_error("Illegal token in input: '" + peek_token_.literal + "'");
   }
 }
 
@@ -73,14 +79,38 @@ ast::ExprPtr Parser::parse_string_literal() {
   return ast::make_expression<ast::StringLiteral>(cur_token_.literal);
 }
 ast::ExprPtr Parser::parse_integer_literal() {
-  return ast::make_expression<ast::IntegerLiteral>(
-      std::stoi(cur_token_.literal));
+  int value = 0;
+  try {
+    std::size_t pos = 0;
+    value = std::stoi(cur_token_.literal, &pos);
+    if (pos != cur_token_.literal.size()) {
+      throw std::invalid_argument("trailing characters");
+    }
+  } catch (const std::exception&) {
+    // Never let a bad literal turn into a silently different number.
+    add_error("Invalid integer literal '" + cur_token_.literal + "'");
+  }
+  return ast::make_expression<ast::IntegerLiteral>(value);
 }
 ast::ExprPtr Parser::parse_float_literal() {
-  return ast::make_expression<ast::FloatLiteral>(std::stof(cur_token_.literal));
+  double value = 0.0;
+  try {
+    std::size_t pos = 0;
+    value = std::stod(cur_token_.literal, &pos);
+    if (pos != cur_token_.literal.size()) {
+      throw std::invalid_argument("trailing characters");
+    }
+  } catch (const std::exception&) {
+    add_error("Invalid float literal '" + cur_token_.literal + "'");
+  }
+  return ast::make_expression<ast::FloatLiteral>(value);
 }
 ast::ExprPtr Parser::parse_prefix_expression() {
   auto op = cur_token_.type;
+  // NOTE: upstream never advanced past the operator, so parse_expression
+  //       re-dispatched the same prefix token and recursed until the stack
+  //       overflowed ("-T" segfaulted).
+  next_token();
   auto right_expr = parse_expression(Precedence::Prefix);
   return ast::make_expression<ast::PrefixExpression>(op, std::move(right_expr));
 }
@@ -125,9 +155,11 @@ Parser::parse_list_of_expressions(TokenTypes end_token) {
   }
 
   if (!expect_peek_and_advance(end_token)) {
-    // may prefer a throw
-    throw std::runtime_error("Unexpected Token at end of list " +
-                             to_string(cur_token_));
+    // NOTE: upstream threw a std::runtime_error here, bypassing the ParserError
+    //       channel that every other failure uses. expect_peek_and_advance has
+    //       already recorded the details.
+    add_error("Unexpected token at end of list " + to_string(peek_token_));
+    throw ParserError(errors_);
   }
   return expressions;
 }
@@ -152,6 +184,11 @@ Parser::Parser(Lexer lexer)
           {TokenTypes::String, &Parser::parse_string_literal},
           {TokenTypes::Minus, &Parser::parse_prefix_expression},
           {TokenTypes::Bang, &Parser::parse_prefix_expression},
+          // NOTE: upstream defined parse_grouped_expression but never
+          //       registered it, so no parenthesized expression could parse.
+          //       LeftParen is legitimately in both maps: prefix position is
+          //       grouping, infix position is a function call.
+          {TokenTypes::LeftParen, &Parser::parse_grouped_expression},
           {TokenTypes::ArrayLeftBracket, &Parser::parse_array_expression},
       }},
       infix_parse_fns_{{
@@ -180,6 +217,15 @@ ast::ExprPtr Parser::parse() {
   // For now i'll assume we're parsing one expression statement at a time
   // and nothing more complicated
   auto expr = parse_expression(Precedence::Lowest);
+
+  // NOTE: upstream returned whatever it had parsed without checking that the
+  //       input was exhausted, so trailing garbage was silently dropped
+  //       ("T @ x" parsed as "T"). Require that we stopped at end-of-input.
+  if (!cur_token_is(TokenTypes::EndofFile) &&
+      !peek_token_is(TokenTypes::EndofFile)) {
+    add_error("Unexpected token after end of expression: " +
+              to_string(peek_token_));
+  }
 
   if (has_errors()) {
     throw ParserError(errors_);
