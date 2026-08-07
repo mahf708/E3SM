@@ -1,5 +1,8 @@
 #include "share/io/eamxx_diag_names.hpp"
 
+#include <edp/lexer.hpp>
+#include <edp/parser.hpp>
+
 #include <map>
 #include <regex>
 #include <utility>
@@ -172,6 +175,64 @@ std::optional<std::string> legacy_to_dsl (const std::string& name)
   }
 
   return std::nullopt;
+}
+
+// ---------------------------------------------------------------------------
+// Resolution
+// ---------------------------------------------------------------------------
+
+DiagSpec resolve (const std::string& request,
+                  const std::string& grid_name,
+                  const std::function<bool(const std::string&)>& is_registered)
+{
+  // Shorthand forms rewrite to another expression rather than resolving
+  // directly, so this loops. The bound is a safety net against a rewrite rule
+  // that cycles; the rules here nest at most two deep (a legacy backtend name
+  // becomes X.tend(), which becomes the subtraction over dt).
+  constexpr int max_rewrites = 8;
+
+  std::string expr_str = request;
+
+  for (int i=0; i<max_rewrites; ++i) {
+    edp::parser::Parser parser {edp::Lexer{expr_str}};
+    const auto expr = parser.parse();
+
+    if (const auto name = bare_name(*expr)) {
+      // A single name: a diagnostic in its own right, a canonical named
+      // diagnostic, or an old composite name -- in that order, so a genuinely
+      // registered name always wins.
+      if (is_registered(*name)) {
+        DiagSpec spec;
+        spec.diag_name = *name;
+        spec.set("grid_name",grid_name);
+        return spec;
+      }
+      if (auto named = named_diagnostic(*name,grid_name)) {
+        return *named;
+      }
+      if (auto legacy = legacy_to_dsl(*name)) {
+        expr_str = *legacy;
+        continue;
+      }
+      throw DslError(
+          "Unknown field or diagnostic: '" + *name + "'.\n" +
+          (expr_str==request ? std::string("")
+                             : " - requested as: " + request + "\n") +
+          " If this is meant to be a diagnostic, check the spelling against the\n"
+          " registered diagnostics; if it is meant to be a model field, check\n"
+          " that it is present on grid '" + grid_name + "'.\n");
+    }
+
+    auto spec = spec_from_ast(*expr,grid_name);
+    if (spec.rewrite_to.empty()) {
+      return spec;
+    }
+    expr_str = spec.rewrite_to;
+  }
+
+  throw DslError("Gave up expanding '" + request + "' after " +
+                 std::to_string(max_rewrites) + " rewrites.\n"
+                 " - last form: " + expr_str + "\n");
 }
 
 } // namespace diag_dsl

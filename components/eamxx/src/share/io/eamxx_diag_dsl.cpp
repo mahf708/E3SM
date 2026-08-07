@@ -610,6 +610,14 @@ std::string canonical (const Expression& e)
   return to_string(e);
 }
 
+std::optional<std::string> bare_name (const Expression& e)
+{
+  if (const auto* id = node_as<Identifier>(e)) {
+    return id->value;
+  }
+  return std::nullopt;
+}
+
 std::string canonical (const std::string& expr)
 {
   edp::parser::Parser p{edp::Lexer{expr}};

@@ -173,5 +173,99 @@ TEST_CASE("names: every legacy rewrite is itself valid DSL") {
   }
 }
 
+namespace {
+
+// Stand-in for the diagnostic factory: the handful of products that are
+// registered under exactly the name a user requests.
+bool registered (const std::string& n) {
+  return n=="RelativeHumidity" or n=="SeaLevelPressure" or n=="wind_speed" or
+         n=="AerosolOpticalDepth550nm" or n=="Exner";
+}
+
+DiagSpec resolved (const std::string& request) {
+  return resolve(request,"physics",registered);
+}
+
+} // anonymous namespace
+
+TEST_CASE("resolve: bare names try factory, then named table, then legacy") {
+  // A registered product wins, and is built with nothing but the grid.
+  auto r = resolved("RelativeHumidity");
+  REQUIRE(r.diag_name=="RelativeHumidity");
+  REQUIRE(param(r,"grid_name")=="physics");
+
+  // Not registered, but a canonical named diagnostic.
+  REQUIRE(resolved("LiqWaterPath").diag_name=="WaterPath");
+
+  // Neither: falls through to the legacy rewrite.
+  REQUIRE(resolved("T_mid_horiz_avg").diag_name=="HorizAvg");
+
+  // None of the above is an error naming the offender.
+  REQUIRE_THROWS_AS(resolved("no_such_thing"),DslError);
+}
+
+TEST_CASE("resolve: DSL expressions resolve without any rewrite") {
+  REQUIRE(resolved("T_mid.weighted('dp').mean(dim='lev')").diag_name=="VertContract");
+  REQUIRE(resolved("T_mid.isel(lev=-1)").diag_name=="FieldAtLevel");
+  REQUIRE(resolved("qc + qr").diag_name=="BinaryOp");
+  REQUIRE(resolved("T_mid / dt").diag_name=="FieldOverDt");
+}
+
+TEST_CASE("resolve: rewrites chain until they land on something buildable") {
+  // Two hops: the legacy name becomes X.tend(), which is itself shorthand for
+  // the subtraction over dt.
+  auto s = resolved("BlaH_123_atm_backtend");
+  REQUIRE(s.diag_name=="FieldOverDt");
+  // resolve() must follow rewrites to the end; a caller never sees a pending one.
+  REQUIRE(s.rewrite_to.empty());
+
+  // The same by the DSL spelling.
+  REQUIRE(resolved("BlaH_123.tend()").diag_name=="FieldOverDt");
+
+  // A legacy composite whose operand is itself a legacy name: only the outer
+  // operation resolves here, the operand is left named for the IO layer.
+  auto bt = resolved("f_minus_f_prev_over_dt");
+  REQUIRE(bt.diag_name=="FieldOverDt");
+  REQUIRE(param(bt,"field_name")=="f_minus_f_prev");
+  // ...and asking for that operand resolves in turn.
+  REQUIRE(resolved("f_minus_f_prev").diag_name=="BinaryOp");
+}
+
+TEST_CASE("resolve: every name the existing create_diag test uses still works") {
+  // These must all produce a diagnostic.
+  for (const std::string n : {
+        "BlaH_123_at_model_top","BlaH_123_at_model_bot","BlaH_123_at_lev_10",
+        "BlaH_123_at_10mb","BlaH_123_at_10hPa","BlaH_123_at_10Pa",
+        "BlaH_123_at_10m_above_sealevel","BlaH_123_at_10m_above_surface",
+        "BlaH_123_atm_backtend","BlaH_123_prev","BlaH_123_over_dt",
+        "LiqWaterPath","IceWaterPath","RainWaterPath","RimeWaterPath",
+        "VapWaterPath","LiqNumberPath","IceNumberPath","RainNumberPath",
+        "MeridionalVapFlux","ZonalVapFlux","PotentialTemperature",
+        "LiqPotentialTemperature","precip_liq_surf_mass_flux",
+        "precip_ice_surf_mass_flux","precip_total_surf_mass_flux",
+        "z_mid","z_int","geopotential_mid","geopotential_int",
+        "height_mid","height_int","dz"}) {
+    INFO("name: " << n);
+    REQUIRE_NOTHROW(resolved(n));
+    REQUIRE_FALSE(resolved(n).diag_name.empty());
+  }
+
+  // And these must all fail, as they do today.
+  for (const std::string n : {
+        "BlaH_123_at_modeltop","BlaH_123_at_400KPa",
+        "BlaH_123_at_1km_above_sealevel","BlaH_123_at_1m_above_the_surface",
+        "BlaH_123_at_10.5m"}) {
+    INFO("name: " << n);
+    REQUIRE_THROWS(resolved(n));
+  }
+}
+
+TEST_CASE("resolve: unparseable requests surface as errors, not wrong diags") {
+  // The parser reports these; resolve must not swallow them.
+  REQUIRE_THROWS(resolved("T_mid + @foo"));
+  REQUIRE_THROWS(resolved("T_mid.mean(dim='lev"));
+  REQUIRE_THROWS(resolved("a = b = c"));
+}
+
 } // namespace diag_dsl
 } // namespace scream

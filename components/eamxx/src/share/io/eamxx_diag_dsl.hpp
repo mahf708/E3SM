@@ -3,6 +3,7 @@
 
 #include <edp/ast.hpp>
 
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -68,6 +69,12 @@ std::string canonical (const edp::ast::Expression& e);
 
 // Convenience: parse and canonicalize in one step. Throws edp ParserError.
 std::string canonical (const std::string& expr);
+
+// If the expression is a single bare name, return it. Such a name is not
+// translated here: resolving it needs the diagnostic factory and the
+// named-diagnostic table (see eamxx_diag_names.hpp), which this layer has no
+// business knowing about.
+std::optional<std::string> bare_name (const edp::ast::Expression& e);
 
 // Translate the outermost operation of an expression into a DiagSpec.
 //

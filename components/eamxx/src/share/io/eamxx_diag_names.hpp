@@ -3,6 +3,7 @@
 
 #include "share/io/eamxx_diag_dsl.hpp"
 
+#include <functional>
 #include <optional>
 #include <string>
 
@@ -45,6 +46,21 @@ std::optional<DiagSpec> named_diagnostic (const std::string& name,
 // when the IO layer asks for it. That recursion is what preserves the existing
 // netCDF variable names for intermediate quantities.
 std::optional<std::string> legacy_to_dsl (const std::string& name);
+
+// Resolve a requested diagnostic string all the way to a DiagSpec: parse it,
+// translate the outermost operation, and follow any rewrites (shorthand such
+// as `X.tend()`, and every legacy name) until it lands on something buildable.
+//
+// `is_registered` answers whether a bare name is a registered diagnostic
+// product. It is a callback so that this whole resolution stays free of the
+// diagnostic factory, and therefore testable without a model build -- the
+// factory lookup is the only thing here that needs EAMxx.
+//
+// Throws DslError with a user-facing message if the string cannot be resolved,
+// and edp::parser::ParserError if it does not parse.
+DiagSpec resolve (const std::string& request,
+                  const std::string& grid_name,
+                  const std::function<bool(const std::string&)>& is_registered);
 
 } // namespace diag_dsl
 } // namespace scream
