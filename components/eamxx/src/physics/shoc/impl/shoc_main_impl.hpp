@@ -90,9 +90,7 @@ void Functions<S,D>::shoc_main_internal(
   const Scalar&                Ckm,
   const bool&                  shoc_1p5tke,
   const bool&                  do_3d_turb,
-//[shanyp 20260402
-  const bool&                  shoc_nocond,
-//shanyp 20260402]
+  const bool&                  shoc_enable_condensation,
   const bool&                  extra_diags,
   // Input Variables
   const Scalar&                dx,
@@ -279,10 +277,7 @@ void Functions<S,D>::shoc_main_internal(
     // Call the PDF to close on SGS cloud and turbulence
     team.team_barrier();
     shoc_assumed_pdf(team,nlev,nlevi,thetal,qw,w_field,thl_sec,qw_sec, // Input
-//[shanyp 20260402
-// 		    dtime,extra_diags,                                //
- 		    dtime,extra_diags,shoc_nocond,                    // 
-//shanyp 20260402]
+ 		    dtime,extra_diags,shoc_enable_condensation,                    // 
                      wthl_sec,w_sec,wqw_sec,qwthl_sec,w3,pres,         // Input
                      zt_grid, zi_grid,                                 // Input
                      workspace,                                        // Workspace
@@ -368,9 +363,7 @@ void Functions<S,D>::shoc_main_internal(
   const Scalar&                Ckm,
   const bool&                  shoc_1p5tke,
   const bool&                  do_3d_turb,
-//[shanyp 20260402
-  const bool&                  shoc_nocond,
-//shanyp 20260402]
+  const bool&                  shoc_enable_condensation,
   const bool&                  extra_diags,
   // Input Variables
   const view_1d<const Scalar>& dx,
@@ -559,10 +552,7 @@ void Functions<S,D>::shoc_main_internal(
 
     // Call the PDF to close on SGS cloud and turbulence
     shoc_assumed_pdf_disp(shcol,nlev,nlevi,thetal,qw,w_field,thl_sec,qw_sec, // Input
-//[shanyp 20260403
-//	  	    dtime,extra_diags,                                // Runtime options
-                    dtime,extra_diags,shoc_nocond,                    // Runtime options
-//shanyp 20260403]
+                    dtime,extra_diags,shoc_enable_condensation,                    // Runtime options
 		    wthl_sec,w_sec,wqw_sec,qwthl_sec,w3,pres,         // Input
                           zt_grid, zi_grid,                                 // Input
                           workspace_mgr,                                    // Workspace mgr
@@ -656,9 +646,7 @@ Int Functions<S,D>::shoc_main(
   const Scalar Ckh           = shoc_runtime.Ckh;
   const Scalar Ckm           = shoc_runtime.Ckm;
   const bool   shoc_1p5tke   = shoc_runtime.shoc_1p5tke;
-//[shanyp 20260402
-  const bool   shoc_nocond = shoc_runtime.shoc_nocond;
-//shanyp 20260402]
+  const bool   shoc_enable_condensation = shoc_runtime.shoc_enable_condensation;
   const bool   extra_diags   = shoc_runtime.extra_diags;
   const bool   do_3d_turb    = shoc_runtime.do_3d_turb;
 
@@ -739,10 +727,7 @@ Int Functions<S,D>::shoc_main(
 	               lambda_low, lambda_high, lambda_slope, lambda_thresh,  // Runtime options
                        thl2tune, qw2tune, qwthl2tune, w2tune, length_fac,     // Runtime options
                        c_diag_3rd_mom, Ckh, Ckm, shoc_1p5tke,                 // Runtime options
-//[shanyp 20260402
-//                     do_3d_turb, extra_diags,                               // Runtime options
-                       do_3d_turb, shoc_nocond, extra_diags,                  // Runtime options
-//shanyp 20260402]
+                       do_3d_turb, shoc_enable_condensation, extra_diags,     // Runtime options
                        dx_s, dy_s, zt_grid_s, zi_grid_s,                      // Input
                        pres_s, presi_s, pdel_s, thv_s, w_field_s,             // Input
                        wthl_sfc_s, wqw_sfc_s, uw_sfc_s, vw_sfc_s,             // Input
@@ -771,10 +756,7 @@ Int Functions<S,D>::shoc_main(
   shoc_main_internal(shcol, nlev, nlevi, npbl, nadv, num_qtracers, dtime,
     lambda_low, lambda_high, lambda_slope, lambda_thresh,  // Runtime options
     thl2tune, qw2tune, qwthl2tune, w2tune, length_fac,     // Runtime options
-//[shanyp 20260402
-//  c_diag_3rd_mom, Ckh, Ckm, shoc_1p5tke, do_3d_turb, extra_diags,    // Runtime options
-    c_diag_3rd_mom, Ckh, Ckm, shoc_1p5tke, do_3d_turb, shoc_nocond, extra_diags,    // Runtime options
-//shanyp 20260402]
+    c_diag_3rd_mom, Ckh, Ckm, shoc_1p5tke, do_3d_turb, shoc_enable_condensation, extra_diags,    // Runtime options
     shoc_input.dx, shoc_input.dy, shoc_input.zt_grid, shoc_input.zi_grid, // Input
     shoc_input.pres, shoc_input.presi, shoc_input.pdel, shoc_input.thv, shoc_input.w_field, // Input
     shoc_input.wthl_sfc, shoc_input.wqw_sfc, shoc_input.uw_sfc, shoc_input.vw_sfc, // Input
