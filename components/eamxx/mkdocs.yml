@@ -8,6 +8,7 @@ nav:
     - 'Model Configuration': 'user/model_configuration.md'
     - 'Nudging': 'user/nudging.md'
     - 'Extra radiation calls': 'user/clean_clear_sky.md'
+    - 'Prognostic supersaturation': 'user/prognostic_supersaturation.md'
     - 'COSP': 'user/cosp.md'
     - 'Regionally Refined EAMxx': 'user/rrm_eamxx.md'
     - 'Doubly Periodic EAMxx': 'user/dp_eamxx.md'
@@ -61,6 +62,7 @@ nav:
         - 'Liquid Relaxation Timescale': 'technical/physics/p3/liq_relaxation_timescale.md'
         - 'Rime Density': 'technical/physics/p3/rime_density.md'
         - 'Cloud-Liquid Immersion Freezing': 'technical/physics/p3/cldliq_immersion_freezing.md'
+        - 'Prognostic Supersaturation': 'technical/physics/p3/prognostic_supersaturation.md'
     - 'AeroCom cloud top': 'technical/aerocom_cldtop.md'
 
 edit_uri: ""

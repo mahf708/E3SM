@@ -133,8 +133,9 @@ template <typename ScalarT, typename DeviceT> struct Functions {
     bool use_hetfrz_classnuc                    = false;
     bool use_separate_ice_liq_frac              = false;
     bool extra_p3_diags                         = false;
-    bool p3_super_sat;
-    bool p3_WBFoff;
+    bool p3_super_sat                           = false;
+    bool p3_WBFoff                              = false;
+
     void
     load_runtime_options_from_file(ekat::ParameterList &params)
     {
@@ -176,8 +177,8 @@ template <typename ScalarT, typename DeviceT> struct Functions {
       use_separate_ice_liq_frac =
           params.get<bool>("use_separate_ice_liq_frac", use_separate_ice_liq_frac);
       extra_p3_diags = params.get<bool>("extra_p3_diags", extra_p3_diags);
-      p3_super_sat = params.get<bool>("p3_super_sat",p3_super_sat);
-      p3_WBFoff = params.get<bool>("p3_WBFoff",p3_WBFoff);
+      p3_super_sat   = params.get<bool>("p3_super_sat", p3_super_sat);
+      p3_WBFoff      = params.get<bool>("p3_WBFoff", p3_WBFoff);
     }
   };
 
@@ -221,8 +222,6 @@ template <typename ScalarT, typename DeviceT> struct Functions {
     view_2d<const Pack> cld_frac_l;
     // Rain cloud fraction
     view_2d<const Pack> cld_frac_r;
-    view_2d<const Pack> omega_mp;
-    view_2d<const Pack> tke_mp;
     // Pressure [Pa]
     view_2d<const Pack> pres;
     // Vertical grid spacing [m]
@@ -241,6 +240,15 @@ template <typename ScalarT, typename DeviceT> struct Functions {
     view_2d<const Pack> hetfrz_contact_nucleation_tend;
     // Heterogeneous freezing by deposition nucleation [cm^-3 s^-1]
     view_2d<const Pack> hetfrz_deposition_nucleation_tend;
+    // NOTE: keep new members at the end of this struct. It is aggregate
+    //       initialized (see p3_main_host in p3_test_data.cpp), so inserting a
+    //       member in the middle silently shifts every following initializer.
+    // Vertical pressure velocity, used by the prognostic supersaturation
+    // treatment to estimate the grid-scale updraft speed [Pa/s]
+    view_2d<const Pack> omega_mp;
+    // Turbulent kinetic energy, used by the prognostic supersaturation
+    // treatment to estimate the sub-grid updraft speed [m2/s2]
+    view_2d<const Pack> tke_mp;
   };
 
   // This struct stores diagnostic outputs computed by P3.
@@ -875,7 +883,9 @@ template <typename ScalarT, typename DeviceT> struct Functions {
                                          const Pack &qv_sat_i, const Pack &epsi, const Pack &abi,
                                          const Pack &qv, const Scalar &inv_dt, Pack &qidep,
                                          Pack &qi2qv_sublim_tend, Pack &ni_sublim_tend,
-                                         Pack &qiberg, const P3Runtime &runtime_options, const Mask &context = Mask(true));
+                                         Pack &qiberg, const P3Runtime &runtime_options,
+                                         const Mask &context = Mask(true));
+
   KOKKOS_FUNCTION
   static void ice_relaxation_timescale(const Pack &rho, const Pack &temp, const Pack &rhofaci,
                                        const Pack &table_val_qi2qr_melting,
@@ -891,6 +901,18 @@ template <typename ScalarT, typename DeviceT> struct Functions {
                                             const Pack &lamr, const Pack &cdistr,
                                             const Pack &cdist, const Pack &qr_incld,
                                             const Pack &qc_incld, Pack &epsr, Pack &epsc,
+                                            const Mask &context = Mask(true));
+
+  // Prognostic supersaturation condensation/evaporation of cloud liquid.
+  // Returns the updraft speed used to drive the supersaturation [m/s] and the
+  // step-averaged in-cloud condensation (>0) / evaporation (<0) rate [kg/kg/s].
+  KOKKOS_FUNCTION
+  static void prognostic_supersat_cond_evap(const Pack &qc_incld, const Pack &qv,
+                                            const Pack &qv_sat_l, const Pack &dqsdt,
+                                            const Pack &ab, const Pack &epsc, const Pack &rho,
+                                            const Pack &omega_mp, const Pack &tke_mp,
+                                            const Scalar &dt, const Scalar &inv_dt,
+                                            Pack &w_updraft, Pack &cond_evap_tend,
                                             const Mask &context = Mask(true));
 
   // ice nucleation
@@ -1043,9 +1065,8 @@ template <typename ScalarT, typename DeviceT> struct Functions {
       const uview_1d<const Pack> &ni_activated, const uview_1d<const Pack> &inv_qc_relvar,
       const uview_1d<const Pack> &cld_frac_i, const uview_1d<const Pack> &cld_frac_l,
       const uview_1d<const Pack> &cld_frac_r, const uview_1d<const Pack> &qv_prev,
-      const uview_1d<const Pack> &t_prev, 
-      const uview_1d<const Pack>& oomega_mp, 
-      const uview_1d<const Pack>& otke_mp,
+      const uview_1d<const Pack> &t_prev, const uview_1d<const Pack> &omega_mp,
+      const uview_1d<const Pack> &tke_mp,
       const uview_1d<Pack> &T_atm, const uview_1d<Pack> &rho,
       const uview_1d<Pack> &inv_rho, const uview_1d<Pack> &qv_sat_l,
       const uview_1d<Pack> &qv_sat_i, const uview_1d<Pack> &qv_supersat_i,
@@ -1089,7 +1110,9 @@ template <typename ScalarT, typename DeviceT> struct Functions {
       const uview_2d<const Pack> &ni_activated, const uview_2d<const Pack> &inv_qc_relvar,
       const uview_2d<const Pack> &cld_frac_i, const uview_2d<const Pack> &cld_frac_l,
       const uview_2d<const Pack> &cld_frac_r, const uview_2d<const Pack> &qv_prev,
-      const uview_2d<const Pack> &t_prev, const uview_2d<const Pack> &oomega_mp, const uview_2d<const Pack> &otke_mp, const uview_2d<Pack> &T_atm, const uview_2d<Pack> &rho,
+      const uview_2d<const Pack> &t_prev, const uview_2d<const Pack> &omega_mp,
+      const uview_2d<const Pack> &tke_mp,
+      const uview_2d<Pack> &T_atm, const uview_2d<Pack> &rho,
       const uview_2d<Pack> &inv_rho, const uview_2d<Pack> &qv_sat_l,
       const uview_2d<Pack> &qv_sat_i, const uview_2d<Pack> &qv_supersat_i,
       const uview_2d<Pack> &rhofacr, const uview_2d<Pack> &rhofaci, const uview_2d<Pack> &acn,
@@ -1276,6 +1299,7 @@ constexpr ScalarT Functions<ScalarT, DeviceT>::P3C::lookup_table_1a_dum1_c;
 #include "p3_ni_conservation_impl.hpp"
 #include "p3_nr_conservation_impl.hpp"
 #include "p3_prevent_liq_supersaturation_impl.hpp"
+#include "p3_prognostic_supersat_cond_evap_impl.hpp"
 #include "p3_rain_imm_freezing_impl.hpp"
 #include "p3_rain_sed_impl.hpp"
 #include "p3_rain_self_collection_impl.hpp"

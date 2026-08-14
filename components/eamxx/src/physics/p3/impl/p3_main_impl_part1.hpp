@@ -83,7 +83,13 @@ void Functions<S,D>
   const Scalar spa_ccn_to_nc_factor = runtime_options.spa_ccn_to_nc_factor;
   const Scalar spa_ccn_to_nc_exponent = runtime_options.spa_ccn_to_nc_exponent;
   const bool p3_super_sat = runtime_options.p3_super_sat;
-  Pack oldnc(0),deltaqc(0);
+
+  // Newly activated droplets are assumed to be spheres of radius activation_radius,
+  // so each one removes activated_droplet_mass from the vapor field.
+  constexpr Scalar activation_radius     = 1.0e-6; // [m]
+  constexpr Scalar activated_droplet_mass =
+    4 * C::Pi * C::THIRD * rho_h2o * activation_radius * activation_radius * activation_radius;
+
   nucleationPossible = false;
   hydrometeorsPresent = false;
   team.team_barrier();
@@ -140,20 +146,17 @@ void Functions<S,D>
         // where alpha and beta are the factor and exponent, respectively.
         // This functional form accounts for "activation" of CCN into Nc
         // and it can be made sublinear (e.g., 2000 and 0.55).
-        // First, scale by cld_frac_l to account for subgrid frac (if any)
-//        auto nccn_scaled = nccn_prescribed(k) / inv_cld_frac_l(k);
-        // Second, apply the exponent
-//        nccn_scaled = pow(nccn_scaled, spa_ccn_to_nc_exponent);
-        // Third, apply the factor, and retain the max
-//        nc(k).set(not_drymass,
-//                  max(nc(k), spa_ccn_to_nc_factor * nccn_scaled));
-      if(p3_super_sat) {
-      	oldnc=nc(k);  // With prognostic supersaturation, do nothing here.
-      } else {
-        auto nccn_scaled = nccn_prescribed(k) / inv_cld_frac_l(k);
-        nccn_scaled = pow(nccn_scaled, spa_ccn_to_nc_exponent);
-        nc(k).set(not_drymass,max(nc(k), spa_ccn_to_nc_factor * nccn_scaled));
-      }
+        // With the prognostic supersaturation treatment, activation is instead
+        // applied below, where it is tied to the local supersaturation.
+        if (!p3_super_sat) {
+          // First, scale by cld_frac_l to account for subgrid frac (if any)
+          auto nccn_scaled = nccn_prescribed(k) / inv_cld_frac_l(k);
+          // Second, apply the exponent
+          nccn_scaled = pow(nccn_scaled, spa_ccn_to_nc_exponent);
+          // Third, apply the factor, and retain the max
+          nc(k).set(not_drymass,
+                    max(nc(k), spa_ccn_to_nc_factor * nccn_scaled));
+        }
       } else if(predictNc) {
         nc(k).set(not_drymass, max(nc(k) + nc_nuceat_tend(k) * dt, 0.0));
       } else {
@@ -162,31 +165,22 @@ void Functions<S,D>
       }
     }
 
-    if(p3_super_sat) {
-      auto nccn_scaled = ekat::pow(nccn_prescribed(k) / inv_cld_frac_l(k),spa_ccn_to_nc_exponent);
-//    auto actmask = shocql_out(k) > qc(k); // lane condition mask
-      auto actmask = qv(k) > qv_sat_l(k); // use gridscale qv
+    // Prognostic supersaturation: rather than activating CCN wherever cloud
+    // liquid already exists, activate wherever the grid-scale vapor exceeds
+    // liquid saturation, and move the mass of the newly activated droplets from
+    // vapor to cloud liquid.
+    if (p3_super_sat && do_prescribed_CCN) {
+      const auto actmask = (qv(k) > qv_sat_l(k)) && range_mask;
       if (actmask.any()) {
-       auto oldnc = nc(k);
-       auto newnc = ekat::max(nc(k), spa_ccn_to_nc_factor * nccn_scaled);
-       nc(k).set(actmask, newnc);
-       deltaqc.set(actmask, ekat::max(nc(k) - oldnc, 0.0) * 4./3.*3.1415*1.e-15);
-       qc(k).set(actmask, qc(k) + deltaqc);
-       qv(k).set(actmask, qv(k) - deltaqc);
-       th_atm(k).set(actmask, th_atm(k) + exner(k) * latvap * inv_cp * deltaqc);
-    // auto ql = shocql_out(k);
-    // for (int s = 0; s < Spack::n; ++s) {
-    //     const Int lev = k * Spack::n + s;
-    //     if (lev >= nk) continue;
-    //     if (condmask[s] && ql[s] != 0.0) {
-    //         printf("col %d lev %d ql = %e\n qc = %e\n deltaqc = %e\n",
-    //                team.league_rank(),
-    //                lev,
-    //                ql[s],
-    //                qc(k)[s],
-    //                deltaqc[s]);
-    //     }
-    // }
+        const auto nccn_scaled = pow(nccn_prescribed(k) / inv_cld_frac_l(k),
+                                     spa_ccn_to_nc_exponent);
+        const auto nc_old = nc(k);
+        nc(k).set(actmask, max(nc(k), spa_ccn_to_nc_factor * nccn_scaled));
+
+        const auto deltaqc = max(nc(k) - nc_old, 0) * activated_droplet_mass;
+        qc(k).set(actmask, qc(k) + deltaqc);
+        qv(k).set(actmask, qv(k) - deltaqc);
+        th_atm(k).set(actmask, th_atm(k) + inv_exner(k) * latvap * inv_cp * deltaqc);
       }
     }
 

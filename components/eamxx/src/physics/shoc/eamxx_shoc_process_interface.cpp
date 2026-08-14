@@ -285,7 +285,7 @@ void SHOCMacrophysics::initialize_impl (const RunType run_type)
   runtime_options.Ckm           = m_params.get<double>("coeff_km");
   runtime_options.shoc_1p5tke   = m_params.get<bool>("shoc_1p5tke");
   runtime_options.do_3d_turb    = m_params.get<bool>("do_3d_turbulence_shoc", false);
-  runtime_options.shoc_enable_condensation = m_params.get<bool>("shoc_enable_condensation");
+  runtime_options.shoc_enable_condensation = m_params.get<bool>("shoc_enable_condensation", true);
   runtime_options.extra_diags   = m_params.get<bool>("extra_shoc_diags");
   // Initialize all of the structures that are passed to shoc_main in run_impl.
   // Note: Some variables in the structures are not stored in the field manager.  For these

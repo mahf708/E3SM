@@ -1105,6 +1105,14 @@ void p3_main_part2_host(
     qr2qi_immers_freeze_d (temp_d[current_index++]),
     qi2qr_melt_d        (temp_d[current_index++]);
 
+  // The prognostic supersaturation treatment is off for this bridge (the
+  // default-constructed P3Runtime below has p3_super_sat=false), so omega and
+  // tke are never read. Pass zero-filled views rather than adding two unused
+  // arrays to P3MainPart2Data.
+  view_1d omega_mp_d("omega_mp", nk_pack), tke_mp_d("tke_mp", nk_pack);
+  Kokkos::deep_copy(omega_mp_d, 0);
+  Kokkos::deep_copy(tke_mp_d, 0);
+
   // Call core function from kernel
   auto tables = P3F::p3_init();
   const auto dnu         = tables.dnu_table_vals;
@@ -1121,7 +1129,8 @@ void p3_main_part2_host(
       dnu, ice_table_vals, collect_table_vals, revap_table_vals,
       pres_d, dpres_d, dz_d, nc_nuceat_tend_d, inv_exner_d, exner_d, inv_cld_frac_l_d,
       inv_cld_frac_i_d, inv_cld_frac_r_d, ni_activated_d, inv_qc_relvar_d, cld_frac_i_d, cld_frac_l_d, cld_frac_r_d,
-      qv_prev_d, t_prev_d, t_d, rho_d, inv_rho_d, qv_sat_l_d, qv_sat_i_d, qv_supersat_i_d, rhofacr_d, rhofaci_d, acn_d,
+      qv_prev_d, t_prev_d, omega_mp_d, tke_mp_d,
+      t_d, rho_d, inv_rho_d, qv_sat_l_d, qv_sat_i_d, qv_supersat_i_d, rhofacr_d, rhofaci_d, acn_d,
       qv_d, th_atm_d, qc_d, nc_d, qr_d, nr_d, qi_d, ni_d, qm_d, bm_d,
       qc_incld_d, qr_incld_d, qi_incld_d,
       qm_incld_d, nc_incld_d, nr_incld_d, ni_incld_d, bm_incld_d,
@@ -1452,6 +1461,15 @@ Int p3_main_host(
   P3F::P3DiagnosticInputs diag_inputs{nc_nuceat_tend_d, nccn_prescribed_d, ni_activated_d, inv_qc_relvar_d, cld_frac_i_d,
                                       cld_frac_l_d, cld_frac_r_d, pres_d, dz_d, dpres_d,
                                       inv_exner_d, qv_prev_d, t_prev_d, hetfrz_immersion_nucleation_tend_d, hetfrz_contact_nucleation_tend_d, hetfrz_deposition_nucleation_tend_d};
+  // The prognostic supersaturation treatment is off here (runtime_options below
+  // leaves p3_super_sat=false), so omega and tke are never read. Still give them
+  // allocated views so that subviews of them are always valid.
+  view_2d omega_mp_d("omega_mp", nj, ekat::npack<Pack>(nk));
+  view_2d tke_mp_d("tke_mp", nj, ekat::npack<Pack>(nk));
+  Kokkos::deep_copy(omega_mp_d, 0);
+  Kokkos::deep_copy(tke_mp_d, 0);
+  diag_inputs.omega_mp = omega_mp_d;
+  diag_inputs.tke_mp   = tke_mp_d;
   P3F::P3DiagnosticOutputs diag_outputs{qv2qi_depos_tend_d, precip_liq_surf_d,
                                         precip_ice_surf_d, diag_eff_radius_qc_d, diag_eff_radius_qi_d, diag_eff_radius_qr_d,
                                         rho_qi_d,precip_liq_flux_d, precip_ice_flux_d, precip_total_tend_d, nevapr_d, diag_equiv_reflectivity_d};

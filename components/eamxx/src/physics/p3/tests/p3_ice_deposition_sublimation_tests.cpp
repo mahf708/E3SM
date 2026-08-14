@@ -30,20 +30,70 @@ struct UnitWrap::UnitTest<D>::TestIceDepositionSublimation : public UnitWrap::Un
     //init output vars
     Pack qv2qi_vapdep_tend, qi2qv_sublim_tend, ni_sublim_tend, qc2qi_berg_tend;
 
+    //default runtime options: WBF (Bergeron) is active
+    typename Functions::P3Runtime runtime_options{};
+
     //CHECK THAT UNREASONABLY LARGE VAPOR DEPOSITION DOESN'T LEAVE QV SUBSATURATED WRT QI
     Pack epsi_tmp=1e6; //make 1/(sat removal timescale) huge so vapdep rate removes all supersat in 1 dt.
     Functions::ice_deposition_sublimation(qi_incld, ni_incld, T_atm, qv_sat_l, qv_sat_i,
-	        epsi_tmp, abi, qv, inv_dt, qv2qi_vapdep_tend, qi2qv_sublim_tend, ni_sublim_tend, qc2qi_berg_tend);
+                epsi_tmp, abi, qv, inv_dt, qv2qi_vapdep_tend, qi2qv_sublim_tend, ni_sublim_tend,
+                qc2qi_berg_tend, runtime_options);
     REQUIRE( (qv2qi_vapdep_tend[0]==0 || std::abs( qv2qi_vapdep_tend[0] - (qv[0] - qv_sat_i[0])*inv_dt) <1e-8) );
 
     //CHECK THAT HUGE SUBLIMATION DOESN'T LEAVE QV SUPERSATURATED WRT QI
     Pack qv_sat_i_tmp=1e-2;
     Functions::ice_deposition_sublimation(qi_incld, ni_incld, T_atm, qv_sat_l, qv_sat_i_tmp,
-	        epsi_tmp, abi, qv, inv_dt, qv2qi_vapdep_tend, qi2qv_sublim_tend, ni_sublim_tend, qc2qi_berg_tend);
+                epsi_tmp, abi, qv, inv_dt, qv2qi_vapdep_tend, qi2qv_sublim_tend, ni_sublim_tend,
+                qc2qi_berg_tend, runtime_options);
     REQUIRE( (qi2qv_sublim_tend[0]==0 || std::abs( qi2qv_sublim_tend[0] - (qv_sat_i_tmp[0] - qv[0])*inv_dt) <1e-8) );
 
     //CHECK BEHAVIOR AS DT->0?
 
+  }
+
+  void run_wbf_switch() {
+    //Verify that p3_WBFoff switches off the Bergeron (WBF) process, and ONLY
+    //the Bergeron process. This is the switch that is meant to be paired with
+    //the prognostic supersaturation treatment, which handles the transfer of
+    //liquid to ice explicitly and would otherwise double count it.
+
+    //Pick a sub-freezing state with liquid supersaturation w.r.t. ice, so that
+    //the Bergeron tendency is non-zero when it is enabled.
+    Pack qi_incld = 5.1000E-03;
+    Pack ni_incld = 4.7790E+05;
+    Pack T_atm    = 2.7292E+02;
+    Pack qv_sat_l = 4.5879E-03;
+    Pack qv_sat_i = 4.5766E-03;
+    Pack epsi     = 6.2108E-02;
+    Pack abi      = 2.0649E+00;
+    Pack qv       = 5.0000E-03;
+    Scalar inv_dt = 1.666667e-02;
+
+    typename Functions::P3Runtime runtime_wbf_on{};
+    typename Functions::P3Runtime runtime_wbf_off{};
+    runtime_wbf_off.p3_WBFoff = true;
+
+    Pack vapdep_on(0), sublim_on(0), ni_sublim_on(0), berg_on(0);
+    Functions::ice_deposition_sublimation(qi_incld, ni_incld, T_atm, qv_sat_l, qv_sat_i, epsi,
+                                          abi, qv, inv_dt, vapdep_on, sublim_on, ni_sublim_on,
+                                          berg_on, runtime_wbf_on);
+
+    Pack vapdep_off(0), sublim_off(0), ni_sublim_off(0), berg_off(0);
+    Functions::ice_deposition_sublimation(qi_incld, ni_incld, T_atm, qv_sat_l, qv_sat_i, epsi,
+                                          abi, qv, inv_dt, vapdep_off, sublim_off, ni_sublim_off,
+                                          berg_off, runtime_wbf_off);
+
+    //With WBF on, this state must actually produce a Bergeron tendency,
+    //otherwise the test below would pass trivially.
+    REQUIRE(berg_on[0] > 0);
+
+    //Switching WBF off must zero the Bergeron tendency...
+    REQUIRE(berg_off[0] == 0);
+
+    //...and must leave deposition/sublimation completely untouched.
+    REQUIRE(vapdep_off[0] == vapdep_on[0]);
+    REQUIRE(sublim_off[0] == sublim_on[0]);
+    REQUIRE(ni_sublim_off[0] == ni_sublim_on[0]);
   }
 
   void run_bfb()
@@ -88,6 +138,7 @@ struct UnitWrap::UnitTest<D>::TestIceDepositionSublimation : public UnitWrap::Un
     }
 
     // Get data from cxx. Run ice_deposition_sublimation from a kernel and copy results back to host
+    const typename Functions::P3Runtime runtime_options{};
     Kokkos::parallel_for(num_test_itrs, KOKKOS_LAMBDA(const Int& i) {
       const Int offset = i * Pack::n;
 
@@ -109,7 +160,7 @@ struct UnitWrap::UnitTest<D>::TestIceDepositionSublimation : public UnitWrap::Un
       // Init outputs
       Pack ni_sublim_tend(0), qi2qv_sublim_tend(0), qc2qi_berg_tend(0), qv2qi_vapdep_tend(0);
 
-      Functions::ice_deposition_sublimation(qi_incld, ni_incld, T_atm, qv_sat_l, qv_sat_i, epsi, abi, qv, inv_dt, qv2qi_vapdep_tend, qi2qv_sublim_tend, ni_sublim_tend, qc2qi_berg_tend);
+      Functions::ice_deposition_sublimation(qi_incld, ni_incld, T_atm, qv_sat_l, qv_sat_i, epsi, abi, qv, inv_dt, qv2qi_vapdep_tend, qi2qv_sublim_tend, ni_sublim_tend, qc2qi_berg_tend, runtime_options);
 
       // Copy spacks back into cxx_device view
       for (Int s = 0, vs = offset; s < Pack::n; ++s, ++vs) {
@@ -169,6 +220,14 @@ TEST_CASE("ice_deposition_sublimation_property", "[p3]")
 
   T t;
   t.run_property();
+}
+
+TEST_CASE("ice_deposition_sublimation_wbf_switch", "[p3]")
+{
+  using T = scream::p3::unit_test::UnitWrap::UnitTest<scream::DefaultDevice>::TestIceDepositionSublimation;
+
+  T t;
+  t.run_wbf_switch();
 }
 
 TEST_CASE("ice_deposition_sublimation_bfb", "[p3]")

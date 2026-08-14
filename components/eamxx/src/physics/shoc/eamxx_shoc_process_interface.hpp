@@ -316,16 +316,17 @@ public:
       Kokkos::parallel_for(Kokkos::TeamVectorRange(team, nlev_packs), [&] (const Int& k) {
         // See comment in SHOCPreprocess::operator() about the necessity of *_copy views
         tke(i,k) = tke_copy(i,k);
-	if ( !runtime_opts.shoc_enable_condensation ) {
+        if (runtime_opts.shoc_enable_condensation) {
+          qc(i,k) = qc_copy(i,k);
+        }
+        else {
           // If SHOC does not do condensation then we need to include the effects of vertical
           //  diffusion on qc.  Thus, do not use the qc_copy variable, which was created for the sole
           //  purpose of NOT including the effects of vertical diffusion.  However, apply a lower bound
           //  limiter to ensure no values went below zero.
           qc(i,k) = ekat::max(0, qc(i,k));
         }
-        else{
-          qc(i,k)  = qc_copy(i,k);
-        }
+
         qv(i,k) = qw(i,k) - qc(i,k);
 
         cldfrac_liq(i,k) = ekat::min(cldfrac_liq(i,k), 1);

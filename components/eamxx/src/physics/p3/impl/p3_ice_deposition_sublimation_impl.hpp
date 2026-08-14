@@ -14,10 +14,16 @@ void Functions<S,D>
   const Pack& qi_incld, const Pack& ni_incld, const Pack& T_atm,   const Pack& qv_sat_l,
   const Pack& qv_sat_i,         const Pack& epsi,        const Pack& abi, const Pack& qv, const Scalar& inv_dt,
   Pack& qv2qi_vapdep_tend, Pack& qi2qv_sublim_tend, Pack& ni_sublim_tend, Pack& qc2qi_berg_tend,
-  const Mask& context)
+  const P3Runtime& runtime_options, const Mask& context)
 {
   constexpr Scalar QSMALL   = C::QSMALL;
   constexpr Scalar T_zerodegc = C::T_zerodegc.value;
+
+  // When the prognostic supersaturation treatment is active, condensation and
+  // evaporation of cloud liquid are computed explicitly from the local
+  // supersaturation. The Bergeron (WBF) sink then double counts the transfer of
+  // liquid to ice, so it can be switched off here.
+  const bool p3_WBFoff = runtime_options.p3_WBFoff;
 
   Pack qi_tend;   //temporary var for mass tend before splitting into sublim or depos
 
@@ -58,7 +64,9 @@ void Functions<S,D>
 
     //BERGERON: NOTE THAT AS FORMULATED, BERG DOESN'T HAVE ANYTHING TO DO WITH QV, SO CAN'T
     //PUSH IT BEYOND SATURATION. THUS, NOT LIMITING WITH INV_DT HERE.
-    qc2qi_berg_tend.set(qi_incld_not_small && T_lt_frz, max(epsi/abi*(qv_sat_l - qv_sat_i), 0));
+    if (!p3_WBFoff) {
+      qc2qi_berg_tend.set(qi_incld_not_small && T_lt_frz, max(epsi/abi*(qv_sat_l - qv_sat_i), 0));
+    }
 
   } //end if at least 1 qi is greater than qmall
 

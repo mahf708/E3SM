@@ -49,7 +49,7 @@ void Functions<S,D>::shoc_assumed_pdf(
   const uview_1d<const Pack>& qw_sec,
   const Scalar&                dtime,
   const bool&                  extra_diags,
-  const bool& shoc_enable_condensation,
+  const bool&                  shoc_enable_condensation,
   const uview_1d<const Pack>& wthl_sec,
   const uview_1d<const Pack>& w_sec,
   const uview_1d<const Pack>& wqw_sec,
@@ -82,6 +82,9 @@ void Functions<S,D>::shoc_assumed_pdf(
   const Scalar w_tol_sqd = 4e-4;
   const Scalar w_thresh = 0;
   const Scalar largeneg = SC::largeneg;
+  // Cloud liquid above which a level is considered fully cloudy when SHOC
+  //  condensation is disabled
+  const Scalar cldfrac_ql_threshold = 1e-18;
   const Scalar Tl_min = 100;
 
   // Interpolate many variables from interface grid to thermo grid
@@ -235,23 +238,7 @@ void Functions<S,D>::shoc_assumed_pdf(
 
       ql1 = ekat::min(qn1, qw1_1);
       ql2 = ekat::min(qn2, qw1_2);
-      // Deactivate SHOC condensation
-      if (!shoc_enable_condensation){
-        // Do NOT modify shoc_ql, allow it to persist from previous processes.
-        //   Diagnose liquid cloud fraction based on an all-or-nothing approach.
-        const Mask is_cloud (shoc_ql(k) > 1.e-18);
-        shoc_cldfrac(k).set(is_cloud,1);
-
-        // Set other SHOC outputs that depend on sub-grid variability or
-        //  condensation to zero.
-        shoc_cond(k) = 0; // diagnostic
-        shoc_evap(k) = 0; // diagnostic
-        shoc_ql2(k) = 0; // no SGS variability
-        wqls(k) = 0; // no SGS condensation
-        wthv_sec(k) = 0; // no SGS variability or condensation
-      }
-      else{
-
+      if (shoc_enable_condensation) {
         // Compute SGS cloud fraction
         shoc_cldfrac(k) = ekat::min(1, a*C1 + (1 - a)*C2);
 
@@ -267,15 +254,34 @@ void Functions<S,D>::shoc_assumed_pdf(
 
         // Compute cloud liquid variance (CLUBB formulation, adjusted to SHOC parameters based)
         shoc_assumed_pdf_compute_cloud_liquid_variance(a, s1, ql1, C1, std_s1,
-                                                     s2, ql2, C2, std_s2, shoc_ql(k),
-                                                     shoc_ql2(k));
+                                                       s2, ql2, C2, std_s2, shoc_ql(k),
+                                                       shoc_ql2(k));
 
         // Compute liquid water flux
         shoc_assumed_pdf_compute_liquid_water_flux(a, w1_1, w_first, ql1, w1_2, ql2, wqls(k));
 
         // Compute the SGS buoyancy flux
         shoc_assumed_pdf_compute_buoyancy_flux(wthlsec, wqwsec, pval, wqls(k),
-                                             wthv_sec(k));
+                                               wthv_sec(k));
+      }
+      else {
+        // SHOC condensation is deactivated: condensation and evaporation of
+        //  cloud liquid are handled downstream (by P3), so do NOT modify
+        //  shoc_ql, allow it to persist from previous processes. Diagnose the
+        //  liquid cloud fraction with an all-or-nothing approach instead.
+        //  Note shoc_cldfrac persists between steps, so it must be zeroed here
+        //  rather than only setting the cloudy lanes.
+        const Mask is_cloud (shoc_ql(k) > cldfrac_ql_threshold);
+        shoc_cldfrac(k) = 0;
+        shoc_cldfrac(k).set(is_cloud, 1);
+
+        // Set other SHOC outputs that depend on sub-grid variability or
+        //  condensation to zero.
+        shoc_cond(k) = 0; // diagnostic
+        shoc_evap(k) = 0; // diagnostic
+        shoc_ql2(k)  = 0; // no SGS variability
+        wqls(k)      = 0; // no SGS condensation
+        wthv_sec(k)  = 0; // no SGS variability or condensation
       }
   });
 

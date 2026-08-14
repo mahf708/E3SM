@@ -277,7 +277,7 @@ void Functions<S,D>::shoc_main_internal(
     // Call the PDF to close on SGS cloud and turbulence
     team.team_barrier();
     shoc_assumed_pdf(team,nlev,nlevi,thetal,qw,w_field,thl_sec,qw_sec, // Input
- 		    dtime,extra_diags,shoc_enable_condensation,                    // 
+                     dtime,extra_diags,shoc_enable_condensation,       // Runtime options
                      wthl_sec,w_sec,wqw_sec,qwthl_sec,w3,pres,         // Input
                      zt_grid, zi_grid,                                 // Input
                      workspace,                                        // Workspace
@@ -552,8 +552,8 @@ void Functions<S,D>::shoc_main_internal(
 
     // Call the PDF to close on SGS cloud and turbulence
     shoc_assumed_pdf_disp(shcol,nlev,nlevi,thetal,qw,w_field,thl_sec,qw_sec, // Input
-                    dtime,extra_diags,shoc_enable_condensation,                    // Runtime options
-		    wthl_sec,w_sec,wqw_sec,qwthl_sec,w3,pres,         // Input
+                          dtime,extra_diags,shoc_enable_condensation,       // Runtime options
+                          wthl_sec,w_sec,wqw_sec,qwthl_sec,w3,pres,         // Input
                           zt_grid, zi_grid,                                 // Input
                           workspace_mgr,                                    // Workspace mgr
                           shoc_cond,shoc_evap,                              // Output
