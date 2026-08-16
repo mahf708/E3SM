@@ -427,8 +427,10 @@ exactly zero, which is the traced model's force-positive corrector firing.
 Attribution, since several things could plausibly cause it:
 
 - **Not** the `Sx_t` double weighting (#15a). Fixing that leaves the cold pole
-  in place; the 1-month rerun is if anything ~1 K colder at the minimum by step
-  50. The two are independent.
+  exactly where it was: at day 11 the `Sa_tbot` minimum is 178.45 K in the
+  original run and 178.44 K with every fix on this branch applied. (During
+  spin-up around step 50 the fixed run is transiently ~1 K colder; that closes
+  by day 11 and is not a systematic difference.) The two are independent.
 - **Not** introduced by this branch's other changes: the original code produces
   a bit-identical `tbot` minimum for the first ~9 coupler steps and the same
   ~178 K plateau.
@@ -600,14 +602,48 @@ The configs to reproduce the analysis on a new run are in
 
 ### What each fix should show up as
 
+### Measured effect of the fixes
+
+`compare_cpl_hi.py` on the day-11 file, `GMPAS-EATM-test4naser` (original code)
+against this branch, both `ACE2-EAMv3` from `0001-01-01`, area-weighted global
+means:
+
+| field | original | this branch | change |
+|---|---|---|---|
+| `a2x_Sa_z` | 1165.5 m | 407.5 m | **-65%** (max 5575 -> 475 m) |
+| `a2x_Sa_topo` | 0 | 231.5 m | now exported (max 5087 m) |
+| `a2x_Sa_shum` | 7.731e-03 | 6.240e-03 | **-19.3%** (max 2.51e-2 -> 2.04e-2) |
+| `a2x_Sa_pbot` | 88224 Pa | 93345 Pa | +5.8% (layer top -> midpoint) |
+| `a2x_Sa_dens` | 1.2024 | 1.2743 | +6.0% |
+| `a2x_Sa_ptem` | 267.92 K | 263.34 K | -1.7% |
+| `a2x_Faxa_swnet` | 170.11 W/m2 | 146.37 W/m2 | **-14.0%** (= global surface albedo) |
+| `a2x_Sa_tbot` | 259.63 K | 259.35 K | -0.1% (min 178.45 vs 178.44) |
+| `a2x_Faxa_lwdn` | 253.05 | 251.41 | -0.6% |
+| `a2x_Faxa_swvdr` | 47.63 | 47.52 | -0.2% |
+| `a2x_Faxa_rainl` | 4.653e-05 | 4.665e-05 | +0.3% |
+| `a2x_Faxa_snowl` | 2.706e-06 | 2.715e-06 | +0.3% |
+
+The last four are untouched by any fix; their sub-1% differences are the two
+trajectories diverging, which sets the noise floor for reading this table.
+Ignore `a2x_Sa_u` and `a2x_Sa_v`: their global means are near zero
+(-0.157 -> -0.089 m/s), so the percentage change is division noise while the
+extremes are unchanged.
+
+`Sa_z` is the largest effect by far. A 65% reduction in the mean and a 12x
+reduction in the maximum means the surface-flux reference height was wrong
+everywhere there is topography, and every exchange coefficient derived from it
+with it.
+
+### What each fix should show up as
+
 | fix | expected signature |
 |---|---|
-| `Sa_shum` from predicted total water | `Sa_shum` down ~30-50%; `evaporationFlux` toward the JRA baseline (it starts only 3.7% low in the global mean, so look at the spatial structure and the 2.4x-too-large extremes, not the mean) |
-| `Sa_z` at the layer midpoint | `Sa_z` roughly halves over ocean, drops by the surface elevation over land; changes exchange coefficients, so it interacts with the humidity fix |
-| `Faxa_swnet` net rather than downwelling | coupler energy budget diagnostics only; no change to ocean or ice forcing |
-| frozen precipitation from the model | `Faxa_snowl` structure smooths near the ice edge (SamudrACE only) |
-| `Sa_topo` exported | nonzero over land; only matters with ELM |
-| coupler `Sx_t` completed not re-weighted | coastal cells warm toward the ocean temperature; watch the ~178 K cold pole |
+| `Sa_shum` from predicted total water | `Sa_shum` down (measured: -19.3%); `evaporationFlux` toward the JRA baseline (it starts only 3.7% low in the global mean, so look at the spatial structure and the 2.4x-too-large extremes, not the mean) |
+| `Sa_z` at the layer midpoint | `Sa_z` roughly halves over ocean, drops by the surface elevation over land (measured: -65% mean, -91% max); changes exchange coefficients, so it interacts with the humidity fix |
+| `Faxa_swnet` net rather than downwelling | coupler energy budget diagnostics only (measured: -14%); no change to ocean or ice forcing |
+| frozen precipitation from the model | `Faxa_snowl` structure smooths near the ice edge (SamudrACE only; ACE2-EAMv3 has no such channel, hence the +0.3% noise above) |
+| `Sa_topo` exported | nonzero over land (measured: 231.5 m mean); only matters with ELM |
+| coupler `Sx_t` completed not re-weighted | coastal cells warm toward the ocean temperature; does **not** move the cold pole (#15b) |
 
 ## Verified, not a defect
 
