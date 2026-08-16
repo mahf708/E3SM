@@ -203,6 +203,7 @@ CONTAINS
             if (len_trim(eatm_ic_file) == 0) call shr_sys_abort(trim(subname)// &
                  ' ERROR: eatm_ic_file must be set for a startup run')
             call eatm_initial_condition_file_read(eatm_ic_file)
+            call eatm_sanitize_inputs('initial condition')
           endif
        endif
     !----------------------------------------------------------------------------
@@ -219,6 +220,64 @@ CONTAINS
     return
 
   end subroutine eatm_comp_init
+
+  !===============================================================================
+  subroutine eatm_sanitize_inputs(source)
+
+    ! Replace any non-finite value in the emulator's input block with zero,
+    ! reporting per channel.
+    !
+    ! This is not defensive programming for its own sake.  The published
+    ! SamudrACE-E3SMv3 initial conditions carry NaN in ICEFRAC over every cell
+    ! without sea ice -- 60% of the globe -- because sea-ice concentration is
+    ! simply undefined there in the source dataset.  A single NaN anywhere in
+    ! the input block is fatal rather than local: the spherical harmonic
+    ! transform inside an SFNO is global, so one NaN returns all output
+    ! channels as NaN, and because the emulator is autoregressive it stays that
+    ! way forever.  `ace_comp_init` runs an inference before the first coupler
+    ! import, so a poisoned initial condition takes the run out at step 0.
+    !
+    ! Zero is the right fill for a fraction that means "none here"; a channel
+    ! for which zero is *not* meaningful will show up as a large count in the
+    ! log rather than passing silently.
+
+    implicit none
+
+    character(len=*), intent(in) :: source
+
+    integer :: k, i, j, nbad, ntot
+
+    ntot = 0
+    do k = 1, n_input_channels
+      nbad = 0
+      do j = 1, lsize_y
+        do i = 1, lsize_x
+          ! /= itself is true only for NaN; the bounds catch +/-Inf
+          if (net_inputs(1, k, i, j) /= net_inputs(1, k, i, j) .or. &
+              abs(net_inputs(1, k, i, j)) > huge(0.0_R4) * 0.5_R4) then
+            net_inputs(1, k, i, j) = 0.0_R4
+            nbad = nbad + 1
+          end if
+        end do
+      end do
+      if (nbad > 0) then
+        write(logunit_atm,'(a,i0,a,i0,a)') &
+             '(eatm_sanitize_inputs) WARNING '//trim(source)//': channel '// &
+             trim(in_names(k))//' had ', nbad, ' of ', lsize_x*lsize_y, &
+             ' non-finite values, replaced with zero'
+      end if
+      ntot = ntot + nbad
+    end do
+
+    if (ntot > 0) then
+      write(logunit_atm,'(a,i0,a)') &
+           '(eatm_sanitize_inputs) '//trim(source)//': ', ntot, &
+           ' non-finite input values replaced in total.  One NaN reaching the'// &
+           ' emulator returns every output channel as NaN, permanently.'
+      call shr_sys_flush(logunit_atm)
+    end if
+
+  end subroutine eatm_sanitize_inputs
 
   !===============================================================================
   subroutine eatm_comp_run(EClock, x2a, a2x, gsmap, ggrid)

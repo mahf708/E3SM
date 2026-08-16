@@ -109,6 +109,23 @@ def main() -> int:
 
         out[name] = da.astype(np.float32)
 
+    # A single non-finite value anywhere in the input block is fatal, not local:
+    # the spherical harmonic transform inside an SFNO is global, so one NaN
+    # makes every output channel NaN, and the emulator is autoregressive, so it
+    # never recovers.  The published SamudrACE-E3SMv3 initial conditions carry
+    # NaN in ICEFRAC over every cell without sea ice -- 60% of the globe --
+    # because sea-ice concentration is undefined there in the source dataset.
+    # Zero is the right fill for a fraction meaning "none here".
+    for name, da in out.items():
+        bad = ~np.isfinite(da.values)
+        nbad = int(bad.sum())
+        if nbad:
+            print(
+                f"  WARNING {name}: {nbad} of {da.size} values non-finite in the "
+                f"source, filled with 0"
+            )
+            out[name] = da.where(np.isfinite(da), 0.0).astype(np.float32)
+
     if missing:
         sys.exit(
             "ERROR: the source file is missing these emulator input channels:\n  "

@@ -657,8 +657,6 @@ The configs to reproduce the analysis on a new run are in
 `/global/cfs/cdirs/e3sm/anolan/GMPAS-EATM-Analysis/` (`GMPAS-EATM.pmgpu.cfg`,
 `GMPAS-JRA1p5-2023.pmcpu.cfg`).
 
-### What each fix should show up as
-
 ### Measured effect of the fixes
 
 `compare_cpl_hi.py` on the day-11 file, `GMPAS-EATM-test4naser` (original code)
