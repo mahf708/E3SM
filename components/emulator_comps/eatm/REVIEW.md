@@ -1874,3 +1874,39 @@ changes and the magnitude is unchanged.
 
 **So `RESUBMIT` remains safe, and #31's claim still holds with the new clock
 handling.**
+
+### Where this session's data lives
+
+All under `/pscratch/sd/m/mahf708/e3sm_scratch/pm-gpu/`, and every case's
+executable was rebuilt from the current branch tip at the end, so no stale
+pre-fix binary is left anywhere.
+
+| what | where |
+|---|---|
+| SamudrACE 20-day, pre-fix (the baseline) | `GMPAS-EATM-SamudrACE-5yr/run/near_surface_57058963_baseline/` |
+| SamudrACE 20-day, with the fixes | `GMPAS-EATM-SamudrACE-5yr/run/near_surface_20day_WITHFIXES/` |
+| SamudrACE 1-day, `lowest_level` export variant (#51) | `GMPAS-EATM-SamudrACE-5yr/run/exportvar_lowest_level_1day/` |
+| SamudrACE 1-day smoke (flawed first budget report, see #44) | `GMPAS-EATM-SamudrACE-5yr/run/smoke_1day_fixes/` |
+| ACE2 10-day, pre-fix `7db0a0e848` (#48, #49) | `eatm-ers-4n/run/` |
+| ACE2 10-day, with the fixes (#49, #50) | `eatm-buildcheck-08151753/run/ace2_10day_WITHFIXES/` |
+| ACE2 restart test phases A / B / C (#52) | `eatm-buildcheck-08151753/run/ers_{A,B,C}/` |
+| ACE2 20-day pre-fix at 448 tasks (the older baseline) | `eatm-buildcheck-08151753/run/postfix_20day_prev/` |
+
+### What to do next, in order
+
+1. **Seed the RNG** (47, 47a). One CMake line and a 15-line shim, everything
+   already installed. Until this is done no SamudrACE result below about
+   5 W/m2 means anything, which is most of them.
+2. **Scan the export state against the budget report** (43a, 51). The objective
+   is already printed each emulator step and converges within four of them, so
+   a variant costs about seven minutes. Start with a Monin-Obukhov-consistent
+   `near_surface` -- all four fields at one height instead of 2 m temperature
+   and humidity beside 10 m winds, all labelled 10 m.
+3. **Implement `total_energy_budget_correction` in the tracing script** (29).
+   The TOA imbalance is now measured at +12.8 (ACE2) and +16.3 W/m2
+   (SamudrACE), so this is no longer a guess about whether it matters.
+4. **Disaggregate the shortwave** with a cosine-zenith weight, as datm does
+   (37). It preserves the interval mean exactly and restores the diurnal shape
+   the 6-hourly means cannot carry.
+5. **Optimise the SOLIN window mean** (35b) if the ~1.6 s per model day ever
+   matters; the recipe removes the transcendentals from the inner loop.
