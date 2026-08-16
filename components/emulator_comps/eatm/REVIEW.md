@@ -392,13 +392,56 @@ net_inputs(TS) = ts                        ! land model running: already complet
 The branch is now selected on `lnd_present` from the coupler's infodata, so
 `GPMPAS-EATM` (with ELM) takes the coupler's merged value unchanged.
 
-The symptom that led here: `atm.log` reports `ts (min, max)` with a minimum of
-exactly `0.0` — the pure-land cells — and the emulator develops a cold pole,
-`tbot` falling from 232 K to about 178 K over the first ~200 coupler steps and
-sitting there. That is present in the original branch's 2-year run too
-(bit-identical starting values), so it is not new, and it is bounded rather
-than a runaway. Whether the double weighting is what seeds it has not been
-established — it needs a rerun to confirm.
+Size of the correction, for a coastal cell that is half land over a 280 K
+ocean, so the coupler sends `ts = 0.5*280 = 140`:
+
+| | formula | result with `ace_TS` = 250 K |
+|---|---|---|
+| before | `(1-0.5)*140 + 0.5*250` | 195 K |
+| after | `140 + 0.5*250` | 265 K |
+
+70 K at half-land cells, tapering to zero at both pure land and pure ocean. It
+is therefore a coastline-only correction, invisible in a global minimum or
+maximum but large where it acts.
+
+Measured: a 1-month rerun tracks the original bit-identically for the first
+~9 coupler steps and then diverges, which is this correction propagating.
+
+This is **not** what causes the cold pole below — see #15b.
+
+### 15b. The emulator's land surface temperature is unanchored, and cools to ~178 K **[open]**
+
+In `GMPAS-EATM` the land component is `SLND`, a stub. Nothing computes a land
+surface temperature, so over land EATM feeds the emulator its own predicted
+`TS` back in, step after step, with nothing to anchor it. That is by design —
+ACE2-EAMv3 is an atmosphere-only model that predicts land `TS` prognostically,
+so this is the mode it was trained for — but in this configuration it drifts.
+
+`atm.log` reports the symptom directly: `tbot (min, max)` falls from 232.5 K to
+about 178 K over roughly the first 200 coupler steps (~4 model days) and then
+sits there. In the 2-year `GMPAS-EATM-test4naser` run it stays at 178-179 K for
+the entire simulation, so it is bounded — a stable cold pole, not a runaway.
+Along the way `FLDS` and the lowest-layer humidity at that point clamp to
+exactly zero, which is the traced model's force-positive corrector firing.
+
+Attribution, since several things could plausibly cause it:
+
+- **Not** the `Sx_t` double weighting (#15a). Fixing that leaves the cold pole
+  in place; the 1-month rerun is if anything ~1 K colder at the minimum by step
+  50. The two are independent.
+- **Not** introduced by this branch's other changes: the original code produces
+  a bit-identical `tbot` minimum for the first ~9 coupler steps and the same
+  ~178 K plateau.
+- Consistent with an unanchored autoregressive land surface. The coldest
+  Antarctic plateau temperature ever measured is about 184 K, so 178 K is
+  outside the physical range and the emulator is extrapolating.
+
+Worth checking before a long run: whether the cold pole is confined to a
+handful of Antarctic plateau cells (in which case it is cosmetic for an
+ocean-focused run) or whether it spreads. The `cpl.hi` files hold `Sa_tbot` on
+the atmosphere grid, so this is a map away. `GPMPAS-EATM`, which runs ELM, is
+the configuration where the land surface would be anchored — but see #24, its
+mapping files are missing from inputdata.
 
 ### 16. `Sa_pslv` is the surface pressure, not sea-level pressure **[open]**
 
