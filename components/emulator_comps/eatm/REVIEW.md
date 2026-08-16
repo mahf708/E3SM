@@ -1131,3 +1131,296 @@ All under `/pscratch/sd/m/mahf708/e3sm_scratch/pm-gpu/`.
    'cice_default'` cold-starts with 2.5 m ice at 100 % concentration everywhere
    south of 60S and north of 70N; SH ice is 3-4x observed and contributes an
    unknown share of the residual imbalance in *both* emulators.
+
+## Session of 2026-08-15 (late): the forcing was the wrong field
+
+This session started from an independent review that flagged the startup
+clocking as inconsistent. Chasing that led to a larger defect in the same
+area: for every step of every run so far, the emulator has been handed a
+top-of-atmosphere insolation pattern unlike anything in its training set.
+
+### 35. SOLIN was the instantaneous value where the emulator wants a 6 h mean **[fixed]**
+
+`ace_compute_solin` evaluated `S0 * eccf * max(0, cosz)` at a single instant,
+the prediction target time T+dt.
+
+In the E3SMv3 6-hourly stream both emulators were trained on, SOLIN is written
+with `cell_methods = "time: mean"`. Measured directly from the training data,
+`/global/cfs/cdirs/e3smdata/simulations/v3.LR.historical_0101.aigo/run/*.eam.h0.*.nc`
+(`time_period_freq = hour_6`, `time_bnds[0] = [32850.0, 32850.25]`, so the
+timestamp is the *end* of the window):
+
+```
+cell_methods = "time: mean"   FLDS FLUS FLUT FSDS FSUS FSUTOA SOLIN
+                              LHFLX SHFLX PRECT PRECST DTENDTTW TAUX TAUY
+cell_methods = "time: point"  PS TS T_0..7 STW_0..7 U_0..7 V_0..7
+                              Tat2m Qat2m Uat10m Vat10m LANDFRAC OCNFRAC ICEFRAC PHIS
+```
+
+So the SOLIN channel is the mean insolation over the 6 h *leading up to* its
+timestamp -- exactly the interval (T, T+dt] the model steps across. The
+next-step-forcing convention is consistent with that and was already handled
+correctly: fme feeds such a channel from time index `step+1`
+(`fme/ace/stepper/single_module.py:1139-1145`).
+
+**This is not a small error.** The instantaneous field and the 6 h mean field
+have the *same global mean* -- 342.05 W/m2 either way, because the lit
+hemisphere is always the same fraction of the globe -- so no global budget can
+see it. Point by point they are different fields: the instantaneous field is a
+cosine bullseye at the subsolar point, the 6-hourly mean is a band smeared
+across 90 degrees of longitude. Measured on the 180x360 grid at solar
+declination -0.4014 rad:
+
+| | value |
+|---|---|
+| global mean, instantaneous | 342.05 W/m2 |
+| global mean, 6 h window mean | 342.05 W/m2 |
+| **area-weighted RMS difference** | **329.93 W/m2** |
+| max absolute difference | 821.3 W/m2 |
+
+The RMS difference is 96 % of the field's own global mean, and it is invariant
+to the phase of the window. That this passed unnoticed for so long is a direct
+consequence of the global mean being exactly right.
+
+Fixed by evaluating the window mean with the midpoint rule on 48 sub-intervals
+of 7.5 min. Convergence against a 2400-point reference:
+
+| sub-steps | interval | RMS error | max error |
+|---|---|---|---|
+| 4 | 90 min | 4.24 W/m2 | 15.3 |
+| 12 | 30 min | 0.469 | 1.68 |
+| 24 | 15 min | 0.117 | 0.42 |
+| **48** | **7.5 min** | **0.029** | **0.107** |
+
+48 costs 48 `shr_orb_cosz` evaluations per cell per emulator step, which is
+nothing next to one SFNO forward pass, and it puts the quadrature error three
+orders of magnitude below the error it replaces.
+
+### 36. Startup advanced the emulator twice at the same model time **[fixed]**
+
+The independent review was right, and the mechanism is now pinned down.
+
+For a prognostic atmosphere the MCT driver calls `atm_init_mct` **twice**, and
+does not advance the clock between them:
+
+| # | call site | `EClock_a` curr_tod / stepno |
+|---|---|---|
+| 1 | `driver-mct/main/cime_comp_mod.F90:1532` (phase 1) | 0 / 0 |
+| 2 | `driver-mct/main/cime_comp_mod.F90:2446` (phase 2, gated on `atm_prognostic`) | 0 / 0 |
+| - | `cime_comp_mod.F90:2826` `clockAdvance` -- the only one in the driver | -> 1800 / 1 |
+| 3 | `cime_comp_mod.F90:3263` first `atm_run_mct` | 1800 / 1 |
+
+`atm_comp_mct` branches on a saved `first_time` flag rather than `atm_phase`,
+so the phase-2 call runs the full run method. `ace_comp_run`'s only guard was
+`mod(curr_tod, eatm_model_dt) == 0`, which is true at tod = 0. Startup
+therefore ran inference twice: once in `ace_comp_init` (IC(T0) -> T0+6h) and
+again in the phase-2 run call (T0+6h -> T0+12h). The emulator state ended up
+permanently one emulator step ahead of the coupler clock, and because the
+restart writes both brackets verbatim the offset survived every restart.
+
+Two fixes, both in `ace_comp_mod.F90`:
+
+- **The advance is now idempotent in model time.** `last_adv_ymd/tod` record
+  when the emulator last stepped; an advance is skipped if it has already
+  happened at this model time. This does not depend on counting driver phases,
+  which is the property that actually matters.
+- **The lower bracket is seeded from the initial condition.** Startup used to
+  set `t_im1 = t_ip1 = ` the first prediction, throwing away the one state
+  whose valid time is known exactly. It now seeds `t_im1` from the IC via the
+  new `out_from_in` channel map, so the first interval interpolates T0 -> T0+6h
+  properly. The flux channels have no IC counterpart and are held at the first
+  prediction, which is the best available.
+
+With both in place the emulator state's valid time equals the coupler clock
+from T0 onward, and `julday + dt` in `ace_compute_solin` is then exactly the
+prediction target -- the two errors are fixed independently rather than being
+left to cancel.
+
+### 37. Flux channels are interval means and were interpolated as snapshots **[fixed]**
+
+Given the `cell_methods` split in #35, the two kinds of output channel have to
+reach the coupler differently, and both used to be linearly interpolated
+between brackets.
+
+For a snapshot channel that is right. For an interval mean it is not: `t_ip1`
+*is* the mean over the interval being stepped across, so it applies unchanged
+across the whole window. Interpolating from the previous window's mean means
+the applied flux only reaches the correct value at the very end, and averaged
+over the interval it is `(mean_previous + mean_current)/2` -- a half-step lag.
+At a 6 h emulator step that is a **3 h lag on all surface radiation,
+turbulent fluxes, stresses and precipitation**, i.e. 45 degrees of diurnal
+phase, plus an equivalent smoothing.
+
+fme relies on the same split internally -- its time coarsener takes snapshot
+variables from the end of a window and averages the rest
+(`fme/core/dataset/time_coarsen.py:79-85`), and the moisture and energy
+correctors multiply a flux by the timestep to get a change in a path quantity,
+which only closes for an interval mean.
+
+Fixed with `eatm_channel_is_interval_mean` and a resolved-once `out_is_mean`
+table, applied in the new `ace_bracket_blend`. Note the classification is a
+property of the training data, not a tunable.
+
+**Deferred, and worth doing next:** the shortwave now reaches the ocean as a
+6-hourly step function. That is honest -- there is no sub-6-hour information in
+a 6-hourly mean -- but it is not the best available. datm disaggregates an
+interval-mean shortwave using the cosine zenith angle (`tintalgo = 'coszen'`),
+which preserves the interval mean exactly while restoring the correct diurnal
+shape. EATM already computes the window-mean insolation, so the scaling
+`FSDS_now = FSDS_mean * SOLIN_inst(t) / SOLIN_windowmean` needs only an
+instantaneous `cosz` per coupler step. It should be applied to FSDS/FSUS/swnet
+only -- there is no comparable proxy for longwave, precipitation or the
+turbulent fluxes. Left out of this session deliberately so that the A/B below
+measures a coherent set of changes.
+
+### 38. Non-finite inputs were zero-filled in every channel **[fixed]**
+
+`eatm_sanitize_inputs` replaced every non-finite input with zero and warned.
+Zero is the physically correct reading only for a surface fraction that means
+"none here" -- which is the case it was written for, the published SamudrACE
+ICs carrying NaN in ICEFRAC over 60 % of the globe. For PS, TS, PHIS, a
+temperature, a wind or a water channel it substitutes an impossible state that
+the emulator integrates forward happily, converting one detectable failure into
+an undetectable bias.
+
+Now: zero-fill for `LANDFRAC`/`OCNFRAC`/`ICEFRAC` (`eatm_channel_zero_is_valid`),
+abort naming the channel for everything else.
+
+### 39. Nothing checked what came back out of the graph **[fixed]**
+
+Two new checks in `ace_validate_outputs`, called after every inference.
+
+- **Non-finite output is fatal, every step.** The emulator is autoregressive
+  and an SFNO's spherical harmonic transform is global, so one NaN in one
+  channel becomes every channel on the next step and stays that way. Nothing
+  downstream caught it: the export clamps compare against zero, and `NaN < 0`
+  is false, so a NaN passed through `max()` untouched and reached the ocean as
+  NaN forcing.
+- **The channel contract is range-checked once, on the first inference.** A
+  traced model is an opaque graph; nothing at load time ties its channel order
+  to the compiled table. If `eatm_emulator` names the wrong table, or a
+  checkpoint is re-traced with a different layout, every index silently reads
+  the wrong field. The ranges (`eatm_channel_range`) are loose enough that no
+  plausible atmospheric state trips them and tight enough that reading a
+  humidity where a pressure was expected cannot pass.
+
+### 40. The exported humidity was not capped at saturation **[fixed]**
+
+`shr_flux_atmOcn` treats `Sa_shum` as the vapour mixing ratio and drives the
+latent flux with `(q_sat(SST) - Sa_shum)`, so a supersaturated value suppresses
+or reverses evaporation. In the `lowest_level` configuration the exported field
+is the emulator's specific *total* water, condensate included: 19.3 % of ocean
+cells arrived supersaturated, with relative humidities up to 2.82 (#27).
+
+No emulator channel separates vapour from condensate, so capping at saturation
+is the closest estimate of the vapour part the model's own output supports.
+New namelist `eatm_cap_shum`, default `.true.`; the count and the maximum RH
+seen before capping are logged each emulator step.
+
+### 41. Surface fractions were bounded only in sum **[fixed]**
+
+`ace_eatm_import` clipped `ofrac + ifrac + lfrac` to [0,1] but never the
+individual fields, so a negative ICEFRAC compensated by an ocean fraction above
+one still produced a plausible total. Each is now bounded on its own and the
+triple renormalised if it exceeds one.
+
+### 42. `EATM_MODE=NULL` was read and ignored **[fixed]**
+
+`bld/build-namelist:299` sets `do_eatm = .false.` for `EATM_MODE=NULL`. The
+flag was read, broadcast, printed -- and never tested. Initialization went on
+to read a mesh, load a traced graph and run inference regardless.
+
+There is nothing here for a null mode to switch off, and honouring the flag by
+silently skipping all of it would hand the coupler an atmosphere exporting
+zeros. EATM now aborts with a message pointing at SATM, which is the component
+that actually implements a stub atmosphere.
+
+### 43. The atmosphere and the ocean use different surface fluxes **[open, scoped, now measured]**
+
+The independent review's headline finding, and it is real. The emulator
+predicts LHFLX, SHFLX and (SamudrACE) TAUX/TAUY, and evolves its atmosphere
+consistently with them. The coupler ignores those channels and rebuilds the
+turbulent fluxes from the exported state and the SST with `shr_flux_atmOcn`;
+that is what the ocean integrates. The difference is energy entering the ocean
+without leaving the atmosphere.
+
+**Not fixed this session, deliberately.** Scoping it out produced two reasons
+to be careful rather than quick:
+
+1. **The emulator's fluxes are grid-cell means over land + ice + ocean, while
+   `Faox_*` is the open-ocean-only flux that `prep_ocn_mod.F90:1261-1267` then
+   weights by `afrac`.** Substituting one for the other double-counts in every
+   mixed cell. This is the main correctness hazard and it is not cosmetic.
+2. **Sea ice would not follow.** There is no `seq_flux_atmice` in the MCT
+   driver; MPAS-SI computes its own atm/ice turbulent fluxes internally through
+   Icepack (`mpas_seaice_icepack.F:5394` -> `icepack_atmo.F90:829`). An
+   "atmosphere supplies the flux" option would cover the open-ocean fraction
+   only, leaving an asymmetry that has to be argued for rather than assumed.
+
+Also: `Faox_lwup` is currently built from the ocean's own SST, and `Faox_evap`
+must stay exactly `lat / latvap` or the coupler's water and energy budgets
+diverge. Neither survives a naive override.
+
+The mechanical route, if it is taken later, is to **overwrite `Faox_*` inside
+`seq_flux_atmocn_mct` rather than route new fields through the ocean merge** --
+`prep_ocn_mod.F90:922-926` aborts outright if an x2o field is matched by both
+a2x and xao, and a hypothetical `Faxa_taux` shares its `itemc` with the
+existing `Faox_taux`. Keep the existing `shr_flux_atmocn` call (the ocean and
+atmosphere merges still need `tref`, `qref`, `ustar`, `re`, `ssq`, `duu10n`,
+`u10res`) and override `sen`/`lat`/`taux`/`tauy`/`evap` immediately before the
+store loop at `seq_flux_mct.F90:1685-1724`. `ocn_surface_flux_scheme` has no
+`<valid_values>` guard, so a new value flows through the infodata plumbing
+untouched and is the cheapest switch.
+
+**What this session did instead: made it measurable in the run.** The new
+`ace_flux_budget_report` logs, once per emulator step, area-weighted global
+means of the emulator's predicted latent, sensible, stress and radiative terms
+against the coupler's applied ones, with the differences and the implied net
+surface and TOA budgets. Until the pathway question is settled the number needs
+to be visible in the log of every production run rather than reconstructed
+afterwards from history files that do not carry the emulator's flux channels at
+all.
+
+### What is *not* wrong, checked and cleared
+
+- **The unfilled a2x fields are harmless in this compset.** EATM writes 21 of
+  them and leaves the aerosol and dust deposition fluxes at zero. MPAS-O never
+  reads `Faxa_bcph*`/`Faxa_ocph*`/`Faxa_dst*` at all (its ocean dust and iron
+  come from `ecosysMonthlyClimatology`), and MPAS-SI reads them only under
+  `config_use_aerosols` / `config_use_zaerosols`, both default `.false.`.
+  `Sa_uovern` is consumed only by ELM's Froude-number precipitation
+  downscaling, and EAM itself writes 0.0 on that path. `Sa_co2prog`/`Sa_co2diag`
+  are not in the field list for this compset at all -- the `CCSM_BGC=CO2A`
+  override keys on `_EAM`, which does not substring-match `_EATM`. **This
+  becomes harmful the moment BGC is enabled**: 0 ppm atmospheric pCO2 would
+  make the ocean outgas continuously.
+- **`Sa_pslv`, which MPAS-O does use unconditionally** (`ocn_comp_mct.F:2554`
+  -> `surfacePressure`), is written.
+- **The `npes > 1` abort already exists** (`eatmSpmdMod.F90:64`), so the
+  single-task assumption cannot be violated silently.
+
+### 44. The obvious way to write the flux comparison is wrong **[trap, avoided]**
+
+Worth recording because the first version of `ace_flux_budget_report` got it
+wrong and the numbers looked *reassuring*.
+
+The coupler's `Faxx_*` are **merged** fluxes, `sum over surface types of
+frac_s * F_s`. In `GMPAS-EATM` the land model is a stub, so `lfrac` is zero and
+over the ~34 % of the globe no surface model covers, the merged flux is not
+small -- it is structurally absent. Take a plain area mean of that and compare
+it against the emulator's full-cell flux and the coupler is understated by the
+uncovered fraction, which happens to make a large disagreement look like a
+small one. The first version reported an emulator/coupler latent difference of
++3.8 W/m2 where the covered-area comparison gives roughly three times that.
+
+Both columns are now reported per unit *covered* area: the merged coupler flux
+divided by the mean covered fraction, the emulator's flux weighted by that same
+fraction. The covered fraction itself is printed on the header line so the
+basis is never in doubt.
+
+The same routine also had two sign errors, fixed by pinning the convention to
+EAM rather than to intuition: `cam_in%wsx = -Faxx_taux`
+(`eam/src/cpl/atm_comp_mct.F90:1801`) and EAM's `TAUX` history field *is*
+`cam_in%wsx` (`cam_diagnostics.F90:2145`), so the emulator's `TAUX` and `FLUS`
+channels compare against EATM's imported `wsx` and `lwup` with no flip at all.
+`Faxx_lat` is not negated on import while `Faxx_sen` is, which is easy to miss.

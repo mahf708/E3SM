@@ -128,6 +128,7 @@ Everything is in `eatm_inparm` (`user_nl_eatm`); see
 | `eatm_model_device` | `gpu` | must match how the model was traced |
 | `eatm_pass_forcing` | `.false.` | append next-step forcing channels (needed only for a model traced with `--add-ocean`) |
 | `eatm_legacy_surface` | `.false.` | restore the pre-review surface diagnostics |
+| `eatm_cap_shum` | `.true.` | cap the exported `Sa_shum` at saturation — the emulator's lowest-level channel is specific *total* water and arrives supersaturated over 19% of ocean cells (REVIEW.md #40) |
 | `eatm_frzprec_units` | `kg/m2/s` | units of the frozen precipitation channel (the checkpoint metadata says `m/s`, but the data are not — see REVIEW.md #10) |
 | `eatm_iradsw` | `1` | radiation interval, in coupler steps |
 
@@ -210,5 +211,6 @@ Things that are settled and should not be re-litigated:
 | `eatm_model_device` | `gpu` | `cpu` or `gpu` |
 | `eatm_surface_layer` | `near_surface` | export at 10 m from predicted 2 m/10 m diagnostics; falls back to `lowest_level` when the emulator has none |
 | `eatm_legacy_surface` | `.false.` | reproduce the pre-review surface diagnostics |
+| `eatm_cap_shum` | `.true.` | cap exported `Sa_shum` at saturation |
 | `eatm_frzprec_units` | `kg/m2/s` | units of the frozen precipitation channel |
 | `eatm_iradsw` | 1 | radiation interval, coupler steps |
