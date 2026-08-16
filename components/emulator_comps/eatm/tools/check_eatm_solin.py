@@ -23,9 +23,15 @@ neither needs orbital parameters, a calendar, or the model grid:
 
 Usage:
 
-    check_eatm_solin.py <case>.eatm.r.<date>.nc [...]
+    check_eatm_solin.py [--mesh <scrip>.nc] <case>.eatm.r.<date>.nc [...]
 
 A dark fraction of 0.5000 means the run had the pre-fix behaviour.
+
+Pass --mesh with the SCRIP file named by `filename_eatm` to weight by the true
+cell areas.  Without it the weights are cos(lat) on equally spaced centres,
+which is not the Gaussian quadrature this grid actually uses: good enough for
+the dark-fraction verdict, which is a ratio of areas either side of a great
+circle and barely moves, but the printed global mean is then approximate.
 """
 
 import sys
@@ -34,7 +40,23 @@ import numpy as np
 import netCDF4 as nc
 
 
-def signature(path):
+def mesh_weights(mesh_path, shape):
+    """Cell areas from a SCRIP mesh, reshaped to (nlat, nlon)."""
+    with nc.Dataset(mesh_path) as d:
+        if "grid_area" not in d.variables:
+            raise SystemExit(f"{mesh_path}: no grid_area -- is this a SCRIP mesh?")
+        area = np.asarray(d.variables["grid_area"][:]).astype(float)
+        dims = np.asarray(d.variables["grid_dims"][:]).astype(int)
+
+    nx, ny = int(dims[0]), int(dims[1])
+    if (ny, nx) != shape:
+        raise SystemExit(
+            f"{mesh_path}: grid_dims {nx}x{ny} does not match the restart's {shape}"
+        )
+    return area.reshape(ny, nx)
+
+
+def signature(path, mesh_path=None):
     with nc.Dataset(path) as d:
         if "SOLIN" not in d.variables:
             raise SystemExit(f"{path}: no SOLIN variable -- is this an EATM restart?")
@@ -43,10 +65,13 @@ def signature(path):
     if solin.ndim != 2:
         raise SystemExit(f"{path}: expected a 2D SOLIN, got shape {solin.shape}")
 
-    ny, nx = solin.shape
-    lat = np.deg2rad(np.linspace(-90 + 90 / ny, 90 - 90 / ny, ny))
-    w = np.repeat(np.cos(lat)[:, None], nx, axis=1)
-    w /= w.sum()
+    if mesh_path:
+        w = mesh_weights(mesh_path, solin.shape)
+    else:
+        ny, nx = solin.shape
+        lat = np.deg2rad(np.linspace(-90 + 90 / ny, 90 - 90 / ny, ny))
+        w = np.repeat(np.cos(lat)[:, None], nx, axis=1)
+    w = w / w.sum()
 
     return dict(
         dark=float(np.sum(w * (solin <= 1e-6))),
@@ -56,15 +81,22 @@ def signature(path):
 
 
 def main(argv):
-    if len(argv) < 2:
+    args = argv[1:]
+    mesh = None
+    if args and args[0] == "--mesh":
+        if len(args) < 3:
+            raise SystemExit(__doc__)
+        mesh, args = args[1], args[2:]
+    if not args:
         raise SystemExit(__doc__)
 
+    print(f"weights: {'cell areas from ' + mesh if mesh else 'cos(lat), approximate'}")
     print(f"{'restart':<52} {'dark frac':>10} {'peak':>9} {'gmean':>8}  verdict")
     print("-" * 100)
 
     bad = 0
-    for path in argv[1:]:
-        s = signature(path)
+    for path in args:
+        s = signature(path, mesh)
         # 0.5 is the instantaneous signature; anything near a quarter is a mean.
         if abs(s["dark"] - 0.5) < 0.02:
             verdict = "INSTANTANEOUS -- emulator forced with an untrained field"
