@@ -69,10 +69,6 @@ contains
     type(mct_aVect) :: a2x      ! temporary
     type(mct_aVect) :: x2a      ! temporary
 
-    integer, parameter :: tot_mon_in_year = 12
-    integer :: imon, ier
-    character(len=2) :: monstr ! month string
-
     ! Determine attribute vector indices
 
     ! create temporary attribute vectors
@@ -115,6 +111,7 @@ contains
     index_x2a_Sl_ram1       = mct_avect_indexra(x2a,'Sl_ram1')
 
     index_a2x_Sa_z          = mct_avect_indexra(a2x,'Sa_z')
+    index_a2x_Sa_topo       = mct_avect_indexra(a2x,'Sa_topo', perrWith='quiet')
     index_a2x_Sa_u          = mct_avect_indexra(a2x,'Sa_u')
     index_a2x_Sa_v          = mct_avect_indexra(a2x,'Sa_v')
     index_a2x_Sa_wsresp     = mct_avect_indexra(a2x,'Sa_wsresp', perrWith='quiet')

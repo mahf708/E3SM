@@ -8,17 +8,45 @@
 Values to use by default for creation of EATM model namelists.
 The element names are the same as the corresponding namelist
 variables.  Values that depend on the model configuration use
-attributes to express the dependency.  
+attributes to express the dependency.
 
 The default filenames are given relative to the root directory
-for the EATM data in the E3SM distribution 
+for the EATM data in the E3SM distribution
 -->
 
 <!-- Default eatm namelist -->
 
-<do_eatm>.true.</do_eatm> 
+<do_eatm>.true.</do_eatm>
 
 <!-- Emulator atm domain file (relative to DIN_LOC_ROOT) -->
 <filename_eatm atm_grid="gauss180x360" >share/meshes/gaussian_180x360_latlon.scrip.20260127.nc</filename_eatm>
+
+<!-- Which emulator's channel layout to drive; set with ./xmlchange EATM_EMULATOR -->
+<eatm_emulator>ACE2-EAMv3</eatm_emulator>
+
+<eatm_model_device>gpu</eatm_model_device>
+<eatm_pass_forcing>.false.</eatm_pass_forcing>
+<eatm_legacy_surface>.false.</eatm_legacy_surface>
+<eatm_frzprec_units>m/s</eatm_frzprec_units>
+<eatm_iradsw>1</eatm_iradsw>
+
+<!--
+Traced TorchScript model and matching initial condition, per emulator.
+
+These are absolute paths outside DIN_LOC_ROOT because neither the checkpoints
+nor their traced form are distributed with E3SM inputdata yet.  Override in
+user_nl_eatm.  TODO: stage a blessed copy under $DIN_LOC_ROOT and switch these
+to inputdata-relative paths.
+-->
+<eatm_model_file emulator="ACE2-EAMv3"
+  >/global/cfs/cdirs/e3sm/anolan/ACE2-E3SMv3/ace_traced_cuda.pt</eatm_model_file>
+<eatm_ic_file emulator="ACE2-EAMv3"
+  >/global/cfs/cdirs/e3sm/anolan/ACE2-E3SMv3/initial_conditions/1971010100_time_1.nc</eatm_ic_file>
+
+<!--
+SamudrACE-E3SMv3 has no blessed traced model yet: produce one with
+  components/emulator_comps/eatm/tools/trace_samudrace_atmosphere.sh
+and point eatm_model_file / eatm_ic_file at its output in user_nl_eatm.
+-->
 
 </namelist_defaults>

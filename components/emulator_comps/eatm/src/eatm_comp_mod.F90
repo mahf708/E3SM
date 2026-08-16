@@ -7,7 +7,7 @@ module eatm_comp_mod
   use perf_mod
   use shr_const_mod
   use shr_sys_mod
-  use shr_kind_mod   , only: IN=>SHR_KIND_IN, R8=>SHR_KIND_R8, CS=>SHR_KIND_CS, CL=>SHR_KIND_CL
+  use shr_kind_mod   , only: IN=>SHR_KIND_IN, R4=>SHR_KIND_R4, R8=>SHR_KIND_R8, CS=>SHR_KIND_CS, CL=>SHR_KIND_CL
   use shr_file_mod   , only: shr_file_getunit, shr_file_freeunit
   use shr_cal_mod    , only: shr_cal_date2julian, shr_cal_ymdtod2string
   use shr_mpi_mod    , only: shr_mpi_bcast
@@ -15,6 +15,7 @@ module eatm_comp_mod
   use eatmMod
   use eatmSpmdMod
   use eatmIO
+  use eatm_channels_mod
   use eatm_restart_mod
   use ace_comp_mod
 
@@ -32,8 +33,6 @@ module eatm_comp_mod
   public :: eatm_comp_final
   public :: eatm_shr_getNextRadCDay
 
-  ! forward value that should be coming from namelist
-  public :: iradsw
   save
 
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -73,8 +72,6 @@ CONTAINS
     character(CL) :: calendar    ! calendar type
     character(CL) :: flds_strm
 
-    character(len=*), parameter :: initial_condition_file = "/global/cfs/cdirs/e3sm/anolan/ACE2-E3SMv3/initial_conditions/1971010100_time_1.nc"
-
     !--- formats ---
     character(*), parameter :: F00   = "('(eatm_comp_init) ',8a)"
     character(*), parameter :: F0L   = "('(eatm_comp_init) ',a, l2)"
@@ -89,6 +86,11 @@ CONTAINS
     !-------------------------------------------------------------------------------
 
     call t_startf('EATM_INIT')
+
+       !----------------------------------------------------------------------
+       ! Resolve the emulator's channel layout before anything is sized to it
+       !----------------------------------------------------------------------
+       call eatm_channels_init(eatm_emulator, logunit_atm)
 
        call t_startf('eatm_initmctavs')
        if (masterproc) write(logunit_atm,F00) 'allocate AVs'
@@ -116,6 +118,7 @@ CONTAINS
        allocate(ocnfrac(lsize_x,lsize_y))
        allocate(lndfrac(lsize_x,lsize_y))
 
+       allocate(topo(lsize_x,lsize_y))
        allocate(zbot(lsize_x,lsize_y))
        allocate(ubot(lsize_x,lsize_y))
        allocate(vbot(lsize_x,lsize_y))
@@ -140,7 +143,16 @@ CONTAINS
 
        allocate(net_inputs(1, n_input_channels, lsize_x, lsize_y))
        allocate(net_outputs(1, n_output_channels, lsize_x, lsize_y))
-       allocate(net_inputs_nn(1, n_input_channels, lsize_x, lsize_y))
+       ! staging buffer handed to FTorch: the state block plus, optionally, the
+       ! trailing "next step forcing" block the traced graph slices off
+       if (eatm_pass_forcing) then
+          allocate(net_inputs_nn(1, n_input_channels + n_forcing_channels, lsize_x, lsize_y))
+       else
+          allocate(net_inputs_nn(1, n_input_channels, lsize_x, lsize_y))
+       end if
+       net_inputs(:,:,:,:)    = 0.0_R4
+       net_outputs(:,:,:,:)   = 0.0_R4
+       net_inputs_nn(:,:,:,:) = 0.0_R4
 
        ! initialize the interpolater struct
        allocate(eatm_intrp%t_im1(n_output_channels, lsize_x, lsize_y))
@@ -175,7 +187,9 @@ CONTAINS
        else
           if (masterproc) then
             ! startup, so read initial condition file
-            call eatm_initial_condition_file_read(initial_condition_file)
+            if (len_trim(eatm_ic_file) == 0) call shr_sys_abort(trim(subname)// &
+                 ' ERROR: eatm_ic_file must be set for a startup run')
+            call eatm_initial_condition_file_read(eatm_ic_file)
           endif
        endif
     !----------------------------------------------------------------------------
@@ -210,23 +224,13 @@ CONTAINS
     integer(IN)   :: CurrentYMD        ! model date
     integer(IN)   :: CurrentTOD        ! model sec into model date
     integer(IN)   :: yy,mm,dd          ! year month day
-    integer(IN)   :: n                 ! indices
     integer(IN)   :: idt               ! integer timestep
-    real(R8)      :: dt                ! timestep
     logical       :: write_restart     ! restart now
     integer(IN)   :: nu                ! unit number
     integer(IN)   :: stepno            ! step number
-    real(R8)      :: rday              ! elapsed day
-    real(R8)      :: cosFactor         ! cosine factor
-    real(R8)      :: factor            ! generic/temporary correction factor
-    real(R8)      :: avg_alb           ! average albedo
-    real(R8)      :: tMin              ! minimum temperature
     character(CL) :: calendar          ! calendar type
 
     character(len=18) :: date_str
-    !--- temporaries
-    real(R8)      :: uprime,vprime,swndr,swndf,swvdr,swvdf,ratio_rvrf
-    real(R8)      :: tbot,pbot,rtmp,vp,ea,e,qsat,frac
     character(*), parameter :: F00   = "('(eatm_comp_run) ',8a)"
     character(*), parameter :: F04   = "('(eatm_comp_run) ',2a,2i8,'s')"
     character(*), parameter :: subName = "(eatm_comp_run) "
@@ -240,7 +244,6 @@ CONTAINS
     call seq_timemgr_EClockGetData( EClock, curr_yr=yy, curr_mon=mm, curr_day=dd)
     call seq_timemgr_EClockGetData( EClock, stepno=stepno, dtime=idt)
     call seq_timemgr_EClockGetData( EClock, calendar=calendar)
-    dt = idt * 1.0_r8
     write_restart = seq_timemgr_RestartAlarmIsOn(EClock)
 
     call t_stopf('eatm_run1')
@@ -344,6 +347,7 @@ CONTAINS
     deallocate(ocnfrac)
     deallocate(lndfrac)
 
+    deallocate(topo)
     deallocate(zbot)
     deallocate(ubot)
     deallocate(vbot)
@@ -373,6 +377,8 @@ CONTAINS
 
     ! TODO (AN): Generalize dispatching correct finalize method for different emulators
     call ace_comp_finalize()
+
+    call eatm_channels_final()
 
     if (masterproc) then
        write(logunit_atm,F91)

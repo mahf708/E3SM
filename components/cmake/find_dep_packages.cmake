@@ -48,8 +48,13 @@ if (USE_PETSC)
   find_package(PETSc REQUIRED)
 endif()
 
-#TODO (AN): Make optinal with USE_FTORCH
-find_package(FTorch REQUIRED)
+# FTorch is only needed by the emulator components (eatm).  Requiring it
+# unconditionally would break every configuration on every machine that does
+# not have an FTorch install.
+if (COMP_ATM STREQUAL "eatm")
+  find_package(FTorch REQUIRED)
+  set(USE_FTORCH TRUE)
+endif()
 
 find_package(PIO REQUIRED)
 find_package(MCT REQUIRED)

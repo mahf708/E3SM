@@ -23,6 +23,20 @@ module eatmMod
   character(len=16), public :: inst_name
   character(len=16), public :: inst_suffix = ""    ! char string associated with instance (ie. "_0001" or "")
 
+  !--------------------------------------------------------------------------
+  ! eatm_inparm namelist settings (read in atm_comp_mct::eatm_read_namelist)
+  !--------------------------------------------------------------------------
+  logical, public       :: do_eatm                ! run the emulator at all
+  character(CL), public :: filename_eatm          ! SCRIP mesh describing the eatm grid
+  character(CL), public :: eatm_emulator          ! which emulator's channel table to use
+  character(CL), public :: eatm_model_file        ! traced TorchScript model (.pt)
+  character(CL), public :: eatm_ic_file           ! initial-condition file for a startup run
+  character(CL), public :: eatm_model_device      ! 'cpu' or 'gpu'
+  character(CL), public :: eatm_frzprec_units     ! units of the frozen precip channel
+  logical, public       :: eatm_pass_forcing      ! append next-step forcing channels
+  logical, public       :: eatm_legacy_surface    ! reproduce the pre-review surface diagnostics
+  integer, public       :: eatm_iradsw            ! radiation interval (coupler steps)
+
   ! Orbital parameters (set from coupler infodata at init)
   real(kind=R8), public :: orb_eccen     ! orbital eccentricity
   real(kind=R8), public :: orb_obliqr    ! obliquity in radians
@@ -53,6 +67,7 @@ module eatmMod
   real(kind=R8), dimension(:,:), allocatable, public :: lndfrac      ! land area fraction
 
   ! exported arrays
+  real(kind=R8), dimension(:,:), allocatable, public :: topo         ! surface height above sea level
   real(kind=R8), dimension(:,:), allocatable, public :: zbot         ! bot level height above surface
   real(kind=R8), dimension(:,:), allocatable, public :: ubot         ! bot level u wind
   real(kind=R8), dimension(:,:), allocatable, public :: vbot         ! bot level v wind
@@ -82,74 +97,25 @@ module eatmMod
 
   character(len=*), parameter, public :: rpfile = 'rpointer.atm'
 
-  type :: t_eatm_interpolator(kind)
-    integer, kind :: kind
-    real(kind=kind), dimension(:, :, :), allocatable :: t_im1
-    real(kind=kind), dimension(:, :, :), allocatable :: t_ip1
+  ! Two bracketing emulator states, (channel, x, y).  The emulator advances on
+  ! its own (6-hourly) timestep; the coupler sees a linear interpolation
+  ! between t_im1 (state at the last emulator step) and t_ip1 (state at the
+  ! next one).  Both levels are written to the restart file so that a restart
+  ! reproduces the interpolation exactly.
+  !
+  ! NOTE: deliberately a plain derived type rather than a parameterized one --
+  ! PDT support is uneven across the compilers E3SM has to build with.
+  type :: t_eatm_interpolator
+    real(kind=R4), dimension(:, :, :), allocatable :: t_im1
+    real(kind=R4), dimension(:, :, :), allocatable :: t_ip1
   end type t_eatm_interpolator
 
-  type(t_eatm_interpolator(kind=R4)), public :: eatm_intrp
+  type(t_eatm_interpolator), public :: eatm_intrp
 
-  type, public :: t_normalization_struct
-    real(kind=R4), dimension(:), allocatable :: means
-    real(kind=R4), dimension(:), allocatable :: stds
-  end type t_normalization_struct
-
-  type, extends(t_normalization_struct) :: t_normalizer
-    contains
-      procedure :: normalize
-  end type t_normalizer
-
-  type, extends(t_normalization_struct) :: t_denormalizer
-    contains
-      procedure :: denormalize
-  end type t_denormalizer
-
-  type(t_normalizer), public :: normalizer
-  type(t_denormalizer), public :: denormalizer
-
-contains
-
-  subroutine normalize(self, inputs)
-    class(t_normalizer) :: self
-    real(kind=R4), intent(inout) :: inputs(:, :, :, :)
-
-    integer :: i, j, k
-    integer :: nx, ny, nc
-
-    nc = SIZE(inputs, dim=2)
-    nx = SIZE(inputs, dim=3)
-    ny = SIZE(inputs, dim=4)
-
-    do k = 1, nc
-      do j = 1, ny
-        do i = 1, nx
-          inputs(1, k, i, j) = (inputs(1, k, i, j) - self%means(k)) / self%stds(k)
-        enddo
-      enddo
-    enddo
-
-  end subroutine normalize
-
-  subroutine denormalize(self, outputs)
-    class(t_denormalizer) :: self
-    real(kind=R4), intent(inout) :: outputs(:, :, :, :)
-
-    integer :: i, j, k
-    integer :: nx, ny, nc
-
-    nc = SIZE(outputs, dim=2)
-    nx = SIZE(outputs, dim=3)
-    ny = SIZE(outputs, dim=4)
-
-    do k = 1, nc
-      do j = 1, ny
-        do i = 1, nx
-          outputs(1, k, i, j) = outputs(1, k, i, j) * self%stds(k) + self%means(k)
-        enddo
-      enddo
-    enddo
-
-  end subroutine denormalize
+  ! NOTE: normalization and denormalization used to live here, driven by the
+  ! ace2_EAMv3_{,de}normalize.nc statistics files.  They are no longer needed:
+  ! the traced TorchScript model produced by the ACE tracing script bakes
+  ! normalization, denormalization and the atmosphere correctors into the
+  ! graph.  See git history (pre eatm channel-table refactor) to recover them.
 
 end module eatmMod

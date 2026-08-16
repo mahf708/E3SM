@@ -57,9 +57,6 @@ module atm_comp_mct
   integer, allocatable :: length(:)    ! for gsmap initialization
   integer, allocatable :: pe_loc(:)    ! for gsmap initialization
 
-  logical                :: do_eatm
-  character(len=256)     :: filename_eatm
-
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 CONTAINS
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -245,7 +242,7 @@ CONTAINS
 
        ! Compute time of next radiation computation, like in run method for exact restart
 
-       nextsw_cday = eatm_shr_getNextRadCDay( EClock, iradsw )
+       nextsw_cday = eatm_shr_getNextRadCDay( EClock, eatm_iradsw )
        call seq_infodata_PutData( infodata, nextsw_cday=nextsw_cday )
 
        ! End redirection of share output to eatm log
@@ -310,7 +307,7 @@ CONTAINS
 
     ! Get calendar day of next radiation calculation
     ! albedos for each surface model will be calculated for this day
-    nextsw_cday = eatm_shr_getNextRadCDay( EClock, iradsw )
+    nextsw_cday = eatm_shr_getNextRadCDay( EClock, eatm_iradsw )
     call seq_infodata_PutData( infodata, nextsw_cday=nextsw_cday )
 
   end subroutine atm_run_mct
@@ -557,7 +554,9 @@ CONTAINS
        do i = 1, lsize_x
           n = n + 1
           a2x_a%rattr(index_a2x_Sa_z,n)       = zbot(i,j)
-!JW          a2x_a%rattr(index_a2x_Sa_topo,n)    = 0._r8
+          if (index_a2x_Sa_topo > 0) then
+             a2x_a%rattr(index_a2x_Sa_topo,n) = topo(i,j)
+          end if
           a2x_a%rattr(index_a2x_Sa_u,n)       = ubot(i,j)
           a2x_a%rattr(index_a2x_Sa_v,n)       = vbot(i,j)
           a2x_a%rattr(index_a2x_Sa_tbot,n)    = tbot(i,j)
@@ -601,11 +600,21 @@ CONTAINS
 
     !---------------------------------------------------------------------------
 
-    namelist /eatm_inparm / do_eatm, filename_eatm
+    namelist /eatm_inparm / do_eatm, filename_eatm, &
+         eatm_emulator, eatm_model_file, eatm_ic_file, eatm_model_device, &
+         eatm_pass_forcing, eatm_legacy_surface, eatm_frzprec_units, eatm_iradsw
 
     ! default values
-    do_eatm        = .true.
-    filename_eatm  = ' '
+    do_eatm             = .true.
+    filename_eatm       = ' '
+    eatm_emulator       = 'ACE2-EAMv3'
+    eatm_model_file     = ' '
+    eatm_ic_file        = ' '
+    eatm_model_device   = 'gpu'
+    eatm_frzprec_units  = 'm/s'
+    eatm_pass_forcing   = .false.
+    eatm_legacy_surface = .false.
+    eatm_iradsw         = 1
 
     ! read namelist from expected file
     nlfilename_atm = "eatm_in" // trim(inst_suffix)
@@ -630,13 +639,29 @@ CONTAINS
     end if
     call shr_mpi_bcast(do_eatm, mpicom_atm, 'do_eatm')
     call shr_mpi_bcast(filename_eatm, mpicom_atm, 'filename_eatm')
+    call shr_mpi_bcast(eatm_emulator, mpicom_atm, 'eatm_emulator')
+    call shr_mpi_bcast(eatm_model_file, mpicom_atm, 'eatm_model_file')
+    call shr_mpi_bcast(eatm_ic_file, mpicom_atm, 'eatm_ic_file')
+    call shr_mpi_bcast(eatm_model_device, mpicom_atm, 'eatm_model_device')
+    call shr_mpi_bcast(eatm_frzprec_units, mpicom_atm, 'eatm_frzprec_units')
+    call shr_mpi_bcast(eatm_pass_forcing, mpicom_atm, 'eatm_pass_forcing')
+    call shr_mpi_bcast(eatm_legacy_surface, mpicom_atm, 'eatm_legacy_surface')
+    call shr_mpi_bcast(eatm_iradsw, mpicom_atm, 'eatm_iradsw')
 
     ! print out namelist settings to log
     if (masterproc) then
        write(logunit_atm,*) ' '
        write(logunit_atm,*) 'read from namelist:'
-       write(logunit_atm,*) '   do_eatm           = ', do_eatm
-       write(logunit_atm,*) '   filename_eatm     = ', trim(filename_eatm)
+       write(logunit_atm,*) '   do_eatm             = ', do_eatm
+       write(logunit_atm,*) '   filename_eatm       = ', trim(filename_eatm)
+       write(logunit_atm,*) '   eatm_emulator       = ', trim(eatm_emulator)
+       write(logunit_atm,*) '   eatm_model_file     = ', trim(eatm_model_file)
+       write(logunit_atm,*) '   eatm_ic_file        = ', trim(eatm_ic_file)
+       write(logunit_atm,*) '   eatm_model_device   = ', trim(eatm_model_device)
+       write(logunit_atm,*) '   eatm_frzprec_units  = ', trim(eatm_frzprec_units)
+       write(logunit_atm,*) '   eatm_pass_forcing   = ', eatm_pass_forcing
+       write(logunit_atm,*) '   eatm_legacy_surface = ', eatm_legacy_surface
+       write(logunit_atm,*) '   eatm_iradsw         = ', eatm_iradsw
     end if
 
     return

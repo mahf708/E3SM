@@ -8,22 +8,116 @@
 <!-- EATM Namelist -->
 <!-- ========================================================================================  -->
 
-<entry id="do_eatm" 
-       type="logical" 
+<entry id="do_eatm"
+       type="logical"
        category="eatm"
        group="eatm_inparm" >
 Default: .true.
 If .true., eatm will run
 </entry>
 
-<entry id="filename_eatm" 
+<entry id="filename_eatm"
        type="char*256"
        category="eatm"
        input_pathname="abs"
-       group="eatm_inparm" 
+       group="eatm_inparm"
        valid_values="" >
 Default: ' '
 Full pathname of eatm domain file
+</entry>
+
+<entry id="eatm_emulator"
+       type="char*256"
+       category="eatm"
+       group="eatm_inparm"
+       valid_values="ACE2-EAMv3,SamudrACE-E3SMv3" >
+Which emulator's channel layout to use.  Selects the input/output channel
+table in eatm_channels_mod.F90; it must match the checkpoint that
+eatm_model_file was traced from (compare against the *_metadata.yaml the
+tracing script writes next to the .pt file).
+Default: ACE2-EAMv3
+</entry>
+
+<entry id="eatm_model_file"
+       type="char*256"
+       category="eatm"
+       input_pathname="abs"
+       group="eatm_inparm"
+       valid_values="" >
+Full pathname of the traced TorchScript emulator (.pt) that FTorch loads.
+Produced by the ACE tracing script with --add-normalization --add-corrector
+(and --device cuda for a GPU run).
+Default: ' '
+</entry>
+
+<entry id="eatm_ic_file"
+       type="char*256"
+       category="eatm"
+       input_pathname="abs"
+       group="eatm_inparm"
+       valid_values="" >
+Full pathname of the emulator initial-condition file, read on a startup run.
+Must contain one 2D (lat, lon) field per emulator input channel, named exactly
+as the channel is named in the checkpoint.  Ignored on a continue/branch run,
+where the state comes from the eatm restart file.
+Default: ' '
+</entry>
+
+<entry id="eatm_model_device"
+       type="char*16"
+       category="eatm"
+       group="eatm_inparm"
+       valid_values="cpu,gpu" >
+Device FTorch loads the traced model onto.  Must match the device the model
+was traced for.
+Default: gpu
+</entry>
+
+<entry id="eatm_pass_forcing"
+       type="logical"
+       category="eatm"
+       group="eatm_inparm" >
+If .true., append the checkpoint's "next step forcing" channels to the input
+tensor after the state block.  Only needed when the traced graph actually
+consumes them (i.e. when it was traced with --add-ocean); the correctors do
+not.  The traced graph slices the state block off the front either way, so
+.false. is safe for a model traced without --add-ocean.
+Default: .false.
+</entry>
+
+<entry id="eatm_legacy_surface"
+       type="logical"
+       category="eatm"
+       group="eatm_inparm" >
+If .true., reproduce the pre-review surface diagnostics: Sa_z from a standard
+atmosphere pressure altitude above sea level, Sa_shum set to the saturation
+specific humidity at the lowest layer, precipitation phase split on a 273.15 K
+lowest-layer temperature threshold, and Faxa_swnet reported as the downwelling
+surface shortwave.  Provided only so earlier runs can be reproduced.
+Default: .false.
+</entry>
+
+<entry id="eatm_frzprec_units"
+       type="char*16"
+       category="eatm"
+       group="eatm_inparm"
+       valid_values="m/s,kg/m2/s" >
+Units of the emulator's frozen_precipitation_rate output channel, used to
+convert it to the kg/m2/s the coupler expects.  SamudrACE-E3SMv3 reports it as
+a water-equivalent depth rate (m/s).  Ignored by emulators that do not predict
+a frozen precipitation rate.
+Default: m/s
+</entry>
+
+<entry id="eatm_iradsw"
+       type="integer"
+       category="eatm"
+       group="eatm_inparm" >
+Radiation interval in coupler steps, used to tell the coupler which calendar
+day the surface models should compute albedos for.  A negative value is
+interpreted as an interval in hours.  EATM has no separate radiation timestep,
+so 1 (every coupler step) is the only value that has been exercised.
+Default: 1
 </entry>
 
 </namelist_definition>

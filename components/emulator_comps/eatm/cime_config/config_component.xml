@@ -24,7 +24,21 @@
     <desc>mode for eatm model, NULL means eatm is turned off</desc>
   </entry>
 
-  <entry id="EATM_BLDNML_OPTS"> 
+  <entry id="EATM_EMULATOR">
+    <type>char</type>
+    <valid_values>ACE2-EAMv3,SamudrACE-E3SMv3</valid_values>
+    <default_value>ACE2-EAMv3</default_value>
+    <group>run_component_eatm</group>
+    <file>env_run.xml</file>
+    <desc>Which emulator EATM drives.  Selects the channel layout in
+      eatm_channels_mod.F90 and the default traced model / initial condition.
+      Must match the checkpoint that eatm_model_file was traced from.
+      ACE2-EAMv3        : atmosphere-only, deterministic SFNO, 39 in / 44 out
+      SamudrACE-E3SMv3  : atmosphere half of the coupled emulator,
+                          stochastic NoiseConditionedSFNO, 43 in / 51 out</desc>
+  </entry>
+
+  <entry id="EATM_BLDNML_OPTS">
     <type>char</type>
     <valid_values></valid_values>
     <default_value>-simyr 2000</default_value>

@@ -1,10 +1,24 @@
 module eatm_restart_mod
 
+  !-----------------------------------------------------------------------------
+  ! Restart and initial-condition I/O for EATM.
+  !
+  ! The restart holds both bracketing emulator states (the `time` dimension has
+  ! length 2 and indexes t_im1 / t_ip1) plus the boundary inputs EATM persists
+  ! rather than re-derives -- currently PHIS and the last SOLIN.  Writing both
+  ! time levels is what makes a restart reproduce the interpolated state the
+  ! coupler would have seen in a continuous run.
+  !
+  ! Variable names come from eatm_channels_mod, so this file does not need to
+  ! change when a different emulator with a different channel layout is used.
+  !-----------------------------------------------------------------------------
+
   use shr_kind_mod      , only : r8 => shr_kind_r8
   use shr_sys_mod       , only : shr_sys_abort
 
   use eatmIO
   use eatmMod
+  use eatm_channels_mod
 
   implicit none
   save
@@ -20,7 +34,7 @@ module eatm_restart_mod
 
       !----------------------------------------------------------------
       ! !DESCRIPTION:
-      ! ...
+      ! Create the restart file and write both emulator time levels to it.
       implicit none
       ! !ARGUMENTS
       character(len=*), intent(in) :: file
@@ -55,7 +69,7 @@ module eatm_restart_mod
     subroutine eatm_restart_file_read( file )
       !----------------------------------------------------------------
       ! !DESCRIPTION:
-      ! ...
+      ! Read both emulator time levels and the persisted boundary inputs.
       implicit none
       ! !ARGUMENTS
       character(len=*), intent(in) :: file
@@ -79,7 +93,7 @@ module eatm_restart_mod
     subroutine eatm_initial_condition_file_read( file )
       !----------------------------------------------------------------
       ! !DESCRIPTION:
-      ! ...
+      ! Populate the emulator's input state from an initial-condition file.
       implicit none
       ! !ARGUMENTS
       character(len=*), intent(in) :: file
@@ -89,9 +103,9 @@ module eatm_restart_mod
       integer :: i ! index
       !----------------------------------------------------------------
 
-      write(logunit_atm, *) 'Reading initial condition dataset'
+      write(logunit_atm, *) 'Reading initial condition dataset ', trim(file)
       call ncd_pio_openfile(ncid, trim(file), 0)
-      call eatm_initial_condition(ncid, 'read')
+      call eatm_initial_condition(ncid)
       call ncd_pio_closefile(ncid)
 
       write(logunit_atm, *)
@@ -111,18 +125,14 @@ module eatm_restart_mod
 
       ! !LOCAL VARIABLES:
       integer :: dimid               ! netCDF dimension id
-      integer :: ier                 ! error status
-      character(len=  8) :: curdate  ! current date
-      character(len=  8) :: curtime  ! current time
-      character(len=256) :: str
       !----------------------------------------------------------------
 
-      ! Define dimensions
+      ! Define dimensions.  'time' of length 2 indexes the two emulator time
+      ! levels (1 => t_im1, 2 => t_ip1), it is not a calendar axis.
       call ncd_defdim(ncid, 'lon', lsize_x, dimid)
       call ncd_defdim(ncid, 'lat', lsize_y, dimid)
       call ncd_defdim(ncid, 'time', 2, dimid)
 
-      ! Define global attributes
     end subroutine set_restart_file_dimensions
 
     subroutine eatm_restart( ncid, flag )
@@ -138,83 +148,15 @@ module eatm_restart_mod
       ! LOCAL VARIABLES:
       integer :: c ! channel index
       logical :: readvar ! determine if variable is read
-      character(len=1)   :: level
-      character(len=32)  :: vname
-      character(len=32)  :: uname
-      character(len=256) :: lname
+      character(len=eatm_nlen)  :: vname
+      character(len=eatm_ulen)  :: uname
+      character(len=eatm_llen)  :: lname
+      character(len=*), parameter :: subname = '(eatm_restart) '
 
-      do c = 1, 44
-        if (c == 1) then
-          vname = "PS"
-          lname = "Surface pressure"
-          uname = "Pa"
-        elseif (c == 2) then
-          vname = "TS"
-          lname = "Surface temperature (radiative)"
-          uname = "K"
-        elseif ((c > 2) .and. (c < 11)) then
-          level = achar( iachar('0') + mod(c - 3, 8) )
-          vname = "T_"//level
-          lname = "Temperature level-"//level
-          uname = "K"
-        elseif ((c > 10) .and. (c < 19)) then
-          level = achar( iachar('0') + mod(c - 3, 8) )
-          vname = "specific_total_water_"//level
-          lname = "specific total water level-"//level
-          uname = "kg/kg"
-        elseif ((c > 18) .and. (c < 27)) then
-          level = achar( iachar('0') + mod(c - 3, 8) )
-          vname = "U_"//level
-          lname = "Zonal wind level-"//level
-          uname = "m/s"
-        elseif ((c > 26) .and. (c < 35)) then
-          level = achar( iachar('0') + mod(c - 3, 8) )
-          vname = "V_"//level
-          lname = "Meridional wind level-"//level
-          uname = "m/s"
-        elseif (c == 35) then
-          vname = "LHFLX"
-          lname = "Surface latent heat flux"
-          uname = "W/m2"
-        elseif (c == 36) then
-          vname = "SHFLX"
-          lname = "Surface sensible heat flux"
-          uname = "W/m2"
-        elseif (c == 37) then
-          vname = "surface_precipitation_rate"
-          lname = "surface precipitation rate (all phases)"
-          uname = "kg/m2/s"
-        elseif (c == 38) then
-          vname = "surface_upward_longwave_flux"
-          lname = "Upward longwave radiative flux at surface"
-          uname = "W/m2"
-        elseif (c == 39) then
-          vname = "FLUT"
-          lname = "Upward longwave radiative flux at TOA"
-          uname = "W/m2"
-        elseif (c == 40) then
-          vname = "FLDS"
-          lname = "Downward longwave radiative flux at surface"
-          uname = "W/m2"
-        elseif (c == 41) then
-          vname = "FSDS"
-          lname = "Downward shortwave radiative flux at surface"
-          uname = "W/m2"
-        elseif (c == 42) then
-          vname = "surface_upward_shortwave_flux"
-          lname = "Upward shortwave radiative flux at surface"
-          uname = "W/m2"
-        elseif (c == 43) then
-          vname = "top_of_atmos_upward_shortwave_flux"
-          lname = "Upward shortwave radiative flux at TOA"
-          uname = "W/m2"
-        elseif (c == 44) then
-          vname = "tendency_of_total_water_path_due_to_advection"
-          lname = "Tendency of total water path from advection"
-          uname = "kg/m2/s"
-        else
-          print *, "Something is wrong"
-        endif
+      do c = 1, n_output_channels
+
+        vname = out_names(c)
+        call eatm_channel_metadata(vname, lname, uname)
 
         if ( flag == 'define' ) then
           call ncd_defvar(&
@@ -236,6 +178,8 @@ module eatm_restart_mod
             nt=1, &
             readvar=readvar &
           )
+          if (flag == 'read' .and. .not. readvar) call shr_sys_abort( &
+               trim(subname)//' ERROR: restart is missing channel '//trim(vname))
           call ncd_io(&
             varname=trim(vname), &
             data=eatm_intrp%t_ip1(c, :, :), &
@@ -244,131 +188,87 @@ module eatm_restart_mod
             nt=2, &
             readvar=readvar &
           )
+        else
+          call shr_sys_abort(trim(subname)//' ERROR: unknown flag '//trim(flag))
         endif
       enddo
+
+      !--- boundary inputs EATM owns and must carry across a restart ---
+      call restart_input_channel(ncid, flag, ix_in_phis)
+      call restart_input_channel(ncid, flag, ix_in_solin)
+
+    end subroutine eatm_restart
+
+    subroutine restart_input_channel( ncid, flag, ix )
+      !-----------------------------------------------------------------------
+      ! define/read/write a single (time-invariant) emulator input channel.
+      implicit none
+      type(file_desc_t), intent(inout) :: ncid
+      character(len=*) , intent(in)    :: flag
+      integer          , intent(in)    :: ix
+
+      logical :: readvar
+      character(len=eatm_nlen) :: vname
+      character(len=eatm_ulen) :: uname
+      character(len=eatm_llen) :: lname
+      character(len=*), parameter :: subname = '(restart_input_channel) '
+
+      if (ix <= 0) return
+
+      vname = in_names(ix)
+      call eatm_channel_metadata(vname, lname, uname)
 
       if ( flag == 'define' ) then
         call ncd_defvar(&
           ncid=ncid, &
-          varname="PHIS", &
+          varname=trim(vname), &
           xtype=ncd_double, &
-          dim1name="lon", &
-          dim2name="lat", &
-          long_name="Surface geopotential", &
-          units="m2/s2" &
-        )
-        call ncd_defvar(&
-          ncid=ncid, &
-          varname="SOLIN", &
-          xtype=ncd_double, &
-          dim1name="lon", &
-          dim2name="lat", &
-          long_name="Solar insolation", &
-          units="W/m2" &
+          dim1name='lon', &
+          dim2name='lat', &
+          long_name=trim(lname), &
+          units=trim(uname) &
         )
       elseif (flag == 'read' .or. flag == 'write') then
         call ncd_io(&
-          varname="PHIS", &
-          data=net_inputs(1, 4, :, :), &
+          varname=trim(vname), &
+          data=net_inputs(1, ix, :, :), &
           ncid=ncid, &
           flag=flag, &
           readvar=readvar &
         )
-        call ncd_io(&
-          varname="SOLIN", &
-          data=net_inputs(1, 5, :, :), &
-          ncid=ncid, &
-          flag=flag, &
-          readvar=readvar &
-        )
+        if (flag == 'read' .and. .not. readvar) call shr_sys_abort( &
+             trim(subname)//' ERROR: restart is missing '//trim(vname))
       endif
-    end subroutine eatm_restart
 
-    subroutine eatm_initial_condition( ncid, flag )
+    end subroutine restart_input_channel
+
+    subroutine eatm_initial_condition( ncid )
       !-----------------------------------------------------------------------
       ! DESCRIPTION:
-      ! read eatm initial condition data.
+      ! read eatm initial condition data -- one 2D field per emulator input
+      ! channel, named exactly as the channel is named in the checkpoint.
 
       ! ARGUMENTS:
       implicit none
       type(file_desc_t), intent(inout) :: ncid ! netcdf id
-      character(len=*) , intent(in)    :: flag ! 'define' or 'read' or 'write'
 
       ! LOCAL VARIABLES:
       integer :: c ! channel index
       logical :: readvar ! determine if variable is read
-      character(len=1)   :: level
-      character(len=32)  :: vname
-      character(len=32)  :: uname
-      character(len=256) :: lname
+      character(len=*), parameter :: subname = '(eatm_initial_condition) '
 
-      integer :: oc               ! output channel index
-      character(len=32) :: oname  ! output variable name
-
-      do c = 1, 39
-        if (c == 1) then
-          vname = "LANDFRAC"
-          lname = "Fraction of sfc area covered by land"
-          uname = "1"
-        elseif (c == 2) then
-          vname = "OCNFRAC"
-          lname = "Fraction of sfc area covered by ocean"
-          uname = "1"
-        elseif (c == 3) then
-          vname = "ICEFRAC"
-          lname = "Fraction of sfc area covered by sea-ice"
-          uname = "1"
-        elseif (c == 4) then
-          vname = "PHIS"
-          lname = "Surface geopotential"
-          uname = "m2/s2"
-        elseif (c == 5) then
-          vname = "SOLIN"
-          lname = "Solar insolation"
-          uname = "W/m2"
-        elseif (c == 6) then
-          vname = "PS"
-          lname = "Surface pressure"
-          uname = "Pa"
-        elseif (c == 7) then
-          vname = "TS"
-          lname = "Surface temperature (radiative)"
-          uname = "K"
-        elseif (c > 7 .and. c < 16) then
-          level = achar( iachar('0') + mod(c, 8) )
-          vname = "T_"//level
-          lname = "Temperature level-"//level
-          uname = "K"
-        elseif (c > 15 .and. c < 24) then
-          level = achar( iachar('0') + mod(c, 8) )
-          vname = "specific_total_water_"//level
-          lname = "specific total water level-"//level
-          uname = "kg/kg"
-        elseif (c > 23 .and. c < 32) then
-          level = achar( iachar('0') + mod(c, 8) )
-          vname = "U_"//level
-          lname = "Zonal wind level-"//level
-          uname = "m/s"
-        elseif (c > 31 .and. c < 40) then
-          level = achar( iachar('0') + mod(c, 8) )
-          vname = "V_"//level
-          lname = "Meridional wind level-"//level
-          uname = "m/s"
-        else
-          print *, "Something is wrong"
-        endif
-
-        if (flag == 'read') then
-          call ncd_io(&
-            varname=trim(vname), &
-            data=net_inputs(1, c, :, :), &
-            ncid=ncid, &
-            flag=flag, &
-            readvar=readvar &
-          )
-        else
-            call shr_sys_abort()
-        endif
+      do c = 1, n_input_channels
+        call ncd_io(&
+          varname=trim(in_names(c)), &
+          data=net_inputs(1, c, :, :), &
+          ncid=ncid, &
+          flag='read', &
+          readvar=readvar &
+        )
+        if (.not. readvar) call shr_sys_abort(trim(subname)// &
+             ' ERROR: initial condition file has no variable '//trim(in_names(c)))
       enddo
+
     end subroutine eatm_initial_condition
+
 end module eatm_restart_mod

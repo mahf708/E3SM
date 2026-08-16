@@ -80,24 +80,23 @@ def buildnml(case, caseroot, compname):
         if os.path.exists(os.path.join(casebuild, "eatm.input_data_list")):
             os.remove(os.path.join(casebuild, "eatm.input_data_list"))
 
+        # EATM finds its restart through rpointer.atm, so a branch or hybrid
+        # start needs no namelist entry -- just check that the reference restart
+        # the user asked for is actually staged in RUNDIR before we get to a
+        # runtime abort inside the component.
         infile_text = ""
-        if atm_grid != "null":
+        if atm_grid != "null" and run_type in ("hybrid", "branch"):
+            fncheck = "{}/{}.eatm{}.r.{}-{}.nc".format(
+                rundir, run_refcase, inst_string, run_refdate, run_reftod)
+            if not os.path.exists(fncheck):
+                fncheck = "{}/{}.eatm.r.{}-{}.nc".format(
+                    rundir, run_refcase, run_refdate, run_reftod)
+                expect(os.path.exists(fncheck),
+                       "ERROR eatm.buildnml: could not find restart file for "
+                       "branch or hybrid start: {}".format(fncheck))
 
-            fncheck = ""
-            if run_type == 'hybrid' or run_type == "branch":
+        logger.debug("EATM::buildnml compset %s", compset)
 
-                fncheck = "{}/{}.eatm{}.r.{}-{}.nc".format(rundir, run_refcase, inst_string, run_refdate, run_reftod)
-                if not os.path.exists(fncheck):
-                    fncheck = "{}/{}.eatm.r.{}-{}.nc".format(rundir, run_refcase, run_refdate, run_reftod)
-                    expect(os.path.exists(fncheck), "ERROR eatm.buildnml: could not find restart file for branch or hybrid start")
-
-            if run_type == "hybrid": infile_text += "finidat_rtm = '{}'\n".format(fncheck)
-            if run_type == "branch": infile_text += "nrevsn_rtm  = '{}'\n".format(fncheck)
-
-        
-        print("EATM::buildnml compset ", compset)
-
-        print("EATM::buildnml final infile_text is:",infile_text)     
         create_namelist_infile(case,
                                "{}/user_nl_eatm{}".format(caseroot, inst_string),
                                "{}/cesm_namelist".format(atmconf_dir),

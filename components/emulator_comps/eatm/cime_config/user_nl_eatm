@@ -1,11 +1,19 @@
 !----------------------------------------------------------------------------------
-! Users should add all user specific namelist changes below in the form of 
-! namelist_var = new_namelist_value 
-! NOTE: namelist variable coupling_period CAN ONLY be changed by modifying the value
-!       of the xml variable ROF_NCPL in env_run.xml
-! NOTE: if the xml variable ROF GRID in env_build.xml is set to 'null', then
-!        the RTM build-namelist will set do_rtm to .false. - and will ignore 
-!        any change below
+! Users should add all user specific namelist changes below in the form of
+! namelist_var = new_namelist_value
+!
+! NOTE: which emulator EATM drives is set with the xml variable EATM_EMULATOR
+!       (./xmlchange EATM_EMULATOR=SamudrACE-E3SMv3), not here.  The default
+!       traced model and initial condition follow from it.
+! NOTE: if the xml variable ATM_GRID is set to 'null' then EATM_MODE is NULL and
+!       build-namelist sets do_eatm = .false.
+!
+! Commonly overridden settings:
+!
+!   eatm_model_file     = '/path/to/traced_model_cuda.pt'
+!   eatm_ic_file        = '/path/to/emulator_initial_condition.nc'
+!   eatm_model_device   = 'gpu'      ! or 'cpu'; must match how the model was traced
+!   eatm_legacy_surface = .false.    ! .true. restores the pre-review surface diagnostics
 !----------------------------------------------------------------------------------
 
 

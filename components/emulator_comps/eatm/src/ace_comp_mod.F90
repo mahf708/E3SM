@@ -1,8 +1,23 @@
 module ace_comp_mod
 
+  !-----------------------------------------------------------------------------
+  ! Drives a traced ACE-family emulator through FTorch and translates between
+  ! its channel layout and the fields the MCT coupler exchanges.
+  !
+  ! The emulator advances on its own timestep (6 h for both ACE2-EAMv3 and the
+  ! SamudrACE-E3SMv3 atmosphere).  The coupler runs much faster than that, so
+  ! inference happens only on emulator-step boundaries and the coupler is handed
+  ! a linear interpolation between the two bracketing emulator states.
+  !
+  ! Which physical field lives in which channel is not hardwired here -- see
+  ! eatm_channels_mod.  Everything below is written against named indices so a
+  ! different checkpoint only needs a new table there plus a namelist change.
+  !-----------------------------------------------------------------------------
+
   use esmf
   use eatmMod
   use eatmIO
+  use eatm_channels_mod
   use mct_mod
   use seq_timemgr_mod, only: seq_timemgr_EClockGetData
   use shr_const_mod
@@ -35,23 +50,21 @@ module ace_comp_mod
   public :: ace_comp_finalize
 
   !--------------------------------------------------------------------------
-  ! Public module data
-  !--------------------------------------------------------------------------
-  integer, parameter, public :: n_input_channels=39  ! number of input channels to emulator
-  integer, parameter, public :: n_output_channels=44 ! number of output channels to emulator
-  integer, parameter, public :: eatm_idt=6 * 60 * 60 ! eatm timestep (6hr) in seconds
-  ! number of eatm steps in a year
-  integer, parameter, public :: eatm_spy=(365 * 24 * 60 * 60) / eatm_idt
-  ! TODO (AN): Parse from namelist
-  integer(IN), parameter, public :: iradsw=1    ! radiation interval
-
-  !--------------------------------------------------------------------------
   ! Private module data
   !--------------------------------------------------------------------------
   real(R8), parameter :: rdair  = SHR_CONST_RDAIR  ! dry air gas constant   ~ J/K/kg
   real(R8), parameter :: tKFrz  = SHR_CONST_TKFRZ
+  real(R8), parameter :: grav   = SHR_CONST_G      ! gravitational acceleration m/s2
+  real(R8), parameter :: rhofw  = SHR_CONST_RHOFW  ! density of fresh water kg/m3
 
   real(R8), parameter :: solar_const = 1368.22_R8  ! total solar irradiance (W/m2), matches RRTMG
+
+  ! Partitioning of the downwelling surface shortwave into the four bands the
+  ! coupler expects.  Same fixed split datm uses; see eatm/REVIEW.md.
+  real(R8), parameter :: frac_swvdr = 0.28_R8
+  real(R8), parameter :: frac_swndr = 0.31_R8
+  real(R8), parameter :: frac_swvdf = 0.24_R8
+  real(R8), parameter :: frac_swndf = 0.17_R8
 
   ! Set up Torch data structures
   type(torch_model) :: ace_model
@@ -62,10 +75,10 @@ module ace_comp_mod
   integer(c_int64_t) :: input_tensor_shape(4)
   integer(c_int64_t) :: output_tensor_shape(4)
 
-  ! TODO (AN): Parse from namelist
-  character(len=*), parameter :: torchscript_file="/pscratch/sd/m/mahf708/test_ace_repo/test_trace_cuda.pt"
-  ! character(len=*), parameter :: norm_file="/global/cfs/cdirs/e3sm/anolan/ACE2-E3SMv3/ace2_EAMv3_normalize.nc"
-  ! character(len=*), parameter :: denorm_file="/global/cfs/cdirs/e3sm/anolan/ACE2-E3SMv3/ace2_EAMv3_denormalize.nc"
+  integer(c_int) :: model_device      ! torch_kCPU or torch_kCUDA
+  integer        :: n_tensor_in       ! channels handed to the traced graph
+  logical        :: frzprec_is_depth  ! frozen precip channel is m/s, not kg/m2/s
+
   save
 
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -83,10 +96,17 @@ CONTAINS
     real(R8)    :: t_frac      ! frac through eatm timestep
     integer     :: t_modulo    ! int remainder of curr. time over eatm dt
     integer(in) :: CurrentTOD  ! model sec into model date
+    character(len=*), parameter :: subname = '(ace_comp_init) '
+
+    !--- how many channels the traced graph is handed ---
+    n_tensor_in = n_input_channels
+    if (eatm_pass_forcing) n_tensor_in = n_input_channels + n_forcing_channels
+
+    frzprec_is_depth = (trim(eatm_frzprec_units) == 'm/s')
 
     input_tensor_shape = [ &
       int(1, kind=c_int64_t), &
-      int(n_input_channels, kind=c_int64_t), &
+      int(n_tensor_in, kind=c_int64_t), &
       int(lsize_y, kind=c_int64_t), &
       int(lsize_x, kind=c_int64_t) &
     ]
@@ -100,20 +120,35 @@ CONTAINS
 
     tensor_layout = [1_c_int, 2_c_int, 4_c_int, 3_c_int]
 
-    ! call init_normalizer(normalizer, norm_file, n_input_channels)
-    ! call init_normalizer(denormalizer, denorm_file, n_output_channels)
+    select case (trim(eatm_model_device))
+    case ('gpu', 'GPU', 'cuda', 'CUDA')
+       model_device = torch_kCUDA
+    case ('cpu', 'CPU')
+       model_device = torch_kCPU
+    case default
+       call shr_sys_abort(trim(subname)//' ERROR: eatm_model_device must be '// &
+            '"cpu" or "gpu", got "'//trim(eatm_model_device)//'"')
+    end select
+
+    if (len_trim(eatm_model_file) == 0) &
+         call shr_sys_abort(trim(subname)//' ERROR: eatm_model_file is not set')
+
+    write(logunit_atm,*) trim(subname)//'loading traced model ', trim(eatm_model_file)
+    write(logunit_atm,*) trim(subname)//'device                = ', trim(eatm_model_device)
+    write(logunit_atm,*) trim(subname)//'input tensor channels = ', n_tensor_in
+    call shr_sys_flush(logunit_atm)
 
     ! load the traced model
-    call torch_model_load(ace_model, torchscript_file, torch_kCUDA)
+    call torch_model_load(ace_model, trim(eatm_model_file), model_device)
 
     if (read_restart) then
 
       call seq_timemgr_EClockGetData( EClock, curr_tod=CurrentTOD )
 
       ! int remainder (in sec) of coupler timestep relative to ACE timestep
-      t_modulo = mod(CurrentTOD, eatm_idt)
+      t_modulo = mod(CurrentTOD, eatm_model_dt)
       ! turn integer remainder into fraction through ACE timestep
-      t_frac = real(t_modulo, kind=R8) / real(eatm_idt, kind=R8)
+      t_frac = real(t_modulo, kind=R8) / real(eatm_model_dt, kind=R8)
 
       do k = 1, n_output_channels
         do j = 1, lsize_y
@@ -127,39 +162,7 @@ CONTAINS
     else
       call ace_compute_solin(EClock, ggrid)
 
-      net_inputs_nn = net_inputs
-      ! normalize, can probably happen after tensor is made becuase it's a pointer
-      ! call normalizer%normalize(net_inputs_nn)
-
-      ! create input/output tensors based off net input/output arrays
-      call torch_tensor_from_blob(&
-        input_tensor(1), &
-        c_loc(net_inputs_nn), &
-        ndims=4_c_int, &
-        tensor_shape=input_tensor_shape, &
-        layout=tensor_layout, &
-        dtype=torch_kFloat32, &
-        device_type=torch_kCUDA &
-      )
-      call torch_tensor_from_blob(&
-        output_tensor(1), &
-        c_loc(net_outputs), &
-        ndims=4_c_int, &
-        tensor_shape=output_tensor_shape, &
-        layout=tensor_layout, &
-        dtype=torch_kFloat32, &
-        device_type=torch_kCPU &
-      )
-
-      ! run inference
-      call torch_model_forward(ace_model, input_tensor, output_tensor)
-
-      ! Clean up C++ pointers
-      call torch_delete(input_tensor)
-      call torch_delete(output_tensor)
-
-      ! denormalize
-      ! call denormalizer%denormalize(net_outputs)
+      call ace_inference()
 
       ! fill both time levels of intrp struct with restart data
       do k = 1, n_output_channels
@@ -199,56 +202,29 @@ CONTAINS
 
     write(logunit_atm, *) "stepno: ", stepno
     write(logunit_atm, *) "cpl_idt: ", cpl_idt
-    write(logunit_atm, *) "eatm_idt: ", eatm_idt
+    write(logunit_atm, *) "eatm_model_dt: ", eatm_model_dt
     write(logunit_atm, *) "CurrentYMD: ", CurrentYMD
     write(logunit_atm, *) "CurrentTOD: ", CurrentTOD
     call shr_sys_flush(logunit_atm)
 
     ! integer remainder (in sec) of coupler timestep relative to ACE timestep
-    t_modulo = mod(CurrentTOD, eatm_idt)
+    t_modulo = mod(CurrentTOD, eatm_model_dt)
 
     if (t_modulo .eq. 0) then
 
-      call ace_eatm_import()
+      ! Feed the emulator its own state *at this time*, which is the prediction
+      ! made one emulator step ago (t_ip1).  net_outputs currently still holds
+      ! the field the coupler was handed at the end of the previous coupler
+      ! step, which is a partial interpolation towards t_ip1 and is therefore
+      ! not a state the emulator was ever trained to consume.
+      call ace_eatm_import(eatm_intrp%t_ip1)
       call ace_compute_solin(EClock, ggrid)
 
-      net_inputs_nn = net_inputs
-      ! normalize, can probably happen after tensor is made becuase it's a pointer
-      ! call normalizer%normalize(net_inputs_nn)
-
-      ! create input/output tensors based off net input/output arrays
-      call torch_tensor_from_blob(&
-        input_tensor(1), &
-        c_loc(net_inputs_nn), &
-        ndims=4_c_int, &
-        tensor_shape=input_tensor_shape, &
-        layout=tensor_layout, &
-        dtype=torch_kFloat32, &
-        device_type=torch_kCUDA &
-      )
-      call torch_tensor_from_blob(&
-        output_tensor(1), &
-        c_loc(net_outputs), &
-        ndims=4_c_int, &
-        tensor_shape=output_tensor_shape, &
-        layout=tensor_layout, &
-        dtype=torch_kFloat32, &
-        device_type=torch_kCPU &
-      )
-
-      ! run inference
-      call torch_model_forward(ace_model, input_tensor, output_tensor)
-
-      ! Clean up C++ pointers
-      call torch_delete(input_tensor)
-      call torch_delete(output_tensor)
-
-      ! denormalize
-      ! call denormalizer%denormalize(net_outputs)
+      call ace_inference()
 
       ! advance the time levels: old t_ip1 (state at current time T)
-      ! becomes t_im1; new inference (state at T+6h) becomes t_ip1.
-      ! Interpolation between them gives smooth transition over [T, T+6h].
+      ! becomes t_im1; new inference (state at T+dt) becomes t_ip1.
+      ! Interpolation between them gives smooth transition over [T, T+dt].
       do k = 1, n_output_channels
         do j = 1, lsize_y
           do i = 1, lsize_x
@@ -260,7 +236,7 @@ CONTAINS
 
     end if
 
-    t_frac = real(t_modulo, kind=r8) / real(eatm_idt, kind=r8)
+    t_frac = real(t_modulo, kind=r8) / real(eatm_model_dt, kind=r8)
 
     ! time interpolate the results
     do k = 1, n_output_channels
@@ -278,66 +254,113 @@ CONTAINS
 
   subroutine ace_comp_finalize()
     call torch_delete(ace_model)
-    ! call finalize_normalizer(normalizer)
-    ! call finalize_normalizer(denormalizer)
   end subroutine ace_comp_finalize
 
-  subroutine ace_eatm_import()
+  !===============================================================================
+  subroutine ace_inference()
+
     !----------------------------------------------------------------
-    ! !DESCRIPTION:
-    ! Set net_inputs from coupler imports and previous model outputs.
-    ! PHIS (channel 4) persists from init. SOLIN (channel 5) is
-    ! computed separately by ace_compute_solin.
+    ! Copy net_inputs (plus, optionally, the next-step forcing block)
+    ! into the tensor staging buffer, run the traced model, and leave
+    ! the denormalized, corrected result in net_outputs.
+    !
+    ! Normalization, the atmosphere correctors and (if it was traced in)
+    ! the ocean SST prescription all live inside the TorchScript graph --
+    ! see scripts/trace_ace_model.py in the ACE repository.
     !----------------------------------------------------------------
     implicit none
 
+    integer :: k
+
+    net_inputs_nn(1, 1:n_input_channels, :, :) = net_inputs(1, :, :, :)
+
+    if (eatm_pass_forcing) then
+      ! The only next-step forcing these checkpoints declare is SOLIN, and
+      ! ace_compute_solin already puts the next-step value into the SOLIN
+      ! state channel (that is what fme's next_step_forcing_names means), so
+      ! the appended copy is the same field.
+      do k = 1, n_forcing_channels
+        net_inputs_nn(1, n_input_channels + k, :, :) = net_inputs(1, ix_in_solin, :, :)
+      end do
+    end if
+
+    call torch_tensor_from_blob(&
+      input_tensor(1), &
+      c_loc(net_inputs_nn), &
+      ndims=4_c_int, &
+      tensor_shape=input_tensor_shape, &
+      layout=tensor_layout, &
+      dtype=torch_kFloat32, &
+      device_type=model_device &
+    )
+    call torch_tensor_from_blob(&
+      output_tensor(1), &
+      c_loc(net_outputs), &
+      ndims=4_c_int, &
+      tensor_shape=output_tensor_shape, &
+      layout=tensor_layout, &
+      dtype=torch_kFloat32, &
+      device_type=torch_kCPU &
+    )
+
+    call torch_model_forward(ace_model, input_tensor, output_tensor)
+
+    ! Clean up C++ pointers
+    call torch_delete(input_tensor)
+    call torch_delete(output_tensor)
+
+  end subroutine ace_inference
+
+  !===============================================================================
+  subroutine ace_eatm_import(state)
+    !----------------------------------------------------------------
+    ! !DESCRIPTION:
+    ! Build the emulator's input state for the step about to be taken.
+    !
+    !   * every input channel that is also an output channel is carried
+    !     forward from `state` (the emulator's own prediction for now),
+    !   * the surface fractions come from the coupler,
+    !   * TS is the coupler's merged surface temperature over ocean and ice
+    !     and the emulator's own TS over land (the surface models own the
+    !     first two, the emulator owns the third),
+    !   * PHIS persists from the initial condition / restart,
+    !   * SOLIN is computed by ace_compute_solin.
+    !----------------------------------------------------------------
+    implicit none
+
+    real(R4), intent(in) :: state(:,:,:)   ! (channel, x, y)
+
     ! !LOCAL VARIABLES:
-    integer :: i, j
+    integer :: i, j, k
+
+    do k = 1, n_input_channels
+      if (in_from_out(k) > 0) then
+        do j = 1, lsize_y
+          do i = 1, lsize_x
+            net_inputs(1, k, i, j) = state(in_from_out(k), i, j)
+          enddo
+        enddo
+      end if
+    end do
 
     do j = 1, lsize_y
       do i = 1, lsize_x
-        net_inputs(1,  1, i, j) = lndfrac(i, j)            ! ACE2-EAMv3: LANDFRAC
-        net_inputs(1,  2, i, j) = ocnfrac(i, j)            ! ACE2-EAMv3: OCNFRAC
-        net_inputs(1,  3, i, j) = icefrac(i, j)            ! ACE2-EAMv3: ICEFRAC
-        net_inputs(1,  6, i, j) = net_outputs(1, 1, i, j)  ! ACE2-EAMv3: PS
-        ! use landfrac as weights to paint in ACE TS over land
-        net_inputs(1,  7, i, j) = (1 - lndfrac(i, j))*ts(i, j) + lndfrac(i, j) * net_outputs(1, 2, i, j)  ! ACE2-EAMv3: TS
-        ! net_inputs(1,  7, i, j) = net_outputs(1, 2, i, j)  ! ACE2-EAMv3: TS
-        ! For 3D fields just advance through with time
-        net_inputs(1,  8, i, j) = net_outputs(1,  3, i, j) ! ACE2-EAMv3: T_0
-        net_inputs(1,  9, i, j) = net_outputs(1,  4, i, j) ! ACE2-EAMv3: T_1
-        net_inputs(1, 10, i, j) = net_outputs(1,  5, i, j) ! ACE2-EAMv3: T_2
-        net_inputs(1, 11, i, j) = net_outputs(1,  6, i, j) ! ACE2-EAMv3: T_3
-        net_inputs(1, 12, i, j) = net_outputs(1,  7, i, j) ! ACE2-EAMv3: T_4
-        net_inputs(1, 13, i, j) = net_outputs(1,  8, i, j) ! ACE2-EAMv3: T_5
-        net_inputs(1, 14, i, j) = net_outputs(1,  9, i, j) ! ACE2-EAMv3: T_6
-        net_inputs(1, 15, i, j) = net_outputs(1, 10, i, j) ! ACE2-EAMv3: T_7
-        net_inputs(1, 16, i, j) = net_outputs(1, 11, i, j) ! ACE2-EAMv3: specific_total_water_0
-        net_inputs(1, 17, i, j) = net_outputs(1, 12, i, j) ! ACE2-EAMv3: specific_total_water_1
-        net_inputs(1, 18, i, j) = net_outputs(1, 13, i, j) ! ACE2-EAMv3: specific_total_water_2
-        net_inputs(1, 19, i, j) = net_outputs(1, 14, i, j) ! ACE2-EAMv3: specific_total_water_3
-        net_inputs(1, 20, i, j) = net_outputs(1, 15, i, j) ! ACE2-EAMv3: specific_total_water_4
-        net_inputs(1, 21, i, j) = net_outputs(1, 16, i, j) ! ACE2-EAMv3: specific_total_water_5
-        net_inputs(1, 22, i, j) = net_outputs(1, 17, i, j) ! ACE2-EAMv3: specific_total_water_6
-        net_inputs(1, 23, i, j) = net_outputs(1, 18, i, j) ! ACE2-EAMv3: specific_total_water_7
-        net_inputs(1, 24, i, j) = net_outputs(1, 19, i, j) ! ACE2-EAMv3: U_0
-        net_inputs(1, 25, i, j) = net_outputs(1, 20, i, j) ! ACE2-EAMv3: U_1
-        net_inputs(1, 26, i, j) = net_outputs(1, 21, i, j) ! ACE2-EAMv3: U_2
-        net_inputs(1, 27, i, j) = net_outputs(1, 22, i, j) ! ACE2-EAMv3: U_3
-        net_inputs(1, 28, i, j) = net_outputs(1, 23, i, j) ! ACE2-EAMv3: U_4
-        net_inputs(1, 29, i, j) = net_outputs(1, 24, i, j) ! ACE2-EAMv3: U_5
-        net_inputs(1, 30, i, j) = net_outputs(1, 25, i, j) ! ACE2-EAMv3: U_6
-        net_inputs(1, 31, i, j) = net_outputs(1, 26, i, j) ! ACE2-EAMv3: U_7
-        net_inputs(1, 32, i, j) = net_outputs(1, 27, i, j) ! ACE2-EAMv3: V_0
-        net_inputs(1, 33, i, j) = net_outputs(1, 28, i, j) ! ACE2-EAMv3: V_1
-        net_inputs(1, 34, i, j) = net_outputs(1, 29, i, j) ! ACE2-EAMv3: V_2
-        net_inputs(1, 35, i, j) = net_outputs(1, 30, i, j) ! ACE2-EAMv3: V_3
-        net_inputs(1, 36, i, j) = net_outputs(1, 31, i, j) ! ACE2-EAMv3: V_4
-        net_inputs(1, 37, i, j) = net_outputs(1, 32, i, j) ! ACE2-EAMv3: V_5
-        net_inputs(1, 38, i, j) = net_outputs(1, 33, i, j) ! ACE2-EAMv3: V_6
-        net_inputs(1, 39, i, j) = net_outputs(1, 34, i, j) ! ACE2-EAMv3: V_7
+        net_inputs(1, ix_in_landfrac, i, j) = real(lndfrac(i, j), R4)
+        net_inputs(1, ix_in_ocnfrac,  i, j) = real(ocnfrac(i, j), R4)
+        net_inputs(1, ix_in_icefrac,  i, j) = real(icefrac(i, j), R4)
       enddo
     enddo
+
+    if (ix_in_ts > 0) then
+      do j = 1, lsize_y
+        do i = 1, lsize_x
+          ! land fraction weights the emulator's own surface temperature in
+          net_inputs(1, ix_in_ts, i, j) = real( &
+               (1.0_R8 - lndfrac(i, j)) * ts(i, j) + &
+               lndfrac(i, j) * real(state(ix_out_ts, i, j), R8), R4)
+        enddo
+      enddo
+    end if
 
     write(logunit_atm, *) "----------------------------------------------------------------"
     write(logunit_atm, *) "ace_eatm_import"
@@ -347,69 +370,100 @@ CONTAINS
 
   end subroutine ace_eatm_import
 
+  !===============================================================================
   subroutine ace_eatm_export(ggrid)
-    ! !LOCAL VARIABLES:
-    type(mct_gGrid), pointer :: ggrid
-    real(R8),        pointer :: yc(:)
 
-    integer(IN) :: klat
-    integer     :: i, j, n
-    real(R8)    :: e, avg_alb
-    real(R8), parameter :: ak_7 = 2328.4749
-    real(R8), parameter :: bk_7 = 0.8722759
-    real(R8), parameter :: degtorad = SHR_CONST_PI/180.0_R8
+    !----------------------------------------------------------------
+    ! Turn the emulator's output channels into the state and flux fields the
+    ! coupler expects from an atmosphere.
+    !----------------------------------------------------------------
+    implicit none
 
-    allocate(yc(lsize))
+    type(mct_gGrid), pointer :: ggrid   ! unused; kept for interface symmetry
 
-    klat = mct_aVect_indexRA(ggrid%data,'lat')
-    yc(:) = ggrid%data%rAttr(klat,:)
+    integer  :: i, j
+    real(R8) :: esat, p_int, tv, precip, snow, fsds_dn
 
-    n = 0
     do j = 1, lsize_y
       do i = 1, lsize_x
-        n = n + 1
 
-        pslv(i, j) = net_outputs(1,  1, i, j) ! PS (Surface pressure)
-        pbot(i, j) = (ak_7 + bk_7 * net_outputs(1, 1, i, j))
-        ! https://en.wikipedia.org/wiki/Pressure_altitude w/ Pa --> hPa
-        zbot(i, j) = 44307.694_R8 * ( 1.0_R8 - (pbot(i, j) / SHR_CONST_PSTD)**0.190284_R8 )
-        ubot(i, j) = net_outputs(1, 26, i, j) ! U_7
-        vbot(i, j) = net_outputs(1, 34, i, j) ! V_7
-        tbot(i, j) = net_outputs(1, 10, i, j) ! T_7
+        pslv(i, j) = net_outputs(1, ix_out_ps, i, j)   ! PS; == SLP where PHIS == 0
+        tbot(i, j) = net_outputs(1, ix_out_tbot, i, j)
+        ubot(i, j) = net_outputs(1, ix_out_ubot, i, j)
+        vbot(i, j) = net_outputs(1, ix_out_vbot, i, j)
+        topo(i, j) = net_inputs(1, ix_in_phis, i, j) / grav
+
+        ! pressure at the interface between the lowest emulator layer and the
+        ! one above it
+        p_int = eatm_ak_bot + eatm_bk_bot * pslv(i, j)
+
+        if (eatm_legacy_surface) then
+          !--- pre-review behaviour, retained so earlier runs can be reproduced:
+          !--- the reference level is the layer top, its height is a standard
+          !--- atmosphere pressure altitude above *sea level*, and the humidity
+          !--- is saturated rather than predicted.
+          pbot(i, j) = p_int
+          ! https://en.wikipedia.org/wiki/Pressure_altitude w/ Pa --> hPa
+          zbot(i, j) = 44307.694_R8 * ( 1.0_R8 - (pbot(i, j) / SHR_CONST_PSTD)**0.190284_R8 )
+          esat = datm_shr_esat(tbot(i, j), tbot(i, j))
+          shum(i, j) = (0.622_R8 * esat)/(pbot(i, j) - 0.378_R8 * esat)
+        else
+          !--- the layer-mean fields T_7/U_7/V_7/STW_7 belong at the layer
+          !--- midpoint, and Sa_z is a height *above the surface*, so use the
+          !--- hypsometric thickness from PS to the midpoint rather than a
+          !--- pressure altitude above sea level.
+          pbot(i, j) = 0.5_R8 * (pslv(i, j) + p_int)
+          shum(i, j) = max(real(net_outputs(1, ix_out_qbot, i, j), R8), 0.0_R8)
+          tv         = tbot(i, j) * (1.0_R8 + 0.608_R8 * shum(i, j))
+          zbot(i, j) = (rdair * tv / grav) * log(pslv(i, j) / pbot(i, j))
+        end if
+
         ptem(i, j) = tbot(i,j) * (pslv(i,j)/pbot(i,j))**(rdair/SHR_CONST_CPDAIR)
-        lwdn(i, j) = net_outputs(1, 40, i, j) ! FLDS (Downwelling longwave flux at surface)
-
-        !--- saturation vapor pressure ---
-        e = datm_shr_esat(tbot(i, j), tbot(i, j))
-        !--- specific humidity ---
-        shum(i, j) = (0.622_R8 * e)/(pbot(i, j) - 0.378_R8 * e)
-        !--- density ---
         dens(i, j) = pbot(i, j)  / (rdair * tbot(i, j) * (1 + 0.608_R8 * shum(i, j)))
 
+        lwdn(i, j) = net_outputs(1, ix_out_flds, i, j)
+
+        !--- precipitation: the emulator has no convective/large-scale split,
+        !--- so everything is reported as large scale.
+        precip = max(real(net_outputs(1, ix_out_precip, i, j), R8), 0.0_R8)
         snowc(i, j) = 0.0_R8
         rainc(i, j) = 0.0_R8
-        if (tbot(i, j) < tKFrz) then
-          rainl(i, j) = 0.0_R8
-          snowl(i, j) = max(net_outputs(1, 37, i, j), 0.0_R8)
+
+        if (ix_out_snow > 0 .and. .not. eatm_legacy_surface) then
+          snow = max(real(net_outputs(1, ix_out_snow, i, j), R8), 0.0_R8)
+          if (frzprec_is_depth) snow = snow * rhofw   ! m/s water equivalent -> kg/m2/s
+          snow = min(snow, precip)
+          snowl(i, j) = snow
+          rainl(i, j) = precip - snow
         else
-          rainl(i, j) = max(net_outputs(1, 37, i, j), 0.0_R8)
-          snowl(i, j) = 0.0_R8
-        endif
+          ! no predicted frozen fraction: split on the lowest-layer temperature
+          if (tbot(i, j) < tKFrz) then
+            rainl(i, j) = 0.0_R8
+            snowl(i, j) = precip
+          else
+            rainl(i, j) = precip
+            snowl(i, j) = 0.0_R8
+          endif
+        end if
 
-        ! Downwelling solar flux at surface
-        swnet(i, j) = net_outputs(1, 41, i, j)
-        !--- fabricate required sw[n,v]d[r,f] components from swnet ---
-        swvdr(i, j) = swnet(i, j) * 0.28_R8
-        swndr(i, j) = swnet(i, j) * 0.31_R8
-        swvdf(i, j) = swnet(i, j) * 0.24_R8
-        swndf(i, j) = swnet(i, j) * 0.17_R8
+        !--- shortwave.  Faxa_swnet is diagnostic in the coupler (the net flux
+        !--- the surface models see is rebuilt from the four downwelling bands
+        !--- below and their own albedos), so report the emulator's actual net
+        !--- flux when it predicts the upward component.
+        fsds_dn = max(real(net_outputs(1, ix_out_fsds, i, j), R8), 0.0_R8)
+        swvdr(i, j) = fsds_dn * frac_swvdr
+        swndr(i, j) = fsds_dn * frac_swndr
+        swvdf(i, j) = fsds_dn * frac_swvdf
+        swndf(i, j) = fsds_dn * frac_swndf
 
-        ! avg_alb = ( 0.069 - 0.011*cos(2.0_R8*yc(n)*degtorad ) )
-        ! swnet(i, j) = swnet(i, j) * (1.0_R4 - REAL(avg_alb, R4))
+        if (ix_out_fsus > 0 .and. .not. eatm_legacy_surface) then
+          swnet(i, j) = max(fsds_dn - max(real(net_outputs(1, ix_out_fsus, i, j), R8), 0.0_R8), 0.0_R8)
+        else
+          swnet(i, j) = fsds_dn
+        end if
+
       enddo
     enddo
-
-    deallocate(yc)
 
     write(logunit_atm, *) "----------------------------------------------------------------"
     write(logunit_atm, *) "ace_eatm_export"
@@ -417,9 +471,11 @@ CONTAINS
     write(logunit_atm, *) "zbot  (min, max):   ( ", minval(zbot(:, :)),  maxval(zbot(:, :)), " )"
     write(logunit_atm, *) "tbot   (min, max):  ( ", minval(tbot(:, :)),  maxval(tbot(:, :)), " )"
     write(logunit_atm, *) "pbot   (min, max):  ( ", minval(pbot(:, :)),  maxval(pbot(:, :)), " )"
+    write(logunit_atm, *) "shum   (min, max):  ( ", minval(shum(:, :)),  maxval(shum(:, :)), " )"
     write(logunit_atm, *) "ubot   (min, max):  ( ", minval(ubot(:, :)),  maxval(ubot(:, :)), " )"
     write(logunit_atm, *) "vbot   (min, max):  ( ", minval(vbot(:, :)),  maxval(vbot(:, :)), " )"
     write(logunit_atm, *) "swnet  (min, max):  ( ", minval(swnet(:, :)), maxval(swnet(:, :)), " )"
+    write(logunit_atm, *) "lwdn   (min, max):  ( ", minval(lwdn(:, :)),  maxval(lwdn(:, :)), " )"
     write(logunit_atm, *) "rainl (min, max):   ( ", minval(rainl(:, :)), maxval(rainl(:, :)), " )"
     write(logunit_atm, *) "snowl (min, max):   ( ", minval(snowl(:, :)), maxval(snowl(:, :)), " )"
     call shr_sys_flush(logunit_atm)
@@ -469,15 +525,17 @@ CONTAINS
 
   end function datm_shr_eSat
 
+  !===============================================================================
   subroutine ace_compute_solin(EClock, ggrid)
     !----------------------------------------------------------------
     ! Compute SOLIN (solar insolation at TOA) from orbital mechanics.
     ! SOLIN = S0 * eccf * max(0, cosz)
     !
-    ! The ACE emulator predicts state at T+dt from inputs at T, so
-    ! SOLIN is computed for T+dt (the prediction target time) to ensure
-    ! the output FSDS matches the correct solar geometry. This enables
-    ! smooth time interpolation between consecutive ACE outputs.
+    ! The ACE emulator predicts state at T+dt from inputs at T, and declares
+    ! SOLIN in next_step_forcing_names -- meaning the SOLIN *input* channel
+    ! carries the value at T+dt, not at T.  So SOLIN is computed for the
+    ! prediction target time, which also makes the output FSDS consistent with
+    ! the solar geometry at the time the state is handed to the coupler.
     !----------------------------------------------------------------
     implicit none
     type(ESMF_Clock), intent(in) :: EClock
@@ -501,7 +559,7 @@ CONTAINS
 
     ! Advance julday by one ACE timestep: the emulator predicts state
     ! at T+dt, so SOLIN must represent solar geometry at T+dt.
-    julday = julday + real(eatm_idt, R8) / SHR_CONST_CDAY
+    julday = julday + real(eatm_model_dt, R8) / SHR_CONST_CDAY
 
     call shr_orb_decl(julday, orb_eccen, orb_mvelpp, orb_lambm0, orb_obliqr, delta, eccf)
 
@@ -519,46 +577,12 @@ CONTAINS
         lon_r = xc(n) * degtorad
         cosz_val = shr_orb_cosz(julday, lat_r, lon_r, delta)
         solin_val = solar_const * eccf * max(0.0_R8, cosz_val)
-        net_inputs(1, 5, i, j) = real(solin_val, R4)
+        net_inputs(1, ix_in_solin, i, j) = real(solin_val, R4)
       end do
     end do
 
     deallocate(yc, xc)
 
   end subroutine ace_compute_solin
-
-  ! Define here becasue we need the eatmIO mod and trying to avoid circular imports
-  subroutine init_normalizer(norm, norm_file, n)
-    implicit none
-    class(t_normalization_struct), intent(out) :: norm
-    character(len=*),   intent(in)  :: norm_file
-    integer,            intent (in) :: n  ! number of variables
-    ! !LOCAL VARIABLES:
-    type(file_desc_t)          :: ncid    ! netcdf file id
-    logical                    :: found
-    character(len=*),parameter :: subname = '(init_normalizer) '
-
-    allocate(norm%stds(n))
-    allocate(norm%means(n))
-
-    call ncd_pio_openfile(ncid, trim(norm_file), 0)
-
-    call ncd_io(varname='stds', data=norm%stds, flag='read', ncid=ncid, readvar=found)
-    if ( .not. found ) call shr_sys_abort( trim(subname)//' ERROR: reading -- stds -- from ' // trim(norm_file))
-
-    call ncd_io(varname='means', data=norm%means, flag='read', ncid=ncid, readvar=found)
-    if ( .not. found ) call shr_sys_abort( trim(subname)//' ERROR: reading -- means -- from ' // trim(norm_file))
-
-    call ncd_pio_closefile(ncid)
-  end subroutine init_normalizer
-
-  subroutine finalize_normalizer(norm)
-    implicit none
-    class(t_normalization_struct), intent(inout) :: norm
-
-    deallocate(norm%stds)
-    deallocate(norm%means)
-
-  end subroutine finalize_normalizer
 
 end module ace_comp_mod
