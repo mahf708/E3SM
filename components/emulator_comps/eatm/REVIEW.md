@@ -2071,3 +2071,35 @@ Build notes for anyone touching this: `FTorchConfig.cmake` already does
 scope at `build_model.cmake:354`; but `FTorch::ftorch` links only `stdc++`, so
 the shim's references into `c10` have to be linked explicitly or the executable
 fails with "DSO missing from command line".
+
+### 58. The export A/B, repeated with the seed on **[measured, now rigorous]**
+
+#51 measured the export-state effect on an unseeded stochastic emulator, so the
+10 W/m2 it found could in principle have been noise. Repeated with
+`eatm_rng_seed = 0`, one model day, identical but for `eatm_surface_layer`:
+
+| export | turbulent, emulator | turbulent, coupler | mismatch | shortwave mismatch |
+|---|---|---|---|---|
+| `near_surface` (2 m / 10 m at `Sa_z` = 10 m) | 127.78 | 143.02 | **+15.24** | -17.51 |
+| `lowest_level` (layer mean, ~450 m) | 127.84 | 153.17 | **+25.33** | -17.44 |
+
+**10.1 W/m2**, confirming #51 and no longer attributable to the RNG.
+
+The more informative half is the last column. **Changing where the state is
+declared moves the turbulent mismatch by 10 W/m2 and leaves the shortwave
+mismatch untouched at -17.5.** That is exactly what the physics says should
+happen -- `Sa_z` and the near-surface state enter `shr_flux_atmOcn`, and nothing
+about them touches the four shortwave bands -- so it is a good check that the
+diagnostic is measuring what it claims, and it separates the interface into two
+independent terms:
+
+- a **turbulent** term of 15-25 W/m2, which the export state controls and which
+  `near_surface` already recovers 10 W/m2 of (#43a's reframing, confirmed);
+- a **shortwave** term of about -17.5 W/m2, which the export state does not
+  touch at all, and which #56 attributes to sea ice and to the emulator having
+  no albedo input.
+
+They should be worked separately. The remaining turbulent term is the one that
+an internally consistent Monin-Obukhov export could still reduce; the shortwave
+term will not move until the surface state the emulator assumes and the one
+MPAS-SI produces are brought closer together.
