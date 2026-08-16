@@ -140,6 +140,31 @@ module ace_comp_mod
 
   logical :: outputs_validated = .false.   ! full range check done once
 
+  !--------------------------------------------------------------------------
+  ! Shortwave disaggregation.
+  !
+  ! The emulator's FSDS is a mean over its 6 h step, and once SOLIN was
+  ! corrected to the window mean it was fed (#35) that mean became a smeared
+  ! band 90 degrees of longitude wide rather than anything resembling the
+  ! instantaneous sun.  The surface models' albedo is instantaneous, and is set
+  ! to 1 where the sun is down, so a flat 6-hourly FSDS delivers 13% of the
+  ! ocean's shortwave onto cells the coupler considers night, where it is
+  ! multiplied by (1 - 1) and discarded.  Measured against 0.3% before.
+  !
+  ! Net energy loss is small -- what is thrown away at dusk is over-delivered
+  ! at dawn, and the ocean's heat drift bounds the whole effect at about
+  ! 1 W/m2 -- but the diurnal cycle of ocean and ice heating is wrong, and
+  ! nothing about it is defensible.
+  !
+  ! Scaling the bands by the instantaneous insolation over its window mean
+  ! preserves the window mean exactly, because the mean of the instantaneous
+  ! field over the window *is* the window mean by construction.  It is what
+  ! datm does with an interval-mean shortwave (tintalgo = 'coszen').
+  !--------------------------------------------------------------------------
+  real(R8), allocatable :: solin_win(:,:)    ! window mean used for this step
+  real(R8), allocatable :: solin_now(:,:)    ! instantaneous, this coupler step
+  logical               :: solin_scale_ready = .false.
+
   save
 
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -236,12 +261,14 @@ CONTAINS
       t_frac = real(t_modulo, kind=R8) / real(eatm_model_dt, kind=R8)
 
       call ace_bracket_blend(t_frac)
+      call ace_capture_solin_window()   ! restored from the restart file
 
     else
       ! The initial condition is the emulator state at T0.  One inference
       ! carries it to T0 + dt, which is the *upper* bracket of the first
       ! interpolation interval -- SOLIN is computed for T0 + dt to match.
       call ace_compute_solin(EClock, ggrid)
+      call ace_capture_solin_window()
 
       call ace_inference()
 
@@ -285,6 +312,7 @@ CONTAINS
     last_adv_tod = CurrentTOD
 
     ! using restart data from ACE set the fields passed to the coupler
+    if (eatm_sw_diurnal) call ace_solin_now(EClock, ggrid)
     call ace_eatm_export(ggrid, verbose=.true.)
 
   end subroutine ace_comp_init
@@ -307,6 +335,9 @@ CONTAINS
     allocate(acc_lwup(lsize_x, lsize_y), acc_swabs(lsize_x, lsize_y))
     allocate(acc_wsx(lsize_x, lsize_y), acc_wsy(lsize_x, lsize_y))
     allocate(acc_cov(lsize_x, lsize_y))
+    allocate(solin_win(lsize_x, lsize_y), solin_now(lsize_x, lsize_y))
+    solin_win(:,:) = 0.0_R8
+    solin_now(:,:) = 0.0_R8
     call ace_reset_accumulators()
 
     karea = mct_aVect_indexRA(ggrid%data, 'area')
@@ -447,6 +478,7 @@ CONTAINS
       ! not a state the emulator was ever trained to consume.
       call ace_eatm_import(eatm_intrp%t_ip1)
       call ace_compute_solin(EClock, ggrid)
+      call ace_capture_solin_window()
 
       call ace_inference()
 
@@ -470,6 +502,9 @@ CONTAINS
     t_frac = real(t_modulo, kind=r8) / real(eatm_model_dt, kind=r8)
 
     call ace_bracket_blend(t_frac)
+
+    ! diurnal shape for this coupler step, applied to the shortwave on export
+    if (eatm_sw_diurnal) call ace_solin_now(EClock, ggrid)
 
     call ace_eatm_export(ggrid, verbose=(t_modulo == 0))
 
@@ -532,6 +567,7 @@ CONTAINS
     call torch_delete(ace_model)
     if (allocated(cell_area)) deallocate(cell_area)
     if (allocated(acc_lhf))   deallocate(acc_lhf, acc_shf, acc_lwup, acc_wsx, acc_wsy, acc_swabs, acc_cov)
+    if (allocated(solin_win)) deallocate(solin_win, solin_now)
   end subroutine ace_comp_finalize
 
   !===============================================================================
@@ -1200,13 +1236,33 @@ CONTAINS
         raw = real(net_outputs(1, ix_out_fsds, i, j), R8)
         if (raw < 0.0_R8) n_clip_fsds = n_clip_fsds + 1
         fsds_dn = max(raw, 0.0_R8)
+
+        !--- put the interval-mean shortwave back on the real diurnal cycle ---
+        if (eatm_sw_diurnal .and. solin_scale_ready) then
+          if (solin_win(i, j) > 1.0_R8) then
+            fsds_dn = fsds_dn * solin_now(i, j) / solin_win(i, j)
+          else
+            fsds_dn = 0.0_R8   ! polar night: no sun in the window, none now
+          end if
+        end if
+
         swvdr(i, j) = fsds_dn * frac_swvdr
         swndr(i, j) = fsds_dn * frac_swndr
         swvdf(i, j) = fsds_dn * frac_swvdf
         swndf(i, j) = fsds_dn * frac_swndf
 
         if (ix_out_fsus > 0 .and. .not. eatm_legacy_surface) then
-          raw = fsds_dn - max(real(net_outputs(1, ix_out_fsus, i, j), R8), 0.0_R8)
+          ! FSUS is a window mean too, so scale it the same way to keep the
+          ! reported net consistent with the bands actually exported
+          raw = real(net_outputs(1, ix_out_fsus, i, j), R8)
+          if (eatm_sw_diurnal .and. solin_scale_ready) then
+            if (solin_win(i, j) > 1.0_R8) then
+              raw = raw * solin_now(i, j) / solin_win(i, j)
+            else
+              raw = 0.0_R8
+            end if
+          end if
+          raw = fsds_dn - max(raw, 0.0_R8)
           if (raw < 0.0_R8) n_clip_swnet = n_clip_swnet + 1
           swnet(i, j) = max(raw, 0.0_R8)
         else
@@ -1289,6 +1345,66 @@ CONTAINS
     end if
 
   end function datm_shr_eSat
+
+  !===============================================================================
+  subroutine ace_solin_now(EClock, ggrid)
+
+    ! Instantaneous TOA insolation at the current coupler time, and (on an
+    ! emulator boundary) a copy of the window mean the emulator was handed.
+    ! Their ratio is the diurnal shape that ace_eatm_export puts back onto the
+    ! interval-mean shortwave.
+
+    implicit none
+    type(ESMF_Clock), intent(in) :: EClock
+    type(mct_gGrid),  intent(in), pointer :: ggrid
+
+    integer(IN)       :: CurrentYMD, CurrentTOD
+    character(len=CS) :: calendar
+    real(R8)          :: julday, delta, eccf, lat_r, lon_r
+    real(R8), parameter :: degtorad = SHR_CONST_PI / 180.0_R8
+    integer           :: klat, klon, n, i, j
+    real(R8), pointer :: yc(:), xc(:)
+
+    call seq_timemgr_EClockGetData(EClock, curr_ymd=CurrentYMD, curr_tod=CurrentTOD)
+    call seq_timemgr_EClockGetData(EClock, calendar=calendar)
+    call shr_cal_date2julian(CurrentYMD, CurrentTOD, julday, calendar)
+
+    call shr_orb_decl(julday, orb_eccen, orb_mvelpp, orb_lambm0, orb_obliqr, delta, eccf)
+
+    allocate(yc(lsize), xc(lsize))
+    klat = mct_aVect_indexRA(ggrid%data, 'lat')
+    klon = mct_aVect_indexRA(ggrid%data, 'lon')
+    yc(:) = ggrid%data%rAttr(klat, :)
+    xc(:) = ggrid%data%rAttr(klon, :)
+
+    n = 0
+    do j = 1, lsize_y
+      do i = 1, lsize_x
+        n = n + 1
+        lat_r = yc(n) * degtorad
+        lon_r = xc(n) * degtorad
+        solin_now(i, j) = solar_const * eccf * &
+             max(0.0_R8, shr_orb_cosz(julday, lat_r, lon_r, delta))
+      end do
+    end do
+
+    deallocate(yc, xc)
+
+  end subroutine ace_solin_now
+
+  !===============================================================================
+  subroutine ace_capture_solin_window()
+    ! Keep the window mean the emulator is about to be driven with, as the
+    ! denominator of the diurnal rescaling for the interval it covers.
+    implicit none
+    integer :: i, j
+    do j = 1, lsize_y
+      do i = 1, lsize_x
+        solin_win(i, j) = real(net_inputs(1, ix_in_solin, i, j), R8)
+      end do
+    end do
+    solin_scale_ready = .true.
+  end subroutine ace_capture_solin_window
 
   !===============================================================================
   subroutine ace_compute_solin(EClock, ggrid)

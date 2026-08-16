@@ -39,13 +39,21 @@ module eatmMod
   character(CL), public :: eatm_surface_layer     ! 'near_surface' or 'lowest_level'
   logical, public       :: eatm_cap_shum          ! cap exported Sa_shum at saturation
   integer, public       :: eatm_rng_seed          ! libtorch RNG seed; <0 leaves it unseeded
+  logical, public       :: eatm_sw_diurnal        ! put the interval-mean shortwave back on a diurnal cycle
 
-  ! Reference height for the exported atmospheric state when the emulator
-  ! predicts near-surface diagnostics.  10 m is what datm hands this same ocean
-  ! and sea ice under JRA forcing (datm_comp_mod.F90:1029), so an EATM run and
-  ! the GMPAS-JRA1p5-2023 baseline present the surface-flux scheme with states
-  ! at the same height.
-  real(R8), parameter, public :: eatm_ref_height = 10.0_R8
+  ! Reference height (m) reported as Sa_z for the exported atmospheric state
+  ! when the emulator predicts near-surface diagnostics.  The default 10 m is
+  ! what datm hands this same ocean and sea ice under JRA forcing
+  ! (datm_comp_mod.F90:1029), so an EATM run and the GMPAS-JRA1p5-2023 baseline
+  ! present the surface-flux scheme with states at the same height.
+  !
+  ! A namelist variable rather than a parameter because the export is not
+  ! internally consistent -- Tat2m and Qat2m are 2 m values sitting beside 10 m
+  ! winds -- and the height at which the emulator's own learned turbulent flux
+  ! is actually valid is not known.  Scanning it is the cheapest way to bound
+  ! how much of the emulator/coupler turbulent mismatch the reference height can
+  ! account for at all.  See eatm/REVIEW.md #58.
+  real(R8), public :: eatm_ref_height
 
   ! Orbital parameters (set from coupler infodata at init)
   real(kind=R8), public :: orb_eccen     ! orbital eccentricity

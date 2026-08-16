@@ -2151,3 +2151,58 @@ readings:
 
 The scan says the second is worth doing, because a zero exists and it sits
 where the physics says it should.
+
+### 60. The window-mean SOLIN fix broke the shortwave, and fixing that is worth 12.8 W/m2 **[regression found and fixed]**
+
+Correcting SOLIN to the window mean (#35) was right for the emulator and wrong
+for the coupling, and the second review's insistence on measuring the *actual*
+absorbed shortwave (#55) is what exposed it.
+
+The emulator's FSDS is a mean over its 6 h step. Once SOLIN became a window
+mean, FSDS became a smeared band rather than anything resembling the
+instantaneous sun. The surface models' albedo is instantaneous and is set to 1
+where the sun is down, so a flat 6-hourly shortwave lands on cells the coupler
+considers night and is multiplied by zero:
+
+| run | FSDS over ocean | delivered where albedo > 0.9 | |
+|---|---|---|---|
+| before this branch's SOLIN fix | 258.29 | 0.72 W/m2 | **0.3%** |
+| with the window mean, no disaggregation | 224.56 | 29.58 W/m2 | **13.2%** |
+| with `eatm_sw_diurnal` | 242.52 | 0.00 W/m2 | **0.0%** |
+
+The net energy error was smaller than 13% because dusk losses were offset by
+dawn gains -- which is why the ocean drift had only moved 1 W/m2 (#49) and why
+this hid behind a plausible-looking result. But the diurnal distribution was
+wrong, and correcting it is worth far more than any correctness fix so far:
+
+| ACE2, 10 days | shortwave mismatch | ocean net surface heat flux |
+|---|---|---|
+| fixes without `eatm_sw_diurnal` | -18.31 | **-34.12 W/m2** |
+| fixes with `eatm_sw_diurnal` | **-4.69** | **-21.34 W/m2** |
+
+**+12.78 W/m2**, the largest single improvement across both sessions, and a real
+bias reduction rather than a correctness fix. Against jonbob's JRA target of
+-9.19 over the same window (#53), the gap has gone from 24.9 to **12.2 W/m2**.
+
+Scaling the bands by instantaneous insolation over the window mean preserves the
+window mean exactly, so it takes nothing away from #35 -- it puts the diurnal
+shape back on a field whose 6 h mean is now correct. `datm` does the same thing
+with interval-mean shortwave (`tintalgo = 'coszen'`).
+
+Two lessons worth keeping. **A correctness fix can be a regression in a coupled
+system**: SOLIN was wrong, correcting it was right, and it made the coupled
+energy worse until the consequence was chased down. And **the ocean's heat drift
+did not reveal this** -- it moved by 1 W/m2 while 13% of the shortwave was being
+discarded and re-delivered elsewhere. It took a diagnostic that compared what
+the atmosphere sent against what the surface actually absorbed.
+
+### 61. Where the two interface terms now stand
+
+| term | size | closable? |
+|---|---|---|
+| turbulent | +25.5 W/m2 | yes -- crosses zero at `eatm_ref_height` ~ 44 m (#59) |
+| shortwave | -4.7 W/m2 | mostly done (#60); residual is albedo/state (#56) |
+
+Both are measured every emulator step by `ace_flux_budget_report`, and #59 shows
+they are independent: scanning the reference height moves the turbulent term by
+52 W/m2 and the shortwave term by 0.04.

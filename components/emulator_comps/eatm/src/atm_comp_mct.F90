@@ -596,12 +596,14 @@ CONTAINS
     namelist /eatm_inparm / do_eatm, filename_eatm, &
          eatm_emulator, eatm_model_file, eatm_ic_file, eatm_model_device, &
          eatm_pass_forcing, eatm_legacy_surface, eatm_frzprec_units, eatm_iradsw, &
-         eatm_surface_layer, eatm_cap_shum, eatm_rng_seed
+         eatm_surface_layer, eatm_cap_shum, eatm_rng_seed, eatm_ref_height, eatm_sw_diurnal
 
     ! default values
     do_eatm             = .true.
     eatm_cap_shum       = .true.
     eatm_rng_seed       = 0
+    eatm_ref_height     = 10.0_R8
+    eatm_sw_diurnal     = .true.
     filename_eatm       = ' '
     eatm_emulator       = 'ACE2-EAMv3'
     eatm_model_file     = ' '
@@ -646,6 +648,8 @@ CONTAINS
     call shr_mpi_bcast(eatm_surface_layer, mpicom_atm, 'eatm_surface_layer')
     call shr_mpi_bcast(eatm_cap_shum, mpicom_atm, 'eatm_cap_shum')
     call shr_mpi_bcast(eatm_rng_seed, mpicom_atm, 'eatm_rng_seed')
+    call shr_mpi_bcast(eatm_ref_height, mpicom_atm, 'eatm_ref_height')
+    call shr_mpi_bcast(eatm_sw_diurnal, mpicom_atm, 'eatm_sw_diurnal')
     call shr_mpi_bcast(eatm_iradsw, mpicom_atm, 'eatm_iradsw')
 
     ! EATM_MODE=NULL sets do_eatm=.false. (bld/build-namelist:299), but there
@@ -674,6 +678,8 @@ CONTAINS
        write(logunit_atm,*) '   eatm_surface_layer  = ', trim(eatm_surface_layer)
        write(logunit_atm,*) '   eatm_cap_shum       = ', eatm_cap_shum
        write(logunit_atm,*) '   eatm_rng_seed       = ', eatm_rng_seed
+       write(logunit_atm,*) '   eatm_ref_height     = ', eatm_ref_height
+       write(logunit_atm,*) '   eatm_sw_diurnal     = ', eatm_sw_diurnal
        write(logunit_atm,*) '   eatm_iradsw         = ', eatm_iradsw
     end if
 

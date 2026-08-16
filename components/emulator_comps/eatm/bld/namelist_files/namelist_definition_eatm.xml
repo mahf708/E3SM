@@ -173,6 +173,50 @@ Has no effect on ACE2-EAMv3, which is deterministic.
 Default: 0
 </entry>
 
+<entry id="eatm_ref_height"
+       type="real"
+       category="eatm"
+       group="eatm_inparm" >
+Height in metres reported as Sa_z for the exported atmospheric state, used only
+when eatm_surface_layer = 'near_surface'.
+
+10 m matches what datm hands this ocean and sea ice under JRA forcing, so an
+EATM run and a GMPAS-JRA1p5-2023 baseline present shr_flux_atmOcn with states
+at the same height.
+
+Exposed because the near_surface export is not internally consistent: Tat2m and
+Qat2m are 2 m values and Uat10m/Vat10m are 10 m values, and all four are
+declared at this single height.  The height at which the emulator's own learned
+turbulent flux is valid is not known -- its LHFLX/SHFLX channels are the
+coupler's fluxes evaluated on EAMv3's lowest model level, around 60 m.
+Scanning this bounds how much of the emulator/coupler turbulent mismatch the
+reference height can explain.  See REVIEW.md #58 and #59.
+
+Default: 10.0
+</entry>
+
+<entry id="eatm_sw_diurnal"
+       type="logical"
+       category="eatm"
+       group="eatm_inparm" >
+If .true., the downwelling shortwave handed to the coupler is scaled by the
+instantaneous insolation over its 6 h window mean, restoring a diurnal cycle
+the emulator's interval-mean output does not carry.
+
+This is not cosmetic.  The emulator's FSDS is a mean over its whole step, and
+the surface models' albedo is instantaneous and equal to 1 where the sun is
+down, so a flat 6-hourly shortwave delivers a large share of the ocean's
+sunlight onto cells the coupler considers night, where it is multiplied by
+(1 - albedo) = 0 and discarded.  Measured on a 10-day ACE2 run: 13.2% of the
+ocean's shortwave, against 0.3% with the pre-window-mean SOLIN.
+
+The scaling preserves the window mean exactly, since the mean of the
+instantaneous insolation over the window is that window mean by construction.
+It is what datm does with an interval-mean shortwave (tintalgo = 'coszen').
+
+Default: .true.
+</entry>
+
 <entry id="eatm_frzprec_units"
        type="char*16"
        category="eatm"

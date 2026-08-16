@@ -313,6 +313,8 @@ else {
     add_default($nl, 'eatm_surface_layer');
     add_default($nl, 'eatm_cap_shum');
     add_default($nl, 'eatm_rng_seed');
+    add_default($nl, 'eatm_ref_height');
+    add_default($nl, 'eatm_sw_diurnal');
     add_default($nl, 'eatm_frzprec_units');
     add_default($nl, 'eatm_iradsw');
     add_default($nl, 'eatm_model_file', 'emulator'=>$EATM_EMULATOR, 'nofail'=>1);
