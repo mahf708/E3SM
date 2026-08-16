@@ -1659,3 +1659,28 @@ same-length A/B runs comparable, which is what is needed now.
 **Not attempted here**: it needs a build-system change plus a rebuild and a
 validation run, and doing that in the last hour of a session with the nodes
 busy is how a working branch gets left broken.
+
+### 48. A control run: the decomposition is not a confounder **[measured]**
+
+Before reading anything into #45, the obvious alternative explanation had to go.
+The same pre-fix code (`7db0a0e848`), same compset, same start date, ACE2-EAMv3,
+10 days, run on two different task counts:
+
+| run | dT (K) | fit | endpoint |
+|---|---|---|---|
+| 448 ocean tasks, job `57053850` (first 10 days of the 20-day run) | -0.001710 | -33.22 | -33.15 W/m2 |
+| 192 ocean tasks, tonight | -0.001710 | -33.22 | -33.16 W/m2 |
+
+**They agree to 0.01 W/m2, with the temperature drift identical to six digits.**
+Halving the ocean decomposition does not move this metric at all.
+
+Two consequences:
+
+- The 6 W/m2 in #45 is *not* the decomposition. It is either the stochastic
+  spread of an unseeded SamudrACE (#47) or a real response to the corrected
+  forcing -- and only #47 being fixed can tell those apart.
+- Anything the deterministic ACE2 comparison shows is attributable to the code
+  change alone.
+
+It also re-derives the -33.3 W/m2 that #27 recorded for ACE2, from a different
+run on a different node count, which is a useful check on the metric itself.
