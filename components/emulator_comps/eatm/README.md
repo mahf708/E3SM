@@ -184,8 +184,11 @@ blocker is energy, not stability.
 | near-surface diagnostics | none | `Tat2m`/`Qat2m`/`Uat10m`/`Vat10m` |
 | throughput, 8 nodes | 5.18 SYPD | 4.71 SYPD |
 | ocean net surface heat flux | **-34.1 W/m2** | **-68.5 W/m2** (`near_surface`) |
-| emulator-vs-coupler surface exchange | **+25.0 W/m2** | **+22.0 W/m2** |
+| turbulent exchange, emulator vs coupler | **+24.2 W/m2** | +22.0 W/m2 |
+| shortwave absorbed, emulator vs coupler | **-18.3 W/m2** | |
+| net surface, emulator vs coupler | **-43.1 W/m2** | |
 | emulator TOA net (`SOLIN-FSUTOA-FLUT`) | **+12.8 W/m2** | **+16.3 W/m2** |
+| reproducible run to run | yes (deterministic) | **yes, with `eatm_rng_seed`** |
 
 A usable coupled run wants the ocean flux inside about +/-10 W/m2.
 
@@ -228,9 +231,20 @@ Things that are settled and should not be re-litigated:
   correctness fixes; do not expect them to have moved the bias, and do not go
   looking for the bias in the forcing again. Finding 49.
 
-One thing that blocks measurement rather than physics: **SamudrACE's RNG is
-unseeded**, and its run-to-run spread is of order 5 W/m2 over 20 days -- larger
-than most effects worth testing. Until finding 47 is done, A/B on ACE2.
+- **SamudrACE reproduces exactly now.** `eatm_rng_seed` (default 0) seeds
+  libtorch; two identical runs agree on 53 of 53 restart channels and 244 of
+  244 ocean fields. A/B on either emulator is meaningful. Finding 57.
+- **The shortwave gap is not a band-split problem and should not be closed in
+  the export path.** The emulator's implied albedo is 0.136 against a coupled
+  surface near 0.25; about half of that is ~2.5x too much sea ice from the
+  `cice_default` cold start, and the rest is that the emulator has no albedo
+  input. Rescaling the bands to close the atmosphere's budget would give the
+  ocean too much sunlight -- the ocean is currently getting the right answer.
+  Findings 55-56.
+
+Read `ace_flux_budget_report` in the atm log rather than reconstructing budgets
+afterwards; it prints once per emulator step and is accumulated over every
+coupling step, so single-step values are noisy but the run mean is a budget.
 
 ### Namelist quick reference
 
