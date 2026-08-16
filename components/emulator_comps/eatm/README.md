@@ -144,6 +144,7 @@ src/eatm_restart_mod.F90            restart and initial-condition I/O
 src/eatmIO.F90                      PIO wrappers (copied from MOSART's ncdio_pio)
 src/eatmMod.F90                     shared state
 src/eatmSpmdMod.F90                 (serial) MPI setup
+tools/compare_cpl_hi.py             diff the a2x fields of two coupler history files
 tools/                              tracing, initial conditions, run script
 REVIEW.md                           code review findings and known limitations
 ```
