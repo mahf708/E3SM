@@ -1820,3 +1820,57 @@ was seeded.
 
 Not attempted tonight only because it needs a rebuild, and a rebuild would have
 invalidated the restart test running on the same executable.
+
+### 52. The clock fix survives a restart **[verified]**
+
+The changes in #36 touch the advance guard, which is exactly the sort of thing
+that breaks a restart quietly, and #31 records exact EATM restart as a property
+of this branch worth keeping. So it was re-checked rather than reasoned about.
+
+ACE2-EAMv3, deterministic, three phases: **A** startup 1 day writing a restart
+at `0001-01-02`; **B** `CONTINUE_RUN` 1 day to `0001-01-03`; **C** a continuous
+2-day control to the same date.
+
+The emulator step cadence, straight out of the logs:
+
+```
+A   step 12 tod 21600   step 24 tod 43200   step 36 tod 64800   step 48 tod 0 (day 2)
+                              -- restart --
+B   step 60 tod 21600   step 72 tod 43200   step 84 tod 64800   step 96 tod 0 (day 3)
+```
+
+Three things this shows at once:
+
+- **No advance at step 0.** The double-advance at `tod = 0` that #36 fixed is
+  gone from a startup run.
+- **No advance at the restart time either.** B resumes at `0001-01-02` `tod = 0`,
+  which *is* an emulator boundary, and correctly does not step there -- the
+  driver's first run call lands at `tod = 1800`, and the brackets read from the
+  restart already cover that interval.
+- **The cadence is unbroken across the restart**: 12, 24, 36, 48, 60, 72, 84, 96
+  -- a regular 12-coupler-step interval with neither a duplicate nor a gap. A
+  restart is invisible to the emulator's clock, which is the property that
+  matters.
+
+And the values, not just the cadence. Phase C's own step list is identical to
+A's followed by B's (12, 24, 36, 48, 60, 72, 84, 96), and comparing restart
+files:
+
+| comparison | result |
+|---|---|
+| A's `eatm.r.0001-01-02` vs C's `eatm.r.0001-01-02` | **46 of 46 variables bit-identical** |
+| B's `eatm.r.0001-01-03` vs C's `eatm.r.0001-01-03` | 2 identical, 44 differing, worst 3.4e-3 relative |
+
+The first is the one that tests this session's changes, and it passes exactly:
+two independent startup runs of different lengths produce a bit-identical
+emulator state a day in, so the startup path is deterministic and the restart
+write is exact.
+
+The second is #31's already-documented coupled-system behaviour, not a
+regression. MPAS's restart is not bit-for-bit, the emulator is handed marginally
+different surface fields on the step after a restart, and an autoregressive
+model spreads that through every channel within a day. It was true before these
+changes and the magnitude is unchanged.
+
+**So `RESUBMIT` remains safe, and #31's claim still holds with the new clock
+handling.**
