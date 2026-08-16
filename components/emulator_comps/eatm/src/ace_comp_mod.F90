@@ -379,23 +379,22 @@ CONTAINS
       enddo
     enddo
 
-    write(logunit_atm, *) "----------------------------------------------------------------"
-    write(logunit_atm, *) "ace_eatm_import"
-    write(logunit_atm, *) "----------------------------------------------------------------"
-    ! Sx_t straight from the coupler.  A minimum of 0 K is expected and fine:
-    ! it is the cells no surface model covers, which the deficit term below
-    ! fills in.  What must never be 0 is the TS actually handed to the emulator.
-    write(logunit_atm, *) "cpl Sx_t   (min, max): ( ", minval(ts(:, :)), maxval(ts(:, :)), " )"
-    write(logunit_atm, *) "cpl lfrac  (min, max): ( ", minval(lndfrac), maxval(lndfrac), " )"
-    write(logunit_atm, *) "cpl ofrac  (min, max): ( ", minval(ocnfrac), maxval(ocnfrac), " )"
-    write(logunit_atm, *) "cpl ifrac  (min, max): ( ", minval(icefrac), maxval(icefrac), " )"
-    write(logunit_atm, *) "net LANDFRAC (min,max):( ", &
-         minval(net_inputs(1, ix_in_landfrac, :, :)), &
-         maxval(net_inputs(1, ix_in_landfrac, :, :)), " )"
+    ! Two lines, ranges only.  Sx_t straight from the coupler: a minimum of 0 K
+    ! is expected and fine, it is the cells no surface model covers, which the
+    ! deficit term fills in.  What must never be 0 is the TS handed to the
+    ! emulator, which is why both are reported side by side.
+    write(logunit_atm, '(a,4(1x,a,2f9.3))') '  cpl in ', &
+         'Sx_t',  minval(ts),      maxval(ts),      &
+         'lfrac', minval(lndfrac), maxval(lndfrac), &
+         'ofrac', minval(ocnfrac), maxval(ocnfrac), &
+         'ifrac', minval(icefrac), maxval(icefrac)
     if (ix_in_ts > 0) then
-      write(logunit_atm, *) "net TS     (min, max): ( ", &
-           minval(net_inputs(1, ix_in_ts, :, :)), &
-           maxval(net_inputs(1, ix_in_ts, :, :)), " )"
+      write(logunit_atm, '(a,2(1x,a,2f9.3),1x,a,2es11.3)') '  net in ', &
+           'LANDFRAC', minval(net_inputs(1, ix_in_landfrac, :, :)), &
+                       maxval(net_inputs(1, ix_in_landfrac, :, :)), &
+           'TS',       minval(net_inputs(1, ix_in_ts, :, :)),       &
+                       maxval(net_inputs(1, ix_in_ts, :, :)),       &
+           'shf',      minval(shf),     maxval(shf)
     end if
     call shr_sys_flush(logunit_atm)
 
@@ -562,25 +561,23 @@ CONTAINS
     ! ATM_NCPL=48 eleven of every twelve blocks are redundant.
     if (.not. do_log) return
 
-    write(logunit_atm, *) "----------------------------------------------------------------"
-    write(logunit_atm, *) "ace_eatm_export"
-    write(logunit_atm, *) "----------------------------------------------------------------"
-    write(logunit_atm, *) "zbot  (min, max):   ( ", minval(zbot(:, :)),  maxval(zbot(:, :)), " )"
-    write(logunit_atm, *) "tbot   (min, max):  ( ", minval(tbot(:, :)),  maxval(tbot(:, :)), " )"
-    write(logunit_atm, *) "pbot   (min, max):  ( ", minval(pbot(:, :)),  maxval(pbot(:, :)), " )"
-    write(logunit_atm, *) "shum   (min, max):  ( ", minval(shum(:, :)),  maxval(shum(:, :)), " )"
-    write(logunit_atm, *) "ubot   (min, max):  ( ", minval(ubot(:, :)),  maxval(ubot(:, :)), " )"
-    write(logunit_atm, *) "vbot   (min, max):  ( ", minval(vbot(:, :)),  maxval(vbot(:, :)), " )"
-    write(logunit_atm, *) "swnet  (min, max):  ( ", minval(swnet(:, :)), maxval(swnet(:, :)), " )"
-    write(logunit_atm, *) "lwdn   (min, max):  ( ", minval(lwdn(:, :)),  maxval(lwdn(:, :)), " )"
-    write(logunit_atm, *) "rainl (min, max):   ( ", minval(rainl(:, :)), maxval(rainl(:, :)), " )"
-    write(logunit_atm, *) "snowl (min, max):   ( ", minval(snowl(:, :)), maxval(snowl(:, :)), " )"
+    write(logunit_atm, '(a,3(1x,a,2f9.2),1x,a,2es11.3)') '  net out', &
+         'tbot', minval(tbot), maxval(tbot), &
+         'zbot', minval(zbot), maxval(zbot), &
+         'pbot', minval(pbot), maxval(pbot), &
+         'shum', minval(shum), maxval(shum)
+    write(logunit_atm, '(a,4(1x,a,2f9.2),2(1x,a,2es11.3))') '  net out', &
+         'ubot',  minval(ubot),  maxval(ubot),  &
+         'vbot',  minval(vbot),  maxval(vbot),  &
+         'swnet', minval(swnet), maxval(swnet), &
+         'lwdn',  minval(lwdn),  maxval(lwdn),  &
+         'rainl', minval(rainl), maxval(rainl), &
+         'snowl', minval(snowl), maxval(snowl)
     if (n_clip_shum + n_clip_precip + n_clip_snow + n_clip_fsds + n_clip_swnet > 0) then
-      write(logunit_atm, '(a,i8,a,5(1x,a,i0))') &
-           " clamped to zero, of ", lsize_x*lsize_y, " cells:", &
-           "shum=",   n_clip_shum,   "precip=", n_clip_precip, &
-           "snow=",   n_clip_snow,   "fsds=",   n_clip_fsds, &
-           "swnet=",  n_clip_swnet
+      write(logunit_atm, '(a,5(1x,a,i0),a,i0,a)') '  clamped', &
+           'shum=',   n_clip_shum,   'precip=', n_clip_precip, &
+           'snow=',   n_clip_snow,   'fsds=',   n_clip_fsds,   &
+           'swnet=',  n_clip_swnet,  ' (of ', lsize_x*lsize_y, ' cells)'
     end if
     call shr_sys_flush(logunit_atm)
 

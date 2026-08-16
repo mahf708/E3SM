@@ -161,12 +161,10 @@ CONTAINS
        ! Initialize eatm
        !----------------------------------------------------------------------------
 
-       if (masterproc) write(logunit_atm,*) 'got to atm_init 2'
        ! Initialize atm gsMap
        call atm_SetGSMap_mct( mpicom_atm, compid, gsMap)
 
        ! Initialize atm domain
-       if (masterproc) write(logunit_atm,*) 'got to atm_init 3'
        call atm_domain_mct( gsMap, ggrid )
 
        ! Initialize cpl -> eatm attribute vector
@@ -177,7 +175,6 @@ CONTAINS
        call mct_aVect_init(a2x, rList=seq_flds_a2x_fields, lsize=lsize)
        call mct_aVect_zero(a2x)
 
-       if (masterproc) write(logunit_atm,*) 'got to atm_init 4'
        call eatm_comp_init(Eclock, x2a, a2x, &
             seq_flds_x2a_fields, seq_flds_a2x_fields, &
             gsmap, ggrid, read_restart)
@@ -186,7 +183,6 @@ CONTAINS
        ! Fill infodata that needs to be returned from eatm
        !----------------------------------------------------------------------------
 
-       if (masterproc) write(logunit_atm,*) 'got to atm_init 5'
        call seq_infodata_PutData(infodata, &
             atm_nx=lsize_x, &
             atm_ny=lsize_y)
@@ -523,7 +519,6 @@ CONTAINS
        end do
     end do
 
-    if (masterproc) write(logunit_atm,*) 'Import shf ',minval(shf),maxval(shf)
 
   end subroutine atm_import_mct
 

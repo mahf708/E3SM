@@ -362,17 +362,11 @@ CONTAINS
     call t_stopf('eatm')
 
     !----------------------------------------------------------------------------
-    ! Log output for model date
     ! Reset shr logging to original values
     !----------------------------------------------------------------------------
-
-    call t_startf('eatm_run2')
-    if (masterproc) then
-       write(logunit_atm,F04) trim(myModelName),': model date ', CurrentYMD,CurrentTOD
-       call shr_sys_flush(logunit_atm)
-    end if
-
-    call t_stopf('eatm_run2')
+    ! The model date is not logged here: at ATM_NCPL=48 that is 48 flushed
+    ! writes a day for a value the coupler already logs, and `eatm step`
+    ! carries the date on the steps where the emulator actually does something.
 
     call t_stopf('EATM_RUN')
 
