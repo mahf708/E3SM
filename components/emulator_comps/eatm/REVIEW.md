@@ -623,8 +623,17 @@ means:
 | `a2x_Faxa_rainl` | 4.653e-05 | 4.665e-05 | +0.3% |
 | `a2x_Faxa_snowl` | 2.706e-06 | 2.715e-06 | +0.3% |
 
-The last four are untouched by any fix; their sub-1% differences are the two
-trajectories diverging, which sets the noise floor for reading this table.
+The last four are untouched by any fix; their differences are the two
+trajectories diverging, which sets the noise floor for reading this table. That
+floor grows: under 0.6% at day 11, but `lwdn` -1.1%, `rainl` -0.6% and `snowl`
++1.8% by day 21. Anything at the 1-2% level in a day-21 or later comparison is
+not distinguishable from chaos.
+
+The fixes themselves are stable rather than drifting, which is how you tell
+them apart from divergence — day 11 vs day 21: `Sa_z` -65.0% / -65.0%,
+`Sa_pbot` +5.8% / +5.8%, `Sa_dens` +6.0% / +6.0%, `Faxa_swnet` -14.0% / -13.8%,
+`Sa_shum` -19.3% / -20.7%. `Sa_topo` is bit-identical between the two dates, as
+a time-invariant boundary field should be.
 Ignore `a2x_Sa_u` and `a2x_Sa_v`: their global means are near zero
 (-0.157 -> -0.089 m/s), so the percentage change is division noise while the
 extremes are unchanged.
