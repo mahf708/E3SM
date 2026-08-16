@@ -90,13 +90,26 @@ global rank 0 while everything else starts at rank 64:
 
 ```
 ./xmlchange MAX_MPITASKS_PER_NODE=64
-./xmlchange NTASKS=-10, NTASKS_ATM=1, NTASKS_ESP=1, NTASKS_IAC=1
+./xmlchange NTASKS=-7, NTASKS_ATM=1, NTASKS_ESP=1, NTASKS_IAC=1
 ./xmlchange ROOTPE=64, ROOTPE_ATM=0, ROOTPE_WAV=1, ROOTPE_GLC=1
 ./xmlchange PSTRID_ATM=16, EXCL_STRIDE_ATM=16
 ```
 
-11 nodes total. Measured throughput 5.58 SYPD; the emulator is ~4% of runtime,
-MPAS-Ocean (60%) and MPAS-Seaice (33%) dominate.
+8 nodes total, which is also the pm-gpu debug queue's node limit, so a smoke
+test can go through debug (≤30 min) instead of waiting in `regular`:
+
+```bash
+CASE_NAME=smoke STOP_OPTION=ndays STOP_N=3 RESUBMIT=0 \
+  QUEUE=debug WALLCLOCK=00:30:00 tools/run_gmpas_eatm_pm-gpu.sh
+```
+
+A 2-year shakedown of this compset ran at 5.58 SYPD on 11 nodes; the emulator
+is ~4% of runtime, with MPAS-Ocean (60%) and MPAS-Seaice (33%) dominating, so
+8 nodes gives roughly 4–4.5 SYPD.
+
+Short-term archiving is off (`DOUT_S=FALSE`): it queues a second dependent job
+per segment and moves output out from under a running case. Output stays in
+`RUNDIR`.
 
 ## Namelist
 

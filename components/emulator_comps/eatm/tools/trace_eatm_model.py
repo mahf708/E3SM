@@ -16,6 +16,17 @@ SST prescription, all folded into one nn.Module) and only takes over the final
     checks that before writing anything out, which turns a silent field mix-up
     into an error at trace time.
 
+  * The ACE tracing script finds the corrector configuration at
+    ``corrector._config``.  Current ``fme`` correctors do not expose that
+    attribute -- the config lives at ``step.config.corrector`` -- and for a
+    checkpoint with ``corrector_disabled_epochs`` the corrector is additionally
+    wrapped in an ``EpochScheduledCorrector``.  The lookup therefore returns
+    None and the script silently traces the bare network with no dry-air
+    conservation, no moisture-budget closure and no force-positive clamping.
+    This driver resolves the config from ``step.config.corrector`` instead and
+    refuses to write a model whose correctors came out inactive when the
+    checkpoint says they should be on.
+
 Usage
 -----
     python trace_eatm_model.py CHECKPOINT OUTPUT_BASE \\
@@ -142,6 +153,99 @@ def _load_ace_tracer(path: pathlib.Path):
     return module
 
 
+def _install_corrector_repair(tracer, holder: dict):
+    """Make the ACE tracing script find the corrector config again.
+
+    Replaces its ``_build_corrector_flags_and_channel_map`` with one that reads
+    ``step.config.corrector`` (an ``AtmosphereCorrectorConfig``) rather than
+    ``corrector._config``, which current ``fme`` correctors do not have.  The
+    corrector *maths* is untouched -- only where the flags come from.
+
+    The resolved config is stashed in ``holder`` so the caller can also rebuild
+    the force-positive indices, which ``load_and_build`` looks up inline from
+    the same dead attribute.
+    """
+    original = tracer._build_corrector_flags_and_channel_map
+
+    def patched(stepper, in_names, all_out_names):
+        step = tracer._unwrap_step(stepper)
+        config = getattr(getattr(step, "config", None), "corrector", None)
+
+        if config is None or not hasattr(config, "conserve_dry_air"):
+            logger.warning(
+                "could not resolve an atmosphere corrector config; falling "
+                "back to the tracing script's own lookup"
+            )
+            return original(stepper, in_names, all_out_names)
+
+        holder["config"] = config
+
+        flags = {
+            "conserve_dry_air": config.conserve_dry_air,
+            "zero_global_mean_moisture_advection": (
+                config.zero_global_mean_moisture_advection
+            ),
+            "moisture_budget_correction": config.moisture_budget_correction,
+            "total_energy_budget_correction": (
+                config.total_energy_budget_correction is not None
+            ),
+        }
+        flags["any_active"] = any(
+            [
+                config.conserve_dry_air,
+                config.zero_global_mean_moisture_advection,
+                config.moisture_budget_correction is not None,
+                config.total_energy_budget_correction is not None,
+            ]
+        )
+
+        cmap = {
+            "ps_in": tracer._find_by_standard(in_names, "surface_pressure"),
+            "ps_out": tracer._find_by_standard(all_out_names, "surface_pressure"),
+            "water_in_indices": tracer._find_all_by_standard(
+                in_names, "specific_total_water"
+            ),
+            "water_out_indices": tracer._find_all_by_standard(
+                all_out_names, "specific_total_water"
+            ),
+            "advection_out": tracer._find_by_standard(
+                all_out_names, "tendency_of_total_water_path_due_to_advection"
+            ),
+            "precip_out": tracer._find_by_standard(all_out_names, "precipitation_rate"),
+            "evap_out": tracer._find_by_standard(all_out_names, "latent_heat_flux"),
+        }
+
+        logger.info("resolved corrector config from step.config.corrector: %s", flags)
+        for key, value in cmap.items():
+            if value == -1 or value == []:
+                logger.warning("corrector channel %r did not resolve (%r)", key, value)
+        return flags, cmap
+
+    tracer._build_corrector_flags_and_channel_map = patched
+
+
+def _repair_force_positive(traceable, metadata: dict, holder: dict) -> None:
+    """Rebuild the force-positive channel indices from the resolved config."""
+    config = holder.get("config")
+    names = list(getattr(config, "force_positive_names", []) or [])
+    if not names:
+        return
+
+    all_out = [
+        metadata["output_channels"][i] for i in range(len(metadata["output_channels"]))
+    ]
+    idx = torch.tensor(
+        [all_out.index(n) for n in names if n in all_out], dtype=torch.long
+    )
+    if idx.numel() == traceable.force_pos_idx.numel():
+        return  # the script already found them
+
+    device = traceable.force_pos_idx.device
+    traceable.force_pos_idx = idx.to(device)
+    metadata["force_positive_names"] = names
+    logger.info("restored %d force-positive channels: %s", idx.numel(), ", ".join(names))
+
+
 def _check_channels(metadata: dict, emulator: str) -> None:
     expected = EXPECTED.get(emulator)
     if expected is None:
@@ -223,11 +327,20 @@ def main() -> None:
         help="re-run the model to verify the trace.  Only valid for a "
         "deterministic checkpoint; a NoiseConditionedSFNO will fail.",
     )
+    parser.add_argument(
+        "--allow-no-correctors",
+        action="store_true",
+        help="write the model even if the correctors came out inactive.  Only "
+        "for a checkpoint that genuinely configures none.",
+    )
     args = parser.parse_args()
 
     tracer = _load_ace_tracer(pathlib.Path(args.trace_script))
 
     from fme.core.distributed import Distributed  # noqa: PLC0415  (needs fme on path)
+
+    holder: dict = {}
+    _install_corrector_repair(tracer, holder)
 
     with Distributed.context():
         traceable, metadata = tracer.load_and_build(
@@ -239,6 +352,26 @@ def main() -> None:
         )
 
         _check_channels(metadata, args.emulator)
+        _repair_force_positive(traceable, metadata, holder)
+
+        config = holder.get("config")
+        if config is not None and getattr(config, "clip_frozen_precipitation", None):
+            logger.warning(
+                "this checkpoint configures clip_frozen_precipitation, which "
+                "the ACE tracing script does not implement"
+            )
+
+        if not metadata["corrector_flags"].get("any_active"):
+            message = (
+                "the traced model has NO active correctors (no dry-air "
+                "conservation, no moisture-budget closure).  EATM runs the "
+                "emulator autoregressively for years, so an uncorrected model "
+                "will drift."
+            )
+            if args.allow_no_correctors:
+                logger.warning("%s  Continuing because --allow-no-correctors.", message)
+            else:
+                raise SystemExit(f"ERROR: {message}\nPass --allow-no-correctors to override.")
 
         if metadata["corrector_flags"].get("total_energy_budget_correction"):
             logger.warning(

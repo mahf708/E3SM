@@ -8,13 +8,19 @@
 # Land is a stub and runoff is a data model; ocean and sea ice are prognostic.
 #
 # Defaults to a 5-year run submitted as five 1-year segments (STOP_N=1,
-# RESUBMIT=4).  Measured throughput for this configuration is about 5.6
-# simulated years per day on 11 nodes, i.e. ~4.4 h per segment.
+# RESUBMIT=4) on 8 nodes, which is also the pm-gpu debug queue's node limit so
+# the same layout can be smoke-tested there.  A 2-year shakedown of this
+# compset ran at 5.6 SYPD on 11 nodes; on 8 nodes expect roughly 4-4.5 SYPD,
+# i.e. ~6 h per 1-year segment.
 #
 # Usage:
 #   ./run_gmpas_eatm_pm-gpu.sh                        # build and submit
 #   CASE_NAME=my-run STOP_N=1 RESUBMIT=4 ./run_gmpas_eatm_pm-gpu.sh
 #   SUBMIT=false ./run_gmpas_eatm_pm-gpu.sh           # build only
+#
+#   # 3-day smoke test in the debug queue (<=8 nodes, <=30 min)
+#   CASE_NAME=smoke STOP_OPTION=ndays STOP_N=3 RESUBMIT=0 \
+#     QUEUE=debug WALLCLOCK=00:30:00 ./run_gmpas_eatm_pm-gpu.sh
 #
 set -euo pipefail
 
@@ -38,6 +44,7 @@ STOP_OPTION="${STOP_OPTION:-nyears}"
 STOP_N="${STOP_N:-1}"
 RESUBMIT="${RESUBMIT:-4}"
 WALLCLOCK="${WALLCLOCK:-08:00:00}"
+QUEUE="${QUEUE:-regular}"
 REST_OPTION="${REST_OPTION:-nmonths}"
 REST_N="${REST_N:-1}"
 HIST_OPTION="${HIST_OPTION:-nmonths}"
@@ -100,10 +107,10 @@ cd "${CASE_ROOT}"
 
 # --- PE layout ---------------------------------------------------------------
 # EATM is serial and runs the emulator on one GPU, so it gets a node of its own
-# at global rank 0; everything else shares the remaining nodes starting at rank
-# 64.  This is the layout the 2-year GMPAS-EATM shakedown run used.
+# at global rank 0; everything else shares the remaining 7 nodes starting at
+# rank 64.  8 nodes total, which is the pm-gpu debug queue's limit.
 ./xmlchange MAX_MPITASKS_PER_NODE=64
-./xmlchange NTASKS=-10
+./xmlchange NTASKS=-7
 ./xmlchange NTASKS_ATM=1
 ./xmlchange NTASKS_ESP=1
 ./xmlchange NTASKS_IAC=1
@@ -116,12 +123,15 @@ cd "${CASE_ROOT}"
 
 # --- run control -------------------------------------------------------------
 ./xmlchange DEBUG=false
+./xmlchange JOB_QUEUE="${QUEUE}"
 ./xmlchange JOB_WALLCLOCK_TIME="${WALLCLOCK}"
 ./xmlchange STOP_OPTION="${STOP_OPTION}",STOP_N="${STOP_N}"
 ./xmlchange RESUBMIT="${RESUBMIT}"
 ./xmlchange REST_OPTION="${REST_OPTION}",REST_N="${REST_N}"
 ./xmlchange HIST_OPTION="${HIST_OPTION}",HIST_N="${HIST_N}"
-./xmlchange DOUT_S=TRUE
+# no short-term archiving: it queues a second dependent job per segment and
+# moves output out from under you mid-run.  Output stays in RUNDIR.
+./xmlchange DOUT_S=FALSE
 
 # --- emulator ----------------------------------------------------------------
 ./xmlchange EATM_EMULATOR="${EMULATOR}"
