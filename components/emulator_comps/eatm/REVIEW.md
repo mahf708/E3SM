@@ -1684,3 +1684,59 @@ Two consequences:
 
 It also re-derives the -33.3 W/m2 that #27 recorded for ACE2, from a different
 run on a different node count, which is a useful check on the metric itself.
+
+### 49. The deterministic answer: the fixes are worth about 1 W/m2 **[measured]**
+
+ACE2-EAMv3 is deterministic, and #48 showed the decomposition contributes
+nothing, so this comparison is attributable to the code change alone. Same
+compset, same start, same 192 ocean tasks, 10 days:
+
+| run | dT (K) | fit | endpoint |
+|---|---|---|---|
+| pre-fix `7db0a0e848` | -0.001710 | -33.22 | **-33.16 W/m2** |
+| with the fixes | -0.001760 | -34.03 | **-34.12 W/m2** |
+
+**-0.96 W/m2.** That is the honest size of this session's physics changes on the
+energy bias, and it is close to what #40a's arithmetic predicted for the
+humidity cap alone in the `lowest_level` configuration ACE2 falls back to
+(0.26% of mean humidity, worth of order 1 W/m2, in the cooling direction).
+
+So the fixes in 35-37 are correctness fixes. They put the emulator on the
+forcing field it was trained on and align it with the coupler clock; they do
+not move the ocean imbalance, and nothing about them ever should have been
+expected to -- the SOLIN correction is exactly global-mean-neutral by
+construction, and the interval-mean correction is mean-neutral to a boundary
+term (see the note in 37).
+
+**A useful by-product: a first bound on SamudrACE's stochastic spread.** The
+same set of changes measured -6.12 W/m2 on stochastic SamudrACE (#45) and
+-0.96 W/m2 on deterministic ACE2. Allowing for the two emulators differing, the
+gap implies a run-to-run spread of order 5 W/m2 over 20 days -- comfortably
+larger than any effect this session set out to measure, which is finding 47's
+whole point.
+
+### 50. Both emulators disagree with the coupler by the same ~25 W/m2
+
+The in-run report on the ACE2 run above, over all 40 emulator steps:
+
+| | emulator | coupler | difference |
+|---|---|---|---|
+| latent + sensible, per covered area | 118.48 | 143.46 | **+24.98 W/m2** |
+| TOA net, global | | | **+12.84 W/m2** |
+
+Against SamudrACE's +21.95 and +16.26 (#46). **Two different emulators, two
+different architectures, one deterministic and one stochastic, trained on
+different streams -- and the surface exchange disagrees by 22-25 W/m2 in both,
+with a TOA imbalance of 13-16 W/m2 in both.**
+
+That the number is nearly emulator-independent is the strongest evidence yet
+that this is structural to the interface rather than a property of either
+checkpoint, and it is consistent with 43a: both emulators learned to predict
+`shr_flux_atmOcn` evaluated on EAMv3's lowest model level, and EATM is handing
+the same `shr_flux_atmOcn` a state from a different height.
+
+Note also that the two orderings do not match -- ACE2 has the *larger* flux
+mismatch (25.0 vs 22.0) but by far the *smaller* ocean imbalance (-33 vs -68).
+So the surface exchange gap is not the whole story either, and the radiative
+terms differ between the two emulators as well. It is the largest single term
+that is common to both.
