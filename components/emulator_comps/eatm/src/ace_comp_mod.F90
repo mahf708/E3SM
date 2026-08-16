@@ -417,6 +417,7 @@ CONTAINS
     real(R8) :: esat, p_int, tv, precip, snow, fsds_dn
     real(R8) :: raw
     logical  :: do_log
+    logical  :: use_near_surface   ! export at eatm_ref_height, not the layer midpoint
 
     ! Counts of cells where a physically-required floor had to be applied to a
     ! predicted field.  An emulator predicting negative water or a negative
@@ -426,6 +427,13 @@ CONTAINS
 
     do_log = .false.
     if (present(verbose)) do_log = verbose
+
+    ! Only available where the emulator predicts all four near-surface
+    ! diagnostics -- SamudrACE-E3SMv3 does, ACE2-EAMv3 has no such channels.
+    use_near_surface = (trim(eatm_surface_layer) == 'near_surface') .and. &
+         .not. eatm_legacy_surface .and. &
+         ix_out_tref > 0 .and. ix_out_qref > 0 .and. &
+         ix_out_u10  > 0 .and. ix_out_v10  > 0
 
     n_clip_shum   = 0
     n_clip_precip = 0
@@ -446,7 +454,32 @@ CONTAINS
         ! one above it
         p_int = eatm_ak_bot + eatm_bk_bot * pslv(i, j)
 
-        if (eatm_legacy_surface) then
+        if (use_near_surface) then
+          !--- Hand the coupler a state at a genuine surface-layer height.
+          !---
+          !--- The emulator's lowest layer is ~900 hPa thick, so its midpoint is
+          !--- ~450 m up.  shr_flux_atmOcn applies Monin-Obukhov constant-flux-
+          !--- layer similarity between Sa_z and the surface, which is not valid
+          !--- over that depth: the state arrives too cold and too dry and the
+          !--- scheme returns too much latent and sensible heat.
+          !---
+          !--- Where the emulator predicts near-surface diagnostics we use them
+          !--- instead, at the same 10 m reference height datm uses to force this
+          !--- very ocean from JRA (datm_comp_mod.F90:1029, the IAF_JRA_1p5
+          !--- datamode), including its pbot = pslv convention.  Wind is exactly
+          !--- at 10 m; T and q are at 2 m, an inconsistency of a few tenths of a
+          !--- kelvin -- against the ~1.5 K the 450 m dry-adiabatic reduction was
+          !--- injecting.
+          zbot(i, j) = eatm_ref_height
+          ubot(i, j) = net_outputs(1, ix_out_u10, i, j)
+          vbot(i, j) = net_outputs(1, ix_out_v10, i, j)
+          tbot(i, j) = net_outputs(1, ix_out_tref, i, j)
+          raw        = real(net_outputs(1, ix_out_qref, i, j), R8)
+          if (raw < 0.0_R8) n_clip_shum = n_clip_shum + 1
+          shum(i, j) = max(raw, 0.0_R8)
+          pbot(i, j) = pslv(i, j)
+
+        else if (eatm_legacy_surface) then
           !--- pre-review behaviour, retained so earlier runs can be reproduced:
           !--- the reference level is the layer top, its height is a standard
           !--- atmosphere pressure altitude above *sea level*, and the humidity

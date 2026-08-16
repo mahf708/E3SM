@@ -97,6 +97,28 @@ surface shortwave.  Provided only so earlier runs can be reproduced.
 Default: .false.
 </entry>
 
+<entry id="eatm_surface_layer"
+       type="char*256"
+       category="eatm"
+       group="eatm_inparm"
+       valid_values="near_surface,lowest_level" >
+Height at which the atmospheric state handed to the coupler is valid.
+
+near_surface: use the emulator's predicted near-surface diagnostics
+(Tat2m, Qat2m, Uat10m, Vat10m) at a 10 m reference height, with
+Sa_pbot = Sa_pslv.  This is the convention datm uses to force the same ocean
+and sea ice from JRA (the IAF_JRA_1p5 datamode), so an EATM run and a
+GMPAS-JRA1p5-2023 baseline present the surface-flux scheme with states at the
+same height.  Silently falls back to lowest_level for an emulator with no
+near-surface channels, such as ACE2-EAMv3.
+
+lowest_level: use the lowest model layer's mean state at the layer midpoint.
+For an 8-level ACE grid that midpoint is ~450 m up, which is far above the
+constant-flux layer that shr_flux_atmOcn's similarity theory assumes.
+
+Default: near_surface
+</entry>
+
 <entry id="eatm_frzprec_units"
        type="char*16"
        category="eatm"

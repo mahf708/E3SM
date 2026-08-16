@@ -36,6 +36,14 @@ module eatmMod
   logical, public       :: eatm_pass_forcing      ! append next-step forcing channels
   logical, public       :: eatm_legacy_surface    ! reproduce the pre-review surface diagnostics
   integer, public       :: eatm_iradsw            ! radiation interval (coupler steps)
+  character(CL), public :: eatm_surface_layer     ! 'near_surface' or 'lowest_level'
+
+  ! Reference height for the exported atmospheric state when the emulator
+  ! predicts near-surface diagnostics.  10 m is what datm hands this same ocean
+  ! and sea ice under JRA forcing (datm_comp_mod.F90:1029), so an EATM run and
+  ! the GMPAS-JRA1p5-2023 baseline present the surface-flux scheme with states
+  ! at the same height.
+  real(R8), parameter, public :: eatm_ref_height = 10.0_R8
 
   ! Orbital parameters (set from coupler infodata at init)
   real(kind=R8), public :: orb_eccen     ! orbital eccentricity

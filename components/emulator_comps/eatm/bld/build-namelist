@@ -310,6 +310,7 @@ else {
     add_default($nl, 'eatm_model_device');
     add_default($nl, 'eatm_pass_forcing');
     add_default($nl, 'eatm_legacy_surface');
+    add_default($nl, 'eatm_surface_layer');
     add_default($nl, 'eatm_frzprec_units');
     add_default($nl, 'eatm_iradsw');
     add_default($nl, 'eatm_model_file', 'emulator'=>$EATM_EMULATOR, 'nofail'=>1);
