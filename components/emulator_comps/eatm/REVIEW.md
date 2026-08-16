@@ -2451,3 +2451,84 @@ that is where to look first in their output.
 #62's and reproduce its global figures to 0.01 W/m2 -- +17.57 against +17.56 at
 10 m, +0.91 against +0.90 at 44 m. The band breakdown is answer-neutral, and
 `eatm_rng_seed` is doing its job across rebuilds.
+
+### 67. One model month at 10 m: the 5-day mean was not the run mean **[measured]**
+
+The band pair in #66 was 5 days. Repeating at 10 m for a full model month (124
+emulator steps, Jan of year 1, same seed, same executable) gives a different
+run mean and, more usefully, a trend. Segment means over the month, W/m2:
+
+| steps | 60-90S | 30-60S | 0-30S | 0-30N | 30-60N | 60-90N | **GLOBAL** | SW mis |
+|---|---|---|---|---|---|---|---|---|
+| 0-20 | -7.33 | 10.56 | 20.82 | 23.27 | 22.87 | 20.41 | **+17.57** | -2.20 |
+| 20-41 | -0.57 | 14.85 | 27.15 | 30.99 | 18.49 | 14.82 | **+21.85** | -0.56 |
+| 41-62 | 2.58 | 17.60 | 25.83 | 34.42 | 16.56 | 14.63 | **+22.95** | +0.03 |
+| 62-82 | 4.48 | 17.91 | 29.16 | 34.32 | 14.36 | 14.97 | **+23.75** | +0.30 |
+| 82-103 | 6.83 | 15.21 | 29.26 | 30.92 | 12.15 | 13.99 | **+22.07** | +0.37 |
+| 103-124 | 6.55 | 14.22 | 26.59 | 27.48 | 9.79 | 12.36 | **+19.84** | +0.42 |
+| **month mean** | 2.15 | 15.07 | 26.49 | 30.26 | 15.66 | 15.16 | **+21.35** | |
+
+Three things follow.
+
+**The 5-day figure understates the month mean.** +17.57 against +21.35. The
+first segment is the least representative of the six -- every band is still
+moving. Quoting the 5-day number as *the* mismatch was too generous by about
+4 W/m2, and #62/#65/#66 all rest on 5-day means. Their *conclusions* survive
+(the 44 m zero is still compensation, the Stanton/Dalton argument is structural
+and height-independent), but the magnitude attached to 10 m should be ~21, not
+~17.
+
+**It is a spin-up hump, not a runaway.** The global mismatch rises to +23.75
+around day 15-20 and then falls back to +19.84 over the last five days, still
+declining. Nothing here diverges over a month.
+
+**The bands are not moving together.** The extratropics improve monotonically
+and substantially -- 30-60N from +22.87 to +9.79, 60-90N from +20.41 to +12.36
+-- while the tropics get worse before turning over, and 60-90S crosses from
+-7.33 to +6.55. So the end-of-month state is *more* tropically concentrated than
+#66's 5-day snapshot suggested: by the last segment the two tropical bands carry
++26.59 and +27.48 against +9.79 and +12.36 in the northern extratropics.
+"Mostly a tropical latent-heat bias" was right and gets more true with time.
+
+**The shortwave fix holds.** The SW mismatch converges from -2.20 to +0.42 and
+is flat over the second half of the month. The diurnal correction (#35 as
+repaired by `eatm_sw_diurnal`) is not a 5-day artifact; after spin-up the
+shortwave interface is closed to under half a W/m2.
+
+### 68. The ocean's own drift, which is what actually matters **[measured]**
+
+Every number above is a mismatch *at the interface*. The quantity with physical
+consequences is what the ocean does, and `mpaso.hist.am.globalStats` reports it
+directly: `temperatureAvg`, the volume-weighted global mean ocean temperature.
+Converting with the model's own `volumeCellGlobal` (1.33067e18 m3), rho=1026,
+cp=3996, over 3.6e14 m2 of ocean gives 1.516e10 J/m2/K.
+
+| run | dT/day (K) | implied flux |
+|---|---|---|
+| 5-day, 10 m | -2.35e-4 | -41.4 W/m2 |
+| 5-day, 44 m | -1.30e-4 | -22.9 W/m2 |
+| 1-month, 10 m | -3.09e-4 | -54.3 W/m2 |
+
+**44 m nearly halves the ocean cooling drift** -- a factor of 1.81 on the raw
+dT/day, which needs no heat-capacity assumption at all. That is a stronger
+argument for 44 m than anything in #62-#66, and it partly cuts against the
+recommendation at the end of #65.
+
+It has to be weighed against two things. First, #66 stands: the 44 m interface
+is regionally incoherent, spanning -7.87 to +15.85, and it reduces the drift by
+arranging cancellation rather than by getting the physics right. Second, the
+month at 10 m shows the drift *grows* with time (-42.4 W/m2 over the first five
+days, -52.1 over the last ten), so the 44 m 5-day figure of -22.9 is an
+early-spin-up number and may not hold either.
+
+That second caveat is testable and is being tested: a 1-month run at 44 m is
+running now. Until it reports, the honest statement is that **44 m halves the
+drift on the only timescale both have been measured on, and we do not yet know
+whether it still does at one month.**
+
+Note also the scale. -41 W/m2 of ocean cooling in January is not a small
+residual -- the real global ocean is near neutral in the annual mean and this is
+a substantial cold bias in the coupled system, larger than the +21 W/m2
+interface mismatch that produced it, because it also carries whatever the
+radiative and ice terms contribute. The 2-year runs will show this as a
+cooling trend; it is the headline number to watch, not the interface diagnostic.
