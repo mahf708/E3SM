@@ -2103,3 +2103,51 @@ They should be worked separately. The remaining turbulent term is the one that
 an internally consistent Monin-Obukhov export could still reduce; the shortwave
 term will not move until the surface state the emulator assumes and the one
 MPAS-SI produces are brought closer together.
+
+### 59. The turbulent mismatch closes at Sa_z ~ 44 m **[measured]**
+
+`eatm_ref_height` is now a namelist variable, so the question #58 left open --
+whether the remaining turbulent gap is a reference-height problem at all -- can
+be answered by scanning it. SamudrACE, seeded, one model day per point,
+`near_surface`, nothing else changed:
+
+| `eatm_ref_height` (m) | emulator | coupler | turbulent mismatch | shortwave mismatch |
+|---|---|---|---|---|
+| 2 | 127.60 | 179.27 | **+51.67** | -17.50 |
+| 10 (default) | 127.78 | 143.02 | **+15.24** | -17.51 |
+| 30 | 127.80 | 130.46 | **+2.65** | -17.49 |
+| 60 | 127.81 | 124.95 | **-2.86** | -17.47 |
+
+**The mismatch crosses zero at about 44 m**, and it is a strong, monotone
+function of the declared height -- 52 W/m2 across the scan.
+
+This is the prediction of 43a, quantitatively. The emulator's LHFLX and SHFLX
+are not an independent parameterisation: they are `shr_flux_atmOcn` evaluated
+on **EAMv3's lowest model level**, which sits around 60 m, learned from the
+training stream. So the state that reproduces the emulator's own flux should be
+a state at roughly that height -- and it is. Nothing was tuned to make that
+come out; the scan was run to find out whether a zero even existed.
+
+**The shortwave column is invariant to four digits across the whole scan**
+(-17.47 to -17.51). `Sa_z` enters `shr_flux_atmOcn` and touches nothing about
+the four shortwave bands, so this is exactly right, and it is a strong check
+that the diagnostic measures what it claims. The two interface terms are
+independent and should be worked separately (#58).
+
+**What to do with this is a science decision, not a code one, so the default is
+unchanged at 10 m.** Raising `eatm_ref_height` to ~44 m would close the
+turbulent gap, but `Sa_z` would then no longer be the height at which the
+exported state actually lives -- `Tat2m` and `Qat2m` are 2 m values. Two honest
+readings:
+
+- *As a calibration*: the emulator's flux corresponds to a ~60 m state, EATM has
+  no 60 m state to give, and declaring the near-surface diagnostics at the
+  height that recovers the learned flux is the cheapest way to make the
+  atmosphere and ocean agree on the energy exchanged.
+- *As a fix*: construct a genuine ~60 m state -- blend the 2 m/10 m diagnostics
+  with the ~450 m layer mean through a similarity profile -- so that `Sa_z` and
+  the state are consistent and the flux follows. More work, and the right
+  answer.
+
+The scan says the second is worth doing, because a zero exists and it sits
+where the physics says it should.
