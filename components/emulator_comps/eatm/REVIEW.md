@@ -1781,3 +1781,42 @@ Three things follow:
 emulator steps, so the objective is readable in about seven minutes of wall
 clock on four nodes. There is no reason for the next iteration of this to be
 slow.
+
+### 47a. Seeding, scoped down to one CMake line and a 15-line shim
+
+Chased further, and it is smaller than 47 makes it sound. Everything needed is
+already installed on Perlmutter; nothing has to be built or staged.
+
+- `FTorch::ftorch` exports only its own include directory and links only
+  `stdc++` (`FTorchTargets.cmake:62-63`), so it does **not** propagate the Torch
+  headers -- which is why this looked like a build problem.
+- But `FTorchConfig.cmake:31` already does
+  `find_dependency(Torch REQUIRED PATHS
+  "/global/cfs/cdirs/e3sm/software/libtorch/libtorch-shared-with-deps-2.10.0+cu128")`.
+  So by the time `find_dep_packages.cmake` has found FTorch, the `Torch`
+  package is found in the same scope and **`TORCH_INCLUDE_DIRS` is already
+  set** (`TorchConfig.cmake:57-61`).
+- The headers are there: `include/torch/csrc/api/include/torch/torch.h` exists,
+  and `torch/utils.h:75` is `using at::manual_seed;`.
+
+So the whole change is:
+
+1. **One line** next to the existing FTorch link at
+   `components/cmake/build_model.cmake:354`:
+   `target_include_directories(${TARGET_NAME} PRIVATE ${TORCH_INCLUDE_DIRS})`.
+2. **A `.cpp` dropped into `eatm/src`**, which the source glob at
+   `components/cmake/cmake_util.cmake:15` already compiles:
+   `extern "C" void eatm_torch_manual_seed(long s) { torch::manual_seed(s); }`.
+3. An `iso_c_binding` interface and an `eatm_rng_seed` namelist entry, seeded in
+   `ace_comp_init` after `torch_model_load`.
+
+**One thing to check rather than assume**: `at::manual_seed` seeds the CPU
+generator, and whether it also reaches the CUDA generators the traced model
+actually draws from depends on the LibTorch version. If not,
+`at::cuda::manual_seed_all` is the one that matters here, since the model runs
+on the GPU. Verify by seeding, running two identical single-day runs, and
+diffing the exported fields -- if they are not identical the wrong generator
+was seeded.
+
+Not attempted tonight only because it needs a rebuild, and a rebuild would have
+invalidated the restart test running on the same executable.
