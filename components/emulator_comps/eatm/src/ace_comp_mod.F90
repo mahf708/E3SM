@@ -319,19 +319,37 @@ CONTAINS
     !
     !   * every input channel that is also an output channel is carried
     !     forward from `state` (the emulator's own prediction for now),
-    !   * the surface fractions come from the coupler,
+    !   * the surface fractions come from the coupler, EXCEPT that the land
+    !     fraction is the part of the cell no surface model covers -- see below,
     !   * TS is the coupler's merged surface temperature completed with the
-    !     emulator's own TS wherever no surface model contributed (the surface
-    !     models own their fractions, the emulator owns the rest),
+    !     emulator's own TS over that same uncovered fraction,
     !   * PHIS persists from the initial condition / restart,
     !   * SOLIN is computed by ace_compute_solin.
+    !
+    ! The coupler's own `Sf_lfrac` cannot be used for either. It is the fraction
+    ! claimed by the *land model*, and in the GMPAS-EATM compset the land model
+    ! is a stub, so `Sf_lfrac` is identically zero everywhere. Over land that
+    ! leaves all three of lfrac, ofrac and ifrac at zero, and the coupler's
+    ! merged surface temperature `Sx_t` -- built as
+    ! lfrac*Sl_t + ifrac*Si_t + ofrac*So_t -- at exactly 0 K over 26% of the
+    ! globe. Passing that through told the emulator the surface was at absolute
+    ! zero over every land point and that the planet had no land at all, which
+    ! drove a 12%-of-area cold pool below 200 K.
+    !
+    ! So the land fraction EATM reports is the deficit, 1 - ofrac - ifrac, and
+    ! the emulator owns the surface temperature there. This is correct whether
+    ! or not a land model is running: with ELM active, lfrac is nonzero, the
+    ! fractions sum to one, the deficit is zero, and `Sx_t` is passed through
+    ! unchanged.
     !----------------------------------------------------------------
     implicit none
 
     real(R4), intent(in) :: state(:,:,:)   ! (channel, x, y)
 
     ! !LOCAL VARIABLES:
-    integer :: i, j, k
+    integer  :: i, j, k
+    real(R8) :: covered   ! cell fraction the surface models accounted for
+    real(R8) :: deficit   ! the rest, which the emulator owns
 
     do k = 1, n_input_channels
       if (in_from_out(k) > 0) then
@@ -345,41 +363,40 @@ CONTAINS
 
     do j = 1, lsize_y
       do i = 1, lsize_x
-        net_inputs(1, ix_in_landfrac, i, j) = real(lndfrac(i, j), R4)
+
+        covered = min(max(ocnfrac(i, j) + icefrac(i, j) + lndfrac(i, j), 0.0_R8), 1.0_R8)
+        deficit = 1.0_R8 - covered
+
+        net_inputs(1, ix_in_landfrac, i, j) = real(lndfrac(i, j) + deficit, R4)
         net_inputs(1, ix_in_ocnfrac,  i, j) = real(ocnfrac(i, j), R4)
         net_inputs(1, ix_in_icefrac,  i, j) = real(icefrac(i, j), R4)
+
+        if (ix_in_ts > 0) then
+          net_inputs(1, ix_in_ts, i, j) = real( &
+               ts(i, j) + deficit * real(state(ix_out_ts, i, j), R8), R4)
+        end if
+
       enddo
     enddo
-
-    if (ix_in_ts > 0) then
-      if (lnd_present) then
-        ! Sx_t is merged in the coupler as lfrac*Sl_t + ifrac*Si_t + ofrac*So_t
-        ! (prep_atm_mod), so with a land model running it is already complete.
-        do j = 1, lsize_y
-          do i = 1, lsize_x
-            net_inputs(1, ix_in_ts, i, j) = real(ts(i, j), R4)
-          enddo
-        enddo
-      else
-        ! With a stub land the lfrac term contributes nothing, so Sx_t is the
-        ! ocean and ice contributions already weighted by their fractions --
-        ! zero over land.  Completing the merge means *adding* the emulator's
-        ! own surface temperature over the land fraction, not re-weighting what
-        ! the coupler sent: (1-lndfrac)*ts would scale the ocean and ice terms
-        ! by their fractions a second time and put a cold bias on every coast.
-        do j = 1, lsize_y
-          do i = 1, lsize_x
-            net_inputs(1, ix_in_ts, i, j) = real( &
-                 ts(i, j) + lndfrac(i, j) * real(state(ix_out_ts, i, j), R8), R4)
-          enddo
-        enddo
-      end if
-    end if
 
     write(logunit_atm, *) "----------------------------------------------------------------"
     write(logunit_atm, *) "ace_eatm_import"
     write(logunit_atm, *) "----------------------------------------------------------------"
-    write(logunit_atm, *) "ts  (min, max):   ( ", minval(ts(:, :)),  maxval(ts(:, :)), " )"
+    ! Sx_t straight from the coupler.  A minimum of 0 K is expected and fine:
+    ! it is the cells no surface model covers, which the deficit term below
+    ! fills in.  What must never be 0 is the TS actually handed to the emulator.
+    write(logunit_atm, *) "cpl Sx_t   (min, max): ( ", minval(ts(:, :)), maxval(ts(:, :)), " )"
+    write(logunit_atm, *) "cpl lfrac  (min, max): ( ", minval(lndfrac), maxval(lndfrac), " )"
+    write(logunit_atm, *) "cpl ofrac  (min, max): ( ", minval(ocnfrac), maxval(ocnfrac), " )"
+    write(logunit_atm, *) "cpl ifrac  (min, max): ( ", minval(icefrac), maxval(icefrac), " )"
+    write(logunit_atm, *) "net LANDFRAC (min,max):( ", &
+         minval(net_inputs(1, ix_in_landfrac, :, :)), &
+         maxval(net_inputs(1, ix_in_landfrac, :, :)), " )"
+    if (ix_in_ts > 0) then
+      write(logunit_atm, *) "net TS     (min, max): ( ", &
+           minval(net_inputs(1, ix_in_ts, :, :)), &
+           maxval(net_inputs(1, ix_in_ts, :, :)), " )"
+    end if
     call shr_sys_flush(logunit_atm)
 
   end subroutine ace_eatm_import

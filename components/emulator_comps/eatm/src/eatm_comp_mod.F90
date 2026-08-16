@@ -92,6 +92,14 @@ CONTAINS
        !----------------------------------------------------------------------
        call eatm_channels_init(eatm_emulator, logunit_atm)
 
+       if (masterproc) then
+          write(logunit_atm,'(a,l2)') '(eatm_comp_init) land model present = ', lnd_present
+          if (.not. lnd_present) write(logunit_atm,'(a)') &
+               '(eatm_comp_init) no land model: the coupler reports lfrac = 0 and'// &
+               ' Sx_t = 0 over land, so the emulator supplies the land surface'// &
+               ' temperature over the surface fraction deficit'
+       end if
+
        call t_startf('eatm_initmctavs')
        if (masterproc) write(logunit_atm,F00) 'allocate AVs'
        call shr_sys_flush(logunit_atm)

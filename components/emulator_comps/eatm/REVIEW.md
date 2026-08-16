@@ -409,41 +409,98 @@ Measured: a 1-month rerun tracks the original bit-identically for the first
 
 This is **not** what causes the cold pole below — see #15b.
 
-### 15b. The emulator's land surface temperature is unanchored, and cools to ~178 K **[open]**
+### 15b. The emulator was fed 0 K over every land point, and no land at all **[fixed]**
 
-In `GMPAS-EATM` the land component is `SLND`, a stub. Nothing computes a land
-surface temperature, so over land EATM feeds the emulator its own predicted
-`TS` back in, step after step, with nothing to anchor it. That is by design —
-ACE2-EAMv3 is an atmosphere-only model that predicts land `TS` prognostically,
-so this is the mode it was trained for — but in this configuration it drifts.
+The most serious defect found. It is the cause of the cold pool that shows up
+in `atm.log` as `tbot` falling from 232.5 K to ~178 K.
 
-`atm.log` reports the symptom directly: `tbot (min, max)` falls from 232.5 K to
-about 178 K over roughly the first 200 coupler steps (~4 model days) and then
-sits there. In the 2-year `GMPAS-EATM-test4naser` run it stays at 178-179 K for
-the entire simulation, so it is bounded — a stable cold pole, not a runaway.
-Along the way `FLDS` and the lowest-layer humidity at that point clamp to
-exactly zero, which is the traced model's force-positive corrector firing.
+The coupler computes the land fraction correctly and then fails to deliver it.
+`prep_atm_mod.F90` chooses which field to ship as `Sf_lfrac`:
 
-Attribution, since several things could plausibly cause it:
+```fortran
+if (samegrid_al) then
+   klf = mct_aVect_indexRA(fractions_a,"lfrac")     ! the land fraction
+else
+   klf = mct_aVect_indexRA(fractions_a,"lfrin")     ! the land *input* fraction
+endif
+x2a_a%rAttr(index_x2a_Sf_lfrac,n) = fractions_a%Rattr(klf,n)
+```
 
-- **Not** the `Sx_t` double weighting (#15a). Fixing that leaves the cold pole
-  exactly where it was: at day 11 the `Sa_tbot` minimum is 178.45 K in the
-  original run and 178.44 K with every fix on this branch applied. (During
-  spin-up around step 50 the fixed run is transiently ~1 K colder; that closes
-  by day 11 and is not a systematic difference.) The two are independent.
-- **Not** introduced by this branch's other changes: the original code produces
-  a bit-identical `tbot` minimum for the first ~9 coupler steps and the same
-  ~178 K plateau.
-- Consistent with an unanchored autoregressive land surface. The coldest
-  Antarctic plateau temperature ever measured is about 184 K, so 178 K is
-  outside the physical range and the emulator is extrapolating.
+`SLND` makes CIME set `LND_GRID=null`, so the atmosphere and land grids differ,
+so `samegrid_al` is false, so the driver ships `lfrin` — which only a real land
+model ever populates and with a stub stays identically zero. Measured in the
+day-31 coupler history of an actual run:
 
-Worth checking before a long run: whether the cold pole is confined to a
-handful of Antarctic plateau cells (in which case it is cosmetic for an
-ocean-focused run) or whether it spreads. The `cpl.hi` files hold `Sa_tbot` on
-the atmosphere grid, so this is a map away. `GPMPAS-EATM`, which runs ELM, is
-the configuration where the land surface would be anchored — but see #24, its
-mapping files are missing from inputdata.
+```
+fraca_lfrac    min=0.0000 max=1.0000 mean=0.3426    seq_frac computes it correctly
+fraca_lfrin    min=0.0000 max=0.0000 mean=0.0000    never populated: no land model
+x2a_Sf_lfrac   min=0.0000 max=0.0000 mean=0.0000    what the atmosphere receives
+fraca sum = 1.0000 exactly       x2a sum = 0.6574
+```
+
+`ofrac` and `ifrac` arrive intact (0.4996 and 0.1578 in both bundles); only
+`lfrac` is lost. Since `prep_atm_mod` merges the surface temperature as
+`lfrac*Sl_t + ifrac*Si_t + ofrac*So_t`, and over land `ofrac` and `ifrac` are
+also zero, the coupler's `Sx_t` is exactly **0 K** over 26.1% of global area.
+
+This is arguably a driver defect — `prep_atm_mod` should fall back to `lfrac`
+when no land model is present — and it would affect any active atmosphere run
+with a stub land, not just EATM. `datm` does not notice because it prescribes
+its own state and never consumes `Sf_lfrac`. EATM notices because it feeds both
+`LANDFRAC` and `TS` straight into a neural network.
+
+EATM passed both straight through:
+
+- `net_inputs(LANDFRAC) = lndfrac` → the emulator was told the planet has **no
+  land anywhere**, when `LANDFRAC` is a time-invariant boundary condition it
+  was trained with.
+- `net_inputs(TS)` → **0 K** over every land point. Both the original blend
+  `(1-lndfrac)*ts + lndfrac*ace_TS` and the #15a form `ts + lndfrac*ace_TS`
+  reduce to `0` when `lndfrac` is zero, so the "use the emulator's own TS over
+  land" logic never executed. It was dead code in this compset.
+
+The result, at day 31, splitting the grid by whether the coupler covered it:
+
+| | mean `T_7` |
+|---|---|
+| cells where the fractions sum to ~1 | 274.2 K |
+| cells where the fractions sum to ~0 | **197.1 K** |
+
+12.0% of global area below 200 K, 23.0% below 210 K, spanning both hemispheres.
+`FLDS` and the lowest-layer humidity clamp to exactly zero in that region — the
+traced model's force-positive corrector firing, i.e. the network predicting
+negative downwelling longwave and negative water, the signature of being
+evaluated far outside its training manifold. The initial condition's *global*
+minimum `T_7` is 233.15 K, so this is a 55 K excursion below anything in the
+initial state, at a point receiving 530 W/m2 of insolation (87.25S, 104E, 3086 m
+elevation, sunlit in January).
+
+The fix keys off the fraction deficit rather than `lndfrac`, which is correct
+with or without a land model:
+
+```fortran
+covered = ofrac + ifrac + lfrac
+deficit = 1 - covered
+LANDFRAC = lfrac + deficit
+TS       = ts + deficit * ace_TS
+```
+
+With a land model running, `lfrin` is populated, `Sf_lfrac` arrives intact, the
+fractions sum to one, the deficit is zero, and `Sx_t` passes through unchanged.
+
+Verified against ground truth from the same run: reconstructing the land
+fraction as `lfrac + (1 - ofrac - ifrac - lfrac)` reproduces
+`fractions_a(lfrac)` with a mean absolute error of 5.3e-07, with only 77 of
+64800 cells differing by more than 1e-6 — and those by ~1e-3, which is exactly
+`eps_fraclim`, the limit below which `seq_frac_mct` snaps a small land fraction
+to zero. So the reconstruction is exact to within the driver's own rounding.
+
+`ace_eatm_import` now also logs the coupler fractions and the `LANDFRAC` and
+`TS` actually handed to the emulator, so this class of defect is visible in
+`atm.log` rather than needing a coupler-history analysis to find.
+
+**Not yet re-run.** The fix is reasoned and the diagnosis is measured, but no
+simulation has been done with it. That is the next thing to do.
 
 ### 16. `Sa_pslv` is the surface pressure, not sea-level pressure **[open]**
 
