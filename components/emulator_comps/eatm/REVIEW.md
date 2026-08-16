@@ -1974,3 +1974,72 @@ responding to the corrected SOLIN pattern, the aligned clock and the
 interval-mean flux handling. Those are individually mean-neutral by
 construction, but the forcing *pattern* changed enormously (#35), and the
 emulator's response to it is not required to be neutral at all.
+
+### 55. The surface budget, properly accumulated **[measured]**
+
+#46 and #50 read the coupler's fluxes once per emulator step, which compared a
+6 h emulator mean against a single 30 min coupler sample. Fixed: the coupler
+fields now accumulate every coupling step and are reported at the boundary.
+ACE2-EAMv3, 10 days, 40 emulator steps, per unit covered area:
+
+| | emulator | coupler | difference |
+|---|---|---|---|
+| turbulent (latent + sensible) | 118.48 | 142.73 | **+24.25** |
+| net shortwave absorbed | 191.00 | 172.69 | **-18.31** |
+| surface longwave up | 406.50 | 407.01 | +0.52 |
+| **net surface, downward** | 20.78 | -22.29 | **-43.07** |
+| TOA net, global | | | +12.84 |
+
+Three results, one of them a correction to this review's own numbers.
+
+**The turbulent figure survives**: 24.98 sampled, **24.25** accumulated. The
+sampling error was 0.7 W/m2, because four evenly spaced samples a day integrate
+a diurnal or semi-diurnal signal without bias. Worth fixing, but #50's
+conclusion stands unchanged.
+
+**The longwave is fine**: 0.52 W/m2 apart. A single accumulated step had shown
+-29.6, which was itself a sampling artifact -- a good illustration of why the
+fix was worth making, and a warning against reading any single step of this
+report.
+
+**The shortwave was never being measured at all.** The old report used the
+emulator's own `FSDS - FSUS` for *both* columns, so the one term where EATM and
+the surface models genuinely disagree was invisible. The coupler value is now
+rebuilt as the surface models compute it, `sum over bands of
+band * (covered_fraction - merged_albedo)` -- a fraction-weighted sum, not a
+mean, confirmed at `prep_atm_mod.F90` where the merge reads
+`x2a = ... + l2x*fracl`.
+
+### 56. The shortwave gap is a surface-state disagreement, not a band split **[measured]**
+
+Worth stating plainly because the obvious reading is wrong.
+
+The emulator's own implied surface albedo is `FSUS/FSDS` = **0.136** (ACE2;
+0.151 for SamudrACE). The coupled surface reflects like **~0.25**. Repartitioning
+four bands moves absorbed shortwave by a few percent; it cannot bridge an albedo
+gap of 0.11, and tuning the split to close it would hide a state error behind a
+spectral knob while corrupting exactly the snow and ice response the split
+exists to represent.
+
+**About half is excess sea ice.** `mpassi` regional statistics for the ACE2
+10-day run give a total ice area of 32.5 + 13.9 = **46.4 million km2** against
+roughly 17-19 observed for January -- about 2.5x too much, from the
+`cice_default` cold start (#27's last recommendation). Swapping ocean albedo
+(~0.06) for ice (~0.65) over the excess ~5.6% of the globe raises the
+covered-area albedo by ~0.05, so roughly half the 0.11 gap. **This is the
+directly actionable part**: start from a spun-up G-case restart.
+
+**The rest is structural and should not be "fixed" in the export path.** The
+emulator has no albedo input channel; it predicts FSUS from its own learned
+surface state and cannot know what MPAS-SI's ice looks like. EATM could rescale
+the exported bands until the coupler's absorbed shortwave matched the emulator's
+net, which would close the atmosphere's budget -- and would hand the ocean *too
+much* sunlight, because the real ice is genuinely brighter than the emulator
+believes.
+
+**The ocean is currently getting the physically right shortwave.** The surface
+models apply their own albedos to real downwelling bands, which is correct. The
+inconsistency lives in the atmosphere, and it is the same object as the +12.8
+(ACE2) and +16.3 (SamudrACE) W/m2 TOA imbalance: `FSUTOA` carries the same
+albedo assumption that `FSUS` does. A checkpoint taking surface albedo as an
+input forcing is the real fix, and it is not an EATM change.
