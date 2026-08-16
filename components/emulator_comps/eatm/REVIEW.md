@@ -1533,3 +1533,93 @@ in which the ocean receives the flux the atmosphere believes it lost, which is
 the conservation property the coupled system currently lacks. This is cheap to
 test: the mismatch is visible within the first emulator step of a run, so each
 variant costs minutes, not a 20-day integration.
+
+### 35b. What the window mean costs, and the optimisation not taken
+
+From the E3SM timers, `a:eatm_datamode` (the whole emulator advance, inference
+included) on the SamudrACE case:
+
+| run | coupler steps | total | per step |
+|---|---|---|---|
+| pre-fix 20-day (`57058963`) | 960 | 27.62 s | 28.8 ms |
+| with window mean, 1-day smoke (`57060952`) | 48 | 2.82 s | 58.7 ms |
+
+So the emulator advance roughly doubles, from about 1.8 to 3.4 s per model day
+of `ATM Run Time`. In the coupled system that is noise -- the ocean is ~32 s
+per model day and the atmosphere runs on its own node -- but it is 48 x 64800
+`shr_orb_cosz` calls per emulator step, and it does not have to cost anything.
+
+The inner loop currently recomputes `lat*degtorad`, `lon*degtorad` and a full
+`sin`/`cos` pair per cell per sub-interval. Cache `sin(lat)`, `cos(lat)`,
+`sin(lon)`, `cos(lon)` per cell once in `ace_cache_areas`, then expand
+
+```
+cosz = sin(lat)sin(delta) - cos(lat)cos(delta)cos(a + lon)
+     = sin(lat)sin(delta) - cos(lat)cos(delta)[cos(a)cos(lon) - sin(a)sin(lon)]
+```
+
+with `a = 2*pi*(jday - floor(jday))`, so `sin(a)`/`cos(a)`/`sin(delta)`/
+`cos(delta)` are computed once per sub-interval and the per-cell work is a
+handful of multiplies with no transcendentals at all.
+
+**Deliberately not done in this session.** It is algebraically exact but not
+bit-exact, and applying it midway through the A/B runs below would have meant
+reporting numbers from a build that no longer matched the source. It is a
+contained change for whoever picks this up next.
+
+## Session of 2026-08-15 (late): measured results
+
+### 45. What the fixes did to the ocean imbalance: not what one would hope
+
+SamudrACE-E3SMv3, `near_surface`, 20 days from `0001-01-01`, net surface heat
+flux from the ocean's volume-mean temperature drift (#27's metric):
+
+| run | dT (K) | fit | endpoint |
+|---|---|---|---|
+| pre-fix, job `57058963`, 448 ocean tasks | -0.006793 | -63.37 | **-62.37 W/m2** |
+| with the fixes, 192 ocean tasks | -0.007459 | -70.09 | **-68.49 W/m2** |
+
+**The imbalance got about 6 W/m2 worse, not better.**
+
+Three reasons that number cannot yet be attributed to the fixes, in order of
+how much they worry me:
+
+1. **SamudrACE is stochastic and its RNG is unseeded** (#13). Two runs of the
+   *same* code differ by an unmeasured amount, and nobody has ever quantified
+   the spread. A 6 W/m2 difference over 20 days may be entirely within it.
+2. **The decompositions differ** -- the pre-fix baseline ran on 448 ocean
+   tasks, this one on 192, because it had to share a 4-node interactive
+   allocation. Round-off diverges from step one.
+3. **The humidity cap pushes this way by construction.** Capping lowers
+   `Sa_shum`, which raises `(q_sat(SST) - Sa_shum)` and so increases
+   evaporation and ocean cooling (#40a). It is the correct thing to do and its
+   sign is unhelpful.
+
+This is why finding 46 exists: the same comparison on the *deterministic*
+emulator, with the decomposition held fixed.
+
+### 46. The in-run surface exchange, over a full 20 days
+
+The number the new budget report is for, averaged over all 80 emulator steps of
+the run above, per unit covered area:
+
+| | emulator | coupler | difference |
+|---|---|---|---|
+| latent + sensible | 150.10 | 172.05 | **+21.95 W/m2** |
+
+Stable step to step (the last five steps read 23.7, 22.7, 22.6, 23.7, 23.3) and
+in close agreement with the 23.2 W/m2 an independent review estimated offline
+from day-21 history files. Two routes to the same number, one of them now
+printed by the model itself.
+
+Also from the same report, and new: **the emulator's own top-of-atmosphere
+balance, `SOLIN - FSUTOA - FLUT`, averages +16.26 W/m2** over the run. That is
+an order of magnitude larger than a balanced climate should show, and it is a
+direct measurement of the thing `total_energy_budget_correction` exists to
+control -- the corrector the SamudrACE checkpoint configures and the tracing
+script silently drops (#29). Finding 29 was a suspicion; this is a number.
+
+Together these say the surface loses ~22 W/m2 more than the atmosphere believes
+it gave up, while the top of the atmosphere gains ~16 W/m2 that nothing removes.
+Neither is a forcing-field problem, which is consistent with the fixes above
+being correctness fixes that leave the energy bias where it was.
