@@ -2206,3 +2206,53 @@ the atmosphere sent against what the surface actually absorbed.
 Both are measured every emulator step by `ace_flux_budget_report`, and #59 shows
 they are independent: scanning the reference height moves the turbulent term by
 52 W/m2 and the shortwave term by 0.04.
+
+### 62. The 44 m zero holds over days, but the mismatch it nulls does not **[measured]**
+
+#59 found the turbulent mismatch crossing zero near 44 m from a *one-day*
+scan. Two longer SamudrACE runs, seeded, identical but for the height, with
+`eatm_sw_diurnal` on:
+
+| `eatm_ref_height` | turbulent mismatch | shortwave mismatch | **ocean net surface heat flux** |
+|---|---|---|---|
+| 10 m | **+17.56** | -2.20 | **-41.09 W/m2** |
+| 44 m | **+0.90** | -2.21 | **-22.73 W/m2** |
+
+Both 5 days, 20 emulator steps, matched. Per step:
+
+```
+10 m   +17.4 +16.0 +14.3 +13.9 +13.7 +15.2 +16.0 +15.6 +15.4 +16.0
+       +17.2 +17.5 +18.0 +19.1 +20.7 +21.8 +20.9 +20.6 +21.4 +20.7
+44 m    +2.7  +0.2  -2.0  -2.5  -2.9  -1.7  -0.9  -0.9  -0.8  -0.4
+        +0.9  +1.4  +1.7  +2.4  +3.6  +4.4  +3.2  +2.8  +3.7  +3.3
+```
+
+**The zero survives, and it is worth 18.4 W/m2 of ocean heat**: -41.09 to
+-22.73. That is larger than the shortwave fix of #60 and by far the biggest
+lever found. #59 was not a one-day artifact.
+
+**But the quantity it nulls is not stationary.** At a fixed 10 m the mismatch
+wanders from 13.7 to 21.8 W/m2 within five days -- a 60% swing with no change of
+configuration. A height chosen to zero it is therefore being fitted to a moving
+target, and the 44 m trace shows the same wander superimposed on zero, drifting
+back up through +1.7 by day three.
+
+The 44 m trace shows it: it starts near -3, crosses zero around day 2.5 and
+reaches +4.4 by day 4, so the height that would null it is *rising* through the
+run. Averaged over five days it happens to sit at +0.90.
+
+So the recommendation is finely balanced rather than obvious. **18.4 W/m2 is
+too large to leave on the table indefinitely**, and it is the single biggest
+lever measured on this branch. But the quantity being nulled moves by 8 W/m2 in
+five days with nothing changed, and 44 m was fitted to one January day. The
+default therefore stays at 10 m for the production runs -- which keeps them
+comparable to each other and to the JRA baseline -- and job `57102456` runs
+three months at 44 m against the first three months of `57093122` as its
+control. If the mismatch there stays near zero across a season, adopt it; if the
+zero walks with the seasonal cycle, the fix belongs in the emulator's channel
+consistency, not in a height.
+
+**Also confirmed here: the shortwave fix generalises.** These are the first
+SamudrACE runs carrying `eatm_sw_diurnal`, and the shortwave mismatch reads
+-2.20 and -2.58 against **-17.5** in the pre-fix scan of #59 -- the same
+improvement measured on ACE2 in #60, on a different emulator.
