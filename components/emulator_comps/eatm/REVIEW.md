@@ -1424,3 +1424,36 @@ EAM rather than to intuition: `cam_in%wsx = -Faxx_taux`
 `cam_in%wsx` (`cam_diagnostics.F90:2145`), so the emulator's `TAUX` and `FLUS`
 channels compare against EATM's imported `wsx` and `lwup` with no flip at all.
 `Faxx_lat` is not negated on import while `Faxx_sen` is, which is easy to miss.
+
+### 35a. Verifying the SOLIN fix without trusting anything
+
+EATM writes the last SOLIN it computed into its restart file, so a restart is a
+direct record of what the emulator was fed. Two signatures separate the
+instantaneous field from the window mean, and neither needs orbital parameters,
+a calendar, or the model grid -- which matters, because getting those slightly
+wrong is exactly how one talks oneself into the wrong answer here:
+
+- **dark fraction.** An instantaneous insolation field is zero over exactly the
+  unlit hemisphere: half the globe, to machine precision. A 6 h mean is zero
+  only where the sun stays down for the whole window, and the terminator sweeps
+  90 degrees of longitude in 6 h, so it lands near a quarter plus polar night.
+- **peak value.** The instantaneous field peaks at `S0*eccf` at the subsolar
+  point; averaging over a window in which the sun moves 45 degrees either side
+  knocks that down by roughly a quarter.
+
+Measured on the two restarts:
+
+| restart | dark fraction | peak (W/m2) | global mean |
+|---|---|---|---|
+| `near_surface_57058963_baseline`, pre-fix, `0001-01-21` | **0.5000** | 1412.9 | 353.48 |
+| `smoke_1day_fixes`, with fix, `0001-01-02` | **0.2767** | 1296.6 | 353.96 |
+| expected, instantaneous | 0.5000 | ~1365 | |
+| expected, 6 h window mean | ~0.27 | ~1050 | |
+
+A dark fraction of exactly 0.5000 is the smoking gun: every step, the emulator
+was told half the planet was in darkness, when the field it was trained on has
+the sun somewhere in the window over roughly three quarters of the globe. The
+global means agree to 0.5 W/m2, which is why nothing caught this earlier.
+
+`tools/check_eatm_solin.py` runs the test on any EATM restart and exits
+non-zero if it finds the pre-fix signature.
