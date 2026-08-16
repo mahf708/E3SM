@@ -149,4 +149,17 @@ REVIEW.md                           code review findings and known limitations
 ```
 
 Read `REVIEW.md` before trusting EATM output for science — it lists what is
-approximated, what is exported as zero, and what is known to be wrong.
+approximated, what is exported as zero, what is known to be wrong, and (in
+"Reference runs") which existing simulations to compare a new one against,
+including the JRA data-atmosphere baseline that says how the same ocean and sea
+ice behave under real forcing.
+
+## Reproducibility
+
+`ACE2-EAMv3` is deterministic. `SamudrACE-E3SMv3` is not: its
+`NoiseConditionedSFNO` draws fresh noise every step from libtorch's global
+generator, which FTorch does not expose a way to seed. Seeding it is possible —
+it needs a small C++ shim calling `torch::manual_seed`, reseeded each emulator
+step from the model date so restarts land on the same draw — but is not
+implemented. Until it is, two SamudrACE runs of the same configuration diverge,
+and `ERS` can only be run against `ACE2-EAMv3`. See REVIEW.md #13.

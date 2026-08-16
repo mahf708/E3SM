@@ -108,21 +108,40 @@ shum(i, j) = (0.622_R8 * e)/(pbot(i, j) - 0.378_R8 * e)
 This is `q_sat(T_bot, p_bot)` — the lowest model layer is reported to the
 coupler as exactly saturated, everywhere, at every timestep. `Sa_shum` is the
 atmospheric humidity in the bulk formula that `flux_atmocn` and `flux_atmice`
-use to compute evaporation and latent heat flux, so a saturated bottom layer
-suppresses evaporation almost everywhere and can reverse its sign wherever
-`T_bot > SST`. For a run whose whole point is a prognostic ocean, this is the
-most consequential error in the coupling.
+use to compute evaporation and latent heat flux.
+
+**How much this actually mattered** (measured, not predicted — an earlier draft
+of this review overstated it). Comparing the 2-year `GMPAS-EATM-test4naser` run
+against jonbob's `GMPAS-JRA1p5-2023-test` data-atmosphere baseline, both from
+MPAS-Analysis at years 0001-0002:
+
+| | global mean `evaporationFlux` | min |
+|---|---|---|
+| EATM (saturated `Sa_shum`) | -3.828e-05 kg/m2/s | -3.27e-04 |
+| JRA data atmosphere | -3.977e-05 kg/m2/s | -1.36e-04 |
+
+So the global mean is only **3.7% low**, not collapsed: the bulk formula's
+sensitivity to `Sa_shum` is partly offset by the compensating errors in `Sa_z`
+and the resulting stability and exchange coefficients. The peak evaporation is
+2.4x the baseline's, so the spatial structure is worse than the mean suggests,
+but this is a systematic near-surface moist bias rather than a catastrophic
+one.
+
+The fix is still unambiguously right — using the humidity the emulator predicts
+instead of assuming saturation — but do not expect it to transform the run, and
+do expect it to interact with the `Sa_z` change below rather than act alone.
 
 The emulator predicts the field: `specific_total_water_7` (ACE2-EAMv3) /
 `STW_7` (SamudrACE-E3SMv3) is the lowest-layer specific total water. That is now
 what is exported. Using total water slightly overstates vapour where there is
 condensate, which is a much smaller error than assuming saturation.
 
-Scale of the error, from the published initial conditions: the global mean of
-`STW_7` is 8.3e-3 kg/kg (and `Qat2m` 9.1e-3), whereas `q_sat` at the lowest
-layer's temperature and pressure is around 1.2e-2 — roughly 50% too moist in
-the mean, and much worse in dry subsidence regions where the real RH is low and
-the evaporative demand is largest.
+Scale of the input error, from the published initial conditions: the global
+mean of `STW_7` is 8.3e-3 kg/kg (and `Qat2m` 9.1e-3), whereas `q_sat` at the
+lowest layer's temperature and pressure is around 1.2e-2 — roughly 50% too
+moist in the mean, and worse in dry subsidence regions where the real RH is low
+and the evaporative demand is largest. That the flux error is far smaller than
+the humidity error is what the table above records.
 
 Set `eatm_legacy_surface = .true.` to get the old behaviour back.
 
@@ -241,9 +260,39 @@ Consequences:
 
 This is intrinsic to the model rather than a defect in EATM, and it is arguably
 the point (the emulator is an ensemble emulator). It does need to be stated
-explicitly wherever EATM results are compared. Making it reproducible would
-mean exposing `torch::manual_seed` through FTorch and saving/restoring the RNG
-state in the EATM restart.
+explicitly wherever EATM results are compared.
+
+**It can be seeded, though — with a small amount of work.** Checked rather than
+assumed:
+
+- The traced graph keeps `aten::randn` with no generator argument, so at replay
+  it draws from libtorch's global default CUDA generator. That generator is
+  seedable through `torch::manual_seed`.
+- FTorch does not expose it: no seed symbol is exported from `libftorch.so` and
+  nothing in its `.mod` files mentions one.
+- It cannot be pushed into the graph either — `torch.manual_seed` is not
+  TorchScript-scriptable, so a scripted wrapper around the traced core will not
+  work.
+
+The workable route is a C++ shim in `src/` calling `torch::manual_seed`, bound
+from Fortran with `iso_c_binding`, driven by a namelist seed.
+`gather_sources` in `components/cmake/cmake_util.cmake` already globs `*.cpp`,
+so the file is picked up with no build change; the one addition needed is
+propagating Torch's include directories and libraries to the atm target, since
+`FTorch::ftorch` exports only its own module directory
+(`FTorchConfig.cmake` does `find_dependency(Torch)`, so the `Torch` package is
+already in scope where `find_package(FTorch)` runs).
+
+Reseed on every emulator step from a seed derived from the **model date**
+rather than a step counter, so a restart lands on the same draw without having
+to checkpoint the RNG state.
+
+Caveat worth stating up front: that pins the noise realization, which makes a
+rerun follow the same trajectory and makes restart-versus-continuous differ
+only by roundoff. It does not by itself guarantee bit-for-bit reproducibility,
+which additionally needs deterministic GPU kernels.
+
+Not implemented.
 
 ### 13a. The ACE tracing script had drifted away from `fme`, silently **[fixed in the driver]**
 
@@ -460,6 +509,62 @@ also absent from inputdata — so the `GPMPAS-EATM` (ELM + MOSART) compset canno
 currently run.
 
 ---
+
+## Reference runs
+
+What to compare against, and where it is. Everything below predates the changes
+on this branch, so it is the "before" side of any A/B.
+
+### Completed runs with output still on disk
+
+| run | what | where |
+|---|---|---|
+| `GMPAS-EATM-test4naser` | 2 years, June 2026, the branch as reviewed. **The direct baseline.** 363 GB intact: 486 MPAS history files, 73 `cpl.hi.*` (10-daily) | `/pscratch/sd/a/anolan/e3sm_scratch/pm-gpu/GMPAS-EATM-test4naser/run` |
+| `GMPAS-EATM-gnugpu` | 2 years, June 2026, earlier EATM code. 363 GB intact, same layout | `/pscratch/sd/a/anolan/e3sm_scratch/pm-gpu/GMPAS-EATM-gnugpu/run` |
+| `GMPAS-JRA` | 1-day test only, rundir purged — not usable | — |
+
+The `cpl.hi.*` files are the useful ones for reviewing *this* component: they
+carry the `a2x` fields (`Sa_shum`, `Sa_z`, `Sa_pbot`, `Sa_dens`, `Faxa_*`)
+exactly as EATM produced them. A case configured with
+`HIST_OPTION=ndays, HIST_N=10` and `RUN_STARTDATE=0001-01-01` lines up
+file-for-file with them, which makes a field-by-field diff of the fixes
+straightforward.
+
+### Published MPAS-Analysis
+
+`/global/cfs/cdirs/e3sm/www/anolan/` has a run per fix, which doubles as a
+history of what has already been tried:
+
+```
+GMPAS-EATM.IcoswISC30E3r5                     baseline (Apr)
+GMPAS-EATM.IcoswISC30E3r5.nextsw_cday         nextsw_cday fix
+GMPAS-EATM.IcoswISC30E3r5.time-varying-SOLIN  time-varying SOLIN
+GMPAS-EATM.IcoswISC30E3r5.cpl-solin-test      coupler SOLIN test
+GMPAS-EATM.IcoswISC30E3r5.pressure-altitude   the zbot pressure-altitude commit
+GMPAS-EATM.IcoswISC30E3r5.GMPAS-EATM-gnugpu   Jun
+GMPAS-EATM.IcoswISC30E3r5.GMPAS-EATM-test4naser  Jun, current branch
+GMPAS-JRA1p5-2023                             JRA control
+```
+
+and `/global/cfs/cdirs/e3sm/www/jonbob/GMPAS-JRA1p5-2023-test/` is the
+data-model baseline for how the same ocean and sea ice behave with a real
+forcing dataset — the right yardstick for "is the emulated atmosphere driving a
+sane ocean", as opposed to EATM-vs-EATM.
+
+The configs to reproduce the analysis on a new run are in
+`/global/cfs/cdirs/e3sm/anolan/GMPAS-EATM-Analysis/` (`GMPAS-EATM.pmgpu.cfg`,
+`GMPAS-JRA1p5-2023.pmcpu.cfg`).
+
+### What each fix should show up as
+
+| fix | expected signature |
+|---|---|
+| `Sa_shum` from predicted total water | `Sa_shum` down ~30-50%; `evaporationFlux` toward the JRA baseline (it starts only 3.7% low in the global mean, so look at the spatial structure and the 2.4x-too-large extremes, not the mean) |
+| `Sa_z` at the layer midpoint | `Sa_z` roughly halves over ocean, drops by the surface elevation over land; changes exchange coefficients, so it interacts with the humidity fix |
+| `Faxa_swnet` net rather than downwelling | coupler energy budget diagnostics only; no change to ocean or ice forcing |
+| frozen precipitation from the model | `Faxa_snowl` structure smooths near the ice edge (SamudrACE only) |
+| `Sa_topo` exported | nonzero over land; only matters with ELM |
+| coupler `Sx_t` completed not re-weighted | coastal cells warm toward the ocean temperature; watch the ~178 K cold pole |
 
 ## Verified, not a defect
 
