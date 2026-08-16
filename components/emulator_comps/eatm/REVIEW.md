@@ -1740,3 +1740,44 @@ mismatch (25.0 vs 22.0) but by far the *smaller* ocean imbalance (-33 vs -68).
 So the surface exchange gap is not the whole story either, and the radiative
 terms differ between the two emulators as well. It is the largest single term
 that is common to both.
+
+### 51. The export state moves the mismatch by 10 W/m2 -- 43a is testable and true **[measured]**
+
+The experiment 43a proposed, run: SamudrACE-E3SMv3, one model day, everything
+identical but `eatm_surface_layer`, comparing the first four emulator steps.
+
+| export | emulator | coupler | mismatch |
+|---|---|---|---|
+| `near_surface` (2 m / 10 m diagnostics at `Sa_z = 10 m`) | 128.21 | 147.33 | **+19.12 W/m2** |
+| `lowest_level` (layer mean at ~450 m) | 127.87 | 157.50 | **+29.63 W/m2** |
+
+**The emulator column barely moves (128.21 vs 127.87) and the coupler column
+moves by 10 W/m2.** That is exactly the signature 43a predicts and it is a
+strong internal check on the diagnostic itself: how EATM chooses to *describe*
+its atmosphere to the coupler cannot change what the emulator predicted, and it
+does not. All of the difference is in what `shr_flux_atmOcn` makes of the state
+it is handed.
+
+Broken down, it is entirely the latent flux -- `+13.86` -> `+31.12` W/m2 --
+while sensible moves the other way, `+5.26` -> `-1.49`.
+
+Three things follow:
+
+1. **`near_surface` is confirmed the better export**, independently of #28's
+   route to the same conclusion, and now with a direct measure of *why*: it
+   removes 10.5 W/m2 of spurious evaporation, not because it changes the
+   atmosphere but because it stops misrepresenting it.
+2. **The surface exchange gap is a state-export problem, as 43a argued.** A
+   third of it is addressable by changing nothing but the height at which the
+   state is declared. No driver change was needed to demonstrate this.
+3. **The remaining ~19 W/m2 has an obvious next suspect.** The `near_surface`
+   export is not internally consistent: `Tat2m` and `Qat2m` are 2 m values,
+   `Uat10m`/`Vat10m` are 10 m values, and all four are declared at a single
+   `Sa_z = 10 m`. A Monin-Obukhov-consistent state -- all four fields at one
+   height, or the state transferred to the ~60 m level EAMv3's learned flux
+   actually corresponds to -- is the experiment to run next.
+
+**This costs one model day per variant.** The mismatch is converged within four
+emulator steps, so the objective is readable in about seven minutes of wall
+clock on four nodes. There is no reason for the next iteration of this to be
+slow.
