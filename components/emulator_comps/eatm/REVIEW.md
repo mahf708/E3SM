@@ -1457,3 +1457,79 @@ global means agree to 0.5 W/m2, which is why nothing caught this earlier.
 
 `tools/check_eatm_solin.py` runs the test on any EATM restart and exits
 non-zero if it finds the pre-fix signature.
+
+### 40a. How much the humidity cap is actually worth: almost nothing
+
+Measured from the day-1 restart of the fixed SamudrACE run, computing `q_sat`
+the same way the export does:
+
+| configuration | supersaturated area | max RH | effect of the cap on global mean q |
+|---|---|---|---|
+| `near_surface` (`Tat2m`/`Qat2m`, `pbot = PS`) | 9.1 % | 1.98 | **-0.07 %** |
+| `lowest_level` (`T_7`/`STW_7`, layer midpoint) | 17.4 % | 1.82 | **-0.26 %** |
+
+The `lowest_level` figure reproduces the 19.3 % measured in #27 from a
+different run. But the supersaturation is concentrated where there is hardly
+any water to remove -- in `lowest_level`, 13.0 of the 17.4 percentage points
+sit in the 240-273 K band -- so capping it changes the humidity the bulk
+formula sees by a quarter of a percent.
+
+The log line reporting `max RH before cap 4.353` on some steps is the same
+effect at its extreme: at 220 K, `q_sat` is around 6e-6 kg/kg, so an absolute
+error far too small to matter shows up as a relative humidity of four.
+
+**So the cap is a correctness fix, not a bias fix.** The interface was invalid
+-- `shr_flux_atmOcn` is entitled to a vapour mixing ratio and was being handed
+total water -- and it should stay fixed. It cannot be worth more than a
+fraction of a W/m2, and the direction is *unhelpful* anyway: capping lowers
+`Sa_shum`, which raises `(q_sat(SST) - Sa_shum)` and so increases evaporation
+and ocean cooling, in a run whose problem is already too much ocean cooling.
+
+### 43a. The split-flux problem is smaller than it looks, and fixable here
+
+One fact changes what finding 43 means, and it was worth checking rather than
+assuming.
+
+**The emulator's `LHFLX` and `SHFLX` are not an independent physics package's
+opinion. They are the coupler's own fluxes.** In E3SM the atmosphere does not
+compute its turbulent surface fluxes; `seq_flux_atmocn_mct` does, and EAM
+imports the result: `cam_in%lhf = -x2a(Faxx_lat)`
+(`eam/src/cpl/atm_comp_mct.F90:1794`, and `atm_import_export.F90:89`). EAM's
+`LHFLX` history field is exactly that imported value
+(`cam_diagnostics.F90:2142`). The `aigo` h0 stream the emulators were trained
+on therefore contains, in its `LHFLX` channel, `shr_flux_atmOcn` evaluated on
+EAMv3's lowest model level and the SST -- merged over surface types, so a
+full-cell mean, which is also how EATM's budget report reads it.
+
+So the emulator is trained to predict *what this very coupler would compute*.
+The two columns in the budget report are not two irreconcilable
+parameterisations. They are the same bulk formula evaluated on two different
+atmospheric states:
+
+- the coupler's column: `shr_flux_atmOcn` on the state **EATM exports**;
+- the emulator's column: `shr_flux_atmOcn` on the state **EAMv3 had**, learned.
+
+**The ~20-29 W/m2 gap is therefore a measure of how far EATM's exported state
+is from the one the emulator's flux prediction assumes** -- not evidence that
+the atmosphere and ocean are running different physics. That reframes it from
+a driver-level design question into a state-export question, answerable inside
+this component, with no change to `seq_flux_mct.F90` and none of the hazards
+in 43 (mixed-cell double counting, the Icepack asymmetry, `Faox_lwup` and
+`Faox_evap` consistency).
+
+It also explains why the `eatm_surface_layer` change helped but did not close
+it (#28). EAMv3's lowest model level sits around 60 m; the emulator's coarsened
+lowest layer is at ~450 m and its near-surface diagnostics are at 2 m and 10 m.
+Neither is the height the learned flux corresponds to, and the `near_surface`
+export is not even internally consistent -- `Tat2m` and `Qat2m` at 2 m,
+`Uat10m`/`Vat10m` at 10 m, all declared at a single `Sa_z = 10 m`.
+
+**The experiment this suggests**, now that the disagreement is instrumented and
+prints every emulator step: treat the budget report's `turbulent total` column
+as the objective, and try export variants against it -- `lowest_level`,
+`near_surface`, and a Monin-Obukhov-consistent state at an intermediate height
+built from both. A configuration that drives the difference toward zero is one
+in which the ocean receives the flux the atmosphere believes it lost, which is
+the conservation property the coupled system currently lacks. This is cheap to
+test: the mismatch is visible within the first emulator step of a run, so each
+variant costs minutes, not a 20-day integration.
