@@ -1623,3 +1623,39 @@ Together these say the surface loses ~22 W/m2 more than the atmosphere believes
 it gave up, while the top of the atmosphere gains ~16 W/m2 that nothing removes.
 Neither is a forcing-field problem, which is consistent with the fixes above
 being correctness fixes that leave the energy bias where it was.
+
+### 47. Seeding the RNG is the top *methodological* priority **[open, scoped]**
+
+This session ran into #13 as a practical wall rather than a theoretical one.
+The SamudrACE A/B in #45 produced a 6 W/m2 difference that **cannot be
+interpreted**, because two runs of identical code differ by an unknown amount
+and no one has ever measured the spread. Every future science comparison on
+this emulator has the same problem. That makes seeding worth more than any
+single physics fix on the list.
+
+Two things found while scoping it, both of which make it easier than #13
+implies:
+
+- **The build already compiles C++ in `eatm/src`.** The source glob in
+  `components/cmake/cmake_util.cmake:15` matches `*.cpp` in every Filepath
+  directory, and `build_model.cmake:354` already links `FTorch::ftorch` (and
+  so libtorch) into the eatm target. A `.cpp` dropped next to the Fortran is
+  compiled and linked with no build-system change at all.
+- **What is missing is only the Torch *header* path.** `find_dep_packages.cmake`
+  finds FTorch, whose installed `include/` carries `ctorch.h` and the Fortran
+  `.mod` files but not `<torch/torch.h>`. `torch::manual_seed` needs the
+  LibTorch C++ headers, so this needs a `find_package(Torch)` (or an explicit
+  include directory from the same install prefix FTorch was built against)
+  before the shim will compile.
+
+Sketch: a C-linkage `void eatm_torch_manual_seed(long)` calling
+`torch::manual_seed`, which in current LibTorch seeds the CPU generator and
+every CUDA device generator; an `iso_c_binding` interface in `ace_comp_mod`;
+and an `eatm_rng_seed` namelist entry called once in `ace_comp_init` after
+`torch_model_load`. To make restarts reproducible the generator state, not just
+the seed, has to be carried across -- but a fixed seed alone already makes
+same-length A/B runs comparable, which is what is needed now.
+
+**Not attempted here**: it needs a build-system change plus a rebuild and a
+validation run, and doing that in the last hour of a session with the nodes
+busy is how a working branch gets left broken.
