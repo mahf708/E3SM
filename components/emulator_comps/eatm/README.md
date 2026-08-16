@@ -110,7 +110,7 @@ Everything is in `eatm_inparm` (`user_nl_eatm`); see
 | `eatm_model_device` | `gpu` | must match how the model was traced |
 | `eatm_pass_forcing` | `.false.` | append next-step forcing channels (needed only for a model traced with `--add-ocean`) |
 | `eatm_legacy_surface` | `.false.` | restore the pre-review surface diagnostics |
-| `eatm_frzprec_units` | `m/s` | units of the frozen precipitation channel |
+| `eatm_frzprec_units` | `kg/m2/s` | units of the frozen precipitation channel (the checkpoint metadata says `m/s`, but the data are not — see REVIEW.md #10) |
 | `eatm_iradsw` | `1` | radiation interval, in coupler steps |
 
 Which emulator to drive is an xml variable, not a namelist one:

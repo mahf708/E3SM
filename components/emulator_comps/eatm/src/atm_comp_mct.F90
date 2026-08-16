@@ -611,7 +611,7 @@ CONTAINS
     eatm_model_file     = ' '
     eatm_ic_file        = ' '
     eatm_model_device   = 'gpu'
-    eatm_frzprec_units  = 'm/s'
+    eatm_frzprec_units  = 'kg/m2/s'
     eatm_pass_forcing   = .false.
     eatm_legacy_surface = .false.
     eatm_iradsw         = 1

@@ -306,7 +306,10 @@ contains
        case ('surface_precipitation_rate')
           long_name = 'Surface precipitation rate (all phases)'               ; units = 'kg/m2/s'
        case ('frozen_precipitation_rate')
-          long_name = 'Surface frozen precipitation rate (water equivalent)'  ; units = 'm/s'
+          ! the checkpoint metadata says m/s, inherited from EAM's PRECS, but
+          ! the data are kg/m2/s -- see eatm_frzprec_units in the namelist
+          ! definition for the evidence
+          long_name = 'Surface frozen precipitation rate (water equivalent)'  ; units = 'kg/m2/s'
        case ('tendency_of_total_water_path_due_to_advection')
           long_name = 'Tendency of total water path from advection'           ; units = 'kg/m2/s'
        end select

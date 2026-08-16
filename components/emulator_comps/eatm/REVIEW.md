@@ -118,6 +118,12 @@ The emulator predicts the field: `specific_total_water_7` (ACE2-EAMv3) /
 what is exported. Using total water slightly overstates vapour where there is
 condensate, which is a much smaller error than assuming saturation.
 
+Scale of the error, from the published initial conditions: the global mean of
+`STW_7` is 8.3e-3 kg/kg (and `Qat2m` 9.1e-3), whereas `q_sat` at the lowest
+layer's temperature and pressure is around 1.2e-2 — roughly 50% too moist in
+the mean, and much worse in dry subsidence regions where the real RH is low and
+the evaporative demand is largest.
+
 Set `eatm_legacy_surface = .true.` to get the old behaviour back.
 
 ### 8. The autoregressive loop was fed an interpolated state **[fixed]**
@@ -177,12 +183,21 @@ SamudrACE-E3SMv3 predicts `frozen_precipitation_rate` directly, so with that
 emulator the split now comes from the model. ACE2-EAMv3 has no such channel and
 still uses the threshold.
 
-One caveat worth checking in the first run's log: the checkpoint's metadata
-declares `frozen_precipitation_rate` in `m/s` (water-equivalent depth) while
-`surface_precipitation_rate` is in `kg/m2/s`. The conversion factor
-(`SHR_CONST_RHOFW`) is applied when `eatm_frzprec_units = 'm/s'`, which is the
-default; set it to `'kg/m2/s'` if the log shows `snowl` two or three orders of
-magnitude off `rainl`.
+A units trap worth recording, because it would have been a 1000x error. The
+checkpoint's `variable_metadata` declares **both** precipitation channels as
+`m/s`, inherited from EAM's `PRECT`/`PRECS`. The data are actually `kg/m2/s`.
+Global means in the published initial condition:
+
+| channel | global mean | 3 mm/day would be |
+|---|---|---|
+| `surface_precipitation_rate` | 3.33e-5 | 3.5e-5 kg/m2/s, or 3.5e-8 m/s |
+| `frozen_precipitation_rate` | 2.25e-6 | 7% of total by mass — plausible |
+
+Read as m/s, the frozen rate would be 67x the *total* precipitation. The traced
+model's moisture-budget corrector also compares the precipitation channel
+directly against `LHFLX / L_v`, which is kg/m2/s. So `eatm_frzprec_units`
+defaults to `kg/m2/s` and no conversion is applied; `'m/s'` remains available
+in case a future checkpoint really does use it.
 
 ### 11. `Faxa_swnet` carried the downwelling flux **[fixed]**
 
@@ -193,6 +208,8 @@ from the four downwelling bands and the surface albedos. So the effect was
 confined to the coupler's global energy budget diagnostics — but they were
 wrong by the reflected fraction. Where the emulator predicts the upward flux
 (`FSUS` / `surface_upward_shortwave_flux`), `swnet = FSDS - FSUS` is now used.
+In the published initial condition the global means are `FSDS` 195 W/m2 and
+`FSUS` 33 W/m2, so the diagnostic was ~33 W/m2 (17%) too high.
 
 The commented-out latitude-dependent `avg_alb` fudge in the original has been
 dropped along with the unused `yc` allocation that supported it.

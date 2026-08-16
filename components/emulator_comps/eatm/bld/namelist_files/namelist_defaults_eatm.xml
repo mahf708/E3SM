@@ -27,7 +27,7 @@ for the EATM data in the E3SM distribution
 <eatm_model_device>gpu</eatm_model_device>
 <eatm_pass_forcing>.false.</eatm_pass_forcing>
 <eatm_legacy_surface>.false.</eatm_legacy_surface>
-<eatm_frzprec_units>m/s</eatm_frzprec_units>
+<eatm_frzprec_units>kg/m2/s</eatm_frzprec_units>
 <eatm_iradsw>1</eatm_iradsw>
 
 <!--

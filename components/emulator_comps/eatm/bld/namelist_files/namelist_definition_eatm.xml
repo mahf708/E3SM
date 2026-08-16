@@ -103,10 +103,17 @@ Default: .false.
        group="eatm_inparm"
        valid_values="m/s,kg/m2/s" >
 Units of the emulator's frozen_precipitation_rate output channel, used to
-convert it to the kg/m2/s the coupler expects.  SamudrACE-E3SMv3 reports it as
-a water-equivalent depth rate (m/s).  Ignored by emulators that do not predict
-a frozen precipitation rate.
-Default: m/s
+convert it to the kg/m2/s the coupler expects.  Ignored by emulators that do
+not predict a frozen precipitation rate.
+
+Note that SamudrACE-E3SMv3's variable_metadata declares 'm/s' for both the
+total and frozen precipitation rates, inherited from EAM's PRECT/PRECS, but
+the data are in kg/m2/s: the published initial condition has a global mean
+surface_precipitation_rate of 3.3e-5 (3 mm/day in kg/m2/s; it would be 3.3e-8
+in m/s) and a frozen rate of 2.2e-6, i.e. 7% of total precipitation by mass.
+The traced model's moisture-budget corrector also compares the precipitation
+channel directly against LHFLX/L_v, which is kg/m2/s.
+Default: kg/m2/s
 </entry>
 
 <entry id="eatm_iradsw"
