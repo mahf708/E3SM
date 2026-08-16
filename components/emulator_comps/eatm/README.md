@@ -99,13 +99,18 @@ global rank 0 while everything else starts at rank 64:
 test can go through debug (≤30 min) instead of waiting in `regular`:
 
 ```bash
-CASE_NAME=smoke STOP_OPTION=ndays STOP_N=3 RESUBMIT=0 \
+CASE_NAME=smoke STOP_OPTION=ndays STOP_N=25 RESUBMIT=0 \
   QUEUE=debug WALLCLOCK=00:30:00 tools/run_gmpas_eatm_pm-gpu.sh
 ```
 
-A 2-year shakedown of this compset ran at 5.58 SYPD on 11 nodes; the emulator
-is ~4% of runtime, with MPAS-Ocean (60%) and MPAS-Seaice (33%) dominating, so
-8 nodes gives roughly 4–4.5 SYPD.
+Measured at 8 nodes: **5.17 SYPD**, init 134 s, integration ~45.5 s/model-day
+(MPAS-Ocean 70%, MPAS-Seaice 23%, coupler 7%, the emulator itself under 4%).
+
+Budget the end-of-run restart write separately — it took over 235 s and was
+still unfinished when a 31-day debug run hit the wall, which is why the smoke
+test above asks for 25 days rather than a full month. A 1-year production
+segment is ~4.7 h of integration plus twelve monthly restarts, so allow ~5.5 h
+against the 8 h wallclock.
 
 Short-term archiving is off (`DOUT_S=FALSE`): it queues a second dependent job
 per segment and moves output out from under a running case. Output stays in

@@ -715,9 +715,41 @@ except the autoregressive-input fix which is unconditional):
 6. the emulator is fed its own prediction rather than an interpolated state
 7. the coupler's merged surface temperature is completed rather than re-weighted
 
-Validated on `pm-gpu`: `GMPAS-EATM` at `gauss180x360_IcoswISC30E3r5` builds
-clean and a 3-day `ACE2-EAMv3` run completes with the channel table resolving
-39 in / 44 out / 33 prognostic feedbacks and physically sensible exports —
-`zbot` 319–485 m (a height above the surface, where the pressure-altitude
-formula gave ~940 m over ocean), `shum` down to 1.9e-5 kg/kg (a saturation
-value cannot get near that), `pbot` 51–99 kPa, no NaNs.
+Validated on `pm-gpu`, `GMPAS-EATM` at `gauss180x360_IcoswISC30E3r5`:
+
+- Builds clean; the channel table resolves 39 in / 44 out / 33 prognostic
+  feedbacks for `ACE2-EAMv3`, and the traced model loads on the GPU.
+- Exports are physically sensible: `zbot` 319-485 m (a height above the
+  surface, where the pressure-altitude formula gave ~940 m over ocean and
+  >5000 m over plateaus), `shum` down to 1.9e-5 kg/kg (a saturation value
+  cannot get near that), `pbot` 51-99 kPa, no NaNs over a month.
+- A 1-month run reproduces the fixes against the original branch at three
+  independent dates -- see "Measured effect of the fixes".
+- The restart **write** path is confirmed: 46 variables (44 output channels
+  plus `PHIS` and `SOLIN`), `time=2` for the two emulator states, `PHIS` and
+  `SOLIN` correctly without a time dimension, names identical to the original
+  code so existing restarts stay readable, and `PHIS/g` matching the exported
+  `Sa_topo` range exactly as an independent cross-check.
+- The restart **read** path is **not** yet tested. It needs a
+  `CONTINUE_RUN=TRUE` continuation, and it is what a production run with
+  `RESUBMIT` depends on at every segment boundary.
+
+### Timing, measured at 8 nodes
+
+`NTASKS=-7` plus a node for the serial atm; 5.17 SYPD.
+
+| | |
+|---|---|
+| init | 134 s |
+| integration | 45.2-45.8 s per model day (OCN 31.7, ICE 10.6, CPL 3.1, ATM 1.8) |
+| end-of-run restart write | **>= 235 s** and not complete when the job was killed |
+
+The restart write is not negligible, which is easy to miss: a 1-month debug run
+budgeted at 31 x 45.8 s + init fits inside 1800 s on paper and still hit the
+wall. A 1-year segment carries twelve monthly restarts on top of ~4.7 h of
+integration, so budget ~5.5 h against the 8 h wallclock, or set
+`REST_OPTION=nyears` to trade recovery points for margin.
+
+Beware taking a rate from a very short run: the 3-day run reported 45.8 s/day
+but averaging over its startup ramp gives 54 s/day, and neither is the whole
+story once restart writes are included.
