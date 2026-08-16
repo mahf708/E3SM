@@ -245,6 +245,44 @@ explicitly wherever EATM results are compared. Making it reproducible would
 mean exposing `torch::manual_seed` through FTorch and saving/restoring the RNG
 state in the EATM restart.
 
+### 13a. The ACE tracing script had drifted away from `fme`, silently **[fixed in the driver]**
+
+Two independent failures, both of which produce a *working* traced model that
+is quietly missing physics. Found by tracing the SamudrACE atmosphere and
+noticing `corrector_flags: {any_active: false}` in the metadata.
+
+1. The script resolves the corrector configuration from `corrector._config`.
+   Current `fme` correctors have no such attribute — the config lives at
+   `step.config.corrector` — and a checkpoint with `corrector_disabled_epochs`
+   (SamudrACE has one) wraps the corrector in an `EpochScheduledCorrector`
+   besides. The lookup returns `None`, the script reports "no correctors
+   configured" and traces the bare network: no dry-air conservation, no
+   moisture-budget closure, and — because `force_positive_names` comes from the
+   same dead attribute — no clamping of the 16 channels that must not go
+   negative (all eight `STW_` levels, both precipitation rates, and all six
+   radiative fluxes).
+
+   This is not specific to SamudrACE: `corrector._config` is `None` for
+   ACE2-EAMv3 too. The ACE2 model currently in use was traced in March against
+   an older `fme` and does have its correctors (`any_active: true` in its
+   metadata); **re-tracing it today would silently lose them.**
+
+2. The script inlines its own copy of `ATMOSPHERE_FIELD_NAME_PREFIXES` "so the
+   traced .pt has zero runtime dependency on fme". That copy predates the
+   SamudrACE naming: it knows `specific_total_water_` but not `STW_`, and
+   `tendency_of_total_water_path_due_to_advection` but not `DTENDTTW`. With the
+   correctors correctly enabled but the channel lookup stale, the water-channel
+   list comes back empty and the dry-air corrector dies inside
+   `torch.jit.trace` with `stack expects a non-empty TensorList`.
+
+`trace_eatm_model.py` fixes both without touching the tracing script: it
+refreshes the prefix map from `fme.core.atmosphere_data`, resolves the
+corrector config from `step.config.corrector`, rebuilds the force-positive
+indices, and refuses to write a model whose correctors came out inactive or
+whose corrector channels did not resolve.
+
+The underlying fix belongs in the ACE repository's copy of the script.
+
 ### 14. The traced model drops the total-energy corrector **[open]**
 
 The SamudrACE atmosphere configures

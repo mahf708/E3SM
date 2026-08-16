@@ -153,6 +153,39 @@ def _load_ace_tracer(path: pathlib.Path):
     return module
 
 
+def _refresh_field_prefixes(tracer) -> None:
+    """Give the tracing script fme's current field-name prefix map.
+
+    The script inlines its own copy of ``ATMOSPHERE_FIELD_NAME_PREFIXES`` so
+    the traced model has no runtime dependency on ``fme``.  That copy predates
+    the SamudrACE naming: it knows ``specific_total_water_`` but not ``STW_``,
+    and ``tendency_of_total_water_path_due_to_advection`` but not ``DTENDTTW``.
+    The result is an empty water-channel list, and the dry-air corrector then
+    dies at trace time with "stack expects a non-empty TensorList".
+    """
+    try:
+        from fme.core.atmosphere_data import (  # noqa: PLC0415
+            ATMOSPHERE_FIELD_NAME_PREFIXES as LIVE,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not import fme's field prefix map (%s); "
+                       "using the tracing script's inlined copy", exc)
+        return
+
+    merged = dict(tracer.ATMOSPHERE_FIELD_NAME_PREFIXES)
+    added = []
+    for standard, prefixes in LIVE.items():
+        old = merged.get(standard, [])
+        new = list(prefixes) + [p for p in old if p not in prefixes]
+        if new != old:
+            added.extend(p for p in prefixes if p not in old)
+        merged[standard] = new
+    tracer.ATMOSPHERE_FIELD_NAME_PREFIXES = merged
+    if added:
+        logger.info("refreshed field-name prefixes from fme, adding: %s",
+                    ", ".join(sorted(set(added))))
+
+
 def _install_corrector_repair(tracer, holder: dict):
     """Make the ACE tracing script find the corrector config again.
 
@@ -216,9 +249,27 @@ def _install_corrector_repair(tracer, holder: dict):
         }
 
         logger.info("resolved corrector config from step.config.corrector: %s", flags)
-        for key, value in cmap.items():
-            if value == -1 or value == []:
-                logger.warning("corrector channel %r did not resolve (%r)", key, value)
+
+        # An unresolved index is not survivable: an empty water-channel list
+        # makes the dry-air corrector fail inside torch.jit.trace with "stack
+        # expects a non-empty TensorList", and a -1 silently addresses the last
+        # channel.  Only complain about the ones the active correctors use.
+        needed = {"ps_in", "ps_out"}
+        if flags["conserve_dry_air"] or flags["moisture_budget_correction"]:
+            needed |= {"water_in_indices", "water_out_indices"}
+        if flags["moisture_budget_correction"]:
+            needed |= {"precip_out", "evap_out", "advection_out"}
+        if flags["zero_global_mean_moisture_advection"]:
+            needed |= {"advection_out"}
+
+        unresolved = [
+            k for k in sorted(needed) if cmap[k] == -1 or cmap[k] == []
+        ]
+        if unresolved:
+            holder["unresolved"] = unresolved
+            logger.error(
+                "these corrector channels did not resolve: %s", ", ".join(unresolved)
+            )
         return flags, cmap
 
     tracer._build_corrector_flags_and_channel_map = patched
@@ -340,6 +391,7 @@ def main() -> None:
     from fme.core.distributed import Distributed  # noqa: PLC0415  (needs fme on path)
 
     holder: dict = {}
+    _refresh_field_prefixes(tracer)
     _install_corrector_repair(tracer, holder)
 
     with Distributed.context():
@@ -359,6 +411,15 @@ def main() -> None:
             logger.warning(
                 "this checkpoint configures clip_frozen_precipitation, which "
                 "the ACE tracing script does not implement"
+            )
+
+        if holder.get("unresolved"):
+            raise SystemExit(
+                "ERROR: the active correctors reference channels that could not "
+                "be resolved: " + ", ".join(holder["unresolved"]) + ".\n"
+                "The tracing script matches channels through "
+                "ATMOSPHERE_FIELD_NAME_PREFIXES; this checkpoint uses names it "
+                "does not know."
             )
 
         if not metadata["corrector_flags"].get("any_active"):
