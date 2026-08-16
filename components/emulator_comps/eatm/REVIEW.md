@@ -2256,3 +2256,50 @@ consistency, not in a height.
 SamudrACE runs carrying `eatm_sw_diurnal`, and the shortwave mismatch reads
 -2.20 and -2.58 against **-17.5** in the pre-fix scan of #59 -- the same
 improvement measured on ACE2 in #60, on a different emulator.
+
+### 63. The 44 m zero is a cancellation between latent and sensible **[measured -- argues against calibrating]**
+
+#62 recommended waiting on seasonality before adopting 44 m. Splitting the
+mismatch into its two components settles it without waiting. Same runs:
+
+| `eatm_ref_height` | latent mismatch | sensible mismatch | total |
+|---|---|---|---|
+| 2 m | +41.41 | +10.26 | +51.67 |
+| 10 m | +10.46 | +4.78 | +15.24 |
+| 30 m | **-0.43** | +3.08 | +2.65 |
+| 44 m (5 days) | **-1.28** | **+2.18** | +0.90 |
+| 60 m | -5.18 | +2.32 | -2.86 |
+
+**Latent crosses zero near 29 m. Sensible never crosses at all** -- it falls
+from +10.26 to +2.32 between 2 m and 60 m and then flattens, and no height in
+any plausible range nulls it.
+
+So the 44 m zero in the *total* is not a height at which the exchange becomes
+consistent. It is the point where a latent flux that has been driven **negative**
+cancels a sensible flux that is **still positive**. Two errors of opposite sign
+summing to 0.90.
+
+That is the compensating-error failure mode, and it disqualifies
+`eatm_ref_height` as the fix regardless of what the seasonal runs show. The two
+components respond to height with different sensitivities -- latent moves 46.6
+W/m2 across the scan, sensible 7.9 -- so one knob cannot null both, and any
+value that nulls the sum is balancing them against each other at a ratio that
+will not survive a change in season, SST or wind regime.
+
+**What this redirects toward.** The sensible residual that height cannot remove
+is the more interesting number: the coupler's sensible flux exceeds the
+emulator's by 2-5 W/m2 at every height tested. That is a statement about the
+air-sea temperature difference, not about a reference level, and it points back
+at #59's real finding -- the emulator's near-surface channels are not consistent
+with its own flux channels, because nothing in training tied them together. In
+EAMv3 they cannot disagree: `TREFHT` *is* the coupler's `tref`, returned from
+the same `shr_flux_atmOcn` call that produced `LHFLX`. The emulator predicts
+them as independent outputs and they drift apart.
+
+Fixing that is an emulator-side change (constrain the near-surface channels
+against the flux channels, or predict one from the other), not a namelist value.
+
+**Recommendation, firmed up from #62**: keep `eatm_ref_height` at 10 m. Job
+`57102456` is still worth reading when it lands, but as a measurement of how the
+two components drift apart over a season -- not as a decision about whether to
+adopt 44 m.

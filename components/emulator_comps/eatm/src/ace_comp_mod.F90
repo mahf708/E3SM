@@ -110,6 +110,7 @@ module ace_comp_mod
 
   !--- cell areas (rad2), cached from the domain for the budget report ---
   real(R8), allocatable :: cell_area(:,:)
+  real(R8), allocatable :: cell_lat(:,:)    ! for the latitude-band breakdown
   real(R8)              :: area_total = 0.0_R8
 
   !--------------------------------------------------------------------------
@@ -326,11 +327,12 @@ CONTAINS
     implicit none
     type(mct_gGrid), intent(in), pointer :: ggrid
 
-    integer :: karea, n, i, j
+    integer :: karea, klat, n, i, j
 
     if (allocated(cell_area)) return   ! init runs once, but do not rely on it
 
     allocate(cell_area(lsize_x, lsize_y))
+    allocate(cell_lat(lsize_x, lsize_y))
     allocate(acc_lhf(lsize_x, lsize_y), acc_shf(lsize_x, lsize_y))
     allocate(acc_lwup(lsize_x, lsize_y), acc_swabs(lsize_x, lsize_y))
     allocate(acc_wsx(lsize_x, lsize_y), acc_wsy(lsize_x, lsize_y))
@@ -341,6 +343,7 @@ CONTAINS
     call ace_reset_accumulators()
 
     karea = mct_aVect_indexRA(ggrid%data, 'area')
+    klat  = mct_aVect_indexRA(ggrid%data, 'lat')
 
     n = 0
     area_total = 0.0_R8
@@ -348,6 +351,7 @@ CONTAINS
       do i = 1, lsize_x
         n = n + 1
         cell_area(i, j) = ggrid%data%rAttr(karea, n)
+        cell_lat(i, j)  = ggrid%data%rAttr(klat, n)
         area_total = area_total + cell_area(i, j)
       end do
     end do
@@ -566,6 +570,7 @@ CONTAINS
   subroutine ace_comp_finalize()
     call torch_delete(ace_model)
     if (allocated(cell_area)) deallocate(cell_area)
+    if (allocated(cell_lat))  deallocate(cell_lat)
     if (allocated(acc_lhf))   deallocate(acc_lhf, acc_shf, acc_lwup, acc_wsx, acc_wsy, acc_swabs, acc_cov)
     if (allocated(solin_win)) deallocate(solin_win, solin_now)
   end subroutine ace_comp_finalize
@@ -854,6 +859,15 @@ CONTAINS
            emu_ty, cpl_ty, cpl_ty - emu_ty
     end if
 
+    !--- where the turbulent mismatch lives.
+    !
+    ! A global mean of zero can be two large regional errors of opposite sign.
+    ! That matters directly for eatm_ref_height: #62 found the *total* mismatch
+    ! nulling near 44 m while latent and sensible null at different heights, so
+    ! the global zero is already known to be a cancellation between components.
+    ! This asks whether it is also one across latitude.
+    call band_report()
+
     !--- top of atmosphere, when the emulator predicts it.  Global, not
     !--- covered-area: the TOA budget is not a surface-type quantity.
     if (ix_out_flut > 0 .and. ix_out_fsutoa > 0) then
@@ -883,6 +897,51 @@ CONTAINS
     ! area, since the fraction weighting is already inside the field itself.
     ! The sum is over acc_n coupling steps, so divide that out to get the
     ! interval mean -- the same kind of quantity as the emulator's channel.
+    subroutine band_report()
+      ! Latent, sensible and their total, emulator against coupler, in six
+      ! latitude bands.  Weighted exactly as the global figures are: area times
+      ! the mean covered fraction over the accumulation window.
+      integer, parameter :: nb = 6
+      real(R8), parameter :: edge(nb+1) = &
+           (/ -90.0_R8, -60.0_R8, -30.0_R8, 0.0_R8, 30.0_R8, 60.0_R8, 90.0_R8 /)
+      character(len=8), parameter :: nm(nb) = &
+           (/ '  60-90S', '  30-60S', '   0-30S', '   0-30N', '  30-60N', '  60-90N' /)
+      real(R8) :: wsum(nb), elh(nb), esh(nb), clh(nb), csh(nb)
+      real(R8) :: wq, la
+      integer  :: i, j, b
+
+      wsum = 0.0_R8; elh = 0.0_R8; esh = 0.0_R8; clh = 0.0_R8; csh = 0.0_R8
+
+      do j = 1, lsize_y
+        do i = 1, lsize_x
+          la = cell_lat(i, j)
+          b  = 1
+          do while (b < nb .and. la >= edge(b+1))
+            b = b + 1
+          end do
+          wq = w_cov(i, j)
+          wsum(b) = wsum(b) + wq
+          if (ix_out_lhflx > 0) elh(b) = elh(b) + wq * real(net_outputs(1, ix_out_lhflx, i, j), R8)
+          if (ix_out_shflx > 0) esh(b) = esh(b) + wq * real(net_outputs(1, ix_out_shflx, i, j), R8)
+          clh(b) = clh(b) - cell_area(i, j) * acc_lhf(i, j) / real(acc_n, R8)
+          csh(b) = csh(b) + cell_area(i, j) * acc_shf(i, j) / real(acc_n, R8)
+        end do
+      end do
+
+      write(logunit_atm,'(a)') '    by latitude (emulator, coupler, mismatch), W/m2:'
+      write(logunit_atm,'(a)') &
+           '        band     area%      latent-emu  latent-cpl  latent-mis' // &
+           '   sens-emu   sens-cpl    sens-mis    TOTAL-mis'
+      do b = 1, nb
+        if (wsum(b) <= 0.0_R8) cycle
+        write(logunit_atm,'(a,f9.1,7f12.3)') nm(b), 100.0_R8 * wsum(b) / cov_total, &
+             elh(b)/wsum(b), clh(b)/wsum(b), clh(b)/wsum(b) - elh(b)/wsum(b), &
+             esh(b)/wsum(b), csh(b)/wsum(b), csh(b)/wsum(b) - esh(b)/wsum(b), &
+             (clh(b)+csh(b))/wsum(b) - (elh(b)+esh(b))/wsum(b)
+      end do
+
+    end subroutine band_report
+
     real(R8) function cpl_mean(f)
       real(R8), intent(in) :: f(:,:)
       integer :: i, j
