@@ -2303,3 +2303,58 @@ against the flux channels, or predict one from the other), not a namelist value.
 `57102456` is still worth reading when it lands, but as a measurement of how the
 two components drift apart over a season -- not as a decision about whether to
 adopt 44 m.
+
+### 64. Correcting #63: the emulator is not the problem, the roughness lengths are **[measured]**
+
+#63 blamed the latent/sensible split on the emulator predicting near-surface
+and flux channels independently, "and they drift apart". That explanation is
+wrong, and the E3SMv3 training data says so directly.
+
+`SamudrACE-E3SMv3-ICx3-train_atmosphere_ic.nc` carries `Tat2m`, `Qat2m`,
+`Uat10m`, `TS`, `PS`, `LHFLX` and `SHFLX` together, so a dataset's own
+state-to-flux relationship can be inverted for a transfer coefficient and turned
+into a neutral-equivalent height, `z = z0 exp(k/sqrt(C))`:
+
+| dataset | C_E -> z_E | C_H -> z_H |
+|---|---|---|
+| E3SMv3 training, 3 times | 1.24e-3 -> **12.4-13.1 m** | 1.16-1.19e-3 -> **16.3-18.8 m** |
+| emulator output, 5-day runs | 1.288e-3 -> **10.4 m** | 1.328e-3 -> **8.8 m** |
+
+**The emulator reproduces the training relationship closely** -- 10 m against
+12 m for latent. It has not corrupted the state/flux consistency, and #63's
+attribution was unfounded.
+
+**The two components already disagree in the training data**, before the
+emulator touches them: latent implies ~12 m, sensible ~18 m. Stratifying by
+air-sea temperature difference shows this is not an artifact of the
+neutral-only estimator:
+
+| air-sea dT | z_E | z_H | gap |
+|---|---|---|---|
+| 0.2-0.7 K (near neutral) | 18.1 | 31.5 | **+13.4** |
+| 0.7-1.5 | 14.6 | 22.5 | +7.9 |
+| 1.5-3.0 | 11.5 | 18.7 | +7.2 |
+| 3.0-10 (unstable) | 10.3 | 9.8 | -0.5 |
+
+The gap is **largest where the neutral estimator is most nearly exact** and
+disappears where it is least valid -- the reverse of the signature an artifact
+would leave.
+
+**The mechanism is almost certainly the roughness lengths.** `shr_flux_atmOcn`
+gives heat and moisture different roughness lengths, so C_H and C_E are not
+equal at the same height by construction, and inverting each separately through
+one neutral log law must return different heights. That is physics embedded in
+the scheme that generated the training fluxes, not an error anywhere. (Stated as
+inference from the numbers, not read out of the code.)
+
+**So #63's conclusion stands and its reasoning is replaced.** A single `Sa_z`
+cannot null both components -- not because the emulator is sloppy, but because
+heat and moisture are transferred with different efficiencies, and one height
+parameter moves them along different curves. No emulator-side fix changes this.
+
+That closes off the "fix it in the emulator" direction #63 pointed at. What is
+left is honest: `near_surface` at 10 m costs about 15 W/m2 of turbulent
+mismatch, `lowest_level` costs about 25 (#58), and the only route to zero is
+letting the emulator's own fluxes drive the surface (#43), which is ruled out
+for mixed cells and Icepack. **10 m is the best available option, and its cost
+should be reported rather than tuned away.**
