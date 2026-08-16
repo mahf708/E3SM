@@ -2514,6 +2514,11 @@ dT/day, which needs no heat-capacity assumption at all. That is a stronger
 argument for 44 m than anything in #62-#66, and it partly cuts against the
 recommendation at the end of #65.
 
+> **Superseded by #69.** The 1.81 is a 5-day artifact. Measured over a full
+> month the ratio is 1.39 and falling at every timescale checked; over the final
+> week the benefit is 6.7 W/m2, not half. The conclusion below -- that this cuts
+> against #65 -- does not survive. #69 has the decision.
+
 It has to be weighed against two things. First, #66 stands: the 44 m interface
 is regionally incoherent, spanning -7.87 to +15.85, and it reduces the drift by
 arranging cancellation rather than by getting the physics right. Second, the
@@ -2532,3 +2537,70 @@ a substantial cold bias in the coupled system, larger than the +21 W/m2
 interface mismatch that produced it, because it also carries whatever the
 radiative and ice terms contribute. The 2-year runs will show this as a
 cooling trend; it is the headline number to watch, not the interface diagnostic.
+
+### 69. One model month at 44 m: the decision, on ocean drift **[measured]**
+
+#68 ended on an open question -- 44 m halved the ocean drift over 5 days, and we
+did not know whether that held at one month. It does not. The matching 1-month
+44 m run (same seed, same executable, same initial state, `CONTINUE_RUN=FALSE`)
+is now complete. Weekly mean ocean heat drift, from `temperatureAvg`:
+
+| | 10 m | 44 m | benefit of 44 m |
+|---|---|---|---|
+| days 1-7 | -46.0 | -27.6 | 18.5 |
+| days 8-14 | -59.3 | -41.5 | 17.8 |
+| days 15-21 | -60.9 | -41.4 | 19.5 |
+| days 22-28 | -53.1 | -47.3 | **5.9** |
+| days 29-30 | -44.9 | -32.7 | 12.2 |
+| **month** | **-54.18** | **-38.98** | **15.2** |
+
+Net dT over January: -9.27e-3 K at 10 m, -6.67e-3 K at 44 m; ratio 1.39, against
+1.81 at 5 days and 1.56 at 12 days. **The ratio has been falling monotonically
+every time we have measured it.** #68's "nearly halves the drift" was a 5-day
+artifact; the month figure is a 28% reduction, and over the last seven days the
+benefit is 6.7 W/m2, roughly a third of what it was in week one.
+
+Three findings, in order of how much they matter.
+
+**1. The 44 m global zero does not survive a month.** Run-mean turbulent
+mismatch at 44 m is **+3.52 W/m2**, not the +0.91 measured over 5 days. It
+climbs to +5.00 by mid-month and settles near +3.4. The height that nulls the
+global sum over five days does not null it over thirty, which is exactly what
+#65 predicted structurally: the null depends on the stability distribution, and
+that distribution moves as the model spins up. A tuned height is a fit to a
+moving target.
+
+**2. The regional incoherence gets worse, not better.** Month-mean bands at
+44 m span **-13.24 (30-60N) to +12.59 (60-90N)**, a spread of 25.8 W/m2 around
+a global mean of +3.52. And 30-60N degrades monotonically through the month --
+-7.87, -11.92, -12.12, -13.34, -17.19, -16.77 -- while at 10 m that same band
+*improves* monotonically, +22.87 down to +9.79. So the two configurations are
+moving in opposite directions in the band where they differ most. #66 called the
+44 m zero "regional compensation"; a month of integration makes that worse
+rather than annealing it.
+
+**3. Neither height fixes the drift, because most of it is not a height
+problem.** Both runs plateau -- 10 m near -60 W/m2, 44 m near -44 -- separated
+by a roughly constant offset, and both carry a large common-mode cold drift that
+the height parameter does not touch. Whichever we pick, the coupled system loses
+40-55 W/m2 through January. **That is the real defect, and it is not the
+reference height.** The turbulent mismatch peaks and turns over (#67); the
+shortwave interface is closed to +0.55 (#67, and +0.55 at 44 m here); so the
+residual is in longwave and the ice terms, which nothing on this branch has yet
+audited. That is the next investigation, and it is a bigger one than this.
+
+**Decision: keep `eatm_ref_height` at 10 m.** The recommendation is unchanged
+from #65 but now rests on ocean drift rather than interface diagnostics alone:
+
+- The 44 m benefit is real but shrinking -- 15.2 W/m2 month-mean, 6.7 W/m2 over
+  the final week, and the ratio has fallen at every timescale measured.
+- What it buys, it buys through a regional cancellation that is deteriorating
+  with integration time, not converging.
+- 10 m keeps `Sa_z` where the exported state actually lives, so the interface
+  stays interpretable, and its bias has a simple shape (tropical latent, #66/#67)
+  that can be diagnosed in the 2-year output. The 44 m bias has no simple shape.
+- The dominant error is common to both, so the height choice is not where the
+  fix lives and should not be spent as if it were.
+
+The 2-year runs are correctly configured at 10 m. The number to watch in them is
+the ocean cooling trend, not the interface mismatch.
