@@ -106,6 +106,7 @@ CONTAINS
     ! Obtain infodata variables
     call seq_infodata_getData(infodata,&
          read_restart=read_restart,&
+         lnd_present=lnd_present,&
          orb_eccen=orb_eccen,&
          orb_obliqr=orb_obliqr,&
          orb_lambm0=orb_lambm0,&

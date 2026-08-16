@@ -311,6 +311,46 @@ the driver defines. The rest stay at zero forever:
   ice. For a 5-year run this is a real (if second-order) forcing omission that
   should be stated in any comparison against a full E3SM run.
 
+### 15a. The coupler's merged surface temperature was weighted twice **[fixed]**
+
+`ace_eatm_import` blended the surface temperature the coupler sends with the
+emulator's own as
+
+```fortran
+net_inputs(TS) = (1 - lndfrac)*ts + lndfrac*ace_TS
+```
+
+But `Sx_t` is *already* fraction-weighted. `prep_atm_mod.F90:655-700` merges it
+as `lfrac*Sl_t + ifrac*Si_t + ofrac*So_t`, and in `GMPAS-EATM` the land is a
+stub, so the `lfrac` term contributes nothing:
+
+```
+ts = ofrac*So_t + ifrac*Si_t        (and exactly 0 over pure land)
+```
+
+Multiplying that by `(1 - lndfrac)` scales the ocean and ice contributions by
+their fractions a *second* time. A cell that is half land and half ocean gets
+`0.25*So_t + 0.5*ace_TS` instead of `0.5*So_t + 0.5*ace_TS` — a cold bias on
+every coastline, worst where the ocean is warm relative to the emulator's land.
+
+Completing the merge means *adding*, not re-weighting:
+
+```fortran
+net_inputs(TS) = ts + lndfrac*ace_TS      ! stub land
+net_inputs(TS) = ts                        ! land model running: already complete
+```
+
+The branch is now selected on `lnd_present` from the coupler's infodata, so
+`GPMPAS-EATM` (with ELM) takes the coupler's merged value unchanged.
+
+The symptom that led here: `atm.log` reports `ts (min, max)` with a minimum of
+exactly `0.0` — the pure-land cells — and the emulator develops a cold pole,
+`tbot` falling from 232 K to about 178 K over the first ~200 coupler steps and
+sitting there. That is present in the original branch's 2-year run too
+(bit-identical starting values), so it is not new, and it is bounded rather
+than a runaway. Whether the double weighting is what seeds it has not been
+established — it needs a rerun to confirm.
+
 ### 16. `Sa_pslv` is the surface pressure, not sea-level pressure **[open]**
 
 `pslv = PS`. Over the ocean, where `PHIS = 0`, these are identical, so nothing
@@ -480,3 +520,11 @@ except the autoregressive-input fix which is unconditional):
 4. `Faxa_swnet` net rather than downwelling
 5. `Sa_topo` exported instead of left at zero
 6. the emulator is fed its own prediction rather than an interpolated state
+7. the coupler's merged surface temperature is completed rather than re-weighted
+
+Validated on `pm-gpu`: `GMPAS-EATM` at `gauss180x360_IcoswISC30E3r5` builds
+clean and a 3-day `ACE2-EAMv3` run completes with the channel table resolving
+39 in / 44 out / 33 prognostic feedbacks and physically sensible exports —
+`zbot` 319–485 m (a height above the surface, where the pressure-altitude
+formula gave ~940 m over ocean), `shum` down to 1.9e-5 kg/kg (a saturation
+value cannot get near that), `pbot` 51–99 kPa, no NaNs.

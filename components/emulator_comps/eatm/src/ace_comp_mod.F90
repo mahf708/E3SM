@@ -320,9 +320,9 @@ CONTAINS
     !   * every input channel that is also an output channel is carried
     !     forward from `state` (the emulator's own prediction for now),
     !   * the surface fractions come from the coupler,
-    !   * TS is the coupler's merged surface temperature over ocean and ice
-    !     and the emulator's own TS over land (the surface models own the
-    !     first two, the emulator owns the third),
+    !   * TS is the coupler's merged surface temperature completed with the
+    !     emulator's own TS wherever no surface model contributed (the surface
+    !     models own their fractions, the emulator owns the rest),
     !   * PHIS persists from the initial condition / restart,
     !   * SOLIN is computed by ace_compute_solin.
     !----------------------------------------------------------------
@@ -352,14 +352,28 @@ CONTAINS
     enddo
 
     if (ix_in_ts > 0) then
-      do j = 1, lsize_y
-        do i = 1, lsize_x
-          ! land fraction weights the emulator's own surface temperature in
-          net_inputs(1, ix_in_ts, i, j) = real( &
-               (1.0_R8 - lndfrac(i, j)) * ts(i, j) + &
-               lndfrac(i, j) * real(state(ix_out_ts, i, j), R8), R4)
+      if (lnd_present) then
+        ! Sx_t is merged in the coupler as lfrac*Sl_t + ifrac*Si_t + ofrac*So_t
+        ! (prep_atm_mod), so with a land model running it is already complete.
+        do j = 1, lsize_y
+          do i = 1, lsize_x
+            net_inputs(1, ix_in_ts, i, j) = real(ts(i, j), R4)
+          enddo
         enddo
-      enddo
+      else
+        ! With a stub land the lfrac term contributes nothing, so Sx_t is the
+        ! ocean and ice contributions already weighted by their fractions --
+        ! zero over land.  Completing the merge means *adding* the emulator's
+        ! own surface temperature over the land fraction, not re-weighting what
+        ! the coupler sent: (1-lndfrac)*ts would scale the ocean and ice terms
+        ! by their fractions a second time and put a cold bias on every coast.
+        do j = 1, lsize_y
+          do i = 1, lsize_x
+            net_inputs(1, ix_in_ts, i, j) = real( &
+                 ts(i, j) + lndfrac(i, j) * real(state(ix_out_ts, i, j), R8), R4)
+          enddo
+        enddo
+      end if
     end if
 
     write(logunit_atm, *) "----------------------------------------------------------------"

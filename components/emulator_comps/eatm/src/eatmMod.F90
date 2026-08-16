@@ -37,6 +37,10 @@ module eatmMod
   logical, public       :: eatm_legacy_surface    ! reproduce the pre-review surface diagnostics
   integer, public       :: eatm_iradsw            ! radiation interval (coupler steps)
 
+  ! Is a land model running?  Decides how EATM completes the coupler's merged
+  ! surface temperature -- see ace_eatm_import.
+  logical, public :: lnd_present = .false.
+
   ! Orbital parameters (set from coupler infodata at init)
   real(kind=R8), public :: orb_eccen     ! orbital eccentricity
   real(kind=R8), public :: orb_obliqr    ! obliquity in radians
