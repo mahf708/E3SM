@@ -2410,3 +2410,44 @@ This is what closes the question. #62 proposed waiting for a 3-month run to see
 whether the zero held; it cannot hold, for a reason visible in eight lines of
 the flux scheme. **Keep `eatm_ref_height` at 10 m and report the ~15 W/m2
 turbulent mismatch as a known, quantified cost of the near-surface export.**
+
+### 66. Where the mismatch lives, and what 44 m actually does to it **[measured]**
+
+`ace_flux_budget_report` now breaks the turbulent mismatch into six latitude
+bands. Two seeded 5-day SamudrACE runs, 20 emulator steps each, identical but
+for the height. Run means, W/m2:
+
+| band | area% | 10 m latent | 10 m sens | **10 m total** | 44 m latent | 44 m sens | **44 m total** |
+|---|---|---|---|---|---|---|---|
+| 60-90S | 5.8 | -2.70 | -4.63 | **-7.33** | -2.15 | -1.51 | **-3.66** |
+| 30-60S | 24.4 | 7.82 | 2.74 | **10.56** | -2.54 | 1.76 | **-0.77** |
+| 0-30S | 27.2 | 17.02 | 3.80 | **20.82** | 2.40 | 2.14 | **4.54** |
+| 0-30N | 25.2 | 19.09 | 4.18 | **23.27** | -0.45 | 1.79 | **1.34** |
+| 30-60N | 12.8 | 12.35 | 10.52 | **22.87** | **-9.35** | 1.48 | **-7.87** |
+| 60-90N | 4.7 | 5.95 | 14.46 | **20.41** | 2.63 | **13.22** | **+15.85** |
+| GLOBAL | 100 | | | **+17.57** | | | **+0.91** |
+
+**The 44 m global zero is regional compensation.** The Arctic sits at +15.85,
+almost all of it sensible (+13.22) -- the component #65 showed height cannot
+move -- and it is cancelled by driving latent to -9.35 in the northern
+midlatitudes, a band where 10 m had it at +12.35. A spread of nearly 24 W/m2,
+from -7.87 to +15.85, averaging to +0.91. Nothing about that interface is
+consistent; the errors have merely been arranged to sum to zero.
+
+That was the prediction from #65 and it is confirmed quantitatively: one height
+parameter cannot null a quantity whose components transfer with different,
+stability-dependent efficiencies, so forcing the global sum to zero necessarily
+redistributes the error rather than removing it.
+
+**At 10 m the bias has a simple shape**, which is the more useful result. It is
+positive everywhere except over Antarctic ice, and largest in the tropics --
++20.82 and +23.27 in the two tropical bands, which together are 52% of the
+covered area. Latent dominates there (17-19 of it); sensible dominates only at
+high northern latitudes (14.46 of the 20.41 at 60-90N). **So the surface-flux
+bias the 2-year runs will carry is mostly a tropical latent-heat bias**, and
+that is where to look first in their output.
+
+**Reproducibility note.** These runs were built from a different executable than
+#62's and reproduce its global figures to 0.01 W/m2 -- +17.57 against +17.56 at
+10 m, +0.91 against +0.90 at 44 m. The band breakdown is answer-neutral, and
+`eatm_rng_seed` is doing its job across rebuilds.
