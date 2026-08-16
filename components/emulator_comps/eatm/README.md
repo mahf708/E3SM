@@ -183,13 +183,30 @@ blocker is energy, not stability.
 | stochastic | no | yes (`ERS` cannot pass) |
 | near-surface diagnostics | none | `Tat2m`/`Qat2m`/`Uat10m`/`Vat10m` |
 | throughput, 8 nodes | 5.18 SYPD | 4.71 SYPD |
-| ocean net surface heat flux | **-33.3 W/m2** | **-74.4 / -61.6 W/m2** |
+| ocean net surface heat flux | **-34.1 W/m2** | **-68.5 W/m2** (`near_surface`) |
+| emulator-vs-coupler surface exchange | **+25.0 W/m2** | **+22.0 W/m2** |
+| emulator TOA net (`SOLIN-FSUTOA-FLUT`) | **+12.8 W/m2** | **+16.3 W/m2** |
 
-A usable coupled run wants that last row inside about +/-10 W/m2. See
-`REVIEW.md` findings 27-29 for where the residual comes from; the short version
-is that the two emulators fail differently -- ACE2's residual is latent heat
-(a humidity problem), SamudrACE's is a ~1.75 K near-surface cold bias relative
-to the SST it is given.
+A usable coupled run wants the ocean flux inside about +/-10 W/m2.
+
+The two rows below it are what to chase, and they are measured in the run
+itself, once per emulator step, by `ace_flux_budget_report`. **Both emulators
+disagree with the coupler by the same 22-25 W/m2 and carry the same 13-16 W/m2
+TOA imbalance**, despite different architectures, different training streams and
+one being stochastic. That near-independence says the problem is the interface,
+not either checkpoint.
+
+The surface exchange gap is a *state-export* problem and is measurably so:
+switching `eatm_surface_layer` from `lowest_level` to `near_surface` moves the
+coupler's flux by 10 W/m2 while the emulator's own prediction stays put, which
+is only possible if the disagreement is about how EATM describes its atmosphere
+rather than what the atmosphere is. Both emulators learned to predict
+`shr_flux_atmOcn` evaluated on EAMv3's lowest model level -- E3SM's atmosphere
+does not compute its own turbulent fluxes -- so closing the gap means handing
+that same routine a consistent state. `REVIEW.md` 43a, 50 and 51.
+
+Each export variant costs about seven minutes on four nodes: the mismatch
+converges within four emulator steps, so it can be read off a one-day run.
 
 Things that are settled and should not be re-litigated:
 
@@ -200,6 +217,20 @@ Things that are settled and should not be re-litigated:
   restart write is exact. It does not block `RESUBMIT`. Finding 31.
 - **`cpl.hi` files are instantaneous snapshots, not time means.** Do not build
   energy budgets from them; use MPAS `globalStats`. Finding 26.
+- **The ocean decomposition does not affect the energy metric.** 448 vs 192
+  ocean tasks agree to 0.01 W/m2, with the temperature drift identical to six
+  digits, so an A/B does not need matched node counts. Finding 48.
+- **The emulator is now on the forcing field it was trained on.** SOLIN is the
+  6 h window mean, not the instantaneous value, and the flux channels reach the
+  coupler as interval means rather than interpolated endpoints. Verify any run
+  with `tools/check_eatm_solin.py`. Findings 35-37.
+- **Those fixes were worth about 1 W/m2**, measured deterministically. They were
+  correctness fixes; do not expect them to have moved the bias, and do not go
+  looking for the bias in the forcing again. Finding 49.
+
+One thing that blocks measurement rather than physics: **SamudrACE's RNG is
+unseeded**, and its run-to-run spread is of order 5 W/m2 over 20 days -- larger
+than most effects worth testing. Until finding 47 is done, A/B on ACE2.
 
 ### Namelist quick reference
 
