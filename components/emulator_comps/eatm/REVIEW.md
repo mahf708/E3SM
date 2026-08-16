@@ -2043,3 +2043,31 @@ inconsistency lives in the atmosphere, and it is the same object as the +12.8
 (ACE2) and +16.3 (SamudrACE) W/m2 TOA imbalance: `FSUTOA` carries the same
 albedo assumption that `FSUS` does. A checkpoint taking surface albedo as an
 input forcing is the real fix, and it is not an EATM change.
+
+### 57. SamudrACE is reproducible now **[fixed, verified]**
+
+`eatm_rng_seed` (default 0) seeds libtorch through a small C++ shim. Two
+1-day SamudrACE runs, identical configuration, same seed:
+
+| compared | result |
+|---|---|
+| `eatm.r` restart, all channels | **53 of 53 bit-identical** |
+| `mpaso` globalStats, all fields | **244 of 244 bit-identical** |
+
+So the stochastic emulator now reproduces exactly, and #45's uninterpretable
+6 W/m2 would not happen again. This was the top item on #47's list for a
+reason: it is the difference between measuring a change and guessing at one.
+
+Two things it does *not* do, both deliberate. It does not make a restart
+bit-reproducible against a continuous run -- the generator state is not carried
+in the restart file, only the seed is reapplied. And the seed applied is
+`eatm_rng_seed + stepno`, not `eatm_rng_seed`: a resubmitted run re-initializes
+each segment, and seeding identically there would replay one noise realization
+per segment, which for 1-year segments is a spurious annual periodicity in the
+model's own stochasticity.
+
+Build notes for anyone touching this: `FTorchConfig.cmake` already does
+`find_dependency(Torch)`, so `TORCH_INCLUDE_DIRS` and `TORCH_LIBRARIES` are in
+scope at `build_model.cmake:354`; but `FTorch::ftorch` links only `stdc++`, so
+the shim's references into `c10` have to be linked explicitly or the executable
+fails with "DSO missing from command line".
