@@ -53,6 +53,21 @@ module eatm_channels_mod
   integer, allocatable, public :: in_from_out(:)
 
   !----------------------------------------------------------------------------
+  ! The inverse: for every output channel, the input channel of the same name,
+  ! or zero for a channel the emulator only ever produces (fluxes, precip).
+  ! Used to seed the "state at T0" bracket of the interpolator from an initial
+  ! condition, which has an input-channel layout.
+  !----------------------------------------------------------------------------
+  integer, allocatable, public :: out_from_in(:)
+
+  !----------------------------------------------------------------------------
+  ! For every output channel, whether it is a mean over the emulator step
+  ! rather than a snapshot at the end of it.  Resolved once at init so the
+  ! per-cell interpolation loop does not compare strings.
+  !----------------------------------------------------------------------------
+  logical, allocatable, public :: out_is_mean(:)
+
+  !----------------------------------------------------------------------------
   ! Named channel indices (1-based; 0 means "this emulator does not have it").
   ! Only the channels EATM actually touches are resolved here.
   !----------------------------------------------------------------------------
@@ -80,6 +95,17 @@ module eatm_channels_mod
   integer, public :: ix_out_u10     = 0   ! 10 m zonal wind
   integer, public :: ix_out_v10     = 0   ! 10 m meridional wind
 
+  ! Channels EATM does not export but does report, so that the surface energy
+  ! and momentum the emulator believes it exchanged can be compared against
+  ! what the coupler actually applied.  See ace_flux_budget_report.
+  integer, public :: ix_out_lhflx   = 0   ! surface latent heat flux
+  integer, public :: ix_out_shflx   = 0   ! surface sensible heat flux
+  integer, public :: ix_out_taux    = 0   ! zonal surface stress
+  integer, public :: ix_out_tauy    = 0   ! meridional surface stress
+  integer, public :: ix_out_flus    = 0   ! upward longwave at surface
+  integer, public :: ix_out_flut    = 0   ! upward longwave at TOA
+  integer, public :: ix_out_fsutoa  = 0   ! upward shortwave at TOA
+
   !----------------------------------------------------------------------------
   ! Hybrid-coordinate interface between the lowest emulator layer and the layer
   ! above it: p_interface = ak_bot + bk_bot * PS.  Used to place the lowest
@@ -100,8 +126,136 @@ module eatm_channels_mod
   public :: eatm_channels_final
   public :: eatm_channel_index
   public :: eatm_channel_metadata
+  public :: eatm_channel_zero_is_valid
+  public :: eatm_channel_range
+  public :: eatm_channel_is_interval_mean
 
 contains
+
+  !=============================================================================
+  logical function eatm_channel_is_interval_mean(name)
+
+    ! Does this channel hold a mean over the emulator step, rather than a
+    ! snapshot at the end of it?
+    !
+    ! This is a property of the training data, not a modelling choice.  In the
+    ! E3SMv3 6-hourly stream both emulators were trained on, the flux and
+    ! precipitation fields are written with cell_methods = "time: mean" and the
+    ! prognostic state with "time: point"; the timestamp on a record is the
+    ! *end* of its averaging window, so a channel stamped T+dt is either the
+    ! state at T+dt or the mean over (T, T+dt].
+    !
+    ! fme relies on the same split -- its time coarsener takes snapshot
+    ! variables from the end of a window and averages the rest
+    ! (fme/core/dataset/time_coarsen.py:79-85), and the moisture and energy
+    ! correctors multiply a flux by the timestep to get the change in a path
+    ! quantity, which only closes for an interval mean.
+    !
+    ! It matters here because the two kinds have to be carried to the coupler
+    ! differently: a snapshot is interpolated between brackets, a mean is the
+    ! constant value that applies across the whole interval.
+
+    character(len=*), intent(in) :: name
+
+    select case (trim(name))
+    case ('LHFLX', 'SHFLX', 'TAUX', 'TAUY',                          &
+          'FLDS', 'FLUT', 'FSDS',                                    &
+          'FLUS', 'surface_upward_longwave_flux',                    &
+          'FSUS', 'surface_upward_shortwave_flux',                   &
+          'FSUTOA', 'top_of_atmos_upward_shortwave_flux',            &
+          'SOLIN',                                                   &
+          'surface_precipitation_rate', 'frozen_precipitation_rate', &
+          'DTENDTTW', 'tendency_of_total_water_path_due_to_advection')
+       eatm_channel_is_interval_mean = .true.
+    case default
+       ! PS, TS, PHIS, T_*, STW_*, specific_total_water_*, U_*, V_*,
+       ! Tat2m, Qat2m, Uat10m, Vat10m, and the surface fractions
+       eatm_channel_is_interval_mean = .false.
+    end select
+
+  end function eatm_channel_is_interval_mean
+
+  !=============================================================================
+  logical function eatm_channel_zero_is_valid(name)
+
+    ! Is zero a physically meaningful fill for this channel?
+    !
+    ! Only the surface fractions qualify.  "No sea ice here" really is
+    ! ICEFRAC = 0, and the published SamudrACE-E3SMv3 initial conditions encode
+    ! it as a missing value, so zero-filling them is a correction rather than a
+    ! guess.  For PS, TS, PHIS, a temperature, a wind or a water channel there
+    ! is no value that can stand in for "unknown" -- zero is a physically
+    ! impossible state that the emulator would happily integrate forward.
+
+    character(len=*), intent(in) :: name
+
+    select case (trim(name))
+    case ('LANDFRAC', 'OCNFRAC', 'ICEFRAC')
+       eatm_channel_zero_is_valid = .true.
+    case default
+       eatm_channel_zero_is_valid = .false.
+    end select
+
+  end function eatm_channel_zero_is_valid
+
+  !=============================================================================
+  subroutine eatm_channel_range(name, lo, hi, checked)
+
+    ! Physically admissible range for a channel, used to check that the traced
+    ! graph really does put the field EATM thinks it does in a given channel.
+    !
+    ! A traced model is an opaque tensor-in/tensor-out graph: nothing at load
+    ! time relates its channel order to the table above.  If a checkpoint is
+    ! swapped for one with a different layout, or eatm_emulator names the wrong
+    ! table, every index silently reads the wrong field.  The ranges below are
+    ! deliberately loose -- wide enough that no plausible atmospheric state
+    ! trips them, narrow enough that reading a humidity where a pressure was
+    ! expected cannot pass.
+
+    character(len=*), intent(in)  :: name
+    real(R8),         intent(out) :: lo, hi
+    logical,          intent(out) :: checked
+
+    checked = .true.
+    lo      = 0.0_R8
+    hi      = 0.0_R8
+
+    if (starts_with(name, 'T_')) then
+       lo = 120.0_R8   ; hi = 360.0_R8       ! K, any emulator layer
+    else if (starts_with(name, 'U_') .or. starts_with(name, 'V_')) then
+       lo = -250.0_R8  ; hi = 250.0_R8       ! m/s
+    else if (starts_with(name, 'STW_') .or. &
+             starts_with(name, 'specific_total_water_')) then
+       lo = -1.0e-3_R8 ; hi = 0.1_R8         ! kg/kg (small negatives happen)
+    else
+       select case (trim(name))
+       case ('PS')       ; lo = 3.0e4_R8  ; hi = 1.2e5_R8   ! Pa
+       case ('TS')       ; lo = 120.0_R8  ; hi = 360.0_R8   ! K
+       case ('Tat2m')    ; lo = 120.0_R8  ; hi = 360.0_R8   ! K
+       case ('Qat2m')    ; lo = -1.0e-3_R8; hi = 0.1_R8     ! kg/kg
+       case ('Uat10m', 'Vat10m')
+                           lo = -150.0_R8 ; hi = 150.0_R8   ! m/s
+       case ('FLDS')     ; lo = 0.0_R8    ; hi = 700.0_R8   ! W/m2
+       case ('FSDS')     ; lo = -1.0_R8   ; hi = 1500.0_R8  ! W/m2
+       case ('FLUT')     ; lo = 0.0_R8    ; hi = 500.0_R8   ! W/m2
+       case ('LHFLX')    ; lo = -500.0_R8 ; hi = 2000.0_R8  ! W/m2
+       case ('SHFLX')    ; lo = -1000.0_R8; hi = 2000.0_R8  ! W/m2
+       case ('TAUX', 'TAUY')
+                           lo = -20.0_R8  ; hi = 20.0_R8    ! N/m2
+       case ('surface_precipitation_rate', 'frozen_precipitation_rate')
+                           lo = -1.0e-4_R8; hi = 0.1_R8     ! kg/m2/s
+       case ('FSUS', 'surface_upward_shortwave_flux')
+                           lo = -1.0_R8   ; hi = 1500.0_R8  ! W/m2
+       case ('FLUS', 'surface_upward_longwave_flux')
+                           lo = 0.0_R8    ; hi = 900.0_R8   ! W/m2
+       case ('FSUTOA', 'top_of_atmos_upward_shortwave_flux')
+                           lo = -1.0_R8   ; hi = 1500.0_R8  ! W/m2
+       case default
+          checked = .false.
+       end select
+    end if
+
+  end subroutine eatm_channel_range
 
   !=============================================================================
   subroutine eatm_channels_init(emulator, logunit)
@@ -162,6 +316,19 @@ contains
     ix_out_precip = eatm_channel_index(out_names, 'surface_precipitation_rate')
     ix_out_snow   = eatm_channel_index(out_names, 'frozen_precipitation_rate')
 
+    !--- reported-only channels for the surface exchange budget ---
+    ix_out_lhflx  = eatm_channel_index(out_names, 'LHFLX')
+    ix_out_shflx  = eatm_channel_index(out_names, 'SHFLX')
+    ix_out_taux   = eatm_channel_index(out_names, 'TAUX')
+    ix_out_tauy   = eatm_channel_index(out_names, 'TAUY')
+    ix_out_flut   = eatm_channel_index(out_names, 'FLUT')
+    ix_out_flus   = eatm_channel_index(out_names, 'FLUS')
+    if (ix_out_flus == 0) &
+         ix_out_flus = eatm_channel_index(out_names, 'surface_upward_longwave_flux')
+    ix_out_fsutoa = eatm_channel_index(out_names, 'FSUTOA')
+    if (ix_out_fsutoa == 0) &
+         ix_out_fsutoa = eatm_channel_index(out_names, 'top_of_atmos_upward_shortwave_flux')
+
     ix_out_tref = eatm_channel_index(out_names, 'Tat2m')
     ix_out_qref = eatm_channel_index(out_names, 'Qat2m')
     ix_out_u10  = eatm_channel_index(out_names, 'Uat10m')
@@ -198,6 +365,19 @@ contains
     if (ix_in_ocnfrac  > 0) in_from_out(ix_in_ocnfrac)  = 0
     if (ix_in_icefrac  > 0) in_from_out(ix_in_icefrac)  = 0
 
+    !--- and the inverse map, over the full output block ---
+    allocate(out_from_in(n_output_channels))
+    out_from_in(:) = 0
+    do k = 1, n_output_channels
+       out_from_in(k) = eatm_channel_index(in_names, trim(out_names(k)))
+    end do
+
+    !--- snapshot vs interval mean, per output channel ---
+    allocate(out_is_mean(n_output_channels))
+    do k = 1, n_output_channels
+       out_is_mean(k) = eatm_channel_is_interval_mean(out_names(k))
+    end do
+
     write(logunit,'(a)')    '(eatm_channels_init) --------------------------------'
     write(logunit,'(2a)')   '(eatm_channels_init) emulator          = ', trim(eatm_emulator_name)
     write(logunit,'(a,i5)') '(eatm_channels_init) n_input_channels  = ', n_input_channels
@@ -223,6 +403,8 @@ contains
     if (allocated(out_names))     deallocate(out_names)
     if (allocated(forcing_names)) deallocate(forcing_names)
     if (allocated(in_from_out))   deallocate(in_from_out)
+    if (allocated(out_from_in))   deallocate(out_from_in)
+    if (allocated(out_is_mean))   deallocate(out_is_mean)
     n_input_channels   = 0
     n_output_channels  = 0
     n_forcing_channels = 0

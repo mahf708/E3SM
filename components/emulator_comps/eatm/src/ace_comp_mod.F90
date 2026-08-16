@@ -79,6 +79,29 @@ module ace_comp_mod
   integer        :: n_tensor_in       ! channels handed to the traced graph
   logical        :: frzprec_is_depth  ! frozen precip channel is m/s, not kg/m2/s
 
+  !--------------------------------------------------------------------------
+  ! Model time at which the emulator was last advanced.  The driver calls
+  ! atm_init_mct twice for a prognostic atmosphere -- once in phase 1 and again
+  ! in phase 2 after the ocean and ice have initialized -- and the ESMF clock
+  ! is not advanced between them (driver-mct/main/cime_comp_mod.F90:1532 and
+  ! :2446; ClockAdvance appears once in the whole driver, at :2826, at the top
+  ! of the run loop).  The phase-2 call runs the full run method, so a guard of
+  ! `mod(tod, dt) == 0` alone fires twice at tod = 0 and leaves the emulator
+  ! state permanently one emulator step ahead of the coupler clock.
+  !
+  ! Recording the time of the last advance makes the advance idempotent in
+  ! model time, which is the property that actually matters and does not depend
+  ! on counting driver phases.
+  !--------------------------------------------------------------------------
+  integer(IN) :: last_adv_ymd = -1
+  integer(IN) :: last_adv_tod = -1
+
+  !--- cell areas (rad2), cached from the domain for the budget report ---
+  real(R8), allocatable :: cell_area(:,:)
+  real(R8)              :: area_total = 0.0_R8
+
+  logical :: outputs_validated = .false.   ! full range check done once
+
   save
 
   !~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -95,6 +118,7 @@ CONTAINS
     integer     :: i, j, k     ! loop indicies
     real(R8)    :: t_frac      ! frac through eatm timestep
     integer     :: t_modulo    ! int remainder of curr. time over eatm dt
+    integer(in) :: CurrentYMD  ! model date
     integer(in) :: CurrentTOD  ! model sec into model date
     character(len=*), parameter :: subname = '(ace_comp_init) '
 
@@ -141,44 +165,100 @@ CONTAINS
     ! load the traced model
     call torch_model_load(ace_model, trim(eatm_model_file), model_device)
 
-    if (read_restart) then
+    call ace_cache_areas(ggrid)
 
-      call seq_timemgr_EClockGetData( EClock, curr_tod=CurrentTOD )
+    call seq_timemgr_EClockGetData( EClock, curr_ymd=CurrentYMD, curr_tod=CurrentTOD )
+
+    if (read_restart) then
 
       ! int remainder (in sec) of coupler timestep relative to ACE timestep
       t_modulo = mod(CurrentTOD, eatm_model_dt)
       ! turn integer remainder into fraction through ACE timestep
       t_frac = real(t_modulo, kind=R8) / real(eatm_model_dt, kind=R8)
 
-      do k = 1, n_output_channels
-        do j = 1, lsize_y
-          do i = 1, lsize_x
-            net_outputs(1, k, i, j) = eatm_intrp%t_im1(k, i, j) + &
-                t_frac * (eatm_intrp%t_ip1(k, i, j) - eatm_intrp%t_im1(k, i, j))
-          end do
-        end do
-      end do
+      call ace_bracket_blend(t_frac)
 
     else
+      ! The initial condition is the emulator state at T0.  One inference
+      ! carries it to T0 + dt, which is the *upper* bracket of the first
+      ! interpolation interval -- SOLIN is computed for T0 + dt to match.
       call ace_compute_solin(EClock, ggrid)
 
       call ace_inference()
 
-      ! fill both time levels of intrp struct with restart data
+      ! Lower bracket: the state at T0 itself, taken from the initial
+      ! condition wherever the channel exists there.  Seeding both brackets
+      ! from the prediction instead (as this used to) throws away the one
+      ! state whose valid time is known exactly and hands the coupler a T0+dt
+      ! atmosphere at T0.  The flux and precipitation channels have no
+      ! initial-condition counterpart, so they are held at the prediction for
+      ! the first interval; there is nothing better available.
       do k = 1, n_output_channels
+        if (out_from_in(k) > 0) then
+          do j = 1, lsize_y
+            do i = 1, lsize_x
+              eatm_intrp%t_im1(k, i, j) = net_inputs(1, out_from_in(k), i, j)
+            end do
+          end do
+        else
+          do j = 1, lsize_y
+            do i = 1, lsize_x
+              eatm_intrp%t_im1(k, i, j) = net_outputs(1, k, i, j)
+            end do
+          end do
+        end if
         do j = 1, lsize_y
           do i = 1, lsize_x
-            eatm_intrp%t_im1(k, i, j) = net_outputs(1, k, i, j)
             eatm_intrp%t_ip1(k, i, j) = net_outputs(1, k, i, j)
           end do
         end do
       end do
+
+      ! t_frac = 0 at T0: hand the coupler the initial condition for the
+      ! snapshot channels, and the first predicted interval mean for the rest.
+      call ace_bracket_blend(0.0_R8)
     endif
+
+    ! The emulator has now been advanced to cover the interval that starts at
+    ! the current model time; the driver's second initialization call arrives
+    ! at this same time and must not advance it again.
+    last_adv_ymd = CurrentYMD
+    last_adv_tod = CurrentTOD
 
     ! using restart data from ACE set the fields passed to the coupler
     call ace_eatm_export(ggrid, verbose=.true.)
 
   end subroutine ace_comp_init
+
+  !===============================================================================
+  subroutine ace_cache_areas(ggrid)
+
+    ! Cache the domain's cell areas so the surface-exchange budget can be
+    ! reported as a global mean rather than a set of extrema.
+
+    implicit none
+    type(mct_gGrid), intent(in), pointer :: ggrid
+
+    integer :: karea, n, i, j
+
+    allocate(cell_area(lsize_x, lsize_y))
+
+    karea = mct_aVect_indexRA(ggrid%data, 'area')
+
+    n = 0
+    area_total = 0.0_R8
+    do j = 1, lsize_y
+      do i = 1, lsize_x
+        n = n + 1
+        cell_area(i, j) = ggrid%data%rAttr(karea, n)
+        area_total = area_total + cell_area(i, j)
+      end do
+    end do
+
+    if (area_total <= 0.0_R8) call shr_sys_abort( &
+         '(ace_cache_areas) ERROR: domain cell areas sum to zero')
+
+  end subroutine ace_cache_areas
 
   subroutine ace_comp_run(EClock, ggrid)
     ! !DESCRIPTION: run method for ace model
@@ -203,7 +283,11 @@ CONTAINS
     ! integer remainder (in sec) of coupler timestep relative to ACE timestep
     t_modulo = mod(CurrentTOD, eatm_model_dt)
 
-    if (t_modulo .eq. 0) then
+    ! An emulator step is due at every multiple of eatm_model_dt, but only
+    ! once per model time: the driver's phase-2 initialization call runs this
+    ! routine again at the time the startup inference already covered.
+    if (t_modulo == 0 .and. &
+        .not. (CurrentYMD == last_adv_ymd .and. CurrentTOD == last_adv_tod)) then
 
       ! One line per emulator step, not per coupler step: at ATM_NCPL=48 the
       ! latter is 48 flushed writes a day, ~100 MB of atm.log over five years.
@@ -211,6 +295,11 @@ CONTAINS
            'eatm step ', stepno, ' date ', CurrentYMD, ' tod ', CurrentTOD, &
            ' (cpl dt ', cpl_idt, ' s) -- advancing emulator'
       call shr_sys_flush(logunit_atm)
+
+      ! What the coupler did with the state handed over for the interval that
+      ! just closed, next to what the emulator thought it was doing.  Reported
+      ! before the import overwrites the coupler fields.
+      call ace_flux_budget_report()
 
       ! Feed the emulator its own state *at this time*, which is the prediction
       ! made one emulator step ago (t_ip1).  net_outputs currently still holds
@@ -234,26 +323,75 @@ CONTAINS
         end do
       end do
 
+      last_adv_ymd = CurrentYMD
+      last_adv_tod = CurrentTOD
+
     end if
 
     t_frac = real(t_modulo, kind=r8) / real(eatm_model_dt, kind=r8)
 
-    ! time interpolate the results
-    do k = 1, n_output_channels
-      do j = 1, lsize_y
-        do i = 1, lsize_x
-          net_outputs(1, k, i, j) = eatm_intrp%t_im1(k, i, j) + &
-              t_frac * (eatm_intrp%t_ip1(k, i, j) - eatm_intrp%t_im1(k, i, j))
-        end do
-      end do
-    end do
+    call ace_bracket_blend(t_frac)
 
     call ace_eatm_export(ggrid, verbose=(t_modulo == 0))
 
   end subroutine ace_comp_run
 
+  !===============================================================================
+  subroutine ace_bracket_blend(t_frac)
+
+    !----------------------------------------------------------------
+    ! Combine the two bracketing emulator states into the field the coupler is
+    ! handed at a fraction t_frac through the current emulator interval.
+    !
+    ! The two kinds of channel are combined differently, because they mean
+    ! different things (see eatm_channel_is_interval_mean).
+    !
+    !   snapshot channels -- PS, TS, the layer state, the near-surface
+    !     diagnostics -- are instantaneous values at the two bracket times, so
+    !     they are linearly interpolated.
+    !
+    !   interval-mean channels -- every radiative flux, the turbulent fluxes,
+    !     the stresses, precipitation -- are already the mean over the interval
+    !     being stepped across.  t_ip1 *is* the answer everywhere inside it.
+    !     Interpolating them from the previous interval's mean, as this used
+    !     to, hands the coupler a value that only reaches the correct one at
+    !     the very end of the window: averaged over the interval the applied
+    !     flux is (mean_previous + mean_current)/2, a half-step lag.  At a 6 h
+    !     emulator step that is a 3 h lag on the surface radiation and
+    !     precipitation, i.e. 45 degrees of diurnal phase, smeared by an
+    !     equivalent smoothing.
+    !----------------------------------------------------------------
+    implicit none
+
+    real(R8), intent(in) :: t_frac
+
+    integer  :: i, j, k
+    real(R4) :: f
+
+    f = real(t_frac, R4)
+
+    do k = 1, n_output_channels
+      if (out_is_mean(k)) then
+        do j = 1, lsize_y
+          do i = 1, lsize_x
+            net_outputs(1, k, i, j) = eatm_intrp%t_ip1(k, i, j)
+          end do
+        end do
+      else
+        do j = 1, lsize_y
+          do i = 1, lsize_x
+            net_outputs(1, k, i, j) = eatm_intrp%t_im1(k, i, j) + &
+                f * (eatm_intrp%t_ip1(k, i, j) - eatm_intrp%t_im1(k, i, j))
+          end do
+        end do
+      end if
+    end do
+
+  end subroutine ace_bracket_blend
+
   subroutine ace_comp_finalize()
     call torch_delete(ace_model)
+    if (allocated(cell_area)) deallocate(cell_area)
   end subroutine ace_comp_finalize
 
   !===============================================================================
@@ -309,7 +447,290 @@ CONTAINS
     call torch_delete(input_tensor)
     call torch_delete(output_tensor)
 
+    call ace_validate_outputs()
+
   end subroutine ace_inference
+
+  !===============================================================================
+  subroutine ace_validate_outputs()
+
+    !----------------------------------------------------------------
+    ! Check what came back out of the traced graph before anything downstream
+    ! consumes it.
+    !
+    ! Two distinct failures are caught here.
+    !
+    ! Non-finite output is always fatal.  The emulator is autoregressive and
+    ! the spherical harmonic transform inside an SFNO is global, so a single
+    ! NaN in one channel becomes every channel on the next step and stays that
+    ! way for the rest of the run.  Nothing downstream detects it: the export
+    ! clamps compare against zero, and `NaN < 0` is false, so a NaN passes
+    ! through max() untouched and reaches the ocean as a NaN forcing.
+    !
+    ! On the first inference the named channels are also range-checked.  A
+    ! traced model is an opaque graph; nothing at load time ties its channel
+    ! order to the table in eatm_channels_mod.  If eatm_emulator names the
+    ! wrong table, or a checkpoint is re-traced with a different layout, every
+    ! index silently reads the wrong field -- a surface pressure of 0.3 would
+    ! be exported as Sa_pslv and the run would continue.  Checking once is
+    ! enough to establish the contract, and it costs one pass over the block.
+    !----------------------------------------------------------------
+    implicit none
+
+    integer  :: i, j, k, nbad, nout
+    real(R8) :: lo, hi, vmin, vmax, v
+    logical  :: checked
+    character(len=CL) :: msg
+
+    !--- non-finite: every step, fatal ---
+    nbad = 0
+    do k = 1, n_output_channels
+      do j = 1, lsize_y
+        do i = 1, lsize_x
+          if (net_outputs(1, k, i, j) /= net_outputs(1, k, i, j) .or. &
+              abs(net_outputs(1, k, i, j)) > huge(0.0_R4) * 0.5_R4) then
+            if (nbad == 0) write(logunit_atm,'(a)') &
+                 '(ace_validate_outputs) ERROR: first non-finite output in channel '// &
+                 trim(out_names(k))
+            nbad = nbad + 1
+          end if
+        end do
+      end do
+    end do
+    if (nbad > 0) then
+      write(logunit_atm,'(a,i0,a,i0,a)') &
+           '(ace_validate_outputs) ERROR: ', nbad, ' non-finite values in ', &
+           n_output_channels * lsize_x * lsize_y, ' emulator outputs'
+      call shr_sys_flush(logunit_atm)
+      call shr_sys_abort('(ace_validate_outputs) ERROR: emulator returned '// &
+           'non-finite output; the state is unrecoverable, see the atm log')
+    end if
+
+    if (outputs_validated) return
+
+    !--- physical ranges: first inference only, fatal ---
+    nout = 0
+    do k = 1, n_output_channels
+      call eatm_channel_range(out_names(k), lo, hi, checked)
+      if (.not. checked) cycle
+      vmin =  huge(1.0_R8)
+      vmax = -huge(1.0_R8)
+      do j = 1, lsize_y
+        do i = 1, lsize_x
+          v = real(net_outputs(1, k, i, j), R8)
+          vmin = min(vmin, v)
+          vmax = max(vmax, v)
+        end do
+      end do
+      if (vmin < lo .or. vmax > hi) then
+        write(logunit_atm,'(a,2es13.5,a,2es13.5,a)') &
+             '(ace_validate_outputs) ERROR: channel '//trim(out_names(k))// &
+             ' spans ', vmin, vmax, ', outside the admissible ', lo, hi, &
+             ' -- the traced graph does not match the compiled channel table'
+        nout = nout + 1
+        if (nout == 1) write(msg,'(a)') &
+             '(ace_validate_outputs) ERROR: emulator output channel '// &
+             trim(out_names(k))//' is out of physical range.  Check that '// &
+             'eatm_emulator matches the checkpoint eatm_model_file was traced '// &
+             'from (compare against its *_metadata.yaml).'
+      end if
+    end do
+    call shr_sys_flush(logunit_atm)
+    if (nout > 0) call shr_sys_abort(trim(msg))
+
+    write(logunit_atm,'(a,i0,a)') &
+         '(ace_validate_outputs) channel contract verified: ', &
+         n_output_channels, ' output channels within physical range'
+    call shr_sys_flush(logunit_atm)
+
+    outputs_validated = .true.
+
+  end subroutine ace_validate_outputs
+
+  !===============================================================================
+  subroutine ace_flux_budget_report()
+
+    !----------------------------------------------------------------
+    ! Report the surface exchange the emulator predicted next to the exchange
+    ! the coupler actually applied, as area-weighted global means.
+    !
+    ! These are two different quantities and there is no mechanism in the MCT
+    ! driver for the first to override the second.  The emulator predicts
+    ! LHFLX and SHFLX (and, for SamudrACE, TAUX/TAUY) and evolves its own
+    ! atmosphere consistently with them.  The coupler ignores those channels
+    ! and rebuilds the turbulent fluxes from the exported state and the SST
+    ! with shr_flux_atmOcn's bulk formula; that is what the ocean and sea ice
+    ! integrate.  Whatever the two disagree by is energy and momentum that
+    ! enters the ocean without leaving the atmosphere, or the reverse.
+    !
+    ! It is the single largest known error term in a coupled EATM run, it is
+    ! not removable from inside the atmosphere component, and until it is it
+    ! needs to be *measured* -- in the run, at run time, rather than
+    ! reconstructed afterwards from history files that do not carry the
+    ! emulator's own flux channels at all.
+    !
+    ! Two conventions have to be reconciled before the columns mean anything.
+    !
+    ! Sign: everything is reported as "positive = surface loses energy to the
+    ! atmosphere", matching the emulator's LHFLX/SHFLX.  The imported coupler
+    ! fields already carry EAM's convention (atm_comp_mct.F90:456 negates
+    ! Faxx_sen and Faxx_taux, matching eam/src/cpl/atm_comp_mct.F90:1801), and
+    ! EAM's own TAUX/FLUS history fields are those same imported values, so the
+    ! emulator's TAUX and FLUS channels compare to wsx and lwup directly.
+    !
+    ! Area basis: this is the subtle one.  The coupler's Faxx_* are *merged*
+    ! fluxes, `sum over surface types of frac_s * F_s`.  With a stub land model
+    ! lfrac is zero, so over the ~34% of the globe no surface model covers, the
+    ! merged flux is not "small", it is structurally absent.  Taking a plain
+    ! area mean of it and comparing against the emulator's full-cell flux
+    ! understates the coupler by that fraction and makes a large disagreement
+    ! look like a small one.  Both columns are therefore reported per unit
+    ! *covered* area: the coupler's merged flux divided by the mean covered
+    ! fraction, and the emulator's flux weighted by that same fraction.
+    !----------------------------------------------------------------
+    implicit none
+
+    integer  :: i, j
+    real(R8) :: emu_lh, emu_sh, cpl_lh, cpl_sh
+    real(R8) :: emu_tx, emu_ty, cpl_tx, cpl_ty
+    real(R8) :: emu_net, cpl_net
+    real(R8) :: fsds_m, flds_m, fsus_m, flus_m, lwup_m
+    real(R8) :: w_cov(lsize_x, lsize_y)   ! area * covered fraction
+    real(R8) :: cov_total                 ! its sum
+
+    if (ix_out_lhflx <= 0 .or. ix_out_shflx <= 0) return
+
+    cov_total = 0.0_R8
+    do j = 1, lsize_y
+      do i = 1, lsize_x
+        w_cov(i, j) = cell_area(i, j) * &
+             min(max(ocnfrac(i, j) + icefrac(i, j) + lndfrac(i, j), 0.0_R8), 1.0_R8)
+        cov_total = cov_total + w_cov(i, j)
+      end do
+    end do
+
+    if (cov_total <= 0.0_R8) then
+      write(logunit_atm,'(a)') &
+           '  sfc exchange: no surface model covers any cell, budget not reported'
+      return
+    end if
+
+    emu_lh = emu_mean(ix_out_lhflx)
+    emu_sh = emu_mean(ix_out_shflx)
+
+    cpl_lh = -cpl_mean(lhf)   ! Faxx_lat is not negated on import
+    cpl_sh =  cpl_mean(shf)   ! Faxx_sen is
+
+    write(logunit_atm,'(a,f6.4,a)') &
+         '  sfc exchange over the covered fraction (', cov_total / area_total, &
+         ' of area), W/m2, +ve = surface -> atmosphere'
+    write(logunit_atm,'(a)') &
+         '                                                  emulator     coupler        diff'
+    write(logunit_atm,'(a,3f12.4)') '    latent                                    ', &
+         emu_lh, cpl_lh, cpl_lh - emu_lh
+    write(logunit_atm,'(a,3f12.4)') '    sensible                                  ', &
+         emu_sh, cpl_sh, cpl_sh - emu_sh
+    write(logunit_atm,'(a,3f12.4)') '    turbulent total                           ', &
+         emu_lh + emu_sh, cpl_lh + cpl_sh, (cpl_lh + cpl_sh) - (emu_lh + emu_sh)
+
+    !--- radiative terms, for the full surface energy budget ---
+    fsds_m = emu_mean(ix_out_fsds)
+    flds_m = emu_mean(ix_out_flds)
+    fsus_m = 0.0_R8 ; if (ix_out_fsus > 0) fsus_m = emu_mean(ix_out_fsus)
+    flus_m = 0.0_R8 ; if (ix_out_flus > 0) flus_m = emu_mean(ix_out_flus)
+    lwup_m = cpl_mean(lwup)
+
+    if (ix_out_flus > 0) then
+      ! Net downward at the surface: the emulator's own radiation minus its own
+      ! turbulent loss, against the same built from what the coupler applied.
+      ! The shortwave and downward longwave are common to both -- the coupler
+      ! takes them from this component -- so the difference is exactly the
+      ! turbulent disagreement plus the surface longwave one.
+      emu_net = (fsds_m - fsus_m) + (flds_m - flus_m) - (emu_lh + emu_sh)
+      cpl_net = (fsds_m - fsus_m) + (flds_m - lwup_m) - (cpl_lh + cpl_sh)
+      write(logunit_atm,'(a,3f12.4)') '    net surface (downward)                    ', &
+           emu_net, cpl_net, cpl_net - emu_net
+      write(logunit_atm,'(a,3f12.4)') '    surface LW up                             ', &
+           flus_m, lwup_m, lwup_m - flus_m
+    end if
+
+    if (ix_out_taux > 0 .and. ix_out_tauy > 0) then
+      emu_tx = emu_mean(ix_out_taux)
+      emu_ty = emu_mean(ix_out_tauy)
+      cpl_tx = cpl_mean(wsx)
+      cpl_ty = cpl_mean(wsy)
+      write(logunit_atm,'(a,3es12.4)') '    stress x (N/m2)                           ', &
+           emu_tx, cpl_tx, cpl_tx - emu_tx
+      write(logunit_atm,'(a,3es12.4)') '    stress y (N/m2)                           ', &
+           emu_ty, cpl_ty, cpl_ty - emu_ty
+    end if
+
+    !--- top of atmosphere, when the emulator predicts it.  Global, not
+    !--- covered-area: the TOA budget is not a surface-type quantity.
+    if (ix_out_flut > 0 .and. ix_out_fsutoa > 0) then
+      write(logunit_atm,'(a,f12.4)') '    TOA net, global (SOLIN-FSUTOA-FLUT)       ', &
+           glob_in(ix_in_solin) - glob_out(ix_out_fsutoa) - glob_out(ix_out_flut)
+    end if
+
+    call shr_sys_flush(logunit_atm)
+
+  contains
+
+    ! emulator channel, weighted by covered fraction
+    real(R8) function emu_mean(k)
+      integer, intent(in) :: k
+      integer :: i, j
+      emu_mean = 0.0_R8
+      if (k <= 0) return
+      do j = 1, lsize_y
+        do i = 1, lsize_x
+          emu_mean = emu_mean + w_cov(i, j) * real(net_outputs(1, k, i, j), R8)
+        end do
+      end do
+      emu_mean = emu_mean / cov_total
+    end function emu_mean
+
+    ! merged coupler field: a plain area integral over the covered area, since
+    ! the fraction weighting is already inside the field itself
+    real(R8) function cpl_mean(f)
+      real(R8), intent(in) :: f(:,:)
+      integer :: i, j
+      cpl_mean = 0.0_R8
+      do j = 1, lsize_y
+        do i = 1, lsize_x
+          cpl_mean = cpl_mean + cell_area(i, j) * f(i, j)
+        end do
+      end do
+      cpl_mean = cpl_mean / cov_total
+    end function cpl_mean
+
+    real(R8) function glob_out(k)
+      integer, intent(in) :: k
+      integer :: i, j
+      glob_out = 0.0_R8
+      if (k <= 0) return
+      do j = 1, lsize_y
+        do i = 1, lsize_x
+          glob_out = glob_out + cell_area(i, j) * real(net_outputs(1, k, i, j), R8)
+        end do
+      end do
+      glob_out = glob_out / area_total
+    end function glob_out
+
+    real(R8) function glob_in(k)
+      integer, intent(in) :: k
+      integer :: i, j
+      glob_in = 0.0_R8
+      if (k <= 0) return
+      do j = 1, lsize_y
+        do i = 1, lsize_x
+          glob_in = glob_in + cell_area(i, j) * real(net_inputs(1, k, i, j), R8)
+        end do
+      end do
+      glob_in = glob_in / area_total
+    end function glob_in
+
+  end subroutine ace_flux_budget_report
 
   !===============================================================================
   subroutine ace_eatm_import(state)
@@ -350,6 +771,7 @@ CONTAINS
     integer  :: i, j, k
     real(R8) :: covered   ! cell fraction the surface models accounted for
     real(R8) :: deficit   ! the rest, which the emulator owns
+    real(R8) :: fo, fi, fl  ! individually bounded ocean / ice / land fractions
 
     do k = 1, n_input_channels
       if (in_from_out(k) > 0) then
@@ -364,12 +786,27 @@ CONTAINS
     do j = 1, lsize_y
       do i = 1, lsize_x
 
-        covered = min(max(ocnfrac(i, j) + icefrac(i, j) + lndfrac(i, j), 0.0_R8), 1.0_R8)
+        ! Bound each fraction on its own before combining them.  Clipping only
+        ! the sum lets an individual field arrive outside [0,1] -- a negative
+        ! ICEFRAC compensated by an ocean fraction above one still sums to a
+        ! plausible total, and the emulator was never shown such a state.  The
+        ! sum is then held at or below one so the deficit stays non-negative.
+        fo = min(max(ocnfrac(i, j), 0.0_R8), 1.0_R8)
+        fi = min(max(icefrac(i, j), 0.0_R8), 1.0_R8)
+        fl = min(max(lndfrac(i, j), 0.0_R8), 1.0_R8)
+
+        covered = fo + fi + fl
+        if (covered > 1.0_R8) then
+          fo = fo / covered
+          fi = fi / covered
+          fl = fl / covered
+          covered = 1.0_R8
+        end if
         deficit = 1.0_R8 - covered
 
-        net_inputs(1, ix_in_landfrac, i, j) = real(lndfrac(i, j) + deficit, R4)
-        net_inputs(1, ix_in_ocnfrac,  i, j) = real(ocnfrac(i, j), R4)
-        net_inputs(1, ix_in_icefrac,  i, j) = real(icefrac(i, j), R4)
+        net_inputs(1, ix_in_landfrac, i, j) = real(fl + deficit, R4)
+        net_inputs(1, ix_in_ocnfrac,  i, j) = real(fo, R4)
+        net_inputs(1, ix_in_icefrac,  i, j) = real(fi, R4)
 
         if (ix_in_ts > 0) then
           net_inputs(1, ix_in_ts, i, j) = real( &
@@ -414,9 +851,11 @@ CONTAINS
 
     integer  :: i, j
     real(R8) :: esat, p_int, tv, precip, snow, fsds_dn
-    real(R8) :: raw
+    real(R8) :: raw, qsat
     logical  :: do_log
     logical  :: use_near_surface   ! export at eatm_ref_height, not the layer midpoint
+    integer  :: n_cap_shum         ! cells where humidity was capped at saturation
+    real(R8) :: rh_max             ! largest relative humidity seen before capping
 
     ! Counts of cells where a physically-required floor had to be applied to a
     ! predicted field.  An emulator predicting negative water or a negative
@@ -439,6 +878,8 @@ CONTAINS
     n_clip_snow   = 0
     n_clip_fsds   = 0
     n_clip_swnet  = 0
+    n_cap_shum    = 0
+    rh_max        = 0.0_R8
 
     do j = 1, lsize_y
       do i = 1, lsize_x
@@ -499,6 +940,33 @@ CONTAINS
           shum(i, j) = max(raw, 0.0_R8)
           tv         = tbot(i, j) * (1.0_R8 + 0.608_R8 * shum(i, j))
           zbot(i, j) = (rdair * tv / grav) * log(pslv(i, j) / pbot(i, j))
+        end if
+
+        !--- Cap the exported humidity at saturation.
+        !---
+        !--- Sa_shum is consumed by shr_flux_atmOcn as the *vapour* mixing
+        !--- ratio: the latent flux is proportional to (q_sat(SST) - Sa_shum),
+        !--- so a supersaturated value drives evaporation towards zero or
+        !--- reverses it into condensation onto the ocean.
+        !---
+        !--- In the lowest_level configuration the field is the emulator's
+        !--- specific *total* water, condensate included, and there is no
+        !--- channel that separates the two: 19.3% of ocean cells arrive
+        !--- supersaturated, with relative humidities up to 2.82.  Clipping
+        !--- the condensate off at saturation is the closest estimate of the
+        !--- vapour part the emulator's own output supports.
+        !---
+        !--- In the near_surface configuration Qat2m is a genuine vapour
+        !--- humidity and the cap is a guard rather than a correction; it
+        !--- fires on a few hundred cells out of 64800.
+        if (.not. eatm_legacy_surface .and. eatm_cap_shum) then
+          esat = datm_shr_esat(tbot(i, j), tbot(i, j))
+          qsat = (0.622_R8 * esat) / max(pbot(i, j) - 0.378_R8 * esat, 1.0_R8)
+          if (shum(i, j) > qsat) then
+            n_cap_shum = n_cap_shum + 1
+            if (qsat > 0.0_R8) rh_max = max(rh_max, shum(i, j) / qsat)
+            shum(i, j) = qsat
+          end if
         end if
 
         ptem(i, j) = tbot(i,j) * (pslv(i,j)/pbot(i,j))**(rdair/SHR_CONST_CPDAIR)
@@ -579,6 +1047,10 @@ CONTAINS
            'snow=',   n_clip_snow,   'fsds=',   n_clip_fsds,   &
            'swnet=',  n_clip_swnet,  ' (of ', lsize_x*lsize_y, ' cells)'
     end if
+    if (n_cap_shum > 0) then
+      write(logunit_atm, '(a,i0,a,i0,a,f7.3)') '  capped   shum=', n_cap_shum, &
+           ' of ', lsize_x*lsize_y, ' cells at saturation, max RH before cap ', rh_max
+    end if
     call shr_sys_flush(logunit_atm)
 
   end subroutine ace_eatm_export
@@ -629,14 +1101,39 @@ CONTAINS
   !===============================================================================
   subroutine ace_compute_solin(EClock, ggrid)
     !----------------------------------------------------------------
-    ! Compute SOLIN (solar insolation at TOA) from orbital mechanics.
-    ! SOLIN = S0 * eccf * max(0, cosz)
+    ! Compute SOLIN (solar insolation at TOA) from orbital mechanics, as the
+    ! *time mean over the emulator step about to be taken*:
     !
-    ! The ACE emulator predicts state at T+dt from inputs at T, and declares
-    ! SOLIN in next_step_forcing_names -- meaning the SOLIN *input* channel
-    ! carries the value at T+dt, not at T.  So SOLIN is computed for the
-    ! prediction target time, which also makes the output FSDS consistent with
-    ! the solar geometry at the time the state is handed to the coupler.
+    !   SOLIN = (1/dt) * integral over (T, T+dt] of S0 * eccf * max(0, cosz)
+    !
+    ! Two separate properties of the training data fix this form.
+    !
+    ! First, the emulator declares SOLIN in next_step_forcing_names, and fme
+    ! feeds such a channel from time index step+1 rather than step
+    ! (fme/ace/stepper/single_module.py:1139-1145).  The value belongs to the
+    ! prediction target, not to the input state's own time.
+    !
+    ! Second -- and this is what the window is for -- SOLIN in the E3SMv3
+    ! training stream carries cell_methods = "time: mean", not "time: point".
+    ! It is the mean insolation over the 6 h leading up to its timestamp, which
+    ! is exactly the interval (T, T+dt] the model is stepping across.
+    !
+    ! Using the instantaneous value at T+dt instead is not a small error.  The
+    ! two fields have the same global mean (342 W/m2 either way -- the lit
+    ! hemisphere is always the same fraction of the globe), so a global budget
+    ! cannot see it, but they are different fields point by point: the
+    ! instantaneous field is a cosine bullseye at the subsolar point, the
+    ! 6-hourly mean is a smeared band 90 degrees of longitude wide.  Their RMS
+    ! difference is 330 W/m2 against a field whose own global mean is 342.
+    ! Every step was handing the emulator a radiative forcing pattern unlike
+    ! anything in its training set.
+    !
+    ! The window mean is evaluated by the midpoint rule on n_solin_sub
+    ! sub-intervals.  The integrand is smooth apart from the kink at sunrise
+    ! and sunset, so convergence is fast: against a 2400-point reference, 48
+    ! sub-steps (7.5 min) leave an RMS error of 0.03 W/m2 and a maximum of
+    ! 0.1 W/m2.  The cost is 48 cosz evaluations per cell per emulator step,
+    ! which is nothing next to one SFNO forward pass.
     !----------------------------------------------------------------
     implicit none
     type(ESMF_Clock), intent(in) :: EClock
@@ -644,25 +1141,25 @@ CONTAINS
 
     integer(IN)       :: CurrentYMD, CurrentTOD
     character(len=CS) :: calendar
-    real(R8)          :: julday
+    real(R8)          :: julday, jsub
     real(R8)          :: delta, eccf
     real(R8)          :: lat_r, lon_r
-    real(R8)          :: cosz_val, solin_val
+    real(R8)          :: cosz_val, dt_days
     real(R8), parameter :: degtorad = SHR_CONST_PI / 180.0_R8
 
-    integer     :: klat, klon, n, i, j
+    ! Sub-intervals used for the midpoint-rule window mean.
+    integer, parameter :: n_solin_sub = 48
+
+    integer     :: klat, klon, n, i, j, m
     real(R8), pointer :: yc(:), xc(:)
+    real(R8), allocatable :: accum(:,:)
 
     call seq_timemgr_EClockGetData(EClock, curr_ymd=CurrentYMD, curr_tod=CurrentTOD)
     call seq_timemgr_EClockGetData(EClock, calendar=calendar)
 
     call shr_cal_date2julian(CurrentYMD, CurrentTOD, julday, calendar)
 
-    ! Advance julday by one ACE timestep: the emulator predicts state
-    ! at T+dt, so SOLIN must represent solar geometry at T+dt.
-    julday = julday + real(eatm_model_dt, R8) / SHR_CONST_CDAY
-
-    call shr_orb_decl(julday, orb_eccen, orb_mvelpp, orb_lambm0, orb_obliqr, delta, eccf)
+    dt_days = real(eatm_model_dt, R8) / SHR_CONST_CDAY
 
     allocate(yc(lsize), xc(lsize))
     klat = mct_aVect_indexRA(ggrid%data, 'lat')
@@ -670,18 +1167,39 @@ CONTAINS
     yc(:) = ggrid%data%rAttr(klat, :)
     xc(:) = ggrid%data%rAttr(klon, :)
 
-    n = 0
+    allocate(accum(lsize_x, lsize_y))
+    accum(:,:) = 0.0_R8
+
+    do m = 1, n_solin_sub
+
+      ! midpoint of sub-interval m within (T, T+dt]
+      jsub = julday + dt_days * (real(m, R8) - 0.5_R8) / real(n_solin_sub, R8)
+
+      ! declination and the earth-sun distance factor drift slowly, but they
+      ! are per-time not per-cell, so there is no reason to hold them fixed
+      call shr_orb_decl(jsub, orb_eccen, orb_mvelpp, orb_lambm0, orb_obliqr, delta, eccf)
+
+      n = 0
+      do j = 1, lsize_y
+        do i = 1, lsize_x
+          n = n + 1
+          lat_r = yc(n) * degtorad
+          lon_r = xc(n) * degtorad
+          cosz_val = shr_orb_cosz(jsub, lat_r, lon_r, delta)
+          accum(i, j) = accum(i, j) + solar_const * eccf * max(0.0_R8, cosz_val)
+        end do
+      end do
+
+    end do
+
     do j = 1, lsize_y
       do i = 1, lsize_x
-        n = n + 1
-        lat_r = yc(n) * degtorad
-        lon_r = xc(n) * degtorad
-        cosz_val = shr_orb_cosz(julday, lat_r, lon_r, delta)
-        solin_val = solar_const * eccf * max(0.0_R8, cosz_val)
-        net_inputs(1, ix_in_solin, i, j) = real(solin_val, R4)
+        net_inputs(1, ix_in_solin, i, j) = &
+             real(accum(i, j) / real(n_solin_sub, R8), R4)
       end do
     end do
 
+    deallocate(accum)
     deallocate(yc, xc)
 
   end subroutine ace_compute_solin

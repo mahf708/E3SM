@@ -224,8 +224,8 @@ CONTAINS
   !===============================================================================
   subroutine eatm_sanitize_inputs(source)
 
-    ! Replace any non-finite value in the emulator's input block with zero,
-    ! reporting per channel.
+    ! Deal with non-finite values in the emulator's input block: zero-fill the
+    ! channels where zero is the physically correct reading, abort on the rest.
     !
     ! This is not defensive programming for its own sake.  The published
     ! SamudrACE-E3SMv3 initial conditions carry NaN in ICEFRAC over every cell
@@ -237,45 +237,66 @@ CONTAINS
     ! way forever.  `ace_comp_init` runs an inference before the first coupler
     ! import, so a poisoned initial condition takes the run out at step 0.
     !
-    ! Zero is the right fill for a fraction that means "none here"; a channel
-    ! for which zero is *not* meaningful will show up as a large count in the
-    ! log rather than passing silently.
+    ! Zero is the right *value* only for a surface fraction that means "none
+    ! here" (eatm_channel_zero_is_valid).  Substituting it into PS, TS, PHIS, a
+    ! temperature, a wind or a water channel replaces one detectable failure
+    ! with an undetectable one: the run continues, the emulator integrates a
+    ! 0 Pa / 0 K column forward, and the damage surfaces later as a bias
+    ! nobody can trace back to here.  Those abort instead, naming the channel.
 
     implicit none
 
     character(len=*), intent(in) :: source
 
-    integer :: k, i, j, nbad, ntot
+    integer :: k, i, j, nbad, nfilled, nfatal
+    logical :: fillable
+    character(len=CL) :: msg
+    character(len=*), parameter :: subname_sanitize = '(eatm_sanitize_inputs) '
 
-    ntot = 0
+    nfilled = 0
+    nfatal  = 0
     do k = 1, n_input_channels
+      fillable = eatm_channel_zero_is_valid(in_names(k))
       nbad = 0
       do j = 1, lsize_y
         do i = 1, lsize_x
           ! /= itself is true only for NaN; the bounds catch +/-Inf
           if (net_inputs(1, k, i, j) /= net_inputs(1, k, i, j) .or. &
               abs(net_inputs(1, k, i, j)) > huge(0.0_R4) * 0.5_R4) then
-            net_inputs(1, k, i, j) = 0.0_R4
+            if (fillable) net_inputs(1, k, i, j) = 0.0_R4
             nbad = nbad + 1
           end if
         end do
       end do
       if (nbad > 0) then
-        write(logunit_atm,'(a,i0,a,i0,a)') &
-             '(eatm_sanitize_inputs) WARNING '//trim(source)//': channel '// &
-             trim(in_names(k))//' had ', nbad, ' of ', lsize_x*lsize_y, &
-             ' non-finite values, replaced with zero'
+        if (fillable) then
+          write(logunit_atm,'(a,i0,a,i0,a)') &
+               '(eatm_sanitize_inputs) '//trim(source)//': channel '// &
+               trim(in_names(k))//' had ', nbad, ' of ', lsize_x*lsize_y, &
+               ' non-finite values, replaced with zero (valid: no cover here)'
+          nfilled = nfilled + nbad
+        else
+          write(logunit_atm,'(a,i0,a,i0,a)') &
+               '(eatm_sanitize_inputs) ERROR '//trim(source)//': channel '// &
+               trim(in_names(k))//' had ', nbad, ' of ', lsize_x*lsize_y, &
+               ' non-finite values, and zero is not a valid value for it'
+          nfatal = nfatal + 1
+          if (nfatal == 1) write(msg,'(a)') &
+               trim(subname_sanitize)//' ERROR: non-finite values in '// &
+               trim(source)//' channel '//trim(in_names(k))// &
+               ' (see the atm log for the full list of affected channels)'
+        end if
       end if
-      ntot = ntot + nbad
     end do
 
-    if (ntot > 0) then
+    if (nfilled > 0) then
       write(logunit_atm,'(a,i0,a)') &
-           '(eatm_sanitize_inputs) '//trim(source)//': ', ntot, &
-           ' non-finite input values replaced in total.  One NaN reaching the'// &
-           ' emulator returns every output channel as NaN, permanently.'
-      call shr_sys_flush(logunit_atm)
+           '(eatm_sanitize_inputs) '//trim(source)//': ', nfilled, &
+           ' non-finite values zero-filled in surface-fraction channels.'
     end if
+    call shr_sys_flush(logunit_atm)
+
+    if (nfatal > 0) call shr_sys_abort(trim(msg))
 
   end subroutine eatm_sanitize_inputs
 

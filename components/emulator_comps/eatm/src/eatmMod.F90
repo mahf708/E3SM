@@ -37,6 +37,7 @@ module eatmMod
   logical, public       :: eatm_legacy_surface    ! reproduce the pre-review surface diagnostics
   integer, public       :: eatm_iradsw            ! radiation interval (coupler steps)
   character(CL), public :: eatm_surface_layer     ! 'near_surface' or 'lowest_level'
+  logical, public       :: eatm_cap_shum          ! cap exported Sa_shum at saturation
 
   ! Reference height for the exported atmospheric state when the emulator
   ! predicts near-surface diagnostics.  10 m is what datm hands this same ocean

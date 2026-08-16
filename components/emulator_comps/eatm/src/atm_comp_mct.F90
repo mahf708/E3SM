@@ -596,10 +596,11 @@ CONTAINS
     namelist /eatm_inparm / do_eatm, filename_eatm, &
          eatm_emulator, eatm_model_file, eatm_ic_file, eatm_model_device, &
          eatm_pass_forcing, eatm_legacy_surface, eatm_frzprec_units, eatm_iradsw, &
-         eatm_surface_layer
+         eatm_surface_layer, eatm_cap_shum
 
     ! default values
     do_eatm             = .true.
+    eatm_cap_shum       = .true.
     filename_eatm       = ' '
     eatm_emulator       = 'ACE2-EAMv3'
     eatm_model_file     = ' '
@@ -642,7 +643,18 @@ CONTAINS
     call shr_mpi_bcast(eatm_pass_forcing, mpicom_atm, 'eatm_pass_forcing')
     call shr_mpi_bcast(eatm_legacy_surface, mpicom_atm, 'eatm_legacy_surface')
     call shr_mpi_bcast(eatm_surface_layer, mpicom_atm, 'eatm_surface_layer')
+    call shr_mpi_bcast(eatm_cap_shum, mpicom_atm, 'eatm_cap_shum')
     call shr_mpi_bcast(eatm_iradsw, mpicom_atm, 'eatm_iradsw')
+
+    ! EATM_MODE=NULL sets do_eatm=.false. (bld/build-namelist:299), but there
+    ! is nothing here for it to switch off: this component has no null mode,
+    ! and initialization goes on to read a mesh, load a traced graph and run
+    ! inference regardless.  Honouring the flag by silently doing none of that
+    ! would leave the coupler with an atmosphere that exports zeros.  A stub
+    ! atmosphere is what SATM is for.
+    if (.not. do_eatm) call shr_sys_abort(trim(subname)//' ERROR: do_eatm '// &
+         '= .false. (EATM_MODE=NULL) is not implemented -- EATM has no null '// &
+         'mode.  Use the SATM stub atmosphere component instead.')
 
     ! print out namelist settings to log
     if (masterproc) then
@@ -658,6 +670,7 @@ CONTAINS
        write(logunit_atm,*) '   eatm_pass_forcing   = ', eatm_pass_forcing
        write(logunit_atm,*) '   eatm_legacy_surface = ', eatm_legacy_surface
        write(logunit_atm,*) '   eatm_surface_layer  = ', trim(eatm_surface_layer)
+       write(logunit_atm,*) '   eatm_cap_shum       = ', eatm_cap_shum
        write(logunit_atm,*) '   eatm_iradsw         = ', eatm_iradsw
     end if
 

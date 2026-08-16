@@ -119,6 +119,30 @@ constant-flux layer that shr_flux_atmOcn's similarity theory assumes.
 Default: near_surface
 </entry>
 
+<entry id="eatm_cap_shum"
+       type="logical"
+       category="eatm"
+       group="eatm_inparm" >
+If .true., the specific humidity handed to the coupler is capped at its
+saturation value for the exported temperature and pressure.
+
+shr_flux_atmOcn treats Sa_shum as the vapour mixing ratio and drives the
+latent flux with (q_sat(SST) - Sa_shum), so a supersaturated value suppresses
+or reverses evaporation.
+
+This matters most in the lowest_level configuration, where the exported field
+is the emulator's specific *total* water and includes condensate: 19.3% of
+ocean cells arrive supersaturated, with relative humidities up to 2.82.  No
+emulator channel separates vapour from condensate, so capping at saturation is
+the closest estimate of the vapour part the model's own output supports.  In
+the near_surface configuration Qat2m is a true vapour humidity and the cap
+acts only as a guard.
+
+Ignored when eatm_legacy_surface is .true., which sets the humidity to
+saturation by construction.
+Default: .true.
+</entry>
+
 <entry id="eatm_frzprec_units"
        type="char*16"
        category="eatm"
