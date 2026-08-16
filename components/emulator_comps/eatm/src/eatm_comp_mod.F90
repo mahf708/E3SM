@@ -93,11 +93,16 @@ CONTAINS
        call eatm_channels_init(eatm_emulator, logunit_atm)
 
        if (masterproc) then
-          write(logunit_atm,'(a,l2)') '(eatm_comp_init) land model present = ', lnd_present
-          if (.not. lnd_present) write(logunit_atm,'(a)') &
-               '(eatm_comp_init) no land model: the coupler reports lfrac = 0 and'// &
-               ' Sx_t = 0 over land, so the emulator supplies the land surface'// &
-               ' temperature over the surface fraction deficit'
+          ! Deliberately not keyed off infodata's lnd_present: seq_infodata
+          ! defaults it to .true. and only resolves it after component
+          ! initialization, so it reads .true. here even with a stub land.
+          ! ace_eatm_import logs the fractions it actually received each
+          ! emulator step, which is the check that matters.
+          write(logunit_atm,'(a)') &
+               '(eatm_comp_init) the emulator supplies LANDFRAC and the surface'// &
+               ' temperature over the fraction of each cell the coupler leaves'// &
+               ' uncovered (1 - ofrac - ifrac - lfrac); with an active land'// &
+               ' model that deficit is zero and the coupler fields pass through'
        end if
 
        call t_startf('eatm_initmctavs')

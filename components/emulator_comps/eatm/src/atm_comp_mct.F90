@@ -106,7 +106,6 @@ CONTAINS
     ! Obtain infodata variables
     call seq_infodata_getData(infodata,&
          read_restart=read_restart,&
-         lnd_present=lnd_present,&
          orb_eccen=orb_eccen,&
          orb_obliqr=orb_obliqr,&
          orb_lambm0=orb_lambm0,&
@@ -278,7 +277,6 @@ CONTAINS
     character(*), parameter :: subName = "(atm_run_mct) "
     real(R8) :: nextsw_cday  ! calendar of next atm shortwave
     !-------------------------------------------------------------------------------
-    if (masterproc) write(logunit_atm,*) 'got to atm_run'
     call shr_sys_flush(logunit_atm)
 
     call seq_cdata_setptrs(cdata, &
@@ -455,7 +453,6 @@ CONTAINS
     character(len=32), parameter :: sub = 'atm_import_mct'
     !---------------------------------------------------------------------------
 
-    if (masterproc) write(logunit_atm,*) 'got to atm_import'
     n = 0
     do j = 1, lsize_y
        do i = 1, lsize_x

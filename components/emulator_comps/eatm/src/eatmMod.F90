@@ -37,11 +37,6 @@ module eatmMod
   logical, public       :: eatm_legacy_surface    ! reproduce the pre-review surface diagnostics
   integer, public       :: eatm_iradsw            ! radiation interval (coupler steps)
 
-  ! Is a land model running?  Reported at init only: ace_eatm_import keys off
-  ! the surface fraction deficit rather than this, so that it is correct with
-  ! or without a land model.
-  logical, public :: lnd_present = .false.
-
   ! Orbital parameters (set from coupler infodata at init)
   real(kind=R8), public :: orb_eccen     ! orbital eccentricity
   real(kind=R8), public :: orb_obliqr    ! obliquity in radians

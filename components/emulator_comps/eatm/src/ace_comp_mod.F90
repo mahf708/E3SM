@@ -176,7 +176,7 @@ CONTAINS
     endif
 
     ! using restart data from ACE set the fields passed to the coupler
-    call ace_eatm_export(ggrid)
+    call ace_eatm_export(ggrid, verbose=.true.)
 
   end subroutine ace_comp_init
 
@@ -248,7 +248,7 @@ CONTAINS
       end do
     end do
 
-    call ace_eatm_export(ggrid)
+    call ace_eatm_export(ggrid, verbose=(t_modulo == 0))
 
   end subroutine ace_comp_run
 
@@ -402,7 +402,7 @@ CONTAINS
   end subroutine ace_eatm_import
 
   !===============================================================================
-  subroutine ace_eatm_export(ggrid)
+  subroutine ace_eatm_export(ggrid, verbose)
 
     !----------------------------------------------------------------
     ! Turn the emulator's output channels into the state and flux fields the
@@ -411,9 +411,27 @@ CONTAINS
     implicit none
 
     type(mct_gGrid), pointer :: ggrid   ! unused; kept for interface symmetry
+    logical, intent(in), optional :: verbose  ! log the field ranges
 
     integer  :: i, j
     real(R8) :: esat, p_int, tv, precip, snow, fsds_dn
+    real(R8) :: raw
+    logical  :: do_log
+
+    ! Counts of cells where a physically-required floor had to be applied to a
+    ! predicted field.  An emulator predicting negative water or a negative
+    ! downwelling flux is the failure mode most worth seeing, and silently
+    ! clamping it makes it invisible.
+    integer  :: n_clip_shum, n_clip_precip, n_clip_snow, n_clip_fsds, n_clip_swnet
+
+    do_log = .false.
+    if (present(verbose)) do_log = verbose
+
+    n_clip_shum   = 0
+    n_clip_precip = 0
+    n_clip_snow   = 0
+    n_clip_fsds   = 0
+    n_clip_swnet  = 0
 
     do j = 1, lsize_y
       do i = 1, lsize_x
@@ -444,7 +462,9 @@ CONTAINS
           !--- hypsometric thickness from PS to the midpoint rather than a
           !--- pressure altitude above sea level.
           pbot(i, j) = 0.5_R8 * (pslv(i, j) + p_int)
-          shum(i, j) = max(real(net_outputs(1, ix_out_qbot, i, j), R8), 0.0_R8)
+          raw        = real(net_outputs(1, ix_out_qbot, i, j), R8)
+          if (raw < 0.0_R8) n_clip_shum = n_clip_shum + 1
+          shum(i, j) = max(raw, 0.0_R8)
           tv         = tbot(i, j) * (1.0_R8 + 0.608_R8 * shum(i, j))
           zbot(i, j) = (rdair * tv / grav) * log(pslv(i, j) / pbot(i, j))
         end if
@@ -456,12 +476,16 @@ CONTAINS
 
         !--- precipitation: the emulator has no convective/large-scale split,
         !--- so everything is reported as large scale.
-        precip = max(real(net_outputs(1, ix_out_precip, i, j), R8), 0.0_R8)
+        raw = real(net_outputs(1, ix_out_precip, i, j), R8)
+        if (raw < 0.0_R8) n_clip_precip = n_clip_precip + 1
+        precip = max(raw, 0.0_R8)
         snowc(i, j) = 0.0_R8
         rainc(i, j) = 0.0_R8
 
         if (ix_out_snow > 0 .and. .not. eatm_legacy_surface) then
-          snow = max(real(net_outputs(1, ix_out_snow, i, j), R8), 0.0_R8)
+          raw = real(net_outputs(1, ix_out_snow, i, j), R8)
+          if (raw < 0.0_R8) n_clip_snow = n_clip_snow + 1
+          snow = max(raw, 0.0_R8)
           if (frzprec_is_depth) snow = snow * rhofw   ! m/s water equivalent -> kg/m2/s
           snow = min(snow, precip)
           snowl(i, j) = snow
@@ -481,20 +505,29 @@ CONTAINS
         !--- the surface models see is rebuilt from the four downwelling bands
         !--- below and their own albedos), so report the emulator's actual net
         !--- flux when it predicts the upward component.
-        fsds_dn = max(real(net_outputs(1, ix_out_fsds, i, j), R8), 0.0_R8)
+        raw = real(net_outputs(1, ix_out_fsds, i, j), R8)
+        if (raw < 0.0_R8) n_clip_fsds = n_clip_fsds + 1
+        fsds_dn = max(raw, 0.0_R8)
         swvdr(i, j) = fsds_dn * frac_swvdr
         swndr(i, j) = fsds_dn * frac_swndr
         swvdf(i, j) = fsds_dn * frac_swvdf
         swndf(i, j) = fsds_dn * frac_swndf
 
         if (ix_out_fsus > 0 .and. .not. eatm_legacy_surface) then
-          swnet(i, j) = max(fsds_dn - max(real(net_outputs(1, ix_out_fsus, i, j), R8), 0.0_R8), 0.0_R8)
+          raw = fsds_dn - max(real(net_outputs(1, ix_out_fsus, i, j), R8), 0.0_R8)
+          if (raw < 0.0_R8) n_clip_swnet = n_clip_swnet + 1
+          swnet(i, j) = max(raw, 0.0_R8)
         else
           swnet(i, j) = fsds_dn
         end if
 
       enddo
     enddo
+
+    ! Only worth logging on emulator steps: in between, every field below is a
+    ! linear interpolation between two states already reported, so at
+    ! ATM_NCPL=48 eleven of every twelve blocks are redundant.
+    if (.not. do_log) return
 
     write(logunit_atm, *) "----------------------------------------------------------------"
     write(logunit_atm, *) "ace_eatm_export"
@@ -509,6 +542,13 @@ CONTAINS
     write(logunit_atm, *) "lwdn   (min, max):  ( ", minval(lwdn(:, :)),  maxval(lwdn(:, :)), " )"
     write(logunit_atm, *) "rainl (min, max):   ( ", minval(rainl(:, :)), maxval(rainl(:, :)), " )"
     write(logunit_atm, *) "snowl (min, max):   ( ", minval(snowl(:, :)), maxval(snowl(:, :)), " )"
+    if (n_clip_shum + n_clip_precip + n_clip_snow + n_clip_fsds + n_clip_swnet > 0) then
+      write(logunit_atm, '(a,i8,a,5(1x,a,i0))') &
+           " clamped to zero, of ", lsize_x*lsize_y, " cells:", &
+           "shum=",   n_clip_shum,   "precip=", n_clip_precip, &
+           "snow=",   n_clip_snow,   "fsds=",   n_clip_fsds, &
+           "swnet=",  n_clip_swnet
+    end if
     call shr_sys_flush(logunit_atm)
 
   end subroutine ace_eatm_export
