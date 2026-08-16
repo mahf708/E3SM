@@ -808,3 +808,326 @@ integration, so budget ~5.5 h against the 8 h wallclock, or set
 Beware taking a rate from a very short run: the 3-day run reported 45.8 s/day
 but averaging over its startup ramp gives 54 s/day, and neither is the whole
 story once restart writes are included.
+
+---
+
+## Session of 2026-08-15 (evening): measured results
+
+Everything below is measured on `pm-gpu`, `GMPAS-EATM` at
+`gauss180x360_IcoswISC30E3r5`, 8 nodes, starting `0001-01-01`.
+
+### 25. The land-fraction fix, validated **[fixed, confirmed]**
+
+Finding #15b was reasoned but unrun when it was written. It has now been run.
+`eatm-buildcheck-08151753`, 20 days, identical namelist and checkpoint either
+side of commit `67d71a2a09` (the pre-fix month is preserved in
+`run/baseline_57052155/`):
+
+| | before | after | expected |
+|---|---|---|---|
+| area below 240 K | **30.2 %** | 0.02 % | ~0 |
+| area below 200 K | **12.0 %** | 0.00 % | 0 |
+| area with `Faxa_lwdn == 0` | **28.5 %** | 0.00 % | 0 |
+| `Sa_tbot` global mean | 259.4 K | **282.3 K** | 280-288 K |
+| `Sa_tbot` min | 178.4 K | 238.6 K | ~230 K |
+| `Sa_shum` global mean | 6.24e-3 | 8.37e-3 | 6-8e-3 |
+| `Sa_lwdn` global mean | 251 W/m2 | 331 W/m2 | ~340 |
+
+Stable, not drifting: day 11 vs day 21 gives `Sa_tbot` 282.29 / 282.31 K and
+`Sa_shum` 8.368e-3 / 8.368e-3.
+
+It also repaired the general circulation, which nothing predicted. Ocean-only
+zonal-mean `Sa_u`, day 21:
+
+| | SH jet | 50S | 60S | equator | 20S | NH jet |
+|---|---|---|---|---|---|---|
+| before | 5.8 @ 39S | +4.6 | **-3.1** | **+1.8** | -0.8 | 9.4 @ 54N |
+| after | 14.2 @ **52S** | +14.0 | **+9.5** | **-4.9** | -6.9 | 7.1 @ 38N |
+| expected | 8-10 @ 45-55S | ~+8 | ~+6 | -3 to -5 | -5 to -6 | 8-12 @ 40-50N |
+
+Collapsed Southern Ocean westerlies, spurious 60S easterlies, wrong-sign
+equatorial winds and 4x-weak SH trades all fixed. The SH jet is now somewhat
+too strong and the NH jet slightly weak and equatorward; those are the
+remaining wind biases.
+
+The coupler-side symptom is unchanged and that is correct: `x2a_Sf_lfrac` is
+still 0.0 globally and `x2a_Sx_t` still exactly 0 K over 25.93 % of area, in
+both runs. EATM reconstructs the deficit on import rather than repairing what
+the driver ships. Fixing the coupler's own fields is a `prep_atm_mod` change
+and would matter for `GPMPAS-EATM` with ELM, or for anyone reading `cpl.hi`
+naively.
+
+Throughput improved too, 48.01 -> 45.69 s/model-day, and the pre-fix run's
++6.4 %/month secular slowdown disappeared: it was MPAS-SI working harder as the
+cold pool grew ice, not a cost.
+
+### 26. `cpl.hi` is instantaneous, not a time mean **[not a defect -- a trap]**
+
+`seq_hist_write` writes `.cpl.hi.` (`driver-mct/main/seq_hist_mod.F90:231`);
+the time-averaged file is `.cpl.ha.` from `seq_hist_writeavg` (`:839`), written
+only when `AVGHIST_OPTION` is set, which it is not by default.
+
+So every `cpl.hi` field is a snapshot at the file's timestamp -- and with
+`HIST_OPTION=ndays`, always at 00:00 UTC, where the sub-solar longitude is
+180 E. An analysis that assumes these are means concludes the model has no
+diurnal cycle and a frozen sun at 180 E. It does not; three snapshots were
+taken at the same phase.
+
+Consequences for anyone using these files:
+
+- Maxima are instantaneous. `Faxa_swnet` reaching 1039 W/m2 is fine for a
+  snapshot and impossible for a 10-day mean.
+- Ocean-masked global means of shortwave are biased, because the ocean is not
+  distributed uniformly in longitude. **Do not build a surface energy budget
+  out of `cpl.hi`.** An earlier attempt in this session gave +37 W/m2 for the
+  ocean when the ocean's own heat content said -33 W/m2 -- wrong sign.
+- `a2x_Faxa_swnet` is doubly wrong for that purpose: the coupler discards it
+  and rebuilds the ocean's net shortwave from the four bands and the ocean's
+  own albedo (`prep_ocn_mod`).
+
+Set `AVGHIST_OPTION` / `AVGHIST_N` if you want means. Use MPAS's own
+`globalStats` for anything budget-like.
+
+### 27. The authoritative energy metric, and what the two emulators score
+
+Global net surface heat flux from the ocean's volume-mean temperature drift
+(`mpaso.hist.am.globalStats`, `temperatureAvg`), rho=1026, cp=3996,
+V=1.3307e18 m3, A=3.6195e14 m2:
+
+| configuration | days | net surface heat flux |
+|---|---|---|
+| pre-land-fix (31 d) | 30 | **-160 W/m2** |
+| ACE2-EAMv3, post-land-fix | 19 | **-33.3 W/m2** |
+| SamudrACE-E3SMv3, `lowest_level` | 19 | **-74.4 W/m2** |
+| SamudrACE-E3SMv3, `near_surface` | 16 (running) | **-61.6 W/m2** |
+
+A usable 5-year coupled run wants this inside about +/-10 W/m2. Nothing is
+there yet.
+
+Why SamudrACE is worse than ACE2 (day 21, ocean-only area-weighted):
+
+| | ACE2-EAMv3 | SamudrACE | target |
+|---|---|---|---|
+| `Sa_tbot` | 285.42 K | 283.75 K | ~288 |
+| `Sa_shum` | 9.57e-3 | 8.35e-3 | ~9e-3 |
+| tropical `Sx_t - Sa_ptem` | 0.78 K | 2.30 K | ~1.0 |
+| `Faxx_sen` | -9.70 | -22.99 | ~-11 |
+| `Faxx_lat` | -129.3 | -159.5 | ~-105 |
+
+ACE2's disequilibrium and sensible heat are already about right; its residual
+is almost entirely latent, i.e. a humidity problem, and `Sa_shum` being
+specific *total* water (19.3 % of ocean cells supersaturated at the bottom
+level, RH to 2.82) is the thread to pull there. SamudrACE's is temperature.
+**The two emulators fail differently and want different fixes.**
+
+### 28. `eatm_surface_layer`: right change, wrong diagnosis **[fixed; does not fix the imbalance]**
+
+Commit `7470599244` exports the state at 10 m from SamudrACE's predicted
+`Tat2m`/`Qat2m`/`Uat10m`/`Vat10m` with `pbot = pslv`, matching what `datm`
+hands this same ocean under JRA (`datm_comp_mod.F90:1029`, `:1031`, the
+`IAF_JRA_1p5` datamode). ACE2-EAMv3 has no near-surface channels and falls
+back to `lowest_level` automatically.
+
+It does what it says: `Sa_z` 449 -> 10.0 m, `Sa_tbot` 284.00 -> 287.55 K,
+`Sa_shum` 8.54e-3 -> 9.43e-3, `|V|` 9.59 -> 7.38 m/s -- every one moving to
+its target value.
+
+**But the premise was wrong.** Measured at day 11, tropical open ocean:
+
+| | SST | `Sa_tbot` | `Sa_ptem` | SST - ptem |
+|---|---|---|---|---|
+| `lowest_level` | 299.300 | 292.399 (450 m) | **296.926** | 2.37 K |
+| `near_surface` | 299.438 | 296.687 (2 m) | **296.687** | 2.75 K |
+
+The emulator's own `Tat2m` is 296.687 K; the dry-adiabatic reduction of its
+450 m temperature gives 296.926 K. **They agree to 0.24 K.** The 450 m
+sampling was never injecting a large temperature error -- an earlier estimate
+of ~1.5 K of spurious cold, repeated several times in this session, is wrong
+by a factor of six.
+
+The real bias is that **SST - T_2m is 2.75 K where it should be ~1.0 K**:
+SamudrACE's near-surface air is genuinely ~1.75 K too cold for the sea surface
+it is given. No reference-height work touches that.
+
+This also explains why sensible heat got *worse*, -22.07 -> -29.78 W/m2, while
+wind fell and the disequilibrium barely moved. The exchange coefficient goes
+roughly as 1/ln(z/z0)^2: `ln(10/1e-4) = 11.5` against `ln(450/1e-4) = 15.3`,
+so it nearly doubles at 10 m. The old configuration had two compensating
+errors -- too much wind against too small a coefficient -- and removing the
+geometry error exposed the underlying cold bias at full strength. Net still
+improves ~7-12 W/m2 because latent gains more than sensible loses.
+
+Keep the change: it is the physically correct state to hand a similarity-theory
+scheme, and it is revertible with `eatm_surface_layer = 'lowest_level'`. But it
+is not the fix for the energy imbalance.
+
+### 29. The total energy budget corrector is the leading remaining suspect **[open]**
+
+Checked rather than assumed, from the traced metadata and
+`trace_eatm_model.py:222`, which sets the flag from
+`config.total_energy_budget_correction is not None`:
+
+| corrector | ACE2-EAMv3 | SamudrACE-E3SMv3 | in the traced graph |
+|---|---|---|---|
+| `conserve_dry_air` | true | true | yes |
+| `moisture_budget_correction` | advection_and_precipitation | same | yes |
+| `zero_global_mean_moisture_advection` | false | false | not configured |
+| `force_positive` | active | active, 16 channels | yes |
+| `total_energy_budget_correction` | **not configured** | **configured** | **no** |
+
+So for ACE2 every configured corrector is active and there is nothing to
+enable. For SamudrACE one is configured and dropped.
+
+Why it is skipped: `trace.py:508-512` in the ACE tracing script logs
+"not yet implemented in the traced model. Skipping" and returns. It is a TODO,
+not a limitation. The reason it was harder than the two that *were*
+implemented is that it is the only one taking `forcing_data` --
+`atmosphere.py:439-442` wants `DSWRFtoa` (TOA down SW) and `HGTsfc` (surface
+height), and the traced graph's signature is a single input tensor. **Both are
+already in EATM's input block**: `SOLIN` is an input channel and `HGTsfc` is
+`PHIS/g`. Everything else it needs -- the vertical coordinate, an
+area-weighted global mean -- is already used by the correctors that were
+implemented.
+
+What it does: desired global-mean energy path = input path +
+(net energy flux into atmosphere + `constant_unaccounted_heating`) * dt, with
+the shortfall applied as a **spatially uniform temperature increment** to every
+vertical level. That is an atmospheric closure, not a surface-flux one, so it
+would not directly fix the coupler's bulk formula. But a systematic
+near-surface cold bias is exactly the signature of an atmosphere whose energy
+budget is not being closed, and the correlation is now suggestive: the emulator
+that configures it and does not get it runs at twice the imbalance of the one
+that never configured it.
+
+### 30. `force_positive` is per-channel, not relational **[open, benign]**
+
+The emulator clamps each flux non-negative -- 16 channels including `FSDS`,
+`FSUS`, `FLDS`, `FLUS`, `STW_0..7` -- and it works: EATM's own clamp counters
+read `shum=0 precip=0 snow=0 fsds=0` on essentially every step. Nothing
+enforces `FSUS <= FSDS`, so the emulator's implied surface albedo can exceed 1.
+
+Measured at day 11 rather than inferred from the counts:
+
+| | SamudrACE | ACE2-EAMv3 |
+|---|---|---|
+| cells with `swnet` floored | 47.5 % | 45.3 % |
+| of those, FSDS > 1 W/m2 | 1692 (3.1 % of area) | 1166 (2.1 %) |
+| of those, FSDS > 20 W/m2 | **17 (0.02 %)** | 14 (0.02 %) |
+| daytime cells floored | 17 of 31444 (**0.1 %**) | 14 of 31586 (0.0 %) |
+
+Confined to the night side and terminator where FSDS is under 1 W/m2, and the
+same in both emulators. Benign.
+
+### 31. Exact restart: EATM passes, the coupled system does not **[EATM fixed; system open]**
+
+Hand-rolled ERS in `eatm-ers-4n` (4 nodes, ACE2-EAMv3 because it is
+deterministic), three phases in one case: A startup 2 days -> restart at
+`0001-01-03`; B `CONTINUE_RUN` 2 days -> `0001-01-05`; C startup 4 days
+straight. Driven with `./case.submit --no-batch` inside an interactive
+allocation; output stashed per phase under `run/ers/`.
+
+**Control passes exactly.** A vs C over days 2 and 3: **365 of 365** coupler
+fields bit-identical. The GPU inference is reproducible; nothing here is
+non-deterministic.
+
+**EATM's restart is exact**, three ways:
+
+- its restart file at `0001-01-03` is bit-identical between the run that wrote
+  it at end-of-run and the run that wrote it mid-run -- all 46 variables;
+- its first export after restart matches the continuous run at the same model
+  time to the last digit, all ten logged fields;
+- step phasing is right: B's first advance is step 108 at `tod 21600`,
+  matching C's step 108. It correctly does *not* re-run the emulator at
+  `tod 0`, and `nextsw_cday` follows EAM's exact-restart pattern
+  (`atm_comp_mct.F90:201-204` skips `curr_cday` on restart, `:245` recomputes
+  `getNextRadCDay` in the second init call).
+
+MPAS-Seaice and MPAS-Ocean restart writes are exact too (57 and 51 variables
+bit-identical at `0001-01-03`).
+
+**But B vs C differ** -- 172 of 365 fields at day 4. The seed is roundoff:
+
+| field | day 4 rms(diff)/rms | day 5 | day-4 max abs |
+|---|---|---|---|
+| `a2x_Sa_tbot` | 7.8e-06 | 1.3e-05 | 0.014 K |
+| `x2a_Sx_t` | 3.2e-06 | 8.9e-06 | 0.10 K |
+| `o2x_So_t` | 1.8e-06 | 1.1e-05 | 0.036 K |
+| `a2x_Faxa_swnet` | 3.4e-04 | 7.5e-04 | 2.2 W/m2 |
+
+Single-precision roundoff amplifying chaotically, roughly doubling per day.
+An `ERS` test would formally fail and it is worth filing, but every component's
+restart is exact and a segment boundary perturbs at roundoff level. **This does
+not block a 5-year `RESUBMIT` chain.** (`i2x_Si_anidf` showing max = NaN is a
+masking artifact; ice albedo is undefined where there is no ice.)
+
+### 32. A non-finite initial condition kills the run at step 0 **[fixed]**
+
+The published SamudrACE-E3SMv3 initial conditions carry NaN in `ICEFRAC` over
+every cell without sea ice -- 38877 of 64800, 60 % of the globe. `LANDFRAC`
+and `OCNFRAC` are clean.
+
+Fatal rather than local: the spherical harmonic transform inside an SFNO is
+global, so one NaN returns all 51 output channels as NaN, and the emulator is
+autoregressive. `ace_comp_init` runs an inference before the first coupler
+import, so the run is dead at step 0 -- observed as `zbot/tbot/pbot/ubot/vbot`
+all NaN on the first export, with `shum` and `swnet` reading 0.0 because the
+export's own `max(...,0)` floors swallowed the NaN.
+
+`eatm_sanitize_inputs` (commit `54d3a751d2`) runs on the initial condition
+before the first inference, replaces non-finite values with zero and reports
+the count per channel by name. `make_eatm_ic.py` does the same at build time.
+
+### 33. Nothing in this configuration measures conservation **[open]**
+
+`BUDGETS=FALSE` in `env_run.xml` (`do_budgets = .false.` in `drv_in`),
+MPAS-Ocean's `conservationCheck` AM off, MPAS-Seaice's off. Zero matches for
+`NET HEAT BUDGET` in any `cpl.log`. So the coupler cannot tell you whether an
+ML atmosphere closes energy, and it has no particular reason to.
+
+`./xmlchange BUDGETS=TRUE` gets the surface budget (`seq_diag_mct.F90:2200`).
+The coupler has **no TOA term at all** -- but the emulator predicts `FLUT` and
+`FSUTOA` and neither is ever read, so `SOLIN - FSUTOA - FLUT` as a logged
+global mean is a small change and the highest-value diagnostic available.
+
+### 34. Two production traps found by running into them **[document]**
+
+- **`STOP_N` shorter than `REST_OPTION` writes no restart at all.** A 20-day
+  run with `REST_OPTION=nmonths` never fires the restart alarm; the coupler
+  warns `Stop time too short ... restarts won't be written` and you get
+  nothing to continue from. Use `REST_OPTION=ndays` with `REST_N <= STOP_N`
+  for any test you intend to restart.
+- **A wall-clock kill during the restart write leaves a corrupt file.** The
+  31-day job died 6 s after `mpaso.rst` finished, leaving
+  `mpassi.rst.am.timeSeriesStatsMonthly` at 0 bytes; the next run then failed
+  to open it with `NetCDF: Unknown file format`. Budget the restart write
+  (~150 s for the ~11.9 GB end-of-month set) and clean the rundir between
+  runs. MPAS `highFrequencyOutput` also has `clobber_mode: append`, so a
+  re-run silently mixes trajectories into the previous file.
+
+### Where this session's data lives
+
+| what | where |
+|---|---|
+| pre-land-fix month (the "before") | `.../eatm-buildcheck-08151753/run/baseline_57052155/` |
+| post-land-fix 20 days | `.../eatm-buildcheck-08151753/run/` |
+| SamudrACE `lowest_level` 20 days | `.../GMPAS-EATM-SamudrACE-5yr/run/lowest_level_57056960/` |
+| SamudrACE `near_surface` 20 days | `.../GMPAS-EATM-SamudrACE-5yr/run/` |
+| ERS phases A/B/C + day-3 restarts | `.../eatm-ers-4n/run/ers/` |
+
+All under `/pscratch/sd/m/mahf708/e3sm_scratch/pm-gpu/`.
+
+### What I would do next, in order
+
+1. **Implement the total energy budget corrector in the tracing script.** Both
+   forcing fields it needs are already in EATM's input block. It is the only
+   configured corrector being dropped, and the emulator that drops it runs at
+   twice the imbalance of the one that never had it.
+2. **`./xmlchange BUDGETS=TRUE`** and add the TOA imbalance diagnostic, so the
+   next run produces a conservation record instead of one inferred from ocean
+   heat content.
+3. **Chase ACE2's latent-heat residual separately** -- `Sa_shum` is total water
+   including condensate, and 19.3 % of ocean cells are supersaturated.
+4. **Start from a spun-up G-case restart.** `config_initial_condition_type =
+   'cice_default'` cold-starts with 2.5 m ice at 100 % concentration everywhere
+   south of 60S and north of 70N; SH ice is 3-4x observed and contributes an
+   unknown share of the residual imbalance in *both* emulators.

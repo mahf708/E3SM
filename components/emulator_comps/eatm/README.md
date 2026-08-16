@@ -169,3 +169,46 @@ it needs a small C++ shim calling `torch::manual_seed`, reseeded each emulator
 step from the model date so restarts land on the same draw — but is not
 implemented. Until it is, two SamudrACE runs of the same configuration diverge,
 and `ERS` can only be run against `ACE2-EAMv3`. See REVIEW.md #13.
+
+## Status as of 2026-08-15
+
+Two emulators are wired up and both run coupled to a prognostic MPAS-Ocean and
+MPAS-Seaice on `pm-gpu`. Neither is ready for a 5-year production run; the
+blocker is energy, not stability.
+
+| | ACE2-EAMv3 | SamudrACE-E3SMv3 |
+|---|---|---|
+| channels | 39 in / 44 out | 43 in / 51 out |
+| stochastic | no | yes (`ERS` cannot pass) |
+| near-surface diagnostics | none | `Tat2m`/`Qat2m`/`Uat10m`/`Vat10m` |
+| throughput, 8 nodes | 5.18 SYPD | 4.71 SYPD |
+| ocean net surface heat flux | **-33.3 W/m2** | **-74.4 / -61.6 W/m2** |
+
+A usable coupled run wants that last row inside about +/-10 W/m2. See
+`REVIEW.md` findings 27-29 for where the residual comes from; the short version
+is that the two emulators fail differently -- ACE2's residual is latent heat
+(a humidity problem), SamudrACE's is a ~1.75 K near-surface cold bias relative
+to the SST it is given.
+
+Things that are settled and should not be re-litigated:
+
+- **The land-fraction reconstruction works.** It removed a 178 K cold pool over
+  30 % of the globe and repaired the general circulation. Finding 25.
+- **EATM's restart is exact.** The coupled system is not bit-for-bit across a
+  restart, but the seed is single-precision roundoff and every component's
+  restart write is exact. It does not block `RESUBMIT`. Finding 31.
+- **`cpl.hi` files are instantaneous snapshots, not time means.** Do not build
+  energy budgets from them; use MPAS `globalStats`. Finding 26.
+
+### Namelist quick reference
+
+| variable | default | what it does |
+|---|---|---|
+| `eatm_emulator` | `ACE2-EAMv3` | selects the channel table |
+| `eatm_model_file` | per emulator | traced TorchScript model |
+| `eatm_ic_file` | per emulator | initial condition, one 2D field per input channel |
+| `eatm_model_device` | `gpu` | `cpu` or `gpu` |
+| `eatm_surface_layer` | `near_surface` | export at 10 m from predicted 2 m/10 m diagnostics; falls back to `lowest_level` when the emulator has none |
+| `eatm_legacy_surface` | `.false.` | reproduce the pre-review surface diagnostics |
+| `eatm_frzprec_units` | `kg/m2/s` | units of the frozen precipitation channel |
+| `eatm_iradsw` | 1 | radiation interval, coupler steps |
