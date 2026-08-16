@@ -200,17 +200,17 @@ CONTAINS
     call seq_timemgr_EClockGetData( EClock, curr_ymd=CurrentYMD, curr_tod=CurrentTOD)
     call seq_timemgr_EClockGetData( EClock, stepno=stepno, dtime=cpl_idt)
 
-    write(logunit_atm, *) "stepno: ", stepno
-    write(logunit_atm, *) "cpl_idt: ", cpl_idt
-    write(logunit_atm, *) "eatm_model_dt: ", eatm_model_dt
-    write(logunit_atm, *) "CurrentYMD: ", CurrentYMD
-    write(logunit_atm, *) "CurrentTOD: ", CurrentTOD
-    call shr_sys_flush(logunit_atm)
-
     ! integer remainder (in sec) of coupler timestep relative to ACE timestep
     t_modulo = mod(CurrentTOD, eatm_model_dt)
 
     if (t_modulo .eq. 0) then
+
+      ! One line per emulator step, not per coupler step: at ATM_NCPL=48 the
+      ! latter is 48 flushed writes a day, ~100 MB of atm.log over five years.
+      write(logunit_atm, '(a,i9,a,i9.8,a,i6,a,i7,a)') &
+           'eatm step ', stepno, ' date ', CurrentYMD, ' tod ', CurrentTOD, &
+           ' (cpl dt ', cpl_idt, ' s) -- advancing emulator'
+      call shr_sys_flush(logunit_atm)
 
       ! Feed the emulator its own state *at this time*, which is the prediction
       ! made one emulator step ago (t_ip1).  net_outputs currently still holds
