@@ -43,6 +43,18 @@ module ace_comp_mod
   private ! except
 
   !--------------------------------------------------------------------------
+  ! Seed libtorch's generators (eatm_torch_seed.cpp).  FTorch has no interface
+  ! to them, and without a seed the stochastic SamudrACE atmosphere cannot be
+  ! A/B tested at all -- its run-to-run spread is of order 5 W/m2 over 20 days.
+  !--------------------------------------------------------------------------
+  interface
+    subroutine eatm_torch_manual_seed(seed) bind(C, name='eatm_torch_manual_seed')
+      import :: c_int64_t
+      integer(c_int64_t), value :: seed
+    end subroutine eatm_torch_manual_seed
+  end interface
+
+  !--------------------------------------------------------------------------
   ! Public interfaces
   !--------------------------------------------------------------------------
   public :: ace_comp_init
@@ -100,6 +112,32 @@ module ace_comp_mod
   real(R8), allocatable :: cell_area(:,:)
   real(R8)              :: area_total = 0.0_R8
 
+  !--------------------------------------------------------------------------
+  ! Running sums of the coupler's applied surface exchange over the emulator
+  ! interval currently open.
+  !
+  ! The emulator's flux channels are means over the whole 6 h step, but the
+  ! coupler recomputes its fluxes every coupling step and atm_import_mct
+  ! overwrites them each time.  Reading them once at the emulator boundary
+  ! therefore compares a 6 h mean against a single 30 min sample -- exactly the
+  ! kind of unlike-for-unlike comparison that made the first version of this
+  ! report understate the coupler (see REVIEW.md #44).  Sampling four fixed
+  ! phases a day happens to integrate a diurnal or semi-diurnal signal without
+  ! bias, so the error is smaller than it looks, but it is not a budget.
+  !
+  ! These accumulate every coupling step and are reported and reset at the
+  ! emulator boundary, which makes both columns interval means over the same
+  ! interval.
+  !--------------------------------------------------------------------------
+  real(R8), allocatable :: acc_lhf(:,:)    ! latent   heat flux
+  real(R8), allocatable :: acc_shf(:,:)    ! sensible heat flux
+  real(R8), allocatable :: acc_lwup(:,:)   ! upward longwave at the surface
+  real(R8), allocatable :: acc_wsx(:,:)    ! zonal stress
+  real(R8), allocatable :: acc_wsy(:,:)    ! meridional stress
+  real(R8), allocatable :: acc_swabs(:,:)  ! shortwave the surface really absorbs
+  real(R8), allocatable :: acc_cov(:,:)    ! covered fraction, same cadence
+  integer               :: acc_n = 0       ! coupling steps accumulated
+
   logical :: outputs_validated = .false.   ! full range check done once
 
   save
@@ -120,6 +158,7 @@ CONTAINS
     integer     :: t_modulo    ! int remainder of curr. time over eatm dt
     integer(in) :: CurrentYMD  ! model date
     integer(in) :: CurrentTOD  ! model sec into model date
+    integer(in) :: stepno      ! coupler step number, for the RNG seed offset
     character(len=*), parameter :: subname = '(ace_comp_init) '
 
     !--- how many channels the traced graph is handed ---
@@ -168,6 +207,26 @@ CONTAINS
     call ace_cache_areas(ggrid)
 
     call seq_timemgr_EClockGetData( EClock, curr_ymd=CurrentYMD, curr_tod=CurrentTOD )
+    call seq_timemgr_EClockGetData( EClock, stepno=stepno )
+
+    !--- make a stochastic emulator reproducible ---
+    if (eatm_rng_seed >= 0) then
+      ! Offset by the step number rather than seeding with the same value every
+      ! time.  A multi-segment run re-initializes at the start of each segment,
+      ! and seeding identically there would replay the same noise realization in
+      ! every segment -- for 1-year segments, a spurious annual periodicity in
+      ! the emulator's stochasticity.  Adding stepno keeps the run reproducible
+      ! (it is a function of the seed and the start date alone) while making the
+      ! sequence continue rather than repeat.
+      call eatm_torch_manual_seed(int(eatm_rng_seed, c_int64_t) + int(stepno, c_int64_t))
+      write(logunit_atm,'(a,i0,a,i0)') &
+           '(ace_comp_init) libtorch RNG seeded with eatm_rng_seed + stepno = ', &
+           eatm_rng_seed, ' + ', stepno
+    else
+      write(logunit_atm,'(a)') &
+           '(ace_comp_init) libtorch RNG left unseeded (eatm_rng_seed < 0);'// &
+           ' a stochastic emulator will not reproduce between runs'
+    end if
 
     if (read_restart) then
 
@@ -241,7 +300,14 @@ CONTAINS
 
     integer :: karea, n, i, j
 
+    if (allocated(cell_area)) return   ! init runs once, but do not rely on it
+
     allocate(cell_area(lsize_x, lsize_y))
+    allocate(acc_lhf(lsize_x, lsize_y), acc_shf(lsize_x, lsize_y))
+    allocate(acc_lwup(lsize_x, lsize_y), acc_swabs(lsize_x, lsize_y))
+    allocate(acc_wsx(lsize_x, lsize_y), acc_wsy(lsize_x, lsize_y))
+    allocate(acc_cov(lsize_x, lsize_y))
+    call ace_reset_accumulators()
 
     karea = mct_aVect_indexRA(ggrid%data, 'area')
 
@@ -259,6 +325,73 @@ CONTAINS
          '(ace_cache_areas) ERROR: domain cell areas sum to zero')
 
   end subroutine ace_cache_areas
+
+  !===============================================================================
+  subroutine ace_reset_accumulators()
+    ! Start a fresh emulator interval.
+    implicit none
+    acc_lhf(:,:)   = 0.0_R8
+    acc_shf(:,:)   = 0.0_R8
+    acc_lwup(:,:)  = 0.0_R8
+    acc_wsx(:,:)   = 0.0_R8
+    acc_wsy(:,:)   = 0.0_R8
+    acc_swabs(:,:) = 0.0_R8
+    acc_cov(:,:)   = 0.0_R8
+    acc_n          = 0
+  end subroutine ace_reset_accumulators
+
+  !===============================================================================
+  subroutine ace_accumulate_coupler()
+
+    !----------------------------------------------------------------
+    ! Add this coupling step's applied surface exchange to the running sums.
+    !
+    ! Called once per coupler step, right after atm_import_mct has refreshed
+    ! the coupler fields and before anything overwrites them.  The imported
+    ! Faxx_* are the fluxes the coupler computed for the interval that just
+    ! ended, using the atmospheric state EATM exported on the previous step --
+    ! so pairing them with the albedos imported now, and with the shortwave
+    ! bands still held from that previous export, reproduces what the surface
+    ! models actually did.
+    !
+    ! The shortwave is the reason this is not simply an average of imported
+    ! fields.  EATM exports four downwelling bands and the ocean and sea ice
+    ! then absorb them using their *own* band-dependent albedos, so the net
+    ! shortwave reaching the surface is not the emulator's FSDS - FSUS at all.
+    ! Rebuilding it here from the bands and the merged albedos is the only way
+    ! to see that part of the interface.  Since a merged Sx_ field is a
+    ! fraction-weighted sum rather than a mean (it is zero where no surface
+    ! model covers the cell), the absorbed flux is
+    !
+    !     sum over bands of  band * (covered_fraction - merged_albedo)
+    !----------------------------------------------------------------
+    implicit none
+
+    integer  :: i, j
+    real(R8) :: cov
+
+    do j = 1, lsize_y
+      do i = 1, lsize_x
+        cov = min(max(ocnfrac(i, j) + icefrac(i, j) + lndfrac(i, j), 0.0_R8), 1.0_R8)
+
+        acc_lhf(i, j)  = acc_lhf(i, j)  + lhf(i, j)
+        acc_shf(i, j)  = acc_shf(i, j)  + shf(i, j)
+        acc_lwup(i, j) = acc_lwup(i, j) + lwup(i, j)
+        acc_wsx(i, j)  = acc_wsx(i, j)  + wsx(i, j)
+        acc_wsy(i, j)  = acc_wsy(i, j)  + wsy(i, j)
+        acc_cov(i, j)  = acc_cov(i, j)  + cov
+
+        acc_swabs(i, j) = acc_swabs(i, j)                  &
+             + swvdr(i, j) * (cov - asdir(i, j))           &
+             + swndr(i, j) * (cov - aldir(i, j))           &
+             + swvdf(i, j) * (cov - asdif(i, j))           &
+             + swndf(i, j) * (cov - aldif(i, j))
+      end do
+    end do
+
+    acc_n = acc_n + 1
+
+  end subroutine ace_accumulate_coupler
 
   subroutine ace_comp_run(EClock, ggrid)
     ! !DESCRIPTION: run method for ace model
@@ -283,6 +416,11 @@ CONTAINS
     ! integer remainder (in sec) of coupler timestep relative to ACE timestep
     t_modulo = mod(CurrentTOD, eatm_model_dt)
 
+    ! Add this coupling step's applied exchange to the interval that is closing.
+    ! Done before the boundary test so the sample at the boundary itself belongs
+    ! to the interval it ends, not the one it starts.
+    call ace_accumulate_coupler()
+
     ! An emulator step is due at every multiple of eatm_model_dt, but only
     ! once per model time: the driver's phase-2 initialization call runs this
     ! routine again at the time the startup inference already covered.
@@ -297,9 +435,10 @@ CONTAINS
       call shr_sys_flush(logunit_atm)
 
       ! What the coupler did with the state handed over for the interval that
-      ! just closed, next to what the emulator thought it was doing.  Reported
-      ! before the import overwrites the coupler fields.
+      ! just closed, next to what the emulator thought it was doing.  Both
+      ! columns are now means over that same interval.
       call ace_flux_budget_report()
+      call ace_reset_accumulators()
 
       ! Feed the emulator its own state *at this time*, which is the prediction
       ! made one emulator step ago (t_ip1).  net_outputs currently still holds
@@ -392,6 +531,7 @@ CONTAINS
   subroutine ace_comp_finalize()
     call torch_delete(ace_model)
     if (allocated(cell_area)) deallocate(cell_area)
+    if (allocated(acc_lhf))   deallocate(acc_lhf, acc_shf, acc_lwup, acc_wsx, acc_wsy, acc_swabs, acc_cov)
   end subroutine ace_comp_finalize
 
   !===============================================================================
@@ -595,16 +735,19 @@ CONTAINS
     real(R8) :: emu_tx, emu_ty, cpl_tx, cpl_ty
     real(R8) :: emu_net, cpl_net
     real(R8) :: fsds_m, flds_m, fsus_m, flus_m, lwup_m
+    real(R8) :: emu_swnet, cpl_swnet
     real(R8) :: w_cov(lsize_x, lsize_y)   ! area * covered fraction
     real(R8) :: cov_total                 ! its sum
 
     if (ix_out_lhflx <= 0 .or. ix_out_shflx <= 0) return
+    if (acc_n <= 0) return   ! nothing accumulated yet
 
+    ! Covered fraction on the same footing as the accumulated fluxes: the mean
+    ! over the interval, not its value at the closing instant.
     cov_total = 0.0_R8
     do j = 1, lsize_y
       do i = 1, lsize_x
-        w_cov(i, j) = cell_area(i, j) * &
-             min(max(ocnfrac(i, j) + icefrac(i, j) + lndfrac(i, j), 0.0_R8), 1.0_R8)
+        w_cov(i, j) = cell_area(i, j) * acc_cov(i, j) / real(acc_n, R8)
         cov_total = cov_total + w_cov(i, j)
       end do
     end do
@@ -618,12 +761,12 @@ CONTAINS
     emu_lh = emu_mean(ix_out_lhflx)
     emu_sh = emu_mean(ix_out_shflx)
 
-    cpl_lh = -cpl_mean(lhf)   ! Faxx_lat is not negated on import
-    cpl_sh =  cpl_mean(shf)   ! Faxx_sen is
+    cpl_lh = -cpl_mean(acc_lhf)   ! Faxx_lat is not negated on import
+    cpl_sh =  cpl_mean(acc_shf)   ! Faxx_sen is
 
-    write(logunit_atm,'(a,f6.4,a)') &
+    write(logunit_atm,'(a,f6.4,a,i0,a)') &
          '  sfc exchange over the covered fraction (', cov_total / area_total, &
-         ' of area), W/m2, +ve = surface -> atmosphere'
+         ' of area), W/m2, +ve = surface -> atmosphere, ', acc_n, ' cpl steps'
     write(logunit_atm,'(a)') &
          '                                                  emulator     coupler        diff'
     write(logunit_atm,'(a,3f12.4)') '    latent                                    ', &
@@ -638,16 +781,26 @@ CONTAINS
     flds_m = emu_mean(ix_out_flds)
     fsus_m = 0.0_R8 ; if (ix_out_fsus > 0) fsus_m = emu_mean(ix_out_fsus)
     flus_m = 0.0_R8 ; if (ix_out_flus > 0) flus_m = emu_mean(ix_out_flus)
-    lwup_m = cpl_mean(lwup)
+    lwup_m = cpl_mean(acc_lwup)
+
+    ! Shortwave: the emulator's own net against what the surface really absorbs.
+    ! These are different numbers.  EATM hands the coupler four downwelling
+    ! bands split by fixed fractions, and the ocean and sea ice absorb them with
+    ! their own band-dependent albedos; the emulator's FSDS - FSUS never reaches
+    ! anything.  Reporting only the emulator's version, as this used to, hides
+    ! the shortwave part of the interface mismatch entirely -- which matters
+    ! most over snow and sea ice, where the spectral albedo contrast is largest.
+    emu_swnet = fsds_m - fsus_m
+    cpl_swnet = cpl_mean(acc_swabs)
+    write(logunit_atm,'(a,3f12.4)') '    net shortwave absorbed                    ', &
+         emu_swnet, cpl_swnet, cpl_swnet - emu_swnet
 
     if (ix_out_flus > 0) then
-      ! Net downward at the surface: the emulator's own radiation minus its own
-      ! turbulent loss, against the same built from what the coupler applied.
-      ! The shortwave and downward longwave are common to both -- the coupler
-      ! takes them from this component -- so the difference is exactly the
-      ! turbulent disagreement plus the surface longwave one.
-      emu_net = (fsds_m - fsus_m) + (flds_m - flus_m) - (emu_lh + emu_sh)
-      cpl_net = (fsds_m - fsus_m) + (flds_m - lwup_m) - (cpl_lh + cpl_sh)
+      ! Net downward at the surface.  Only the downwelling longwave is common to
+      ! both columns; the shortwave now differs too, so this is the full
+      ! interface disagreement rather than just its turbulent part.
+      emu_net = emu_swnet + (flds_m - flus_m) - (emu_lh + emu_sh)
+      cpl_net = cpl_swnet + (flds_m - lwup_m) - (cpl_lh + cpl_sh)
       write(logunit_atm,'(a,3f12.4)') '    net surface (downward)                    ', &
            emu_net, cpl_net, cpl_net - emu_net
       write(logunit_atm,'(a,3f12.4)') '    surface LW up                             ', &
@@ -657,8 +810,8 @@ CONTAINS
     if (ix_out_taux > 0 .and. ix_out_tauy > 0) then
       emu_tx = emu_mean(ix_out_taux)
       emu_ty = emu_mean(ix_out_tauy)
-      cpl_tx = cpl_mean(wsx)
-      cpl_ty = cpl_mean(wsy)
+      cpl_tx = cpl_mean(acc_wsx)
+      cpl_ty = cpl_mean(acc_wsy)
       write(logunit_atm,'(a,3es12.4)') '    stress x (N/m2)                           ', &
            emu_tx, cpl_tx, cpl_tx - emu_tx
       write(logunit_atm,'(a,3es12.4)') '    stress y (N/m2)                           ', &
@@ -690,8 +843,10 @@ CONTAINS
       emu_mean = emu_mean / cov_total
     end function emu_mean
 
-    ! merged coupler field: a plain area integral over the covered area, since
-    ! the fraction weighting is already inside the field itself
+    ! Accumulated merged coupler field: a plain area integral over the covered
+    ! area, since the fraction weighting is already inside the field itself.
+    ! The sum is over acc_n coupling steps, so divide that out to get the
+    ! interval mean -- the same kind of quantity as the emulator's channel.
     real(R8) function cpl_mean(f)
       real(R8), intent(in) :: f(:,:)
       integer :: i, j
@@ -701,7 +856,7 @@ CONTAINS
           cpl_mean = cpl_mean + cell_area(i, j) * f(i, j)
         end do
       end do
-      cpl_mean = cpl_mean / cov_total
+      cpl_mean = cpl_mean / (cov_total * real(acc_n, R8))
     end function cpl_mean
 
     real(R8) function glob_out(k)
@@ -772,6 +927,17 @@ CONTAINS
     real(R8) :: covered   ! cell fraction the surface models accounted for
     real(R8) :: deficit   ! the rest, which the emulator owns
     real(R8) :: fo, fi, fl  ! individually bounded ocean / ice / land fractions
+    integer  :: n_clip_frac, n_norm_frac   ! cells corrected, by kind
+    real(R8) :: worst_clip, worst_norm     ! and by how much
+
+    ! A merged surface temperature the coupler built from the *original*
+    ! fractions is about to be paired with corrected ones.  If the correction is
+    ! material the two describe different mixtures, so report it rather than let
+    ! it pass silently.  The threshold is not round-off: the coupler's own
+    ! fraction limiter works to about 1e-3 (see #15b, where 77 of 64800 cells
+    ! differed by roughly eps_fraclim), so anything at that level is expected
+    ! and only a gross violation means something upstream is wrong.
+    real(R8), parameter :: frac_tol = 0.05_R8
 
     do k = 1, n_input_channels
       if (in_from_out(k) > 0) then
@@ -782,6 +948,11 @@ CONTAINS
         enddo
       end if
     end do
+
+    n_clip_frac = 0
+    n_norm_frac = 0
+    worst_clip  = 0.0_R8
+    worst_norm  = 0.0_R8
 
     do j = 1, lsize_y
       do i = 1, lsize_x
@@ -795,8 +966,16 @@ CONTAINS
         fi = min(max(icefrac(i, j), 0.0_R8), 1.0_R8)
         fl = min(max(lndfrac(i, j), 0.0_R8), 1.0_R8)
 
+        worst_clip = max(worst_clip, &
+             max(abs(fo - ocnfrac(i, j)), &
+                 max(abs(fi - icefrac(i, j)), abs(fl - lndfrac(i, j)))))
+        if (fo /= ocnfrac(i, j) .or. fi /= icefrac(i, j) .or. fl /= lndfrac(i, j)) &
+             n_clip_frac = n_clip_frac + 1
+
         covered = fo + fi + fl
         if (covered > 1.0_R8) then
+          n_norm_frac = n_norm_frac + 1
+          worst_norm  = max(worst_norm, covered - 1.0_R8)
           fo = fo / covered
           fi = fi / covered
           fl = fl / covered
@@ -815,6 +994,19 @@ CONTAINS
 
       enddo
     enddo
+
+    if (n_clip_frac > 0 .or. n_norm_frac > 0) then
+      write(logunit_atm,'(a,i0,a,es9.2,a,i0,a,es9.2)') &
+           '  frac fix  clipped=', n_clip_frac, ' (max ', worst_clip, &
+           ')  renormalized=', n_norm_frac, ' (max excess ', worst_norm
+      ! Anything beyond round-off means the merged Sx_t handed over alongside
+      ! these fractions was built from a different mixture than the emulator is
+      ! now being told about.
+      if (max(worst_clip, worst_norm) > frac_tol) call shr_sys_abort( &
+           '(ace_eatm_import) ERROR: coupler surface fractions are outside '// &
+           '[0,1] or sum above one by more than round-off; the merged Sx_t '// &
+           'no longer matches the fractions passed to the emulator')
+    end if
 
     ! Two lines, ranges only.  Sx_t straight from the coupler: a minimum of 0 K
     ! is expected and fine, it is the cells no surface model covers, which the

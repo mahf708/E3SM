@@ -143,6 +143,36 @@ saturation by construction.
 Default: .true.
 </entry>
 
+<entry id="eatm_rng_seed"
+       type="integer"
+       category="eatm"
+       group="eatm_inparm" >
+Seed for libtorch's random number generators, applied once at initialization.
+
+The SamudrACE-E3SMv3 atmosphere is a NoiseConditionedSFNO and draws random
+noise on every forward pass, so without a seed two runs of identical code
+diverge.  That spread was measured at order 5 W/m2 in the ocean's net surface
+heat flux over 20 days -- larger than most changes worth testing -- which made
+the emulator effectively impossible to A/B.
+
+The seed actually applied is eatm_rng_seed + the coupler step number at
+initialization.  Seeding with the same value in every segment of a resubmitted
+run would replay one noise realization per segment; with 1-year segments that
+is a spurious annual periodicity.  Adding the step number keeps a run
+reproducible -- it is fixed by the seed and the start date -- while letting the
+sequence continue rather than repeat.
+
+A negative value leaves the generators unseeded, which reproduces the
+behaviour before this option existed.
+
+Note this makes a cold start reproducible; it does not make a restart
+bit-reproducible against a continuous run, because the generator state itself
+is not carried in the restart file.
+
+Has no effect on ACE2-EAMv3, which is deterministic.
+Default: 0
+</entry>
+
 <entry id="eatm_frzprec_units"
        type="char*16"
        category="eatm"

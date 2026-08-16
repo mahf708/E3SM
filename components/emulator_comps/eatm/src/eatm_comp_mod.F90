@@ -298,7 +298,88 @@ CONTAINS
 
     if (nfatal > 0) call shr_sys_abort(trim(msg))
 
+    call eatm_validate_input_ranges(source)
+
   end subroutine eatm_sanitize_inputs
+
+  !===============================================================================
+  subroutine eatm_validate_input_ranges(source)
+
+    ! Range-check every input channel EATM knows a physical range for.
+    !
+    ! The non-finite test above catches NaN and Inf, and that is not enough: a
+    ! netCDF variable written with the default float _FillValue carries
+    ! 9.9692e+36, which is a perfectly finite number well below huge(), so it
+    ! sails through untouched and lands in the emulator as a surface pressure
+    ! of 1e37.  Missing data does not have to be non-finite to be missing.
+    !
+    ! The ranges are the same loose ones used to check the traced graph's output
+    ! channel contract, so this also catches an initial condition whose
+    ! variables are named right but ordered wrong, or in the wrong units.
+    !
+    ! Two thresholds, because real initial conditions are not perfectly clean.
+    ! The published ACE2-EAMv3 IC carries surface fractions from -0.102 to
+    ! 1.103 and a minimum SOLIN of -0.97 W/m2 -- interpolation overshoot from
+    ! regridding onto the Gaussian grid, not missing data.  Those are worth
+    ! seeing but not worth refusing to run over, and EATM clips the fractions
+    ! before the emulator sees them anyway.  So:
+    !
+    !   outside the physical range          -> warn, with the measured extremes
+    !   outside it by more than `slack`     -> abort
+    !
+    ! A netCDF fill value of 9.97e36 is many orders of magnitude beyond any
+    ! padded range, so widening the tolerance costs nothing in detection.
+
+    implicit none
+
+    character(len=*), intent(in) :: source
+
+    integer  :: k, i, j, nbad
+    real(R8) :: lo, hi, vmin, vmax, v, pad
+    logical  :: checked
+    character(len=CL) :: msg
+
+    ! generous, since the job here is catching corruption not policing noise
+    real(R8), parameter :: slack = 0.20_R8
+
+    nbad = 0
+    do k = 1, n_input_channels
+      call eatm_channel_range(in_names(k), lo, hi, checked)
+      if (.not. checked) cycle
+      vmin =  huge(1.0_R8)
+      vmax = -huge(1.0_R8)
+      do j = 1, lsize_y
+        do i = 1, lsize_x
+          v = real(net_inputs(1, k, i, j), R8)
+          vmin = min(vmin, v)
+          vmax = max(vmax, v)
+        end do
+      end do
+
+      if (vmin >= lo .and. vmax <= hi) cycle
+
+      pad = slack * (hi - lo)
+      if (vmin < lo - pad .or. vmax > hi + pad) then
+        write(logunit_atm,'(a,2es13.5,a,2es13.5)') &
+             '(eatm_validate_input_ranges) ERROR '//trim(source)//': channel '// &
+             trim(in_names(k))//' spans ', vmin, vmax, ', far outside the admissible ', lo, hi
+        nbad = nbad + 1
+        if (nbad == 1) write(msg,'(a)') &
+             '(eatm_validate_input_ranges) ERROR: '//trim(source)//' channel '// &
+             trim(in_names(k))//' is grossly outside its physical range.  A netCDF '// &
+             'fill value (9.97e36) is finite and passes the non-finite check, so '// &
+             'check for missing data, wrong units or a mis-ordered file.'
+      else
+        write(logunit_atm,'(a,2es13.5,a,2es13.5)') &
+             '(eatm_validate_input_ranges) WARNING '//trim(source)//': channel '// &
+             trim(in_names(k))//' spans ', vmin, vmax, ', slightly outside ', lo, hi
+      end if
+    end do
+
+    call shr_sys_flush(logunit_atm)
+    if (nbad > 0) call shr_sys_abort(trim(msg))
+
+  end subroutine eatm_validate_input_ranges
 
   !===============================================================================
   subroutine eatm_comp_run(EClock, x2a, a2x, gsmap, ggrid)

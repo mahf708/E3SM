@@ -353,6 +353,15 @@ macro(build_model COMP_CLASS COMP_NAME)
       endif()
       if (COMP_NAME STREQUAL "eatm")
         target_link_libraries(${TARGET_NAME} PRIVATE FTorch::ftorch)
+        # FTorch::ftorch exports only its own include directory, but finding it
+        # pulls Torch in as a dependency (FTorchConfig.cmake does
+        # find_dependency(Torch)), so TORCH_INCLUDE_DIRS is already set here.
+        # eatm/src carries one small C++ shim that needs <torch/torch.h> to
+        # reach the RNG, which FTorch does not expose -- see eatm/REVIEW.md #47.
+        # FTorch::ftorch links only stdc++, so the shim's references into c10
+        # and torch_cpu have to be resolved at the executable link explicitly.
+        target_include_directories(${TARGET_NAME} PRIVATE ${TORCH_INCLUDE_DIRS})
+        target_link_libraries(${TARGET_NAME} PRIVATE ${TORCH_LIBRARIES})
       endif()
       if (USE_KOKKOS)
         target_link_libraries (${TARGET_NAME} PRIVATE Kokkos::kokkos)

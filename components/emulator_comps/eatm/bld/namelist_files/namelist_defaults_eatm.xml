@@ -29,6 +29,7 @@ for the EATM data in the E3SM distribution
 <eatm_legacy_surface>.false.</eatm_legacy_surface>
 <eatm_surface_layer>near_surface</eatm_surface_layer>
 <eatm_cap_shum>.true.</eatm_cap_shum>
+<eatm_rng_seed>0</eatm_rng_seed>
 <eatm_frzprec_units>kg/m2/s</eatm_frzprec_units>
 <eatm_iradsw>1</eatm_iradsw>
 

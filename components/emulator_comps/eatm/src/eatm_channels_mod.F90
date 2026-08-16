@@ -231,6 +231,10 @@ contains
        select case (trim(name))
        case ('PS')       ; lo = 3.0e4_R8  ; hi = 1.2e5_R8   ! Pa
        case ('TS')       ; lo = 120.0_R8  ; hi = 360.0_R8   ! K
+       case ('PHIS')     ; lo = -600.0_R8 ; hi = 9.0e4_R8   ! m2/s2 (Dead Sea to Everest)
+       case ('SOLIN')    ; lo = 0.0_R8    ; hi = 1500.0_R8  ! W/m2
+       case ('LANDFRAC', 'OCNFRAC', 'ICEFRAC')
+                           lo = 0.0_R8    ; hi = 1.0_R8     ! 1
        case ('Tat2m')    ; lo = 120.0_R8  ; hi = 360.0_R8   ! K
        case ('Qat2m')    ; lo = -1.0e-3_R8; hi = 0.1_R8     ! kg/kg
        case ('Uat10m', 'Vat10m')

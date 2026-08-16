@@ -38,6 +38,7 @@ module eatmMod
   integer, public       :: eatm_iradsw            ! radiation interval (coupler steps)
   character(CL), public :: eatm_surface_layer     ! 'near_surface' or 'lowest_level'
   logical, public       :: eatm_cap_shum          ! cap exported Sa_shum at saturation
+  integer, public       :: eatm_rng_seed          ! libtorch RNG seed; <0 leaves it unseeded
 
   ! Reference height for the exported atmospheric state when the emulator
   ! predicts near-surface diagnostics.  10 m is what datm hands this same ocean
