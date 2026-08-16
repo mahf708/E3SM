@@ -1910,3 +1910,67 @@ pre-fix binary is left anywhere.
    the 6-hourly means cannot carry.
 5. **Optimise the SOLIN window mean** (35b) if the ~1.6 s per model day ever
    matters; the recipe removes the transcendentals from the inner loop.
+
+## Session of 2026-08-16: where this sits against the references
+
+### 53. Measured against anolan's EATM runs and jonbob's JRA baseline **[measured]**
+
+The question this branch exists to answer is whether an emulated atmosphere can
+drive a G-case as well as reanalysis forcing does. `jonbob`'s
+`GMPAS-JRA1p5-2023` is that target. Ocean net surface heat flux from the
+volume-mean temperature drift, computed identically for all of them:
+
+| run | code | d0-10 | d0-20 | d0-90 | d0-365 | **2 years** |
+|---|---|---|---|---|---|---|
+| **jonbob `GMPAS-JRA1p5-2023` (target)** | datm/JRA | -9.19 | -4.20 | 1.75 | -4.82 | **-3.92** |
+| anolan `GMPAS-EATM-gnugpu` | `7fce378e5f` | -95.37 | -87.93 | -48.03 | -27.17 | -14.99 |
+| anolan `GMPAS-EATM-test4naser` | `23dd0c1b97` | -57.29 | -55.10 | -46.97 | -44.17 | -39.84 |
+| mine, post-land-fix | `67d71a2a09`+ | **-33.15** | -33.26 | | | |
+| mine, + this session's fixes | HEAD | **-34.12** | | | | |
+
+All ACE2-EAMv3 except the target. Three things worth extracting.
+
+**The direction is right.** At matched window the ACE2 bias has gone
+-95 -> -57 -> -33, a 40-65% reduction against both of anolan's references.
+Nearly all of that was the land-fraction reconstruction (#25); this session's
+changes held it flat at about -1 W/m2 (#49), which is what they should have
+done.
+
+**The remaining gap is the size of the mismatch we measured.** -34.12 against
+the target's -9.19 is **24.9 W/m2**. The emulator-versus-coupler turbulent
+disagreement measured in-run for ACE2 is **24.98 W/m2** (#50). The denominators
+are not identical -- ocean area against covered area -- so some of that
+agreement is luck, but the coincidence of magnitude says the term identified in
+43a and 51 is quantitatively the whole remaining distance to a JRA-quality run.
+That is the strongest argument yet for spending the next effort there rather
+than anywhere else on the list.
+
+**Short windows do not predict the equilibrium.** `gnugpu` runs -95 at ten days
+and -15 over two years; `test4naser` -57 and -40. So a 10-20 day A/B detects a
+bias reliably but says little about where the run settles, and the two-year
+production runs are the only test that does. Note the target has no such
+transient at all (-9.19 at ten days, -3.92 at two years), so the large early
+drift in every EATM run is genuine bias rather than cold-start adjustment --
+which is what makes short A/B runs legitimate for detection in the first place.
+
+**Caveat on the two references**: they are different commits, `gnugpu` being
+the older, and they disagree with each other by more than this session's entire
+effect. Neither is a "correct" EATM baseline; they bracket where the branch was.
+
+### 54. What the humidity cap is really worth: 0.06 W/m2 **[measured]**
+
+#49 attributed most of its -0.96 W/m2 to the humidity cap, reasoning from the
+0.26% change in mean humidity. That was wrong, and the direct test says so.
+ACE2, 10 days, identical except `eatm_cap_shum`:
+
+| run | W/m2 |
+|---|---|
+| pre-fix | -33.16 |
+| fixes, `eatm_cap_shum = .true.` | -34.12 |
+| fixes, `eatm_cap_shum = .false.` | -34.06 |
+
+The cap accounts for **0.06** of the 0.96; the other 0.90 is the emulator
+responding to the corrected SOLIN pattern, the aligned clock and the
+interval-mean flux handling. Those are individually mean-neutral by
+construction, but the forcing *pattern* changed enormously (#35), and the
+emulator's response to it is not required to be neutral at all.
