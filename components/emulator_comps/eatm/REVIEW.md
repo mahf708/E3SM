@@ -2358,3 +2358,55 @@ mismatch, `lowest_level` costs about 25 (#58), and the only route to zero is
 letting the emulator's own fluxes drive the surface (#43), which is ruled out
 for mixed cells and Icepack. **10 m is the best available option, and its cost
 should be reported rather than tuned away.**
+
+### 65. The mechanism, read from the active code rather than inferred **[confirmed]**
+
+#64 guessed the latent/sensible split came from different roughness lengths for
+heat and moisture. That guess was wrong, and checking it produced a better
+answer.
+
+In `rough_ua` -- the UA scheme, `ocn_surface_flux_scheme = 1` -- the roughness
+lengths are *identical* by construction:
+
+```fortran
+xq  = 2.67_R8*re_rough**0.25_R8 - 2.57_R8   ! EQN (25)
+xt  = xq                                    ! EQN (26)
+zoq = zo/exp(xq)
+zot = zo/exp(xt)                            ! so zot == zoq exactly
+```
+
+And that scheme is not even active. This configuration runs
+`ocn_surface_flux_scheme = 0`, where the split is explicit
+(`shr_flux_mod.F90:384-386`):
+
+```fortran
+rhn = (1.0_R8-stable) * 0.0327_R8 + stable * 0.018_R8   ! heat, Stanton
+ren = 0.0346_R8                                          ! moisture, Dalton
+```
+
+**Heat and moisture have different transfer coefficients by construction, and
+only the heat one switches with stability:**
+
+| regime | C_H / C_E |
+|---|---|
+| unstable | 0.0327 / 0.0346 = **0.945** |
+| stable | 0.0180 / 0.0346 = **0.520** |
+
+This predicts the stratification in #64 quantitatively. Where the surface layer
+is strongly unstable the two coefficients are within 5% of each other, so
+inverting each for a height returns nearly the same answer -- measured gap
+**-0.5 m** at dT of 3-10 K. Near neutral the stable branch pulls C_H down by up
+to a factor of two, so the inferred heat height runs far above the moisture
+height -- measured **+13.4 m** at dT of 0.2-0.7 K. The measurement was made
+before the code was read, so this is a prediction confirmed, not a fit.
+
+**Consequence for `eatm_ref_height`, now on firm ground.** C_H and C_E are
+unequal by construction and their ratio depends on stability, so the height that
+nulls the sum of the two fluxes is a function of the stability distribution the
+model happens to be sampling. It must move with season, region and wind regime.
+44 m is where that balance sat for one January in one configuration.
+
+This is what closes the question. #62 proposed waiting for a 3-month run to see
+whether the zero held; it cannot hold, for a reason visible in eight lines of
+the flux scheme. **Keep `eatm_ref_height` at 10 m and report the ~15 W/m2
+turbulent mismatch as a known, quantified cost of the near-surface export.**
