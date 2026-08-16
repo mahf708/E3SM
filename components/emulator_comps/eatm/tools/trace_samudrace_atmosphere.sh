@@ -39,6 +39,13 @@ fi
 
 # --- 1. get a single-component atmosphere checkpoint --------------------------
 ATM_CKPT="${HF_DIR}/SamudrACE-E3SMv3-atmosphere.tar"
+# a previous run of this script may already have extracted one
+if [[ ! -s "${ATM_CKPT}" ]] || [[ $(stat -c%s "${ATM_CKPT}") -lt 1000000 ]]; then
+    if [[ -s "${STAGE}/SamudrACE-E3SMv3-atmosphere.tar" ]] && \
+       [[ $(stat -c%s "${STAGE}/SamudrACE-E3SMv3-atmosphere.tar") -gt 1000000 ]]; then
+        ATM_CKPT="${STAGE}/SamudrACE-E3SMv3-atmosphere.tar"
+    fi
+fi
 if [[ ! -s "${ATM_CKPT}" ]] || [[ $(stat -c%s "${ATM_CKPT}") -lt 1000000 ]]; then
     echo "==> ${ATM_CKPT} is absent or still a git-lfs pointer"
     if [[ -s "${HF_DIR}/SamudrACE-E3SMv3.tar" ]]; then
