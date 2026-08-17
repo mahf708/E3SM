@@ -2604,3 +2604,181 @@ from #65 but now rests on ocean drift rather than interface diagnostics alone:
 
 The 2-year runs are correctly configured at 10 m. The number to watch in them is
 the ocean cooling trend, not the interface mismatch.
+
+### 70. The ocean's own climatology, against a JRA control **[measured]**
+
+MPAS-Analysis was run on model year 1 of both production runs and on jonbob's
+`GMPAS-JRA1p5-2023` as a control, all three restricted to year 1 and remapped to
+the same grids (setup and its several single-year traps are in #71). That gives
+an independent route to the same questions: instead of the in-run interface
+diagnostic, the ocean's own annual climatology differenced against a
+JRA-forced run on the identical mesh.
+
+`R/sd` below is the area-weighted RMS difference normalised by the control
+field's own spatial standard deviation. Under 0.3 the pattern is essentially
+reproduced; near 1 the disagreement is as large as the real structure.
+
+| field | ctrl mean | ACE2 bias | R/sd | SamudrACE bias | R/sd |
+|---|---|---|---|---|---|
+| snowFlux | 5.7e-7 | +1.1e-6 | **1.76** | +7.6e-7 | 1.37 |
+| windStressCurl | 9.5e-10 | -5.5e-10 | **0.85** | -1.1e-10 | 0.68 |
+| sensibleHeatFlux | -14.5 | +4.9 | **0.73** | -8.9 | **1.18** |
+| rainFlux | 3.5e-5 | -2.8e-6 | 0.71 | +5.8e-6 | 0.77 |
+| mld | 47.7 | -0.4 | 0.48 | +13.5 | 0.84 |
+| latentHeatFlux | -99.7 | **-16.0** | 0.43 | **-19.5** | 0.50 |
+| ssh | 20.7 | -13.3 | 0.27 | -2.2 | 0.14 |
+| shortWaveHeatFlux | 165.4 | +6.4 | 0.25 | +12.0 | 0.33 |
+| longWaveHeatFluxDown | 335.5 | **+0.4** | 0.18 | **-22.5** | 0.30 |
+| longWaveHeatFluxUp | -389.1 | +4.1 | 0.16 | +13.1 | 0.20 |
+| sst | 18.26 | -0.29 | **0.11** | -1.47 | 0.18 |
+| barotropicStreamfunction | 16.5 | +1.0 | 0.09 | +0.6 | 0.09 |
+
+**The two runs are not comparable to the control on equal terms.** ACE2-EAMv3
+is a present-day (~2010) AMIP-trained emulator; SamudrACE-E3SMv3 is piControl
+(1850) and is the atmosphere half of a *coupled* atmosphere-ocean emulator. The
+JRA control is present-day. So ACE2 vs control is like-for-like and its
+differences are error; SamudrACE vs control contains a real 1850-versus-present
+climate difference on top of its error. Any reading that ignores this
+overstates SamudrACE's problems, and #69 and the drift comparison in this
+document both did.
+
+**The epoch predicts a signature, and only half of SamudrACE matches it.** A
+colder 1850 world means lower SST, lower LWdn, *less* upward LW (colder surface
+radiating less) and **less** latent loss (less evaporation from a cooler
+surface):
+
+| | 1850 predicts | SamudrACE | |
+|---|---|---|---|
+| SST | lower | -1.47 K | consistent |
+| LWdn | lower | -22.5 | consistent |
+| LWup | less loss | +13.1 | consistent |
+| latent | **less** loss | **-19.5** (more) | **wrong sign** |
+| sensible | ~same or less | **-8.9** (more) | **wrong sign** |
+
+Order-of-magnitude, 1850->2010 is roughly 0.8-1.0 K of global SST and something
+like 6-10 W/m2 of surface LWdn (surface emission response plus the direct CO2
+term); those are estimates, not measurements. On that basis about half of
+SamudrACE's LWdn deficit and most of its SST deficit is **the correct answer for
+piControl**, not a defect.
+
+**This retracts a claim made earlier today.** #69's closing paragraph nominated
+"longwave and the ice terms" as the residual to investigate, and the session
+notes went further and called SamudrACE's LWdn "the lone outlier ... a specific,
+actionable lead". Both were wrong in the same way: LWdn was being compared
+across forcing epochs. The ice terms were also wrong -- `seaIceHeatFlux` is
+-1.7 to -2.2 W/m2 in *every* run including the control, and its R/sd is 0.48 /
+0.51, unremarkable. Neither is the residual.
+
+**What survives is the turbulent pair, and it is common to both emulators.**
+Latent runs -16.0 (ACE2) and -19.5 (SamudrACE) against the control, in the same
+direction, in a field where the epoch predicts the *opposite* sign for
+SamudrACE. Sensible is the worst-reproduced pattern for both (0.73 and 1.18).
+That is the same defect the in-run diagnostic measures as the +21 W/m2 turbulent
+mismatch (#67), reached by a completely independent route -- the ocean's own
+annual climatology rather than a per-step budget report -- and with the same
+tropical-latent emphasis. **#65's structural argument is now confirmed from
+outside the instrument that produced it:** heat and moisture transfer with
+different, stability-dependent coefficients, no single `Sa_z` nulls both, and
+the residue lands in latent.
+
+**A new concern that no interface diagnostic could have seen.**
+`windStressCurl` is at R/sd 0.85 for ACE2 (0.68 SamudrACE) while its
+`barotropicStreamfunction` matches the control at 0.09 and its SST pattern at
+0.11. Wind stress curl sets Ekman pumping and gyre strength; a disagreement that
+large has simply not had time to express itself in a one-year ocean. This is the
+quantitative form of the loose end left at the end of #25 -- "the SH jet is now
+somewhat too strong and the NH jet slightly weak and equatorward; those are the
+remaining wind biases" -- and it says those residual wind errors are large
+relative to the real structure, not a rounding detail. **On a multi-year run
+this is the term most likely to turn a good-looking year 1 into a bad year 5,
+and nothing in the budget diagnostics would show it.**
+
+**Global agreement repeatedly hides regional disagreement.** ACE2's LWdn bias is
++0.37 W/m2 -- essentially perfect -- with RMSE 17.5. Its `mld` bias is -0.4 m
+with RMSE 14.2 m. Both would read as solved from a global mean. The same trap as
+#66's finding that a 44 m global zero was regional compensation, in a different
+diagnostic.
+
+**Skill split tracks the training regime.** ACE2 is used exactly as trained
+(given SST, predict fluxes) and wins on every air-sea exchange term: sensible
+0.73 vs 1.18, mld 0.48 vs 0.84, latent 0.43 vs 0.50, SST 0.11 vs 0.18.
+SamudrACE's atmosphere was trained against Samudra's ocean and we have
+substituted MPAS-O, so it is running out of regime on exactly those terms -- yet
+it *wins* on `ssh` (0.14 vs 0.27) and `windStressCurl` (0.68 vs 0.85), which its
+coupled training would have constrained. That split is a good argument that the
+ACE2/SamudrACE difference is mostly about training regime rather than emulator
+quality.
+
+**Loose ends.** `snowFlux` is the worst-reproduced field for both (1.76 / 1.37
+global, 1.86 / 2.33 Arctic) -- the difference exceeds the control's own
+structure. Commit `88c14c5790` already fixed a precipitation channel unit error
+(kg/m2/s vs m/s); the partitioning deserves the same scrutiny. And in the
+Antarctic, ACE2 is worse than SamudrACE against the SOSE state estimate (0.69 vs
+0.51), the one region where the ordering reverses.
+
+**Caveat on all of the above:** one model year, and year 1 at that, which #67
+showed is the least representative window -- the turbulent mismatch is still
+climbing through it. The years 1-2 rerun is the number to trust.
+
+### 71. Running MPAS-Analysis on these cases, and four single-year traps **[reference]**
+
+Configs, driver and submit script live in
+`/pscratch/sd/m/mahf708/mpas_analysis/cfgs/`. Both production runs use
+`IcoswISC30E3r5`, the same mesh as jonbob's and anolan's references, so their
+configs port directly. Output goes to
+`https://portal.nersc.gov/cfs/e3sm/mahf708/<casename>/`.
+
+Setup notes worth keeping:
+
+- **The entry point is `mpas_analysis`, not `run_mpas_analysis`** in
+  e3sm-unified 1.13.0 (MPAS-Analysis 1.15.0). Every config comment in jonbob's
+  and anolan's files still says the old name.
+- **Do not wrap the environment load in `set -u`.** e3sm-unified's cartopy
+  activation hook dereferences `CARTOPY_DATA_DIR` before setting it; with
+  nounset the shell dies during activation with a one-line error that looks
+  nothing like the actual cause.
+- **The control had to be regenerated from raw output.** jonbob's and anolan's
+  analysis caches (`/pscratch/sd/*/mpas_analysis`) are `drwxrwx---` and
+  unreadable, so `controlRunConfigFile` cannot point at them. Their *model
+  output* under `e3sm_scratch` is group-readable, and jonbob's covers years 1-2,
+  so the control config rebuilds the analysis into our own directories.
+- The analysis is CPU work even though the model ran on pm-gpu: charge `e3sm`,
+  not `e3sm_g`. One node, `parallelTaskCount = 12`. A year-1 pass takes 8-21
+  minutes, so it fits the 30-minute debug QOS, which has been turning around in
+  seconds while `regular` gave no start estimate at all.
+- `ESMF_RegridWeightGen` segfaults intermittently on the 12-way transect
+  mapping step -- it succeeded for the control and SamudrACE and failed twice
+  for ACE2 on identical inputs. It costs the WOCE/WOA transect plots only.
+  `mapMpiTasks = 1` for that step is the fallback if they are needed.
+
+**Four things break on a single year.** All four disappear at years 1-2, and all
+four are worth knowing because two of them fail *silently*:
+
+1. **Hovmollers raise `TypeError: Input z must be at least a (2, 2) shaped
+   array`.** A time-depth section with one year has one time point. This is a
+   hard error, and because it makes the job exit non-zero it will strand any
+   dependent job in `DependencyNeverSatisfied`. Use `no_hovmollerOceanRegions`.
+2. **Anomaly and index tasks fail at the check stage** -- `timeSeries{Temperature,
+   Salinity,OHC,SSH}Anomaly`, `climatologyMapOHCAnomaly`, `indexNino34`. They
+   need a baseline period. Harmless: check-stage failures are skips and do not
+   affect the exit code.
+3. **`movingAveragePoints = 12` silently empties the time-series plots.** With
+   12 monthly samples a 12-wide centred window leaves one valid point, and
+   matplotlib draws no visible line through one point while still setting the
+   axis limits from it -- so the plot has correct-looking axes, no curve, and
+   **the task reports success**. Affects `timeSeriesSST`, `streamfunctionMOC`,
+   `hovmollerOceanBasins`. Set to 1 for single-year passes.
+4. **`year1-only.cfg` does not reach the control.** MPAS-Analysis loads the
+   control as a separate config chain from `controlRunConfigFile`, so an overlay
+   on the main chain leaves the control at `endYear = 2`; every comparison task
+   then hunts `mpaso_ANN_000101_000212_climo.nc`, which a year-1 control never
+   built, and ~600 tasks die with `FileNotFoundError`. Hence
+   `GMPAS-JRA1p5-2023-control-year1.cfg`, which shares the control's `[output]
+   baseDirectory` so the existing climatologies are reused.
+
+**Two operational lessons.** `--html_only` rebuilds the index and **does not
+redraw plots** -- fixing a plotting config and rerunning with it changes
+nothing visible, which is how an empty SST plot survived one "fix". And neither
+job state nor the existence of an output directory is evidence of success: the
+first EATM pair exited with a populated web directory and 7 plots out of ~630.
+Check a plot.
