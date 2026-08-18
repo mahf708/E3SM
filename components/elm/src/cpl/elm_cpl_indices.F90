@@ -22,6 +22,7 @@ module elm_cpl_indices
                                   ! (from coupler) - must equal maxpatch_glcmec from namelist
   integer , parameter, private:: glc_nec_max = 100
 
+  integer , parameter, private :: soilw_nlev_max = 99  ! two-digit soil level suffix
   integer , parameter, private :: iac_npft_max = 30  ! just for allocation
   integer , parameter, private :: iac_nharvest_max = 5  ! just for allocation
   
@@ -51,6 +52,8 @@ module elm_cpl_indices
   integer, public ::index_l2x_Sl_fv           ! friction velocity  
   integer, public ::index_l2x_Sl_ram1         ! aerodynamical resistance
   integer, public ::index_l2x_Sl_soilw        ! volumetric soil water
+  integer, public ::index_l2x_Sl_soilw_lev(soilw_nlev_max) = 0 ! volumetric soil water profile
+  integer, public ::num_soilw_lev = 0        ! number of soil levels requested by the coupler
   integer, public ::index_l2x_Flrl_wslake       ! lake water storage
   integer, public ::index_l2x_Fall_taux       ! wind stress, zonal
   integer, public ::index_l2x_Fall_tauy       ! wind stress, meridional
@@ -224,6 +227,18 @@ contains
     index_l2x_Sl_ram1       = mct_avect_indexra(l2x,'Sl_ram1')
     index_l2x_Sl_fv         = mct_avect_indexra(l2x,'Sl_fv')
     index_l2x_Sl_soilw      = mct_avect_indexra(l2x,'Sl_soilw',perrwith='quiet')
+
+    ! Discover how many soil levels the coupler was configured with (driver namelist
+    ! lnd_soilw_nlev).  The levels are contiguous and 1-based, so stop at the first
+    ! one that is absent.  num_soilw_lev stays 0 when the fields were not created.
+    num_soilw_lev = 0
+    do num = 1,soilw_nlev_max
+       write(cnum,'(i2.2)') num
+       name = 'Sl_soilw_lev' // cnum
+       index_l2x_Sl_soilw_lev(num) = mct_avect_indexra(l2x,trim(name),perrwith='quiet')
+       if (index_l2x_Sl_soilw_lev(num) == 0) exit
+       num_soilw_lev = num
+    end do
     index_l2x_Flrl_wslake     = mct_avect_indexra(l2x,'Flrl_wslake')
     if ( lnd_drydep )then
        index_l2x_Sl_ddvel = mct_avect_indexra(l2x, trim(drydep_fields_token))

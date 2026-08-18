@@ -78,6 +78,10 @@ protected:
   // Number of imports to SCREAM
   Int m_num_scream_imports;
 
+  // Number of land soil levels in the imported volumetric soil water profile.
+  // Zero means the land is not sending soil water and no such field exists.
+  Int m_num_soil_levs = 0;
+
   // Views storing a 2d array for import data.
   // MCT layout: (num_cols, num_fields) - field idx strides faster
   // MOAB layout: (num_fields, num_cols) - column idx strides faster

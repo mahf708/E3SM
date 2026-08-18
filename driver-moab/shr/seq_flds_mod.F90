@@ -160,6 +160,7 @@ module seq_flds_mod
   character(len=CX)  :: ndep_fields         ! List of nitrogen deposition fields from atm->lnd/ocn
   character(len=CX)  :: fan_fields          ! List of NH3 emission fields from lnd->atm
   integer            :: ice_ncat            ! number of sea ice thickness categories
+  integer            :: lnd_soilw_nlev      ! number of ELM soil levels passed lnd->atm (0 => no soil water fields)
   logical            :: seq_flds_i2o_per_cat! .true. if select per ice thickness category fields are passed from ice to ocean
 
   logical            :: rof_heat            ! .true. if river model includes temperature
@@ -430,7 +431,7 @@ contains
 
     namelist /seq_cplflds_inparm/  &
          flds_co2a, flds_co2b, flds_co2c, flds_co2_dmsa, flds_wiso, flds_polar, flds_tf, &
-         glc_nec, glc_nzoc, ice_ncat, seq_flds_i2o_per_cat, flds_bgc_oi, &
+         glc_nec, glc_nzoc, ice_ncat, lnd_soilw_nlev, seq_flds_i2o_per_cat, flds_bgc_oi, &
          nan_check_component_fields, rof_heat, atm_flux_method, atm_gustiness, &
          rof2ocn_nutrients, lnd_rof_two_way, ocn_rof_two_way, ocn_lnd_one_way, rof_sed, &
          wav_ocn_coup, wav_atm_coup, wav_ice_coup, wav_nfreq, add_iac_to_cplstate
@@ -469,6 +470,7 @@ contains
        glc_nec   = 0
        glc_nzoc  = 0
        ice_ncat  = 1
+       lnd_soilw_nlev = 0
        seq_flds_i2o_per_cat = .false.
        nan_check_component_fields = .false.
        rof_heat = .false.
@@ -511,6 +513,7 @@ contains
     call shr_mpi_bcast(glc_nec      , mpicom)
     call shr_mpi_bcast(glc_nzoc     , mpicom)
     call shr_mpi_bcast(ice_ncat     , mpicom)
+    call shr_mpi_bcast(lnd_soilw_nlev, mpicom)
     call shr_mpi_bcast(seq_flds_i2o_per_cat, mpicom)
     call shr_mpi_bcast(nan_check_component_fields, mpicom)
     call shr_mpi_bcast(rof_heat    , mpicom)
@@ -1300,6 +1303,31 @@ contains
     units    = 'm s-1'
     attname  = 'Sl_fv'
     call metadata_set(attname, longname, stdname, units)
+
+    ! Volumetric soil water (land/atm only).
+    ! Sl_soilw is the top ELM soil layer and is what the EAM dry deposition and
+    ! dust parameterizations expect.  Sl_soilw_levNN carries the full ELM soil
+    ! moisture profile, one coupler field per soil level.  Both are only created
+    ! when lnd_soilw_nlev > 0, so the default configuration is unchanged.
+    if (lnd_soilw_nlev > 0) then
+       call seq_flds_add(l2x_states,"Sl_soilw")
+       call seq_flds_add(x2a_states,"Sl_soilw")
+       longname = 'Volumetric soil water in top soil layer'
+       stdname  = 'volume_fraction_of_condensed_water_in_soil'
+       units    = 'm3 m-3'
+       attname  = 'Sl_soilw'
+       call metadata_set(attname, longname, stdname, units)
+
+       name     = 'Sl_soilw_lev'
+       longname = 'Volumetric soil water'
+       stdname  = 'volume_fraction_of_condensed_water_in_soil'
+       units    = 'm3 m-3'
+       attname  = 'Sl_soilw_lev'
+       call set_soil_level_field(name, attname, longname, stdname, units, l2x_states, &
+            lnd_soilw_nlev)
+       call set_soil_level_field(name, attname, longname, stdname, units, x2a_states, &
+            lnd_soilw_nlev, additional_list = .true.)
+    end if
 
     ! Aerodynamical resistance (land/atm only)
     call seq_flds_add(l2x_states,"Sl_ram1")
@@ -4654,6 +4682,67 @@ contains
        end do
     end if
   end subroutine set_glc_elevclass_field
+
+  !===============================================================================
+
+  subroutine set_soil_level_field(name, attname, longname, stdname, units, fieldlist, &
+       nlev, additional_list)
+
+    ! Sets a coupling field for each of nlev soil levels, numbered 01:nlev.
+    !
+    ! Analogous to set_glc_elevclass_field, but for the land soil column: the
+    ! level index (zero padded, 1-based) is appended to name/attname, so that a
+    ! request for 10 levels produces Sl_soilw_lev01 ... Sl_soilw_lev10.
+    !
+    ! If nlev <= 0, no coupling fields are created at all.
+    !
+    ! additional_list should be .false. (or absent) the first time this is called for a
+    ! given set of coupling fields.  When the same set of fields is added to more than
+    ! one field list, pass .true. for the second and subsequent calls so that the
+    ! metadata_set calls are not repeated.
+
+    ! !INPUT/OUTPUT PARAMETERS:
+    character(len=*), intent(in)    :: name     ! base field name to add to fieldlist
+    character(len=*), intent(in)    :: attname  ! base field name for metadata
+    character(len=*), intent(in)    :: longname ! base long name for metadata
+    character(len=*), intent(in)    :: stdname  ! standard name for metadata
+    character(len=*), intent(in)    :: units    ! units for metadata
+    character(len=*), intent(inout) :: fieldlist ! field list to add the fields to
+    integer         , intent(in)    :: nlev     ! number of soil levels
+
+    logical, intent(in), optional :: additional_list  ! whether this is an additional list for the same set of coupling fields
+
+    !EOP
+    integer            :: num
+    character(len=  8) :: cnum
+    logical            :: l_additional_list
+    character(len=*), parameter :: subname = '(set_soil_level_field) '
+
+    l_additional_list = .false.
+    if (present(additional_list)) then
+       l_additional_list = additional_list
+    end if
+
+    if (nlev > 99) then
+       write(logunit,*) subname,' ERROR: nlev = ',nlev,' exceeds the 99 levels'// &
+            ' representable by the two-digit soil level suffix'
+       call shr_sys_abort(subname//'ERROR: too many soil levels requested')
+    end if
+
+    do num = 1, nlev
+       write(cnum,'(i2.2)') num
+
+       call seq_flds_add(fieldlist, trim(name) // trim(cnum))
+
+       if (.not. l_additional_list) then
+          call metadata_set(attname  = trim(attname) // trim(cnum), &
+               longname = trim(longname) // ' of soil level ' // trim(cnum), &
+               stdname  = stdname, &
+               units    = units)
+       end if
+    end do
+
+  end subroutine set_soil_level_field
 
   !===============================================================================
 

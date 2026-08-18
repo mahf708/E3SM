@@ -119,6 +119,7 @@ module camsrfexch
      real(r8), pointer, dimension(:) :: ram1       !aerodynamical resistance (s/m) (pcols)
      real(r8), pointer, dimension(:) :: fv         !friction velocity (m/s) (pcols)
      real(r8), pointer, dimension(:) :: soilw      !volumetric soil water (m3/m3)
+     real(r8), pointer, dimension(:,:) :: soilw_col !volumetric soil water profile (m3/m3) (pcols,soilw_nlev)
      real(r8), allocatable :: cflx(:,:)     ! constituent flux (emissions)
      real(r8), allocatable :: ustar(:)      ! atm/ocn saved version of ustar
      real(r8), allocatable :: re(:)         ! atm/ocn saved version of re
@@ -150,6 +151,7 @@ CONTAINS
   subroutine hub2atm_alloc( cam_in )
     use seq_drydep_mod,  only: lnd_drydep, n_drydep
     use cam_cpl_indices, only: index_x2a_Sl_ram1, index_x2a_Sl_fv, index_x2a_Sl_soilw, index_x2a_Fall_flxdst1
+    use cam_cpl_indices, only: soilw_nlev
     use cam_cpl_indices, only: index_x2a_Fall_flxvoc
     use shr_megan_mod,   only: shr_megan_mechcomps_n
 
@@ -177,6 +179,7 @@ CONTAINS
        nullify(cam_in(c)%ram1)
        nullify(cam_in(c)%fv)
        nullify(cam_in(c)%soilw)
+       nullify(cam_in(c)%soilw_col)
        nullify(cam_in(c)%depvel)
        nullify(cam_in(c)%dstflx)
        nullify(cam_in(c)%meganflx)
@@ -269,6 +272,10 @@ CONTAINS
           allocate (cam_in(c)%soilw(pcols), stat=ierror)
           if ( ierror /= 0 ) call endrun('HUB2ATM_ALLOC error: allocation error soilw')
        end if
+       if (soilw_nlev > 0) then
+          allocate (cam_in(c)%soilw_col(pcols,soilw_nlev), stat=ierror)
+          if ( ierror /= 0 ) call endrun('HUB2ATM_ALLOC error: allocation error soilw_col')
+       end if
 
        allocate (cam_in(c)%cflx(pcols,pcnst), stat=ierror)
        if ( ierror /= 0 ) call endrun('HUB2ATM_ALLOC error: allocation error cflx')
@@ -335,6 +342,8 @@ CONTAINS
             cam_in(c)%fv    (:) = 0.1_r8
        if (associated(cam_in(c)%soilw)) &
             cam_in(c)%soilw (:) = 0.0_r8
+       if (associated(cam_in(c)%soilw_col)) &
+            cam_in(c)%soilw_col(:,:) = 0.0_r8
        if (associated(cam_in(c)%dstflx)) &
             cam_in(c)%dstflx(:,:) = 0.0_r8
        if (associated(cam_in(c)%meganflx)) &
@@ -651,6 +660,10 @@ CONTAINS
           if(associated(cam_in(c)%soilw)) then
              deallocate(cam_in(c)%soilw)
              nullify(cam_in(c)%soilw)
+          end if
+          if(associated(cam_in(c)%soilw_col)) then
+             deallocate(cam_in(c)%soilw_col)
+             nullify(cam_in(c)%soilw_col)
           end if
 
           deallocate(cam_in(c)%cflx)

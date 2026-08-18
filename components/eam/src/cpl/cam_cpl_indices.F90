@@ -4,6 +4,7 @@ module cam_cpl_indices
   use mct_mod
   use seq_drydep_mod, only: drydep_fields_token, lnd_drydep
   use shr_megan_mod,  only: shr_megan_fields_token, shr_megan_mechcomps_n
+  use srf_field_check, only: set_active_Sl_soilw, set_active_Sl_soilw_lev
 
   implicit none
 
@@ -68,6 +69,9 @@ module cam_cpl_indices
   integer :: index_x2a_Sl_fv           ! friction velocity
   integer :: index_x2a_Sl_ram1         ! aerodynamical resistance
   integer :: index_x2a_Sl_soilw        ! volumetric soil water
+  integer, public :: soilw_nlev = 0     ! number of soil levels in the coupler soil water profile
+  integer, parameter, public :: soilw_nlev_max = 99  ! two-digit soil level suffix
+  integer, public :: index_x2a_Sl_soilw_lev(soilw_nlev_max) = 0  ! volumetric soil water profile
   integer :: index_x2a_Faxx_taux       ! wind stress, zonal
   integer :: index_x2a_Faxx_tauy       ! wind stress, meridional
   integer :: index_x2a_Faxx_lat        ! latent          heat flux
@@ -107,7 +111,9 @@ contains
 
     integer, parameter :: tot_mon_in_year = 12
     integer :: imon, ier
+    integer :: ilev            ! soil level index
     character(len=2) :: monstr ! month string
+    character(len=2) :: clev   ! soil level string
 
     ! Determine attribute vector indices
 
@@ -128,6 +134,19 @@ contains
     index_x2a_Sl_fv         = mct_avect_indexra(x2a,'Sl_fv')
     index_x2a_Sl_ram1       = mct_avect_indexra(x2a,'Sl_ram1')
     index_x2a_Sl_soilw      = mct_avect_indexra(x2a,'Sl_soilw',perrWith='quiet')
+
+    ! Volumetric soil water profile from the land (driver namelist lnd_soilw_nlev).
+    ! Levels are contiguous and 1-based, so stop at the first missing one.
+    soilw_nlev = 0
+    do ilev = 1,soilw_nlev_max
+       write(clev,'(i2.2)') ilev
+       index_x2a_Sl_soilw_lev(ilev) = &
+            mct_avect_indexra(x2a,'Sl_soilw_lev'//clev,perrWith='quiet')
+       if (index_x2a_Sl_soilw_lev(ilev) == 0) exit
+       soilw_nlev = ilev
+    end do
+    call set_active_Sl_soilw(index_x2a_Sl_soilw /= 0)
+    call set_active_Sl_soilw_lev(soilw_nlev > 0, soilw_nlev)
 
     index_x2a_Sx_tref       = mct_avect_indexra(x2a,'Sx_tref')
     index_x2a_Sx_qref       = mct_avect_indexra(x2a,'Sx_qref')

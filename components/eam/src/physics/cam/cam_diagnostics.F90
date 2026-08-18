@@ -161,8 +161,11 @@ subroutine diag_init()
    use constituent_burden, only: constituent_burden_init
    use cam_control_mod,    only: moist_physics, ideal_phys
    use tidal_diag,         only: tidal_diag_init 
+   use srf_field_check,    only: active_Sl_soilw, num_Sl_soilw_lev
 
    integer :: k, m
+   character(len=9)  :: soilw_lev_name ! history field name for a soil level
+   character(len=96) :: soilw_lev_desc ! history field description for a soil level
    ! Note - this is a duplication of information in ice_constants 
    ! Cannot put in a use statement if want to swap ice models to cice4
    integer, parameter :: plevmx = 4       ! number of subsurface levels
@@ -653,6 +656,22 @@ subroutine diag_init()
      standard_name='wind_speed')
    call addfld ('U10WITHGUSTS',horiz_only,    'A','m/s','10m wind speed with gustiness effects included')
    call addfld ('RHREFHT',horiz_only,    'A','1','Reference height relative humidity')
+
+   ! Volumetric soil water received from the land model, one history field per
+   ! soil level.  Only declared when the coupler was configured to carry the
+   ! profile (driver namelist lnd_soilw_nlev > 0).
+   ! Like every other Sl_ state, the coupler scales these by the land fraction on
+   ! the way to the atmosphere, so divide by LANDFRAC to recover the land mean.
+   if (active_Sl_soilw) then
+      call addfld ('SOILW',horiz_only,    'A','m3/m3', &
+         'Volumetric soil water in top land soil layer, times land fraction')
+   end if
+   do k = 1, num_Sl_soilw_lev
+      write(soilw_lev_name,'(a,i2.2)') 'SOILW_L', k
+      write(soilw_lev_desc,'(a,i2.2,a)') &
+         'Volumetric soil water in land soil level ', k, ', times land fraction'
+      call addfld (trim(soilw_lev_name),horiz_only,    'A','m3/m3',trim(soilw_lev_desc))
+   end do
 
    call addfld ('LANDFRAC',horiz_only,    'A','1','Fraction of sfc area covered by land')
    call addfld ('ICEFRAC',horiz_only,    'A','1','Fraction of sfc area covered by sea-ice')
@@ -2133,6 +2152,7 @@ subroutine diag_surf (cam_in, cam_out, ps, trefmxav, trefmnav )
     integer :: ncol         ! longitude dimension
     real(r8) tem2(pcols)    ! temporary workspace
     real(r8) ftem(pcols)    ! temporary workspace
+    character(len=9) :: soilw_lev_name ! history field name for a soil level
 !
 !-----------------------------------------------------------------------
 !
@@ -2151,6 +2171,16 @@ subroutine diag_surf (cam_in, cam_out, ps, trefmxav, trefmnav )
     call outfld('QREFHT',   cam_in%qref,      pcols, lchnk)
     call outfld('U10',      cam_in%u10,       pcols, lchnk)
     call outfld('U10WITHGUSTS', cam_in%u10withgusts, pcols, lchnk)
+
+    if (associated(cam_in%soilw)) then
+       call outfld('SOILW',  cam_in%soilw,          pcols, lchnk)
+    end if
+    if (associated(cam_in%soilw_col)) then
+       do k = 1, size(cam_in%soilw_col,2)
+          write(soilw_lev_name,'(a,i2.2)') 'SOILW_L', k
+          call outfld(trim(soilw_lev_name), cam_in%soilw_col(:,k), pcols, lchnk)
+       end do
+    end if
 ! 
 ! Calculate and output reference height RH (RHREFHT)
 

@@ -37,6 +37,7 @@ contains
     ! Local variables
     !
     integer            :: i,lat,n,c,ig  ! indices
+    integer            :: ilev          ! soil level index
     integer            :: ncols         ! number of columns
     logical, save      :: first_time = .true.
     integer, parameter :: ndst = 2
@@ -122,6 +123,11 @@ contains
                cam_in(c)%fv(i)   =  x2a(index_x2a_Sl_fv   , ig)
           if ( associated(cam_in(c)%soilw) ) &
                cam_in(c)%soilw(i) =  x2a(index_x2a_Sl_soilw, ig)
+          if ( associated(cam_in(c)%soilw_col) ) then
+             do ilev = 1,soilw_nlev
+                cam_in(c)%soilw_col(i,ilev) = x2a(index_x2a_Sl_soilw_lev(ilev), ig)
+             end do
+          endif
           if ( associated(cam_in(c)%dstflx) ) then
              cam_in(c)%dstflx(i,1) = x2a(index_x2a_Fall_flxdst1, ig)
              cam_in(c)%dstflx(i,2) = x2a(index_x2a_Fall_flxdst2, ig)

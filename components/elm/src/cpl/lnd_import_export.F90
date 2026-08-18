@@ -1417,6 +1417,9 @@ contains
     use domainMod          , only : ldomain
     use seq_drydep_mod     , only : n_drydep
     use shr_megan_mod      , only : shr_megan_mechcomps_n
+    use elm_varpar         , only : nlevgrnd
+    use elm_varcon         , only : spval
+    use shr_infnan_mod     , only : shr_infnan_isnan
     !
     ! !ARGUMENTS:
     implicit none
@@ -1433,6 +1436,8 @@ contains
     integer  :: nstep ! time step index
     integer  :: dtime ! time step   
     integer  :: num   ! counter
+    integer  :: j     ! soil level index
+    real(r8) :: soilw ! volumetric soil water for one gridcell and soil level
     character(len=*), parameter :: sub = 'lnd_export_mct'
     !---------------------------------------------------------------------------
 
@@ -1478,7 +1483,24 @@ contains
        ! These are now standard fields, but the check on the index makes sure the driver handles them
        if (index_l2x_Sl_ram1      /= 0 )  l2x(index_l2x_Sl_ram1,i)     =  lnd2atm_vars%ram1_grc(g)
        if (index_l2x_Sl_fv        /= 0 )  l2x(index_l2x_Sl_fv,i)       =  lnd2atm_vars%fv_grc(g)
-       if (index_l2x_Sl_soilw     /= 0 )  l2x(index_l2x_Sl_soilw,i)    =  lnd2atm_vars%h2osoi_vol_grc(g,1)
+       ! Volumetric soil water.  h2osoi_vol_grc is not defined everywhere: urban
+       ! wall and roof columns carry no soil below nlevurb and leave those levels
+       ! as NaN, and c2g leaves a gridcell at spval when no column contributed to
+       ! it.  Neither may reach the coupler, so send zero for those instead.
+       ! num_soilw_lev is what the coupler was configured for; levels beyond ELM's
+       ! own soil column keep the zero set above rather than reading past the end
+       ! of h2osoi_vol_grc.
+       if (index_l2x_Sl_soilw /= 0) then
+          soilw = lnd2atm_vars%h2osoi_vol_grc(g,1)
+          if (shr_infnan_isnan(soilw) .or. soilw == spval) soilw = 0._r8
+          l2x(index_l2x_Sl_soilw,i) = soilw
+       end if
+
+       do j = 1, min(num_soilw_lev, nlevgrnd)
+          soilw = lnd2atm_vars%h2osoi_vol_grc(g,j)
+          if (shr_infnan_isnan(soilw) .or. soilw == spval) soilw = 0._r8
+          l2x(index_l2x_Sl_soilw_lev(j),i) = soilw
+       end do
        if (index_l2x_Fall_flxdst1 /= 0 )  l2x(index_l2x_Fall_flxdst1,i)= -lnd2atm_vars%flxdst_grc(g,1)
        if (index_l2x_Fall_flxdst2 /= 0 )  l2x(index_l2x_Fall_flxdst2,i)= -lnd2atm_vars%flxdst_grc(g,2)
        if (index_l2x_Fall_flxdst3 /= 0 )  l2x(index_l2x_Fall_flxdst3,i)= -lnd2atm_vars%flxdst_grc(g,3)

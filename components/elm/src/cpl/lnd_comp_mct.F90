@@ -93,7 +93,8 @@ contains
     use elm_varctl       , only : nsrStartup, nsrContinue, nsrBranch
     use elm_varctl       , only:  elm_varctl_set_iac_flag
     use elm_varctl       , only : use_lnd_rof_two_way, use_ocn_lnd_one_way
-    use elm_cpl_indices  , only : elm_cpl_indices_set
+    use elm_cpl_indices  , only : elm_cpl_indices_set, num_soilw_lev
+    use elm_varpar       , only : nlevgrnd
     use perf_mod         , only : t_startf, t_stopf
     use mct_mod
     use ESMF
@@ -353,6 +354,17 @@ contains
 
     call initialize2()
     call initialize3()
+
+    ! Report the soil moisture profile coupling configuration.  nlevgrnd is only
+    ! known after initialize1, so this check cannot live in elm_cpl_indices_set.
+    if (masterproc .and. num_soilw_lev > 0) then
+       write(iulog,*) sub,' passing volumetric soil water to the atmosphere:', &
+            ' coupler levels= ',num_soilw_lev,' elm nlevgrnd= ',nlevgrnd
+       if (num_soilw_lev > nlevgrnd) then
+          write(iulog,*) sub,' WARNING: lnd_soilw_nlev exceeds nlevgrnd;', &
+               ' coupler soil levels ',nlevgrnd+1,' through ',num_soilw_lev,' will be zero'
+       end if
+    end if
 
     ! Check that elm internal dtime aligns with elm coupling interval
 

@@ -62,6 +62,16 @@ void SurfaceCouplingImporter::create_requests()
   // the correction term for air sea surface water thermo fixer
   add_field<Computed>("h2otemp",          scalar2d, W/m2,    grid_name);
 
+  // Volumetric soil water profile from the land model [m3/m3].  The number of soil
+  // levels is a run-time choice (driver namelist lnd_soilw_nlev, plumbed here through
+  // the sc_import parameter number_of_soil_levels).  It must match what the coupler
+  // actually carries; initialize_impl checks that.  Zero (the default)
+  // means the land is not sending soil water and no field is created.
+  m_num_soil_levs = m_params.get<int>("number_of_soil_levels", 0);
+  if (m_num_soil_levs > 0) {
+    const FieldLayout soil_prof = m_grid->get_2d_vector_layout(m_num_soil_levs, "soil_lev");
+    add_field<Computed>("soil_water_vol", soil_prof, none, grid_name);
+  }
 }
 // =========================================================================================
   void SurfaceCouplingImporter::setup_surface_coupling_data(const SCDataManager &sc_data_manager)
@@ -108,6 +118,21 @@ void SurfaceCouplingImporter::create_requests()
 void SurfaceCouplingImporter::initialize_impl (const RunType /* run_type */)
 {
   bool any_initial_imports = false;
+
+  // The soil water profile is the one import whose length is set independently on the
+  // two sides of the interface: the coupler gets it from the driver namelist, while
+  // this process sizes its field from its own parameter list.  A mismatch would either
+  // write past the end of the field or ask for a field that was never created, so
+  // check it up front, before the loop below looks any field up by name.
+  int num_soil_imports = 0;
+  for (int i=0; i<m_num_scream_imports; ++i) {
+    if (std::string(m_import_field_names[i]) == "soil_water_vol") ++num_soil_imports;
+  }
+  EKAT_REQUIRE_MSG (num_soil_imports == m_num_soil_levs,
+                    "Error! Mismatch in the number of land soil levels.\n"
+                    "  - sc_import number_of_soil_levels: " + std::to_string(m_num_soil_levs) + "\n"
+                    "  - soil levels carried by the coupler: " + std::to_string(num_soil_imports) + "\n"
+                    "  Set the sc_import parameter to match the driver namelist lnd_soilw_nlev.\n");
 
   for (int i=0; i<m_num_scream_imports; ++i) {
 

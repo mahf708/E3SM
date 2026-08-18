@@ -205,6 +205,26 @@
     </values>
   </entry>
 
+  <entry  id="lnd_soilw_nlev" modify_via_xml="LND_SOILW_NLEV">
+    <type>integer</type>
+    <category>seq_flds</category>
+    <group>seq_cplflds_inparm</group>
+    <desc>
+      Number of land model soil levels whose volumetric soil water is passed from the
+      land to the atmosphere.  0 (the default) means no soil water fields are created
+      and the coupler field list is unchanged.  A value greater than 0 creates the
+      top-layer field Sl_soilw plus the profile fields Sl_soilw_lev01 ... Sl_soilw_levNN.
+      Levels beyond the land model's own number of soil levels are filled with zero.
+      Note that, like every other Sl_ state, the coupler scales these fields by the
+      land fraction on the way to the atmosphere, so divide by Sf_lfrac to recover
+      the land mean.
+      Set by the xml variable LND_SOILW_NLEV in env_run.xml
+    </desc>
+    <values>
+      <value>$LND_SOILW_NLEV</value>
+    </values>
+  </entry>
+
   <entry  id="glc_nzoc" modify_via_xml="GLC_NZOC">
     <type>integer</type>
     <category>seq_flds</category>

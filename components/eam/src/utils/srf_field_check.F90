@@ -11,6 +11,8 @@ module srf_field_check
   logical, public, protected :: active_Sl_ram1      = .false.
   logical, public, protected :: active_Sl_fv        = .false.
   logical, public, protected :: active_Sl_soilw     = .false.
+  logical, public, protected :: active_Sl_soilw_lev = .false.
+  integer, public, protected :: num_Sl_soilw_lev    = 0
   logical, public, protected :: active_Fall_flxdst1 = .false.
   logical, public, protected :: active_Fall_flxvoc  = .false.
   logical, public, protected :: active_Fall_flxfire = .false.
@@ -24,6 +26,7 @@ module srf_field_check
   public :: set_active_Sl_ram1
   public :: set_active_Sl_fv
   public :: set_active_Sl_soilw
+  public :: set_active_Sl_soilw_lev
   public :: set_active_Fall_flxdst1
   public :: set_active_Fall_flxvoc
   public :: set_active_Fall_flxfire
@@ -50,6 +53,19 @@ contains
     logical, intent(in) :: is_active
     active_Sl_soilw = is_active
   end subroutine set_active_Sl_soilw
+
+  ! Record whether the coupler is supplying a volumetric soil water profile from
+  ! the land, and how many soil levels it carries.
+  subroutine set_active_Sl_soilw_lev(is_active, nlev)
+    logical, intent(in) :: is_active
+    integer, intent(in) :: nlev
+    active_Sl_soilw_lev = is_active
+    if (is_active) then
+       num_Sl_soilw_lev = nlev
+    else
+       num_Sl_soilw_lev = 0
+    end if
+  end subroutine set_active_Sl_soilw_lev
 
   subroutine set_active_Fall_flxdst1(is_active)
     logical, intent(in) :: is_active

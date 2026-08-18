@@ -887,6 +887,20 @@
     Used by both ELM and MALI (even if MALI is not running, and only SGLC is used).</desc>
   </entry>
 
+  <entry id="LND_SOILW_NLEV">
+    <type>integer</type>
+    <default_value>0</default_value>
+    <group>run_lnd</group>
+    <file>env_run.xml</file>
+    <desc>Number of land model soil levels whose volumetric soil water is passed to the
+    atmosphere through the coupler.  0 (the default) disables the transfer entirely and
+    leaves the coupler field list unchanged.  A positive value adds the top-layer field
+    Sl_soilw plus a full soil moisture profile Sl_soilw_lev01 ... Sl_soilw_levNN.
+    ELM fills min(LND_SOILW_NLEV, nlevgrnd) levels and zeroes any remainder.
+    The coupler scales these fields by the land fraction, as it does for every
+    other Sl_ state, so the atmosphere sees soil water times land fraction.</desc>
+  </entry>
+
   <entry id="GLC_NZOC">
     <type>integer</type>
     <valid_values>0,4,30</valid_values>

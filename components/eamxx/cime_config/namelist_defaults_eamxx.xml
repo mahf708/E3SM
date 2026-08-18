@@ -170,7 +170,12 @@ be lost if SCREAM_HACK_XML is not enabled.
     </eamxx>
 
     <!-- Surface coupling (import and export) -->
-    <sc_import inherit="atm_proc_base"/>
+    <sc_import inherit="atm_proc_base">
+      <!-- Number of land soil levels in the imported volumetric soil water profile.
+           Must match the driver namelist lnd_soilw_nlev, which is set from the case
+           xml variable LND_SOILW_NLEV.  Zero disables the import entirely. -->
+      <number_of_soil_levels type="integer" doc="Number of land soil levels imported from the coupler">${LND_SOILW_NLEV}</number_of_soil_levels>
+    </sc_import>
     <sc_export inherit="atm_proc_base">
       <prescribed_constants>
         <fields type="array(string)"/>

@@ -6,7 +6,13 @@ module eamxx_cpl_indices
   private
 
   ! Focus only on the ones that scream imports/exports (subsets of x2a and a2x)
-  integer, parameter, public :: num_scream_imports = 25
+  ! num_scream_imports is not a parameter: the volumetric soil water profile from
+  ! the land model adds one import per soil level, and the number of levels is a
+  ! run-time choice (driver namelist lnd_soilw_nlev).
+  integer, parameter, public :: num_scream_imports_base = 25
+  integer, parameter, public :: soilw_nlev_max = 99  ! two-digit soil level suffix
+  integer, public :: num_scream_imports = num_scream_imports_base
+  integer, public :: soilw_nlev = 0    ! number of soil levels in the soil water profile
   integer, parameter, public :: num_scream_exports = 20
   integer, public :: num_cpl_imports, num_cpl_exports, import_field_size, export_field_size
 
@@ -46,7 +52,9 @@ module eamxx_cpl_indices
     !
     ! Local(s)
     !
-    integer :: i
+    integer :: i, ilev
+    integer :: soilw_cpl_index(soilw_nlev_max)
+    character(len=2) :: clev
 
     ! total number of import/export fields in data
     num_cpl_imports = size(x2a%rAttr,1)
@@ -57,6 +65,20 @@ module eamxx_cpl_indices
     export_field_size = size(a2x%rAttr,2)
 
     ! IMPORT
+
+    ! Discover how many soil levels the coupler carries.  The Sl_soilw_levNN fields
+    ! are contiguous and 1-based, so stop at the first one that is absent.  When the
+    ! driver was built with lnd_soilw_nlev = 0 there are none, and the import list is
+    ! exactly what it was before this field existed.
+    soilw_nlev = 0
+    soilw_cpl_index(:) = 0
+    do ilev = 1,soilw_nlev_max
+       write(clev,'(i2.2)') ilev
+       soilw_cpl_index(ilev) = mct_avect_indexra(x2a,'Sl_soilw_lev'//clev,perrWith='quiet')
+       if (soilw_cpl_index(ilev) == 0) exit
+       soilw_nlev = ilev
+    end do
+    num_scream_imports = num_scream_imports_base + soilw_nlev
 
     ! Import info is of size num_scream_imports. Any additional imports are not touched.
     allocate (import_field_names(num_scream_imports))
@@ -151,6 +173,18 @@ module eamxx_cpl_indices
     do_import_during_init(12) = .true.
     do_import_during_init(13) = .true.
     do_import_during_init(14) = .true.
+
+    ! Volumetric soil water profile from the land model.  One import per soil level,
+    ! all mapping into the components of the single scream field 'soil_water_vol'.
+    do ilev = 1,soilw_nlev
+       i = num_scream_imports_base + ilev
+       import_field_names(i)      = 'soil_water_vol'
+       import_cpl_indices(i)      = soilw_cpl_index(ilev)
+       import_vector_components(i) = ilev - 1
+       ! The land exports soil water during its own initialization, so pull it in
+       ! at init as well and leave the field with valid data from the first step.
+       do_import_during_init(i)   = .true.
+    end do
 
     ! EXPORT
 
