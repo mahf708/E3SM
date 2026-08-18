@@ -23,6 +23,13 @@ coupler is handed a linear interpolation between the two bracketing emulator
 states. Both states go to the restart file, so a restart reproduces that
 interpolation exactly (for a deterministic emulator).
 
+## Where to start
+
+- **[COUPLING.md](COUPLING.md)** — state of the coupling, the open problems and
+  what to do next. Start here if you are picking this up cold.
+- `REVIEW.md` — chronological log of every finding, with the measurements.
+  Referenced from COUPLING.md as `#NN`.
+
 ## Supported emulators
 
 | `EATM_EMULATOR` | architecture | channels | notes |
