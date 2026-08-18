@@ -2782,3 +2782,110 @@ nothing visible, which is how an empty SST plot survived one "fix". And neither
 job state nor the existence of an output directory is evidence of success: the
 first EATM pair exited with a populated web directory and 7 plots out of ~630.
 Check a plot.
+
+### 72. Two full years: the drift resolves, the regional error does not **[measured]**
+
+Both production runs completed their second leg. MPAS-Analysis was rerun over
+years 1-2 for both plus the JRA control, with no year-1 overlay, so the
+hovmollers, anomaly tasks and Nino index that #71 lists as single-year
+casualties are all present this time (check-stage skips fell 13 -> 3, plots
+638 -> 1274). Three sites at
+`portal.nersc.gov/cfs/e3sm/mahf708/{GMPAS-JRA1p5-2023-control,GMPAS-EATM-ACE2-EAMv3-2yr,GMPAS-EATM-SamudrACE-E3SMv3-2yr}`.
+
+**The drift question from #67-#69 is settled, and the alarm there was wrong.**
+Differencing year 2 against year 1 by calendar month removes the seasonal cycle:
+
+| run | yr2-yr1 SST | relative to control |
+|---|---|---|
+| **ACE2-EAMv3** | -0.055 | **-0.010** |
+| SamudrACE | -0.804 | -0.759 |
+| anolan gnugpu | -0.811 | -0.766 |
+| anolan 4naser | +0.460 | +0.505 |
+| jonbob JRA control | -0.045 | -- |
+
+Full-depth ocean heat drift confirms it: ACE2 runs **-6.22 W/m2 in year 1 and
+-1.39 in year 2, against the control's -4.82 and -3.07.** By year 2 it is
+*closer to balance than the reference run*. Its year-2 surface energy budget
+closes at net **+0.42 W/m2** against the control's -1.20.
+
+#68 and #69 treated a January figure of -41 to -55 W/m2 as "the real defect ...
+the headline number to watch". It was a spin-up transient and that framing was
+wrong. #69 also worried the common-mode growth might not saturate; it saturates
+and then reverses.
+
+**What replaces it is worse, because it is growing.** ACE2 minus control,
+annual mean by region:
+
+| region | year 1 | year 2 | change |
+|---|---|---|---|
+| GLOBAL | -0.287 | -0.297 | **-0.010** |
+| **Equatorial** | -0.931 | **-1.318** | **-0.387** |
+| Arctic | +0.083 | +0.349 | +0.266 |
+| Southern Ocean | -0.280 | -0.028 | +0.252 |
+
+The tropics cool at ~0.39 K/yr and are already 1.3 K cold; the Arctic and
+Southern Ocean warm by almost exactly enough to cancel it. **The stable global
+mean is a cancellation, not an equilibrium.** This is the third instance of the
+same trap -- #66's compensating 44 m zero, #70's perfect-global/poor-regional
+LWdn, and now the drift itself -- and it is the one that matters, because
+unlike the others it is growing with integration time.
+
+**Two years unlock `deltaOHC`, which says the same thing independently.** The
+ocean-heat-content anomaly fields need an anomaly baseline and so did not exist
+in the year-1 pass. `deltaOHC_0-700m` comes in at **R/sd 0.88** for ACE2 (1.48
+for SamudrACE) and `deltaOHC_0-10000m` at 0.79 (1.30). ACE2's *global* heat
+budget now matches the control to ~1.7 W/m2 while the *pattern* of where that
+heat went differs by nearly the control's own spatial variability. Global
+closure and regional correctness are decoupled, measured two ways.
+
+**The flux biases are structural, not spin-up.** Year 1 -> year 2, ACE2:
+
+| field | R/sd yr1 | R/sd yr2 | bias yr1 | bias yr2 |
+|---|---|---|---|---|
+| snowFlux | 1.76 | 1.70 | | |
+| windStressCurl | 0.85 | 0.83 | | |
+| sensibleHeatFlux | 0.73 | 0.74 | +4.9 | +5.3 |
+| latentHeatFlux | 0.43 | 0.40 | -16.0 | **-15.1** |
+| sst | 0.11 | 0.12 | -0.29 | -0.30 |
+| barotropicStreamfunction | 0.09 | 0.08 | | |
+
+Latent holds at about -15 W/m2 across both years. That is #65's structural
+argument confirmed a third time: it does not spin up, it does not anneal, and
+no reference height removes it.
+
+**One field is clearly degrading: `ssh`.** Bias -13.3 -> **-25.0** and R/sd
+0.27 -> 0.46 (JAS worse still, -27.7 and 0.51). Sea surface height integrates
+the circulation, so a near-doubling over one year is the signature of an ongoing
+dynamical adjustment rather than a fixed offset. Taken with `windStressCurl`
+sitting at 0.83 while `barotropicStreamfunction` still matches at 0.08, the
+reading is that the wind-stress error has begun to move mass but has not yet
+reorganised the gyres. **This is the term to watch on any longer run**, and #70
+called it right for the wrong timescale -- it is not a latent risk, it has
+already started.
+
+**SamudrACE behaves like a model equilibrating to a colder climate**, as #70's
+epoch argument predicts. Its latent bias *shrinks* -19.5 -> -13.6 as it cools
+(less evaporation from a cooler surface), while its SST deficit grows
+-1.47 -> -1.86 and its LWdn deficit grows -22.5 -> -25.1. That is the internally
+consistent signature of piControl adjustment, not a worsening defect, and it
+further supports #70's retraction of the "SamudrACE LWdn is an actionable bug"
+claim.
+
+**4naser's bipolar failure is now confirmed in the ice field, not inferred.**
+Annual mean sea-ice area, 1e12 m2, year 1 -> year 2:
+
+| run | NH | SH |
+|---|---|---|
+| ACE2 | 11.47 -> 10.33 | 17.21 -> 12.17 |
+| SamudrACE | 12.45 -> 12.98 | 18.87 -> 17.73 |
+| **4naser** | **18.87 -> 21.81** | **14.80 -> 8.26** |
+| JRA control | 11.55 -> 11.28 | 14.55 -> 11.81 |
+
+4naser holds roughly twice the control's Arctic ice while its Southern Ocean ice
+collapses to 70% of the control -- exactly the frozen-Arctic /
+runaway-Southern-Ocean structure #69-era analysis inferred from SST alone.
+ACE2's NH tracks the control closely; its SH starts 2.7 too high and converges.
+
+**Caveat.** Two years is still short for anything mediated by ocean dynamics,
+which is precisely the category the two live concerns (`ssh`, tropical drift)
+fall into. The trends are established but their asymptotes are not.
