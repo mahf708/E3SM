@@ -2889,3 +2889,236 @@ ACE2's NH tracks the control closely; its SH starts 2.7 too high and converges.
 **Caveat.** Two years is still short for anything mediated by ocean dynamics,
 which is precisely the category the two live concerns (`ssh`, tropical drift)
 fall into. The trends are established but their asymptotes are not.
+
+## Session of 2026-08-21: which of the 52 commits actually moved the ocean
+
+### 73. The attribution experiment: design, and the control that makes it valid **[measured]**
+
+Everything above establishes *that* the branch improved the coupled system.  It
+does not establish *which edits did it*, because almost every measurement in
+this document changes more than one thing at a time: #53 compares whole commits,
+#49 compares a whole session's worth of fixes, and the two reference runs differ
+by more than the effect being measured (#53's last caveat).
+
+The question matters now because the branch is being handed on.  52 commits is
+not a reviewable unit, and most of them are this file.
+
+**What can possibly matter.** Of the 52 commits, 14 touch code; the other 38 are
+`REVIEW.md`, `README.md`, `COUPLING.md` or standalone Python under `tools/`,
+none of which is compiled or read by the model.  Replaying just those 14 onto
+`23dd0c1b97` reproduces HEAD's source tree byte for byte in every code path,
+which is the first thing worth knowing: the reviewable object is 14 commits, not
+52.
+
+**The instrument.** Five answer-changing fixes had no runtime control, so
+measuring one meant rebuilding at an intermediate commit -- slow, and it moves
+more than one thing.  Commit `31cb442371` gives each a namelist flag defaulting
+to the fixed behaviour:
+
+| flag | reverts | finding |
+|---|---|---|
+| `eatm_land_deficit` | land fraction and merged TS from the coverage deficit | #15b, #25 |
+| `eatm_solin_window` | SOLIN as the 6 h window mean | #35 |
+| `eatm_clock_align` | advance once per model time; seed `t_im1` from the IC | #36 |
+| `eatm_flux_interval_mean` | hold interval-mean channels across the window | #37 |
+| `eatm_autoregress_state` | feed the emulator `t_ip1`, not the blended export | #8 |
+
+With the flags that already existed -- `eatm_legacy_surface`, `eatm_sw_diurnal`,
+`eatm_cap_shum`, `eatm_surface_layer`, `eatm_frzprec_units`, `eatm_rng_seed` --
+one executable now spans the whole distance from `23dd0c1b97` to HEAD, and a
+leave-one-out ablation costs a namelist edit rather than a rebuild.
+
+**The metric** is #27's: net surface heat flux implied by the ocean's own
+volume-mean temperature drift.  All runs are ACE2-EAMv3 (deterministic), 10 days
+from `0001-01-01`, 4 nodes / 256 tasks, one executable, one checkpoint.  #48
+showed the ocean decomposition does not move this metric, so the namelist is the
+only thing that varies.
+
+The ladder to reproduce, all recomputed by one script so the numbers are
+commensurable:
+
+| run | code | 10-day W/m2 | yr 1 | yr 2 |
+|---|---|---|---|---|
+| jonbob `GMPAS-JRA1p5-2023` (target) | datm/JRA | **-8.10** | -4.82 | -3.03 |
+| anolan `GMPAS-EATM-gnugpu` | `7fce378e5f` | -94.05 | -27.17 | -2.84 |
+| anolan `GMPAS-EATM-test4naser` | `23dd0c1b97` | **-57.82** | -44.17 | -35.52 |
+| this branch, `GMPAS-EATM-ACE2-EAMv3-2yr` | HEAD | **-20.56** | -6.19 | **-1.38** |
+| `ace2_coszen`, archived 10-day | `d5ea94e87f` | -21.34 | | |
+
+So the 52 commits are worth about **36.5 W/m2 at ten days**, which is 73% of the
+distance from the baseline to the JRA control, and by year 2 the branch is
+closer to balance than the control is.
+
+**The control, which is what makes the rest of this section admissible.** The
+`ctrl` run -- HEAD plus the five new flags, all at their defaults, rebuilt under
+a repaired toolchain (see #74) -- is **bit-identical to the archived
+`ace2_coszen`: 244 of 244 `mpaso` globalStats fields, `temperatureAvg` equal to
+every printed digit.**
+
+Three things follow, and they are worth more than any single ablation number:
+
+- the five new flags are exactly answer-neutral at their defaults, so every
+  difference measured below is attributable to the flag that was moved;
+- the ten commits after `d5ea94e87f` are **provably numerically inert**, which
+  narrows what can possibly matter from 14 code commits to 13;
+- the rebuild reproduces the pre-upgrade executable bit for bit, so the CPE roll
+  in #74 did not silently change the answer.
+
+### 74. The build is broken on `pm-gpu` as of 2026-08-17, and the fix is one path **[fixed, environmental]**
+
+Anyone picking this branch up will hit this before they run anything.
+
+NERSC rolled the default programming environment to `cpe/26.03` /
+`cudatoolkit/13.2` on 2026-08-17.  E3SM's `pm-gpu` configuration pins
+`cudatoolkit/12.9` and `cray-mpich/8.1.30`, and FTorch is built against
+`libtorch 2.10.0+cu128`, so the pinning is deliberate and still correct.  What
+broke is not module resolution -- CIME loads exactly what
+`config_machines.xml` asks for -- but a *system default symlink*:
+
+```
+/opt/cray/pe/lib64/libmpi_gtl_cuda.so.0  ->  a CUDA 13 build
+```
+
+The Cray compiler wrappers link that GTL shim whenever
+`craype-accel-nvidia80` is loaded, so every binary they produce -- including the
+throwaway one CMake compiles to check the CUDA header version -- acquires a
+`libcudart.so.13` dependency that a 12.9 environment cannot satisfy.  The build
+dies inside `find_package(FTorch)` with
+
+```
+CMake Error at .../Caffe2/public/cuda.cmake:127 (message):
+  FindCUDA says CUDA version is 12.9 ... but the CUDA headers say the version is
+  ... error while loading shared libraries: libcudart.so.13
+```
+
+which reads like a `CUDA_HOME` misconfiguration and is not one.  `CUDA_HOME`,
+`PATH`, `nvcc` and the CMake cache are all correctly on 12.9 throughout.
+
+The fix is to put the CUDA-12 GTL and the 12.9 runtime ahead of the system
+default before calling `case.build` or `case.submit`:
+
+```bash
+module reset
+module load cray-python
+export LD_LIBRARY_PATH=/opt/cray/pe/mpich/8.1.30/gtl/lib:\
+/opt/nvidia/hpc_sdk/Linux_x86_64/25.5/cuda/12.9/lib64:$LD_LIBRARY_PATH
+```
+
+`module reset` matters on its own: an inherited interactive environment carries
+`/usr/local/cuda-13.2/compat` on `LD_LIBRARY_PATH`, which CIME does not manage
+and cannot remove.
+
+Two things worth knowing about the diagnosis.  The error is emitted by a CMake
+`try_run`, so the binary **compiled** and failed to **execute** -- which is why
+every `CUDA_HOME`/`PATH` remedy the message suggests does nothing.  And the
+quickest way to the answer was to reproduce the probe by hand and run `ldd` on
+it; `objdump -p` over its dependency closure named
+`/opt/cray/pe/lib64/libmpi_gtl_cuda.so.0` in one step.
+
+The proper fix is upstream, in `cime_config/machines/config_machines.xml`: the
+`pm-gpu` entry pins the toolkit and the MPI but not the GTL search path, so it
+is only correct while the system default happens to agree with it.
+
+**Four limits on the instrument, found by auditing it rather than by trusting
+it.** All four were established by reading the `.false.` branches against
+`23dd0c1b97` line by line:
+
+1. **`eatm_solin_window = .false.` is only meaningful paired with
+   `eatm_sw_diurnal = .false.`** With the window mean off, `solin_win` becomes an
+   instantaneous field six hours ahead of `solin_now`, and the export divides one
+   by the other. That ratio is not a diurnal shape function and the
+   `solin_win > 1 W/m2` guard then zeroes cells that are sunlit *now*. The
+   configuration is neither HEAD nor the baseline. The #35 ablation below is run
+   with both off and compared against `ace2_10day_WITHFIXES` (-34.12), which is
+   `ctrl` with only `eatm_sw_diurnal` off.
+2. **`eatm_land_deficit = .false.` restores the baseline TS weighting, not the
+   baseline TS source.** The emulator's contribution comes from `state`, which is
+   `t_ip1` unless `eatm_autoregress_state` is also off. That is the intended
+   division of responsibility -- #8 owns the state source -- but it means the
+   single-flag run is not the baseline TS field.
+3. **`ace_bracket_blend` rounds the interpolation weight to `real(R4)` where the
+   baseline evaluated in double.** This predates the attribution commit and no
+   flag reverts it, so **no combination of switches reproduces `23dd0c1b97`
+   bitwise**; differences are ~1 ULP and enter the autoregressive state. The
+   switches attribute in the mean, not bit for bit. Worth widening back to R8:
+   it costs nothing and would make the baseline exactly reachable.
+4. **The `frac_tol = 0.05` abort still arms when `eatm_land_deficit` is off**,
+   validating fractions the run is not using. It cannot fire in `GMPAS-EATM`
+   (`lndfrac` is identically zero and the coupler's limiter works at ~1e-3), but
+   it is a way for an ablation run to die where the baseline would not.
+
+### 75. The dominant defect was introduced by a code-review commit, and the branch's biggest fix reinstates a deleted line **[measured]**
+
+`gnugpu` (`7fce378e5f`) and `test4naser` (`23dd0c1b97`) are two runs of nominally
+the same code, 22 days apart, with the same traced checkpoint
+(`test_trace_cuda.pt`, hardwired in both) and the same initial condition. They
+score -2.84 and -35.52 W/m2 of ocean heat drift in year 2. #53 noticed they
+"disagree with each other by more than this session's entire effect" and left it
+there. The reason is worth the whole section.
+
+Measured on the exported coupler state, day 11:
+
+| run | `Sa_z` mean | `Sa_tbot` mean | `Sa_tbot` min | area < 240 K |
+|---|---|---|---|---|
+| `gnugpu` (`7fce378e5f`) | **10.0** | 282.21 | 235.46 | **0.3 %** |
+| `test4naser` (`23dd0c1b97`) | 1346.8 | 259.63 | 178.45 | **30.1 %** |
+| this branch (HEAD) | 428.2 | 274.28 | 237.69 | ~0 % |
+
+`gnugpu` never grows the cold pool: 0.3 % of area below 240 K at day 11 and
+**0.0 % at years 1 and 2**. `test4naser` is at 30.1 % on day 11 and still 30.5 %
+two years later. Both runs receive `x2a_Sf_lfrac = 0` everywhere and
+`x2a_Sx_t = 0 K` over 30.7 % of cells -- the coupler-side defect of #15b is
+identical in both, verified from their history files. So the difference is on the
+component side.
+
+There are exactly two commits between them, and both are regressions.
+
+**The one that matters** is in `atm_comp_mct.F90`, in `23dd0c1b97`, whose
+message is "Apply suggestions from code review":
+
+```diff
+-          if (index_x2a_Sf_lfrac>0) then
+-             !lndfrac(i,j) = x2a_a%rAttr(index_x2a_Sf_lfrac,n)
+-             lndfrac(i, j) = max(0.0_R8, 1.0_R8 - ocnfrac(i, j) - icefrac(i, j))
+-          end if
++           if (index_x2a_Sf_lfrac>0) then
++              lndfrac(i,j) = x2a_a%rAttr(index_x2a_Sf_lfrac,n)
++           end if
+```
+
+The land fraction had been reconstructed from the coverage deficit all along.
+The review replaced it with the coupler's field -- which is identically zero in
+this compset -- and the line it deleted is even sitting there commented out as
+the alternative that was rejected. Paired with the other half of the same
+commit, `TS = ts + lndfrac*TS_emul` becoming
+`TS = (1-lndfrac)*ts + lndfrac*TS_emul`, the arithmetic goes from
+
+- `lndfrac = 1` over land, `TS = 0 + 1 * TS_emul` -- the emulator keeps its own
+  land surface temperature, which is right; to
+- `lndfrac = 0` over land, `TS = 1 * 0 + 0` -- **0 K**.
+
+The second half is harmless on its own and correct with a real land fraction.
+It is only lethal because the first half stopped supplying one.
+
+**So #25's "fix" is a reinstatement.** Commit `67d71a2a09` rebuilt the same idea
+in `ace_eatm_import` as the coverage deficit, and #15b's diagnosis -- that the
+driver ships `lfrin` rather than `lfrac` when the atmosphere and land grids
+differ -- is the correct account of *why the coupler's field is zero*. What #15b
+and #25 did not know is that the component had been working around that since
+before either reference run, and that the workaround had been reviewed out.
+
+**The second regression, `dfcabf92a2`, is real but smaller.** It replaced
+`zbot = 10.0_R8` with a standard-atmosphere pressure altitude above *sea level*,
+taking `Sa_z` from a flat 10 m to a mean of 1347 m and a maximum of 5575 m. That
+is the `Sa_z` error #9 fixed, and the 10 m it replaced is exactly the height
+`datm` hands this same ocean under JRA. Its size is measured by the
+`eatm_legacy_surface` ablation below.
+
+**The interaction is large, and the ablation shows it.** Reverting only the land
+reconstruction from HEAD (`eatm_land_deficit = .false.`) costs **149.9 W/m2** --
+four times the branch's entire 36.5 W/m2 gain over the baseline, and it lands
+`Sa_tbot` at a minimum of 178.5 K against `test4naser`'s 178.45. So the defect is
+far more damaging in HEAD's configuration than it was in the baseline's, where
+other errors were partly masking it. Marginals will not sum to the joint; that is
+what the `all_off` run is for.
+
