@@ -36,6 +36,17 @@ for the EATM data in the E3SM distribution
 <eatm_iradsw>1</eatm_iradsw>
 
 <!--
+Attribution switches: each reverts one answer-changing fix back to the
+behaviour at 23dd0c1b97 so a single executable can measure what it is worth.
+Diagnostic use only; see eatm/REVIEW.md #73.
+-->
+<eatm_land_deficit>.true.</eatm_land_deficit>
+<eatm_solin_window>.true.</eatm_solin_window>
+<eatm_clock_align>.true.</eatm_clock_align>
+<eatm_flux_interval_mean>.true.</eatm_flux_interval_mean>
+<eatm_autoregress_state>.true.</eatm_autoregress_state>
+
+<!--
 Traced TorchScript model and matching initial condition, per emulator.
 
 These are absolute paths outside DIN_LOC_ROOT because neither the checkpoints

@@ -317,6 +317,14 @@ else {
     add_default($nl, 'eatm_sw_diurnal');
     add_default($nl, 'eatm_frzprec_units');
     add_default($nl, 'eatm_iradsw');
+
+    # Attribution switches (eatm/REVIEW.md #73).  All default to the fixed
+    # behaviour; each one reverts a single fix for A/B measurement.
+    add_default($nl, 'eatm_land_deficit');
+    add_default($nl, 'eatm_solin_window');
+    add_default($nl, 'eatm_clock_align');
+    add_default($nl, 'eatm_flux_interval_mean');
+    add_default($nl, 'eatm_autoregress_state');
     add_default($nl, 'eatm_model_file', 'emulator'=>$EATM_EMULATOR, 'nofail'=>1);
     add_default($nl, 'eatm_ic_file',    'emulator'=>$EATM_EMULATOR, 'nofail'=>1);
 

@@ -247,4 +247,74 @@ so 1 (every coupler step) is the only value that has been exercised.
 Default: 1
 </entry>
 
+<entry id="eatm_land_deficit"
+       type="logical"
+       category="eatm"
+       group="eatm_inparm" >
+If .true., the land fraction handed to the emulator is the part of the cell no
+surface model covers (1 - ocnfrac - icefrac - lndfrac, added to lndfrac), and
+the coupler's merged surface temperature is completed with the emulator's own
+TS over that same fraction.
+
+This matters because in GMPAS-EATM the land model is a stub, and the driver
+ships `Sf_lfrac` from `lfrin` rather than `lfrac` whenever the atmosphere and
+land grids differ (prep_atm_mod.F90:588-594), so the coupler's land fraction is
+identically zero.  The emulator was therefore told the planet had no land and
+that the surface was at 0 K over 26% of its area.
+
+Setting .false. restores that, and is a diagnostic only.  See REVIEW.md #15b
+and #25.
+Default: .true.
+</entry>
+
+<entry id="eatm_solin_window"
+       type="logical"
+       category="eatm"
+       group="eatm_inparm" >
+If .true., SOLIN is the mean top-of-atmosphere insolation over the emulator
+step about to be taken, evaluated by the midpoint rule on 48 sub-intervals.
+That is what `cell_methods = "time: mean"` in the E3SMv3 training stream means.
+If .false., SOLIN is the instantaneous value at the target time, which has the
+same global mean and an area-weighted RMS difference of 330 W/m2 against a
+field whose own global mean is 342.  Diagnostic only.  See REVIEW.md #35.
+Default: .true.
+</entry>
+
+<entry id="eatm_clock_align"
+       type="logical"
+       category="eatm"
+       group="eatm_inparm" >
+If .true., the emulator advances at most once per model time (the MCT driver
+calls atm_init_mct twice without advancing the clock, which used to step the
+emulator an extra time at startup and leave it permanently 6 h ahead of the
+coupler), and the lower interpolation bracket at startup is seeded from the
+initial condition rather than from the first prediction.  Diagnostic only.
+See REVIEW.md #36.
+Default: .true.
+</entry>
+
+<entry id="eatm_flux_interval_mean"
+       type="logical"
+       category="eatm"
+       group="eatm_inparm" >
+If .true., output channels whose training data carry
+`cell_methods = "time: mean"` -- every radiative and turbulent flux, the
+stresses and precipitation -- are held at the upper bracket across the whole
+emulator interval, because that value already is the mean over it.  If .false.
+they are linearly interpolated from the previous interval's mean, which applies
+a half-step (3 h) lag to all of them.  Diagnostic only.  See REVIEW.md #37.
+Default: .true.
+</entry>
+
+<entry id="eatm_autoregress_state"
+       type="logical"
+       category="eatm"
+       group="eatm_inparm" >
+If .true., the emulator is fed its own prediction for the current time
+(the upper bracket).  If .false. it is fed the field last handed to the
+coupler, which is a partial interpolation between brackets and is not a state
+any emulator was trained to consume.  Diagnostic only.  See REVIEW.md #8.
+Default: .true.
+</entry>
+
 </namelist_definition>

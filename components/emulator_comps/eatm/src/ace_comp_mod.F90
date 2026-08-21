@@ -281,7 +281,7 @@ CONTAINS
       ! initial-condition counterpart, so they are held at the prediction for
       ! the first interval; there is nothing better available.
       do k = 1, n_output_channels
-        if (out_from_in(k) > 0) then
+        if (out_from_in(k) > 0 .and. eatm_clock_align) then
           do j = 1, lsize_y
             do i = 1, lsize_x
               eatm_intrp%t_im1(k, i, j) = net_inputs(1, out_from_in(k), i, j)
@@ -460,7 +460,8 @@ CONTAINS
     ! once per model time: the driver's phase-2 initialization call runs this
     ! routine again at the time the startup inference already covered.
     if (t_modulo == 0 .and. &
-        .not. (CurrentYMD == last_adv_ymd .and. CurrentTOD == last_adv_tod)) then
+        .not. (eatm_clock_align .and. &
+               CurrentYMD == last_adv_ymd .and. CurrentTOD == last_adv_tod)) then
 
       ! One line per emulator step, not per coupler step: at ATM_NCPL=48 the
       ! latter is 48 flushed writes a day, ~100 MB of atm.log over five years.
@@ -480,7 +481,14 @@ CONTAINS
       ! the field the coupler was handed at the end of the previous coupler
       ! step, which is a partial interpolation towards t_ip1 and is therefore
       ! not a state the emulator was ever trained to consume.
-      call ace_eatm_import(eatm_intrp%t_ip1)
+      if (eatm_autoregress_state) then
+        call ace_eatm_import(eatm_intrp%t_ip1)
+      else
+        ! Ablation only (#8): the pre-branch code fed the emulator the field
+        ! last handed to the coupler, which is a partial interpolation towards
+        ! t_ip1 rather than any state the emulator was trained to consume.
+        call ace_eatm_import(net_outputs(1, :, :, :))
+      end if
       call ace_compute_solin(EClock, ggrid)
       call ace_capture_solin_window()
 
@@ -549,7 +557,7 @@ CONTAINS
     f = real(t_frac, R4)
 
     do k = 1, n_output_channels
-      if (out_is_mean(k)) then
+      if (out_is_mean(k) .and. eatm_flux_interval_mean) then
         do j = 1, lsize_y
           do i = 1, lsize_x
             net_outputs(1, k, i, j) = eatm_intrp%t_ip1(k, i, j)
@@ -1078,13 +1086,33 @@ CONTAINS
         end if
         deficit = 1.0_R8 - covered
 
-        net_inputs(1, ix_in_landfrac, i, j) = real(fl + deficit, R4)
-        net_inputs(1, ix_in_ocnfrac,  i, j) = real(fo, R4)
-        net_inputs(1, ix_in_icefrac,  i, j) = real(fi, R4)
+        if (eatm_land_deficit) then
 
-        if (ix_in_ts > 0) then
-          net_inputs(1, ix_in_ts, i, j) = real( &
-               ts(i, j) + deficit * real(state(ix_out_ts, i, j), R8), R4)
+          net_inputs(1, ix_in_landfrac, i, j) = real(fl + deficit, R4)
+          net_inputs(1, ix_in_ocnfrac,  i, j) = real(fo, R4)
+          net_inputs(1, ix_in_icefrac,  i, j) = real(fi, R4)
+
+          if (ix_in_ts > 0) then
+            net_inputs(1, ix_in_ts, i, j) = real( &
+                 ts(i, j) + deficit * real(state(ix_out_ts, i, j), R8), R4)
+          end if
+
+        else
+
+          ! Ablation only (#15b, #25): the coupler's fractions and merged
+          ! surface temperature straight through, weighted exactly as the code
+          ! did at 23dd0c1b97.  With a stub land model that is LANDFRAC = 0
+          ! everywhere and TS = 0 K over every land point.
+          net_inputs(1, ix_in_landfrac, i, j) = real(lndfrac(i, j), R4)
+          net_inputs(1, ix_in_ocnfrac,  i, j) = real(ocnfrac(i, j), R4)
+          net_inputs(1, ix_in_icefrac,  i, j) = real(icefrac(i, j), R4)
+
+          if (ix_in_ts > 0) then
+            net_inputs(1, ix_in_ts, i, j) = real( &
+                 (1.0_R8 - lndfrac(i, j)) * ts(i, j) + &
+                 lndfrac(i, j) * real(state(ix_out_ts, i, j), R8), R4)
+          end if
+
         end if
 
       enddo
@@ -1514,8 +1542,11 @@ CONTAINS
     real(R8)          :: cosz_val, dt_days
     real(R8), parameter :: degtorad = SHR_CONST_PI / 180.0_R8
 
-    ! Sub-intervals used for the midpoint-rule window mean.
-    integer, parameter :: n_solin_sub = 48
+    ! Sub-intervals used for the midpoint-rule window mean.  Reduced to a
+    ! single endpoint evaluation when eatm_solin_window is off, which
+    ! reproduces the instantaneous SOLIN(T+dt) the code used before #35.
+    integer, parameter :: n_solin_sub_mean = 48
+    integer            :: n_solin_sub
 
     integer     :: klat, klon, n, i, j, m
     real(R8), pointer :: yc(:), xc(:)
@@ -1528,6 +1559,12 @@ CONTAINS
 
     dt_days = real(eatm_model_dt, R8) / SHR_CONST_CDAY
 
+    if (eatm_solin_window) then
+      n_solin_sub = n_solin_sub_mean
+    else
+      n_solin_sub = 1
+    end if
+
     allocate(yc(lsize), xc(lsize))
     klat = mct_aVect_indexRA(ggrid%data, 'lat')
     klon = mct_aVect_indexRA(ggrid%data, 'lon')
@@ -1539,8 +1576,13 @@ CONTAINS
 
     do m = 1, n_solin_sub
 
-      ! midpoint of sub-interval m within (T, T+dt]
-      jsub = julday + dt_days * (real(m, R8) - 0.5_R8) / real(n_solin_sub, R8)
+      if (eatm_solin_window) then
+        ! midpoint of sub-interval m within (T, T+dt]
+        jsub = julday + dt_days * (real(m, R8) - 0.5_R8) / real(n_solin_sub, R8)
+      else
+        ! Ablation only (#35): the instantaneous value at the target time.
+        jsub = julday + dt_days
+      end if
 
       ! declination and the earth-sun distance factor drift slowly, but they
       ! are per-time not per-cell, so there is no reason to hold them fixed

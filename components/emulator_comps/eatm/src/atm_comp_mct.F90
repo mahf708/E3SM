@@ -596,7 +596,9 @@ CONTAINS
     namelist /eatm_inparm / do_eatm, filename_eatm, &
          eatm_emulator, eatm_model_file, eatm_ic_file, eatm_model_device, &
          eatm_pass_forcing, eatm_legacy_surface, eatm_frzprec_units, eatm_iradsw, &
-         eatm_surface_layer, eatm_cap_shum, eatm_rng_seed, eatm_ref_height, eatm_sw_diurnal
+         eatm_surface_layer, eatm_cap_shum, eatm_rng_seed, eatm_ref_height, eatm_sw_diurnal, &
+         eatm_land_deficit, eatm_solin_window, eatm_clock_align, &
+         eatm_flux_interval_mean, eatm_autoregress_state
 
     ! default values
     do_eatm             = .true.
@@ -614,6 +616,11 @@ CONTAINS
     eatm_legacy_surface = .false.
     eatm_surface_layer  = 'near_surface'
     eatm_iradsw         = 1
+    eatm_land_deficit       = .true.
+    eatm_solin_window       = .true.
+    eatm_clock_align        = .true.
+    eatm_flux_interval_mean = .true.
+    eatm_autoregress_state  = .true.
 
     ! read namelist from expected file
     nlfilename_atm = "eatm_in" // trim(inst_suffix)
@@ -651,6 +658,11 @@ CONTAINS
     call shr_mpi_bcast(eatm_ref_height, mpicom_atm, 'eatm_ref_height')
     call shr_mpi_bcast(eatm_sw_diurnal, mpicom_atm, 'eatm_sw_diurnal')
     call shr_mpi_bcast(eatm_iradsw, mpicom_atm, 'eatm_iradsw')
+    call shr_mpi_bcast(eatm_land_deficit, mpicom_atm, 'eatm_land_deficit')
+    call shr_mpi_bcast(eatm_solin_window, mpicom_atm, 'eatm_solin_window')
+    call shr_mpi_bcast(eatm_clock_align, mpicom_atm, 'eatm_clock_align')
+    call shr_mpi_bcast(eatm_flux_interval_mean, mpicom_atm, 'eatm_flux_interval_mean')
+    call shr_mpi_bcast(eatm_autoregress_state, mpicom_atm, 'eatm_autoregress_state')
 
     ! EATM_MODE=NULL sets do_eatm=.false. (bld/build-namelist:299), but there
     ! is nothing here for it to switch off: this component has no null mode,
@@ -681,6 +693,18 @@ CONTAINS
        write(logunit_atm,*) '   eatm_ref_height     = ', eatm_ref_height
        write(logunit_atm,*) '   eatm_sw_diurnal     = ', eatm_sw_diurnal
        write(logunit_atm,*) '   eatm_iradsw         = ', eatm_iradsw
+       write(logunit_atm,*) '   eatm_land_deficit       = ', eatm_land_deficit
+       write(logunit_atm,*) '   eatm_solin_window       = ', eatm_solin_window
+       write(logunit_atm,*) '   eatm_clock_align        = ', eatm_clock_align
+       write(logunit_atm,*) '   eatm_flux_interval_mean = ', eatm_flux_interval_mean
+       write(logunit_atm,*) '   eatm_autoregress_state  = ', eatm_autoregress_state
+       if (.not. (eatm_land_deficit .and. eatm_solin_window .and. eatm_clock_align &
+            .and. eatm_flux_interval_mean .and. eatm_autoregress_state)) then
+          write(logunit_atm,*) ' '
+          write(logunit_atm,*) ' *** WARNING: one or more EATM attribution switches'
+          write(logunit_atm,*) ' *** are off.  This reverts a known defect on purpose'
+          write(logunit_atm,*) ' *** and is a diagnostic configuration only.'
+       end if
     end if
 
     return

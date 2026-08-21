@@ -41,6 +41,19 @@ module eatmMod
   integer, public       :: eatm_rng_seed          ! libtorch RNG seed; <0 leaves it unseeded
   logical, public       :: eatm_sw_diurnal        ! put the interval-mean shortwave back on a diurnal cycle
 
+  !--------------------------------------------------------------------------
+  ! Attribution switches.  Each one reverts a single answer-changing fix made
+  ! on this branch back to the behaviour at 23dd0c1b97, so that one executable
+  ! can measure what each fix is worth in a coupled run.  All default .true.
+  ! (fix active); setting one .false. is a diagnostic, not a supported
+  ! configuration.  See eatm/REVIEW.md #73.
+  !--------------------------------------------------------------------------
+  logical, public :: eatm_land_deficit       ! LANDFRAC/TS from the fraction deficit (#15b, #25)
+  logical, public :: eatm_solin_window       ! SOLIN as the 6 h window mean, not an instant (#35)
+  logical, public :: eatm_clock_align        ! advance once per model time; seed t_im1 from the IC (#36)
+  logical, public :: eatm_flux_interval_mean ! hold interval-mean channels across the window (#37)
+  logical, public :: eatm_autoregress_state  ! feed the emulator t_ip1, not the blended export (#8)
+
   ! Reference height (m) reported as Sa_z for the exported atmospheric state
   ! when the emulator predicts near-surface diagnostics.  The default 10 m is
   ! what datm hands this same ocean and sea ice under JRA forcing
