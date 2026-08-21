@@ -3217,3 +3217,68 @@ emulator step** by `ace_flux_budget_report`, so it is a free, immediate check:
 a `GMPAS-EATM` run reporting ~54 W/m2 of TOA imbalance is being fed a zero land
 fraction, whatever else is configured. A run reporting ~13 is not.
 
+### 78. The forcing fixes are only coherent as a set **[measured; corrects #49]**
+
+#49 measured the SOLIN window mean, the clock alignment, the interval-mean flux
+handling and the humidity cap as a package, found **-0.96 W/m2**, and concluded
+they were "correctness fixes, not bias fixes" that "do not move the ocean
+imbalance". The first half stands. The second does not: two of them move it by
+tens of W/m2, and the package is small because they cancel.
+
+Leave-one-out from HEAD, one switch reverted at a time:
+
+| reverted | run | ocn W/m2 | fix is worth | sw mis | turb mis |
+|---|---|---|---|---|---|
+| `eatm_flux_interval_mean` | `fluxmean_off` | **+21.10** | **-42.44** | +24.17 | +31.49 |
+| `eatm_solin_window` * | `solinwin_off` | **-47.89** | **+13.77** | -30.65 | +22.43 |
+| `eatm_sw_diurnal` | archived `WITHFIXES` | -34.12 | +12.78 | | |
+| `eatm_clock_align` | `clock_off` | -22.22 | **+0.88** | -4.53 | +26.09 |
+| `eatm_cap_shum` | archived `CAPOFF` | -34.06 | +0.06 | | |
+
+\* cannot be reverted alone: with the window mean off, `solin_win` becomes an
+instantaneous field six hours ahead of `solin_now` and the diurnal rescaler
+divides one by the other. Run with `eatm_sw_diurnal = .false.` and compared
+against the archived `ace2_10day_WITHFIXES` (-34.12), which is `ctrl` with only
+the shortwave rescaling off.
+
+**The parts do not sum to the whole.** Turning the entire set on at once is worth
+**+12.11 W/m2** (#76, measured twice at matched configuration, self-consistent to
+0.09). The marginals above sum to **-14.95**. The 27 W/m2 discrepancy is
+interaction, and it runs through the diurnal rescaler: both the SOLIN window mean
+and the interval-mean flux handling change what `ace_solin_now` divides by, so
+each is worth something quite different depending on whether the other is there.
+The shortwave mismatch column shows it directly -- it is -4.5 W/m2 at HEAD and
+blows out to +24.2 or -30.7 when either is reverted alone.
+
+**Two of the five really are what #49 called them.** `eatm_clock_align` is worth
++0.88 W/m2 and `eatm_cap_shum` +0.06, both well inside anything that matters.
+They are correctness fixes with no bias consequence, and the honest version of
+#49's claim applies to them and not to the other three.
+
+**The practical rule, for the second time in this review.** The land-fraction and
+surface-diagnostics fixes must ship together (#76). So must the forcing set: any
+subset of {SOLIN window mean, interval-mean fluxes, diurnal shortwave} leaves the
+shortwave interface worse than either taking all three or taking none. Two
+independent cherry-picking traps on one branch.
+
+### 79. Where this leaves the branch
+
+Complete leave-one-out from HEAD, every answer-changing edit on the branch,
+ordered by size:
+
+| edit | commit | worth, W/m2 |
+|---|---|---|
+| land-fraction reconstruction | `67d71a2a09` + `2387f1e511` | **+149.91** |
+| surface diagnostics `Sa_z`/`Sa_shum`/`Faxa_swnet` | `ab05b3f0ff` | **-120.21** |
+| interval-mean flux handling | `5fdb75e813` | **-42.44** |
+| SOLIN window mean | `5fdb75e813` | **+13.77** |
+| diurnal shortwave | `d5ea94e87f` | **+12.78** |
+| startup clock alignment | `5fdb75e813` | +0.88 |
+| saturation cap on exported humidity | `5fdb75e813` | +0.06 |
+| everything else (7 commits) | | inert here, by code or by proof |
+
+Against the baseline the branch is worth +35.96 W/m2 and is **-21.34** on the
+10-day metric against jonbob's JRA control at -8.10. On the 2-year metric that
+matters more it is closer to balance than the control: year-2 ocean heat drift
+**-1.38 W/m2** against the control's -3.03.
+
