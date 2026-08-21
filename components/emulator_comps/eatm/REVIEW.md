@@ -3191,3 +3191,29 @@ surface diagnostics alone take it to -183.31. **Neither fix may be shipped
 without the other.** They are a pair, and the branch is only sane because it
 carries both.
 
+### 77. Two diagnostics that detect the land defect and nothing else **[measured]**
+
+The ocean heat drift is one number with one failure mode (#73's caveat: it
+detects bias but does not rank equilibria). Two other diagnostics separate the
+seven ablation runs perfectly on the land-fraction fix and are blind to the
+other four switches:
+
+| diagnostic | with the land fix | without it | gap |
+|---|---|---|---|
+| emulator TOA imbalance, W/m2 | 13.25 - 14.61 | 53.84 - 54.32 | **39.2** |
+| NH sea-ice area, 1e6 km2 | 32.53 - 32.85 | 33.80 - 33.88 | **0.95** |
+| SH sea-ice area, 1e6 km2 | 13.78 - 13.88 | 14.86 - 15.07 | **0.98** |
+
+Four runs carry the fix (`ctrl`, `legacy_surface`, `base_plus_land`,
+`solinwin_off`) and three do not (`land_off`, `all_off`, `base_plus_surface`),
+and the two groups do not overlap on any of the three, even though within each
+group the surface diagnostics, the shortwave treatment and the forcing fixes all
+vary and the ocean drift itself spans -183 to +99 W/m2.
+
+That matters for two reasons. It is corroboration from instruments that do not
+share the ocean metric's failure mode -- the +144 W/m2 is a physical effect, not
+an artifact of a 10-day linear fit. And the TOA imbalance is **printed every
+emulator step** by `ace_flux_budget_report`, so it is a free, immediate check:
+a `GMPAS-EATM` run reporting ~54 W/m2 of TOA imbalance is being fed a zero land
+fraction, whatever else is configured. A run reporting ~13 is not.
+
