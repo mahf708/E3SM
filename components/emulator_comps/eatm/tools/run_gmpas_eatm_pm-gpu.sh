@@ -24,6 +24,29 @@
 #
 set -euo pipefail
 
+# --- toolchain shim, required since the 2026-08-17 NERSC CPE roll --------------
+# The system default /opt/cray/pe/lib64/libmpi_gtl_cuda.so.0 is now a CUDA 13
+# build, while E3SM's pm-gpu configuration pins cudatoolkit/12.9 (FTorch is
+# built against libtorch 2.10.0+cu128).  The Cray wrappers link that GTL shim
+# whenever craype-accel-nvidia80 is loaded, so every binary they produce -- down
+# to the throwaway one CMake compiles to check the CUDA header version --
+# acquires a libcudart.so.13 dependency a 12.9 environment cannot satisfy, and
+# the build dies inside find_package(FTorch) with a message that reads like a
+# CUDA_HOME misconfiguration and is not one.  Putting the CUDA-12 GTL and the
+# 12.9 runtime ahead of the system default fixes it.  See eatm/REVIEW.md #74.
+#
+# `module reset` matters on its own: an inherited interactive environment
+# carries /usr/local/cuda-13.2/compat on LD_LIBRARY_PATH, which CIME neither
+# manages nor removes.  Set EATM_SKIP_ENV_SHIM=1 once the machine files pin the
+# GTL search path themselves.
+if [ "${EATM_SKIP_ENV_SHIM:-0}" != "1" ] && [ "${MACHINE:-pm-gpu}" = "pm-gpu" ]; then
+  if command -v module >/dev/null 2>&1; then
+    module reset >/dev/null 2>&1 || true
+    module load cray-python >/dev/null 2>&1 || true
+  fi
+  export LD_LIBRARY_PATH="/opt/cray/pe/mpich/8.1.30/gtl/lib:/opt/nvidia/hpc_sdk/Linux_x86_64/25.5/cuda/12.9/lib64:${LD_LIBRARY_PATH:-}"
+fi
+
 # --- what to run -------------------------------------------------------------
 EMULATOR="${EMULATOR:-SamudrACE-E3SMv3}"   # or ACE2-EAMv3
 CASE_NAME="${CASE_NAME:-GMPAS-EATM-${EMULATOR}-5yr}"

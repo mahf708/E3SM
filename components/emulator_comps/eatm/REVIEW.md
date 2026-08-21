@@ -3122,3 +3122,72 @@ far more damaging in HEAD's configuration than it was in the baseline's, where
 other errors were partly masking it. Marginals will not sum to the joint; that is
 what the `all_off` run is for.
 
+### 76. The answer: two large opposing errors, and a budget that closes **[measured]**
+
+Nine 10-day ACE2-EAMv3 runs, one executable, one checkpoint, one initial
+condition, differing only in the namelist.
+
+| run | land fix | surface fix | fwd/SW fix | **ocn W/m2** | turb mis | sw mis | TOA | LANDFRAC | TS min | tbot min |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `all_off` (= `23dd0c1b97`) | no | no | no | **-57.29** | -140.68 | -18.94 | 53.84 | 0.00 | 0.0 | 178.4 |
+| `base_plus_land` | **yes** | no | no | **+86.72** | -93.88 | -21.47 | 14.61 | 1.00 | 217.5 | 235.2 |
+| `base_plus_surface` | no | **yes** | no | **-183.31** | -12.64 | -18.90 | 54.01 | 0.00 | 0.0 | 178.5 |
+| `legacy_surface` | yes | no | yes | **+98.87** | -96.87 | -4.40 | 13.34 | 1.00 | 221.8 | 239.2 |
+| `land_off` | no | yes | yes | **-171.25** | -8.55 | -2.63 | 54.32 | 0.00 | 0.0 | 178.5 |
+| `ctrl` (= HEAD) | yes | yes | yes | **-21.34** | +25.68 | -4.51 | 13.25 | 1.00 | 222.0 | 239.1 |
+| *anolan `test4naser`, independent* | no | no | no | *-57.82* | | | | 0.00 | | 178.45 |
+
+**`all_off` reproduces the baseline to 0.53 W/m2** on a 57 W/m2 signal, across a
+different executable, a different node count (256 against 704) and a different
+traced checkpoint. That last point matters on its own: it bounds the
+checkpoint difference between `test_trace_cuda.pt` and `ace_traced_cuda.pt` at
+under 0.5 W/m2, so the confounder #25 flagged is not one.
+
+**The decomposition.** Main effects from the clean 2x2 at the baseline end,
+where none of the forcing fixes are active:
+
+| term | W/m2 |
+|---|---|
+| land-fraction reconstruction (`67d71a2a09` + `2387f1e511`) | **+144.01** |
+| surface diagnostics (`ab05b3f0ff`) | **-126.02** |
+| diurnal shortwave + forcing/clock (`d5ea94e87f` + `5fdb75e813`) | **+12.11** |
+| interaction | +5.86 |
+| **total** | **+35.95** (measured `ctrl` - `all_off`: +35.96) |
+
+Three independent checks say the arithmetic is real rather than fitted. The
+forcing/shortwave term is measured twice at matched land/surface configuration
+and agrees with itself to 0.09 W/m2 (+12.15 from `legacy_surface`/`base_plus_land`,
++12.06 from `land_off`/`base_plus_surface`). It also matches #60's separately
+measured +12.78 for `eatm_sw_diurnal` net of #49's -0.96 for the forcing fixes.
+And the cell the factorial does not contain -- both fixes, no shortwave -- is
+inferred at -33.45 and the archived `ace2_10day_WITHFIXES` measured **-34.12**.
+
+**So the baseline was error cancellation.** Its -57.8 W/m2 is a +144 W/m2 error
+and a -126 W/m2 error partly cancelling, and the branch's +36 W/m2 net
+improvement badly understates what changed. The two are close to additive: the
+interaction is 5.9 W/m2, 4 % of either main effect.
+
+The mechanisms are the pair you would expect to cancel, and the in-run interface
+budget -- measured independently of the ocean's heat content -- moves the way
+each mechanism says it should:
+
+- **the land defect cools.** 0 K over 30.7 % of the globe makes a cold, dry
+  atmosphere; an SFNO's spherical harmonic transform is global, so it reaches
+  the ocean everywhere. TOA imbalance 53.8-54.3 W/m2 in all three runs that
+  carry it, against 13.3-14.6 in the three that do not. **The TOA imbalance
+  tracks the land fix and nothing else** -- it is a clean one-variable
+  diagnostic.
+- **the legacy surface diagnostics warm.** `Sa_z` at a pressure altitude above
+  sea level (mean 1347 m) collapses the exchange coefficients and a saturated
+  `Sa_shum` makes `q_sat(SST) - Sa_shum` small, so `shr_flux_atmOcn` returns far
+  too little turbulent flux. Turbulent mismatch -94 to -141 W/m2 without the fix,
+  -8.6 to +25.7 with it.
+
+**The practical consequence, which is not what a reviewer would guess.**
+Restoring the land line alone -- the obvious one-line emergency fix -- takes the
+ocean from -57.29 to **+86.72**: the cold pole disappears, the TOA imbalance is
+repaired, and the drift gets *worse in magnitude* and changes sign. Likewise the
+surface diagnostics alone take it to -183.31. **Neither fix may be shipped
+without the other.** They are a pair, and the branch is only sane because it
+carries both.
+
