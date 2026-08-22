@@ -34,6 +34,7 @@ module eocnMod
   character(CL), public :: eocn_model_device   ! 'cpu' or 'gpu'
   integer, public       :: eocn_rng_seed       ! libtorch RNG seed; <0 leaves it unseeded
   logical, public       :: eocn_interp_state   ! interpolate between emulator brackets
+  logical, public       :: eocn_flux_ifrac_unweight ! undo the coupler's open-water weighting
 
   !--------------------------------------------------------------------------
   ! Imported coupler fluxes, accumulated over the emulator interval.

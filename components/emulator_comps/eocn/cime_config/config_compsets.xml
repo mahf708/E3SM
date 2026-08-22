@@ -26,10 +26,29 @@
     <lname>2010_EAM%CMIP6_ELM%SPBC_SICE_EOCN_SROF_SGLC_SWAV</lname>
   </compset>
 
-  <!-- both halves of SamudrACE, coupled through MCT; everything else stubbed -->
+  <!-- both halves of SamudrACE, coupled through MCT; everything else stubbed.
+       With a stub ice the coupler has nowhere to put the sea ice fraction
+       Samudra predicts, so it reports the polar ocean as open water all year.
+       Prefer E2000-EATM-EOCN-EICE; keep this one to measure what the ice is
+       worth. -->
   <compset>
     <alias>E2000-EATM-EOCN</alias>
     <lname>2000_EATM_SLND_SICE_EOCN_SROF_SGLC_SWAV</lname>
+  </compset>
+
+  <!-- the same pair, with the ocean emulator's own sea ice fraction carried
+       into the coupler's fraction bookkeeping by EICE -->
+  <compset>
+    <alias>E2000-EATM-EOCN-EICE</alias>
+    <lname>2000_EATM_SLND_EICE_EOCN_SROF_SGLC_SWAV</lname>
+  </compset>
+
+  <!-- prognostic EAM over the emulated ocean and its ice.  EAM needs a real
+       ice surface at the poles; F2010-ELM-EOCN has none and fails in the
+       microphysics on the first step. -->
+  <compset>
+    <alias>F2010-ELM-EOCN-EICE</alias>
+    <lname>2010_EAM%CMIP6_ELM%SPBC_EICE_EOCN_SROF_SGLC_SWAV</lname>
   </compset>
 
 </compsets>

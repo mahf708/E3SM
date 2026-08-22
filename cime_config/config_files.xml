@@ -177,6 +177,7 @@
       <value component="dice"                        >$SRCROOT/components/data_comps/dice</value>
       <value component="sice"                        >$SRCROOT/components/stub_comps/sice</value>
       <value component="xice"                        >$SRCROOT/components/xcpl_comps/xice</value>
+      <value component="eice"                        >$SRCROOT/components/emulator_comps/eice/</value>
       <value component="mpassi"                      >$SRCROOT/components/mpas-seaice</value>
       <value component="cice"                        >$SRCROOT/components/cice</value>
     </values>

@@ -28,6 +28,14 @@
     <type>char</type>
     <valid_values>ACE2-EAMv3,SamudrACE-E3SMv3</valid_values>
     <default_value>ACE2-EAMv3</default_value>
+    <values>
+      <!-- EATM and EOCN are two halves of one trained system: Samudra's
+           forcing channels are the SamudrACE atmosphere's own diagnostics.
+           Pairing the standalone ACE2 atmosphere with it would be an
+           off-distribution coupling, so make the matched choice the default
+           whenever the ocean emulator is present. -->
+      <value compset="_EOCN">SamudrACE-E3SMv3</value>
+    </values>
     <group>run_component_eatm</group>
     <file>env_run.xml</file>
     <desc>Which emulator EATM drives.  Selects the channel layout in

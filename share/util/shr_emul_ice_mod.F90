@@ -39,9 +39,20 @@ module shr_emul_ice_mod
   integer               :: nstored = 0
   logical               :: valid   = .false.
 
+  ! Grid, published once by the ocean at init so the ice half of the entity
+  ! needs no I/O of its own and cannot disagree about the mesh.
+  real(R8), allocatable :: g_lon(:), g_lat(:), g_area(:), g_frac(:)
+  integer               :: gsize_stored = 0   ! this task's share
+  integer               :: gsize_global = 0   ! the whole mesh
+  logical               :: grid_valid   = .false.
+
   public :: shr_emul_ice_put
   public :: shr_emul_ice_get
   public :: shr_emul_ice_avail
+  public :: shr_emul_ice_put_grid
+  public :: shr_emul_ice_get_grid
+  public :: shr_emul_ice_grid_size
+  public :: shr_emul_ice_grid_gsize
 
 contains
 
@@ -89,5 +100,61 @@ contains
     end if
 
   end subroutine shr_emul_ice_get
+
+  !===============================================================================
+  subroutine shr_emul_ice_put_grid(lon, lat, area, frac, gsize)
+
+    ! Publish the ocean's grid.  Called once, at ocean init -- which the MCT
+    ! driver runs before ice init, so the ice half always finds it.
+
+    real(R8), intent(in) :: lon(:), lat(:), area(:), frac(:)
+    integer,  intent(in) :: gsize      ! global, not this task's share
+
+    gsize_global = gsize
+    gsize_stored = size(lon)
+    if (allocated(g_lon)) deallocate(g_lon, g_lat, g_area, g_frac)
+    allocate(g_lon(gsize_stored), g_lat(gsize_stored), &
+             g_area(gsize_stored), g_frac(gsize_stored))
+    g_lon  = lon
+    g_lat  = lat
+    g_area = area
+    g_frac = frac
+    grid_valid = .true.
+
+  end subroutine shr_emul_ice_put_grid
+
+  !===============================================================================
+  integer function shr_emul_ice_grid_size()
+
+    if (grid_valid) then
+      shr_emul_ice_grid_size = gsize_stored
+    else
+      shr_emul_ice_grid_size = 0
+    end if
+
+  end function shr_emul_ice_grid_size
+
+  !===============================================================================
+  integer function shr_emul_ice_grid_gsize()
+
+    if (grid_valid) then
+      shr_emul_ice_grid_gsize = gsize_global
+    else
+      shr_emul_ice_grid_gsize = 0
+    end if
+
+  end function shr_emul_ice_grid_gsize
+
+  !===============================================================================
+  subroutine shr_emul_ice_get_grid(lon, lat, area, frac)
+
+    real(R8), intent(out) :: lon(:), lat(:), area(:), frac(:)
+
+    lon  = g_lon
+    lat  = g_lat
+    area = g_area
+    frac = g_frac
+
+  end subroutine shr_emul_ice_get_grid
 
 end module shr_emul_ice_mod

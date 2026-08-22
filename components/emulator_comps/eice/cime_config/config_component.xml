@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+
+<definitions_variables>
+
+  <entry id="COMP_ICE">
+     <type>char</type>
+     <valid_values>eice</valid_values>
+     <default_value>eice</default_value>
+     <group>case_comp</group>
+     <file>env_case.xml</file>
+     <desc>Name of ice component</desc>
+  </entry>
+
+  <entry id="EICE_MODE">
+    <type>char</type>
+    <valid_values>ACTIVE,NULL</valid_values>
+    <default_value>ACTIVE</default_value>
+    <values>
+      <value compset="_EICE" >ACTIVE</value>
+    </values>
+    <group>build_component_eice</group>
+    <file>env_build.xml</file>
+    <desc>mode for eice model, NULL means eice is turned off</desc>
+  </entry>
+
+  <description>
+    <desc compset="_EICE">EICE:</desc>
+  </description>
+
+  <help>
+    =========================================
+    EICE naming conventions
+    =========================================
+    EICE is the sea ice half of the emulated ocean.  It has no state and no
+    namelist: it reports the ice fraction the ocean emulator predicts, and
+    diagnoses the surface fluxes that go with it the way dice does in
+    prescribed mode.  It requires EOCN as the ocean component and the same
+    task count.
+  </help>
+
+</definitions_variables>

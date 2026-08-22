@@ -16,6 +16,7 @@ the fallback.
 <eocn_model_device>gpu</eocn_model_device>
 <eocn_rng_seed>0</eocn_rng_seed>
 <eocn_interp_state>.true.</eocn_interp_state>
+<eocn_flux_ifrac_unweight>.true.</eocn_flux_ifrac_unweight>
 
 <!--
 Traced TorchScript model and matching initial condition.  Absolute paths

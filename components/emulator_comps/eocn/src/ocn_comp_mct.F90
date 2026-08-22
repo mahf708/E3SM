@@ -26,6 +26,7 @@ module ocn_comp_mct
   use eocn_channels_mod
   use eocnSpmdMod
   use eocnIO
+  use shr_emul_ice_mod, only: shr_emul_ice_put_grid
 
   implicit none
   private
@@ -323,6 +324,20 @@ CONTAINS
     end do
     call mct_gGrid_importRattr(dom_ocn,"mask",data,lsize)
 
+    ! Publish the mesh for the ice half of the emulated ocean+ice entity.
+    ! EICE has no grid of its own -- it reports a fraction of *this* domain --
+    ! so taking the mesh from here is not a shortcut but the only way the two
+    ! cannot disagree.  The MCT driver initialises ocn before ice, so this is
+    ! always in place before anyone reads it.
+    n = 0
+    do j = 1, lsize_y
+       do i = 1, lsize_x
+          n = n + 1
+          data(n) = ocn_mask(i,j)
+       end do
+    end do
+    call shr_emul_ice_put_grid(lonc_g, latc_g, areac_g, data, gsize)
+
     deallocate(start,length,pe_loc)
     deallocate(data)
     deallocate(idata)
@@ -348,32 +363,59 @@ CONTAINS
     type(mct_aVect), intent(inout) :: x2o_o
 
     integer  :: i, j, n
-    real(r8) :: swnet, fsds
+    real(r8) :: swnet, fsds, w
 
     n = 0
     do j = 1, lsize_y
        do i = 1, lsize_x
           n = n + 1
+
+          ! Undo the coupler's open-water weighting.
+          !
+          ! With a sea ice component present the coupler hands the ocean only
+          ! the open-water share of every surface flux: prep_ocn_mod.F90:1218
+          ! builds each one as afrac*<atm or atm/ocn flux> + ifrac*<ice flux>,
+          ! with afrac and ifrac renormalised by their sum.  On this grid the
+          ! ice and ocean share a mesh, so that normalised afrac is exactly
+          ! 1 - so_ifrac.
+          !
+          ! Samudra was not trained on the open-water share.  In SamudrACE the
+          ! ocean receives the atmosphere's whole-cell surface fluxes and
+          ! accounts for the insulating effect of its own ice internally --
+          ! ocean_sea_ice_fraction is one of its prognostic outputs, not a
+          ! boundary condition it is handed.  Letting the coupler scale the
+          ! forcing down by (1 - sea ice fraction) would apply that insulation
+          ! a second time, in exactly the cells where it is largest.
+          !
+          ! So divide it back out and give the emulator the whole-cell flux it
+          ! expects.  Set eocn_flux_ifrac_unweight = .false. to keep the
+          ! coupler's open-water values instead, which is the physically
+          ! standard choice for a model that does *not* carry its own ice.
+          if (eocn_flux_ifrac_unweight) then
+             w = 1.0_r8 / max(1.0_r8 - so_ifrac(i,j), 0.01_r8)
+          else
+             w = 1.0_r8
+          end if
           if (index_x2o_Foxx_taux > 0) &
-               acc_taux(i,j) = acc_taux(i,j) + x2o_o%rAttr(index_x2o_Foxx_taux,n)
+               acc_taux(i,j) = acc_taux(i,j) + w*x2o_o%rAttr(index_x2o_Foxx_taux,n)
           if (index_x2o_Foxx_tauy > 0) &
-               acc_tauy(i,j) = acc_tauy(i,j) + x2o_o%rAttr(index_x2o_Foxx_tauy,n)
+               acc_tauy(i,j) = acc_tauy(i,j) + w*x2o_o%rAttr(index_x2o_Foxx_tauy,n)
           if (index_x2o_Foxx_lat > 0) &
-               acc_lhflx(i,j) = acc_lhflx(i,j) + x2o_o%rAttr(index_x2o_Foxx_lat,n)
+               acc_lhflx(i,j) = acc_lhflx(i,j) + w*x2o_o%rAttr(index_x2o_Foxx_lat,n)
           if (index_x2o_Foxx_sen > 0) &
-               acc_shflx(i,j) = acc_shflx(i,j) + x2o_o%rAttr(index_x2o_Foxx_sen,n)
+               acc_shflx(i,j) = acc_shflx(i,j) + w*x2o_o%rAttr(index_x2o_Foxx_sen,n)
           if (index_x2o_Foxx_lwup > 0) &
-               acc_flus(i,j) = acc_flus(i,j) + x2o_o%rAttr(index_x2o_Foxx_lwup,n)
+               acc_flus(i,j) = acc_flus(i,j) + w*x2o_o%rAttr(index_x2o_Foxx_lwup,n)
           if (index_x2o_Faxa_lwdn > 0) &
-               acc_flds(i,j) = acc_flds(i,j) + x2o_o%rAttr(index_x2o_Faxa_lwdn,n)
+               acc_flds(i,j) = acc_flds(i,j) + w*x2o_o%rAttr(index_x2o_Faxa_lwdn,n)
           if (index_x2o_Faxa_rain > 0) &
-               acc_prec(i,j) = acc_prec(i,j) + x2o_o%rAttr(index_x2o_Faxa_rain,n)
+               acc_prec(i,j) = acc_prec(i,j) + w*x2o_o%rAttr(index_x2o_Faxa_rain,n)
           if (index_x2o_Faxa_snow > 0) then
-             acc_prec(i,j) = acc_prec(i,j) + x2o_o%rAttr(index_x2o_Faxa_snow,n)
-             acc_snow(i,j) = acc_snow(i,j) + x2o_o%rAttr(index_x2o_Faxa_snow,n)
+             acc_prec(i,j) = acc_prec(i,j) + w*x2o_o%rAttr(index_x2o_Faxa_snow,n)
+             acc_snow(i,j) = acc_snow(i,j) + w*x2o_o%rAttr(index_x2o_Faxa_snow,n)
           end if
           if (index_x2o_Foxx_swnet > 0) then
-             swnet = x2o_o%rAttr(index_x2o_Foxx_swnet,n)
+             swnet = w*x2o_o%rAttr(index_x2o_Foxx_swnet,n)
              fsds  = swnet / (1.0_r8 - ocn_albedo)
              acc_fsds(i,j) = acc_fsds(i,j) + fsds
              acc_fsus(i,j) = acc_fsus(i,j) + (fsds - swnet)
@@ -422,7 +464,8 @@ CONTAINS
 
     namelist /eocn_inparm/ do_eocn, filename_eocn, eocn_emulator, &
          eocn_model_file, eocn_ic_file, eocn_model_device, eocn_rng_seed, &
-         eocn_interp_state
+         eocn_interp_state, &
+         eocn_flux_ifrac_unweight
 
     do_eocn           = .true.
     filename_eocn     = ' '
@@ -432,6 +475,7 @@ CONTAINS
     eocn_model_device = 'gpu'
     eocn_rng_seed     = 0
     eocn_interp_state = .true.
+    eocn_flux_ifrac_unweight = .true.
 
     if (masterproc) then
        nu_nml = shr_file_getUnit()
@@ -455,6 +499,7 @@ CONTAINS
        write(logunit_ocn,*) '   eocn_model_device = ', trim(eocn_model_device)
        write(logunit_ocn,*) '   eocn_rng_seed     = ', eocn_rng_seed
        write(logunit_ocn,*) '   eocn_interp_state = ', eocn_interp_state
+       write(logunit_ocn,*) '   eocn_flux_ifrac_unweight = ', eocn_flux_ifrac_unweight
     end if
 
     call shr_mpi_bcast(do_eocn,           mpicom_ocn)
@@ -465,6 +510,7 @@ CONTAINS
     call shr_mpi_bcast(eocn_model_device, mpicom_ocn)
     call shr_mpi_bcast(eocn_rng_seed,     mpicom_ocn)
     call shr_mpi_bcast(eocn_interp_state, mpicom_ocn)
+    call shr_mpi_bcast(eocn_flux_ifrac_unweight, mpicom_ocn)
 
   end subroutine eocn_read_namelist
 
