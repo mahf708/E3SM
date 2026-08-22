@@ -195,6 +195,17 @@ reference height can explain.  See REVIEW.md #58 and #59.
 Default: 10.0
 </entry>
 
+<entry id="eatm_icefrac_from_ocn" type="logical" category="eatm"
+       group="eatm_inparm" valid_values="" >
+Take ICEFRAC from the ocean emulator's own sea ice prediction instead of from
+the coupler's Sf_ifrac, splitting the non-land fraction the way SamudrACE does:
+ICEFRAC = ocean_sea_ice_fraction * (1 - LANDFRAC), OCNFRAC = the remainder.
+Only has an effect when the ocean is EOCN on the same grid and decomposition.
+Diagnostic: it measures what a stub sea ice component costs the emulated pair.
+The real fix is a sea ice component reporting the fraction as Si_ifrac.
+Default: .false.
+</entry>
+
 <entry id="eatm_sw_diurnal"
        type="logical"
        category="eatm"

@@ -315,6 +315,7 @@ else {
     add_default($nl, 'eatm_rng_seed');
     add_default($nl, 'eatm_ref_height');
     add_default($nl, 'eatm_sw_diurnal');
+    add_default($nl, 'eatm_icefrac_from_ocn');
     add_default($nl, 'eatm_frzprec_units');
     add_default($nl, 'eatm_iradsw');
 

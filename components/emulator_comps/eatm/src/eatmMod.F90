@@ -40,6 +40,9 @@ module eatmMod
   logical, public       :: eatm_cap_shum          ! cap exported Sa_shum at saturation
   integer, public       :: eatm_rng_seed          ! libtorch RNG seed; <0 leaves it unseeded
   logical, public       :: eatm_sw_diurnal        ! put the interval-mean shortwave back on a diurnal cycle
+  ! Take ICEFRAC from the ocean emulator's own sea ice prediction rather than
+  ! from the coupler's Sf_ifrac.  Diagnostic; see shr_emul_ice_mod.
+  logical, public       :: eatm_icefrac_from_ocn
 
   !--------------------------------------------------------------------------
   ! Attribution switches.  Each one reverts a single answer-changing fix made

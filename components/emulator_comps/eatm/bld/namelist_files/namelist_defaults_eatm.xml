@@ -32,6 +32,7 @@ for the EATM data in the E3SM distribution
 <eatm_rng_seed>0</eatm_rng_seed>
 <eatm_ref_height>10.0</eatm_ref_height>
 <eatm_sw_diurnal>.true.</eatm_sw_diurnal>
+<eatm_icefrac_from_ocn>.false.</eatm_icefrac_from_ocn>
 <eatm_frzprec_units>kg/m2/s</eatm_frzprec_units>
 <eatm_iradsw>1</eatm_iradsw>
 

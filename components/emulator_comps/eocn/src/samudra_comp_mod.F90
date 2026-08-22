@@ -28,6 +28,7 @@ module samudra_comp_mod
   use shr_const_mod
   use shr_kind_mod, only: R4=>SHR_KIND_R4, R8=>SHR_KIND_R8, CS=>SHR_KIND_CS, CL=>SHR_KIND_CL, IN=>SHR_KIND_IN
   use shr_sys_mod,  only: shr_sys_flush, shr_sys_abort
+  use shr_emul_ice_mod, only: shr_emul_ice_put
 
   use ftorch, only: &
     torch_kCPU, &
@@ -539,8 +540,9 @@ contains
     implicit none
     logical, intent(in) :: verbose
 
-    integer  :: i, j, ip, im, jp, jm
+    integer  :: i, j, n, ip, im, jp, jm
     real(R8) :: dx, dy, coslat
+    real(R8) :: ifrac_flat(lsize_x*lsize_y)
 
     do j = 1, lsize_y
       do i = 1, lsize_x
@@ -587,6 +589,20 @@ contains
         end if
       end do
     end do
+
+    ! Publish the sea ice fraction for the emulator atmosphere.  The MCT
+    ! coupler has no o2x field for it and, with a stub ice component, no ifrac
+    ! of its own -- see shr_emul_ice_mod for why this exists and what replaces
+    ! it.  Published as a fraction of the sea surface, which is what
+    ! ocean_sea_ice_fraction means and what the atmosphere's formula expects.
+    n = 0
+    do j = 1, lsize_y
+      do i = 1, lsize_x
+        n = n + 1
+        ifrac_flat(n) = so_ifrac(i,j)
+      end do
+    end do
+    call shr_emul_ice_put(ifrac_flat)
 
     if (verbose) then
       write(logunit_ocn,'(a,4f12.5)') &

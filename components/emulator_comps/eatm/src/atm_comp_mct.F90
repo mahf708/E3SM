@@ -597,6 +597,7 @@ CONTAINS
          eatm_emulator, eatm_model_file, eatm_ic_file, eatm_model_device, &
          eatm_pass_forcing, eatm_legacy_surface, eatm_frzprec_units, eatm_iradsw, &
          eatm_surface_layer, eatm_cap_shum, eatm_rng_seed, eatm_ref_height, eatm_sw_diurnal, &
+         eatm_icefrac_from_ocn, &
          eatm_land_deficit, eatm_solin_window, eatm_clock_align, &
          eatm_flux_interval_mean, eatm_autoregress_state
 
@@ -606,6 +607,7 @@ CONTAINS
     eatm_rng_seed       = 0
     eatm_ref_height     = 10.0_R8
     eatm_sw_diurnal     = .true.
+    eatm_icefrac_from_ocn = .false.
     filename_eatm       = ' '
     eatm_emulator       = 'ACE2-EAMv3'
     eatm_model_file     = ' '
@@ -657,6 +659,7 @@ CONTAINS
     call shr_mpi_bcast(eatm_rng_seed, mpicom_atm, 'eatm_rng_seed')
     call shr_mpi_bcast(eatm_ref_height, mpicom_atm, 'eatm_ref_height')
     call shr_mpi_bcast(eatm_sw_diurnal, mpicom_atm, 'eatm_sw_diurnal')
+    call shr_mpi_bcast(eatm_icefrac_from_ocn, mpicom_atm, 'eatm_icefrac_from_ocn')
     call shr_mpi_bcast(eatm_iradsw, mpicom_atm, 'eatm_iradsw')
     call shr_mpi_bcast(eatm_land_deficit, mpicom_atm, 'eatm_land_deficit')
     call shr_mpi_bcast(eatm_solin_window, mpicom_atm, 'eatm_solin_window')
@@ -692,6 +695,7 @@ CONTAINS
        write(logunit_atm,*) '   eatm_rng_seed       = ', eatm_rng_seed
        write(logunit_atm,*) '   eatm_ref_height     = ', eatm_ref_height
        write(logunit_atm,*) '   eatm_sw_diurnal     = ', eatm_sw_diurnal
+       write(logunit_atm,*) '   eatm_icefrac_from_ocn = ', eatm_icefrac_from_ocn
        write(logunit_atm,*) '   eatm_iradsw         = ', eatm_iradsw
        write(logunit_atm,*) '   eatm_land_deficit       = ', eatm_land_deficit
        write(logunit_atm,*) '   eatm_solin_window       = ', eatm_solin_window

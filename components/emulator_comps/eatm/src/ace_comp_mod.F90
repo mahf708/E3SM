@@ -25,6 +25,7 @@ module ace_comp_mod
   use shr_sys_mod,  only: shr_sys_flush, shr_sys_abort
   use shr_orb_mod,  only: shr_orb_decl, shr_orb_cosz
   use shr_cal_mod,  only: shr_cal_date2julian
+  use shr_emul_ice_mod, only: shr_emul_ice_get, shr_emul_ice_avail
 
   use ftorch, only: &
     torch_kCPU, &
@@ -1029,6 +1030,11 @@ CONTAINS
     integer  :: i, j, k
     real(R8) :: covered   ! cell fraction the surface models accounted for
     real(R8) :: deficit   ! the rest, which the emulator owns
+    real(R8) :: sif       ! emulator sea ice fraction, of the sea surface
+    real(R8) :: land_true ! the land fraction EATM actually reports
+    logical  :: use_emul_ice
+    real(R8) :: ifrac_flat(lsize_x*lsize_y)
+    integer  :: n
     real(R8) :: fo, fi, fl  ! individually bounded ocean / ice / land fractions
     integer  :: n_clip_frac, n_norm_frac   ! cells corrected, by kind
     real(R8) :: worst_clip, worst_norm     ! and by how much
@@ -1057,6 +1063,25 @@ CONTAINS
     worst_clip  = 0.0_R8
     worst_norm  = 0.0_R8
 
+    ! SamudrACE's ocean predicts the sea ice fraction and its coupler splits
+    ! the non-land fraction with it:
+    !     ICEFRAC = ocean_sea_ice_fraction * (1 - LANDFRAC)
+    !     OCNFRAC = max(1 - LANDFRAC - ICEFRAC, 0)
+    ! E3SM writes the same identity as lfrac + ifrac + ofrac = 1 but fills
+    ! ifrac from a sea ice component, so with a stub ice the atmosphere is told
+    ! the polar ocean is open water.  Diagnostic only; see shr_emul_ice_mod.
+    use_emul_ice = eatm_icefrac_from_ocn .and. &
+                   shr_emul_ice_avail(lsize_x*lsize_y)
+    if (use_emul_ice) then
+      call shr_emul_ice_get(ifrac_flat)
+    else if (eatm_icefrac_from_ocn) then
+      write(logunit_atm,'(a)') '(ace_eatm_import) WARNING: '// &
+           'eatm_icefrac_from_ocn is set but the ocean emulator has published '// &
+           'no sea ice fraction of the right size; leaving ICEFRAC as the '// &
+           'coupler gave it'
+    end if
+    n = 0
+
     do j = 1, lsize_y
       do i = 1, lsize_x
 
@@ -1065,6 +1090,7 @@ CONTAINS
         ! ICEFRAC compensated by an ocean fraction above one still sums to a
         ! plausible total, and the emulator was never shown such a state.  The
         ! sum is then held at or below one so the deficit stays non-negative.
+        n  = n + 1
         fo = min(max(ocnfrac(i, j), 0.0_R8), 1.0_R8)
         fi = min(max(icefrac(i, j), 0.0_R8), 1.0_R8)
         fl = min(max(lndfrac(i, j), 0.0_R8), 1.0_R8)
@@ -1091,6 +1117,22 @@ CONTAINS
           net_inputs(1, ix_in_landfrac, i, j) = real(fl + deficit, R4)
           net_inputs(1, ix_in_ocnfrac,  i, j) = real(fo, R4)
           net_inputs(1, ix_in_icefrac,  i, j) = real(fi, R4)
+
+          ! Re-split the non-land part between ice and open ocean the way
+          ! SamudrACE does.  It has to key off `fl + deficit`, not `fl`: with a
+          ! stub land Sf_lfrac is zero everywhere and the real land fraction
+          ! arrives as the deficit.  Keying off fl alone drives the deficit to
+          ! zero, which hands the emulator LANDFRAC = 0 and a 0 K surface
+          ! temperature over every continent.  LANDFRAC and TS are left exactly
+          ! as computed above; only the split of what is left over changes.
+          if (use_emul_ice) then
+            land_true = min(max(fl + deficit, 0.0_R8), 1.0_R8)
+            sif = min(max(ifrac_flat(n), 0.0_R8), 1.0_R8)
+            net_inputs(1, ix_in_icefrac, i, j) = &
+                 real(sif * (1.0_R8 - land_true), R4)
+            net_inputs(1, ix_in_ocnfrac, i, j) = real(max( &
+                 1.0_R8 - land_true - sif * (1.0_R8 - land_true), 0.0_R8), R4)
+          end if
 
           if (ix_in_ts > 0) then
             net_inputs(1, ix_in_ts, i, j) = real( &

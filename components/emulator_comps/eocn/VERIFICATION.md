@@ -165,3 +165,64 @@ equal one minus the land model's fraction.  EOCN originally reported the
 emulator's continuous sea surface fraction as its domain frac, which disagrees
 with a binary mask on every coastal cell and fails that check.  Reporting the
 mask itself fixes it and is what the coupler's bookkeeping assumes throughout.
+
+## 5. What Samudra's sea ice is worth, and why the atmosphere-side fix fails
+
+Samudra predicts sea ice: `ocean_sea_ice_fraction` and `iceVolumeTotal` are two
+of its 80 output channels, and they are a credible field -- NH 13.9e6 km2,
+SH 7.0e6 km2 in early January, mean thickness 1.9 m, fraction above 0.95
+poleward of 80N tapering to zero by 50 degrees.
+
+ACE's own coupler (`fme/coupled/stepper.py`, `CoupledOceanFractionConfig` ->
+`OceanData.ocean_fraction`) uses it as
+
+    ICEFRAC = ocean_sea_ice_fraction * (1 - LANDFRAC)
+    OCNFRAC = max(1 - LANDFRAC - ICEFRAC, 0)
+
+That identity holds to float32 in the published initial conditions, and it is
+the same identity E3SM writes as lfrac + ifrac + ofrac = 1.  The difference is
+only that E3SM fills ifrac from a sea ice *component*, so with `SICE` the
+atmosphere is told the polar ocean is open water.
+
+`eatm_icefrac_from_ocn` (default off) applies ACE's split verbatim, using a
+side channel from EOCN (`shr_emul_ice_mod`).  Over 11 days against the same
+case with the flag off:
+
+| day | net (no ice) | net (ICEFRAC on) | delta | So_t delta |
+|---|---:|---:|---:|---:|
+| 2 | -26.8 | -35.0 | -8.1 | 0.000 |
+| 6 | -34.2 | -50.6 | -16.4 | 0.000 |
+| 9 | -62.6 | -82.1 | -19.6 | +0.002 |
+| 12 | -83.1 | -91.6 | -8.5 | +0.008 |
+
+**It gets worse, not better** -- and the latitude breakdown says why (day 6):
+
+| band | Sa_tbot delta | net flux delta |
+|---|---:|---:|
+| NH polar | -3.52 K | -69.1 W/m2 |
+| mid / tropics | -0.17 K | -6.6 W/m2 |
+| SH polar | -0.39 K | +1.4 W/m2 |
+
+The atmosphere does the right thing: told there is ice, ACE cools the Arctic
+near-surface air by 3.5 K.  The coupler does not.  `domo_frac` is unchanged,
+`fractions_a(ifrac)` is still zero, and the merge and the bulk flux scheme
+still hand the whole polar ocean to that colder atmosphere as open water at
+271 K.  A larger air-sea gradient over an unchanged exposed area is 69 W/m2 of
+extra heat loss.
+
+Two things follow.  The ice fraction is a **first-order** term, not a detail.
+And a half-closed loop is worse than none: the fraction has to enter the
+coupler's own bookkeeping, so the ice-covered share is removed from the ocean's
+exposure and given ice albedo and ice fluxes.  That means a sea ice component
+reporting `Si_ifrac`, not an atmosphere-side substitution.  `shr_emul_ice_mod`
+and `eatm_icefrac_from_ocn` exist to establish this number and should be
+deleted once that component exists.
+
+### A trap worth recording
+
+The first attempt keyed the split off `fl`, the coupler's `Sf_lfrac`.  With a
+stub land that is zero everywhere -- the real land fraction reaches EATM as the
+*deficit* -- so the deficit collapsed to zero, `LANDFRAC` went to zero globally
+and `TS` to 0 K over every continent.  It silently reverted the
+`eatm_land_deficit` fix and cost 34 W/m2 that had nothing to do with sea ice.
+Anything reconstructing fractions inside EATM must key off `fl + deficit`.
