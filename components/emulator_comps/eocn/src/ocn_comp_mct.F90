@@ -263,10 +263,15 @@ CONTAINS
   subroutine ocn_domain_mct( gsMap, dom_ocn )
 
     ! Build the MCT domain.  Unlike EATM, the fraction is not 1 everywhere:
-    ! this grid covers the whole globe and only part of it is ocean.  The
-    ! fraction is the emulator's own sea surface fraction restricted to its
-    ! ocean mask, so the coupler weights the ocean exactly where the checkpoint
-    ! has one to give.
+    ! this grid covers the whole globe and only part of it is ocean.
+    !
+    ! The fraction is the emulator's ocean mask, and it is binary rather than
+    ! the (continuous) sea surface fraction the checkpoint also carries.  That
+    ! is the coupler's convention, not a simplification: when the atmosphere
+    ! and ocean grids differ, seq_domain_mct.F90:301 derives the ocean fraction
+    ! on the atmosphere grid by mapping this domain's *mask*, and then requires
+    ! it to equal one minus the land model's fraction.  A continuous frac
+    ! beside a binary mask fails that check on every coastal cell.
 
     implicit none
     type(mct_gsMap), intent(in)    :: gsMap
@@ -304,11 +309,7 @@ CONTAINS
     do j = 1, lsize_y
        do i = 1, lsize_x
           n = n + 1
-          ! The sea surface fraction is nonzero on ~3200 more coastal cells
-          ! than the emulator's ocean mask covers.  On those the emulator has
-          ! no ocean state to predict, so they get no coupler weight either.
-          frac = real(net_inputs(1, ix_in_ssfrac, i, j), R8) * ocn_mask(i,j)
-          data(n) = min(max(frac, 0.0_R8), 1.0_R8)
+          data(n) = ocn_mask(i,j)
        end do
     end do
     call mct_gGrid_importRattr(dom_ocn,"frac",data,lsize)

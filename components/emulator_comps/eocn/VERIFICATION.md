@@ -36,16 +36,16 @@ ocean-side exchange).
 
 Ocean-fraction-weighted global means from the coupler history:
 
-| date | swnet | lwdn | lwup | latent | sensible | net | So_t (K) |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| 01-02 | 185.9 | 331.6 | -387.6 | -104.3 | -43.9 | -18.3 | 286.855 |
-| 01-05 | 188.8 | 327.2 | -388.8 | -118.2 | -35.2 | -26.2 | 287.073 |
-| 01-08 | 194.8 | 325.0 | -391.7 | -138.2 | -41.1 | -51.2 | 287.603 |
-| 01-12 | 196.6 | 325.9 | -396.5 | -157.1 | -49.7 | -80.7 | 288.482 |
+| day | net (W/m2) | So_t (K) | So_s (g/kg) | Sa_tbot (K) |
+|---|---:|---:|---:|---:|
+| 1 | -26.8 | 286.615 | 33.359 | 283.341 |
+| 5 | -31.9 | 286.830 | 33.383 | 283.938 |
+| 8 | -58.9 | 287.315 | 33.425 | 284.135 |
+| 11 | -80.9 | 288.115 | 33.489 | 284.585 |
 
 **This is a drift, and it is worth taking seriously.**  The sea surface warms
-1.6 K in 11 days while the net surface heat flux the ocean is being given goes
-from -18 to -81 W/m2.  The emulated ocean is not responding to the flux it is
+1.5 K in 11 days while the net surface heat flux the ocean is being given goes
+from -27 to -81 W/m2.  The emulated ocean is not responding to the flux it is
 handed; it is following its own trajectory, and the atmosphere is responding to
 that by losing more and more heat.  Two candidate causes, in the order I would
 check them:
@@ -66,38 +66,35 @@ Neither is a defect in this component's plumbing; both are properties of
 running the two halves of a coupled emulator through a coupler that does not
 carry the channel they were trained to exchange.
 
-## 2b. The same case, continued to 111 days
+## 2b. The same case, continued to 110 days
 
 Continuing the run makes the shape of the problem clear.  The warming
 **saturates and turns over**; the salinity does not.
 
-| day | net (W/m2) | So_t (K) | So_s (g/kg) | Sa_tbot (K) |
-|---|---:|---:|---:|---:|
-| 1 | -18.3 | 286.855 | 33.527 | 283.642 |
-| 11 | -82.7 | 288.482 | 33.667 | 284.746 |
-| 31 | -121.3 | 290.148 | 33.939 | 286.017 |
-| 61 | -129.3 | 290.651 | 34.252 | 286.535 |
-| 81 | -157.3 | 290.658 | 34.432 | 286.497 |
-| 111 | -131.4 | 290.511 | 34.653 | 286.865 |
+| day | net (W/m2) | So_t (K) | So_s (g/kg) | Sa_tbot (K) | E (mm/d) | P (mm/d) |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | -26.8 | 286.615 | 33.359 | 283.341 | 3.61 | 3.23 |
+| 11 | -83.1 | 288.115 | 33.489 | 284.554 | 5.31 | 4.16 |
+| 31 | -110.2 | 289.606 | 33.733 | 285.781 | 6.07 | 4.56 |
+| 61 | -129.7 | 289.982 | 34.016 | 286.320 | 6.54 | 4.70 |
+| 81 | -154.8 | 289.960 | 34.181 | 286.164 | 6.82 | 5.03 |
+| 110 | -119.3 | 289.941 | 34.360 | 286.582 | 6.15 | 4.64 |
 
-The sea surface settles about **+3.8 K** above its initial state by day 70 and
-then eases back very slightly: the coupled emulator finds a quasi-equilibrium,
-it is just the wrong one.  Salinity, by contrast, rises monotonically by
-**1.1 g/kg in 111 days** and shows no sign of turning.
+The sea surface settles about **+3.3 K** above its initial state by day 60 and
+then stops: the coupled emulator finds a quasi-equilibrium, it is just the
+wrong one.  Salinity, by contrast, rises monotonically by **1.0 g/kg in
+110 days** and shows no sign of turning.
 
-The freshwater budget says why:
+The freshwater budget says why.  Evaporation over the ocean goes from
+3.6 to 6.2-6.8 mm/day — a latent heat flux around 180 W/m2 against an observed
+global ocean mean near 90 — while precipitation rises only from 3.2 to
+4.6 mm/day.  `E - P` therefore grows from +0.4 to about +1.7 mm/day, and with
+no river runoff (`SROF` is a stub, worth perhaps 0.3 mm/day) there is nothing
+to balance it.
 
-| | evaporation | precipitation | E - P |
-|---|---:|---:|---:|
-| day 1 | 3.60 mm/day | 3.27 mm/day | +0.33 |
-| day 111 | 6.67 mm/day | 4.88 mm/day | +1.78 |
-
-Evaporation over the ocean nearly doubles, ending at a latent heat flux of
-193 W/m2 against an observed global ocean mean near 90.  That single number
-drives both drifts — it is most of the -130 W/m2 net heat loss and all of the
-salinity rise — and it is a surface-flux problem on the atmosphere side of the
-coupler, not something EOCN can fix.  The absent river runoff (`SROF`) accounts
-for perhaps 0.3 mm/day of the freshwater imbalance; the rest is evaporation.
+That one number, the doubled evaporation, drives both drifts: it is most of the
+-120 W/m2 net heat loss and all of the salinity rise.  It is a surface-flux
+problem on the atmosphere side of the coupler, not something EOCN can fix.
 
 So the ordering of things to fix, on this evidence, is: the missing sea ice
 first (it is what exposes the polar ocean and inflates the turbulent fluxes),
@@ -112,19 +109,59 @@ round trip of the emulator's `real(R4)` state through the `double` restart
 file, and nothing else.  The global mean differs by 1e-8 K.
 
 At day 12, the first history file written after an emulator advance that used
-post-restart atmospheric fluxes, the difference grows to 0.12 K locally and
-1.4e-04 K in the global mean.  That is the stochastic SamudrACE atmosphere:
+post-restart atmospheric fluxes, the difference grows to 0.11 K locally and
+2.2e-04 K in the global mean.  That is the stochastic SamudrACE atmosphere:
 its libtorch RNG is reseeded at the start of each segment, so the noise
 realization after a restart is not the one a continuous run would have drawn.
 EOCN's own bookkeeping — both bracketing states, the ten flux accumulators,
 the accumulated-step count and the elapsed-time counter — round-trips exactly.
 
-## 4. `F2010-ELM-EOCN`
+## 4. `F2010-ELM-EOCN` — builds and couples, then the atmosphere blows up
 
 Prognostic EAM on ne30pg2 over the emulated ocean, with ELM, everything else
-stubbed.  Getting CIME to accept the configuration needed four changes, all in
-this branch: `eocn` as a valid `-ocn` value and an `ieflx_opt` default for EAM,
-`gauss180x360` as a valid mask for ELM, and naming the atmosphere side of the
-gridmap `ne30np4.pg2` rather than the `ne30pg2` alias (without which every map
-silently fell back to `idmap`).  Maps and domains were generated for this
-branch; see the README.
+stubbed.  It builds, and it gets a long way:
+
+* CIME resolves the grid, the maps and the domains;
+* EAM and ELM initialise;
+* the coupler's grid checks pass, and so does `seq_domain_check`'s fraction
+  check — land plus ocean sums to one everywhere;
+* EOCN initialises and hands the coupler the same physical ocean it does in the
+  emulated case (`sst` 269-309 K, ocean-mean 286.57 K, ice fraction 0.19);
+* EAM takes a dynamics step.
+
+Then P3 aborts on the **first physics step** at column 19743, 88.94 N, 45 E —
+the polar cap — with a temperature of -3.6e31 K through the whole lower half of
+the column.
+
+I read this as the missing sea ice, in its sharpest form.  With a stub ice
+component the coupler tells EAM that the Arctic Ocean is **open water** at the
+freezing point under a -40 C atmosphere.  That is a physically enormous
+turbulent and radiative exchange, concentrated in the smallest cells on the
+grid, and a 30-minute physics step does not survive it.  The emulated
+atmosphere does not blow up in the same configuration only because it does not
+integrate anything — it drifts instead (section 2b).
+
+So this compset is blocked on the same gap as the drift, and closing that gap
+is the prerequisite for a prognostic atmosphere over this ocean, not an
+optimisation.  Two things I would check before anything else:
+
+1. rerun with a sea ice component (or the pass-through described in the README)
+   so `ICEFRAC` is not zero at the pole;
+2. failing that, a shorter atmosphere physics step, to confirm the blow-up is
+   the surface exchange rather than something structurally wrong in the merge.
+
+### What it took to get CIME this far
+
+Four changes, all on this branch: `eocn` as a valid `-ocn` value and an
+`ieflx_opt` default for EAM; `gauss180x360` as a valid mask for ELM; naming the
+atmosphere side of the gridmap `ne30np4.pg2` rather than the `ne30pg2` alias
+(without which every map silently fell back to `idmap`); and — the one that
+took longest — making EOCN's domain **fraction** binary.
+
+That last one is worth recording.  When the atmosphere and ocean grids differ,
+`seq_domain_mct.F90:301` builds the ocean fraction on the atmosphere grid by
+mapping the ocean domain's *mask*, not its *fraction*, and then requires it to
+equal one minus the land model's fraction.  EOCN originally reported the
+emulator's continuous sea surface fraction as its domain frac, which disagrees
+with a binary mask on every coastal cell and fails that check.  Reporting the
+mask itself fixes it and is what the coupler's bookkeeping assumes throughout.

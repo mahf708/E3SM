@@ -110,8 +110,10 @@ def build_domains(scrip: str, ic: str, outdir: str, stamp: str) -> None:
     s.close()
 
     d = nc.Dataset(ic)
-    ofrac = np.clip(np.array(d["sea_surface_fraction"][:]), 0.0, 1.0)
-    ofrac = ofrac * (np.array(d["mask_2d"][:]) > 0.5)
+    # Binary, matching what EOCN hands the coupler: seq_domain_mct derives the
+    # ocean fraction on the atmosphere grid from the *mask*, so a continuous
+    # fraction here would disagree with the land model on every coastal cell.
+    ofrac = (np.array(d["mask_2d"][:]) > 0.5).astype(float)
     d.close()
 
     for kind, frac in (("ocn", ofrac), ("lnd", np.ones((nj, ni)))):
