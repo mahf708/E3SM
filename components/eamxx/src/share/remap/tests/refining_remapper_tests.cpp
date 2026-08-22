@@ -6,6 +6,7 @@
 #include "share/core/eamxx_setup_random_test.hpp"
 #include "share/util/eamxx_utils.hpp"
 #include "share/field/field_utils.hpp"
+#include "share/util/eamxx_universal_constants.hpp"
 
 namespace scream {
 
@@ -437,6 +438,170 @@ TEST_CASE ("refining_remapper") {
     if (comm.am_i_root()) {
       printf(" -> Checking 3d subfields ....... %s\n",ok ? "PASS" : "FAIL");
     }
+  }
+
+  // Clean up
+  r = nullptr;
+  scorpio::finalize_subsystem();
+}
+
+// This test covers the *masked* refining path, i.e. what an online output stream
+// does when it remaps to a finer grid and the fields carry a valid mask (e.g., any
+// field that also went through vertical remapping to pressure levels).
+// The masked matvec used to be coarsening-only: it looped over the ov grid rows and
+// indexed the mask with ov-grid col lids, both of which are wrong when refining.
+TEST_CASE ("refining_remapper_masked") {
+  using gid_type = AbstractGrid::gid_type;
+
+  auto& catch_capture = Catch::getResultCapture();
+
+  ekat::Comm comm(MPI_COMM_WORLD);
+
+  int seed = get_random_test_seed(&comm);
+
+  scorpio::init_subsystem(comm);
+
+  const int ngdofs_src = 4*comm.size();
+  const int ngdofs_tgt = 2*ngdofs_src-1;
+  auto filename = "rr_masked_tests_map.np" + std::to_string(comm.size()) + ".nc";
+  write_map_file(filename,ngdofs_src);
+
+  // Same grid setup as the unmasked test above
+  const int nlevs = std::max(SCREAM_PACK_SIZE,16);
+  auto src_grid = create_point_grid("src",ngdofs_src,nlevs,comm,1);
+  auto tgt_grid = create_point_grid("tgt",ngdofs_tgt,nlevs,comm,0);
+  auto dofs_h = tgt_grid->get_dofs_gids().get_view<gid_type*,Host>();
+  for (int i=0; i<tgt_grid->get_num_local_dofs(); ++i) {
+    int q = dofs_h[i] / 2;
+    if (dofs_h[i] % 2 == 0) {
+      dofs_h[i] = q + 1;
+    } else {
+      dofs_h[i] = ngdofs_src + q + 1;
+    }
+  }
+  tgt_grid->get_dofs_gids().sync_to_dev();
+
+  // Build the remapper WITH mask tracking, like AtmosphereOutput does
+  auto r = std::make_shared<HorizontalRemapper>(src_grid,tgt_grid,filename,true);
+
+  auto s2d_src = create_field("s2d_src",LayoutType::Scalar2D,*src_grid,seed++);
+  auto s3d_src = create_field("s3d_src",LayoutType::Scalar3D,*src_grid,seed++);
+  auto s2d_tgt = create_field("s2d_tgt",LayoutType::Scalar2D,*tgt_grid);
+  auto s3d_tgt = create_field("s3d_tgt",LayoutType::Scalar3D,*tgt_grid);
+
+  // Mask out src col with gid==masked_gid entirely (all levels).
+  // Note: gids are 1-based on the src grid.
+  const int masked_gid = 2;
+  auto& m2d = s2d_src.create_valid_mask("s2d_mask",Field::MaskInit::Valid);
+  auto& m3d = s3d_src.create_valid_mask("s3d_mask",Field::MaskInit::Valid);
+
+  // create_valid_mask inits on device, so refresh the host mirrors before editing them
+  m2d.sync_to_host();
+  m3d.sync_to_host();
+
+  auto src_gids_h = src_grid->get_dofs_gids().get_view<const gid_type*,Host>();
+  auto m2d_h = m2d.get_view<int*,Host>();
+  auto m3d_h = m3d.get_view<int**,Host>();
+  for (int i=0; i<src_grid->get_num_local_dofs(); ++i) {
+    if (src_gids_h(i)==masked_gid) {
+      m2d_h(i) = 0;
+      for (int k=0; k<nlevs; ++k) {
+        m3d_h(i,k) = 0;
+      }
+    }
+  }
+  m2d.sync_to_dev();
+  m3d.sync_to_dev();
+
+  r->register_field(s2d_src,s2d_tgt);
+  r->register_field(s3d_src,s3d_tgt);
+  r->registration_ends();
+
+  r->remap_fwd();
+
+  auto gs2d_src = all_gather_field(s2d_src,comm);
+  auto gs3d_src = all_gather_field(s3d_src,comm);
+  auto gs2d_tgt = all_gather_field(s2d_tgt,comm);
+  auto gs3d_tgt = all_gather_field(s3d_tgt,comm);
+
+  gs2d_src.sync_to_host();
+  gs3d_src.sync_to_host();
+  gs2d_tgt.sync_to_host();
+  gs3d_tgt.sync_to_host();
+
+  constexpr auto fill_val = constants::fill_value<Real>;
+
+  // 0-based index, within the gathered src array, of the masked col
+  const int mcol = masked_gid-1;
+
+  // Expected value for the tgt col that copies src col icol
+  auto expected_copy = [&](Real src_val, int icol) {
+    return icol==mcol ? fill_val : src_val;
+  };
+  // Expected value for the tgt col that averages src cols icol and icol+1.
+  // The mask renormalizes the weights, so if exactly one of the two is masked,
+  // the result is the *other* one (not half of it).
+  auto expected_avg = [&](Real v0, Real v1, int icol) {
+    const bool m0 = icol!=mcol;
+    const bool m1 = (icol+1)!=mcol;
+    if (not m0 and not m1) return fill_val;
+    if (not m0) return v1;
+    if (not m1) return v0;
+    return (v0+v1)/2;
+  };
+
+  // Scalar 2D
+  {
+    if (comm.am_i_root()) {
+      printf(" -> Checking masked 2d scalars ..\n");
+    }
+    bool ok = true;
+    auto src_v = gs2d_src.get_view<const Real*,Host>();
+    auto tgt_v = gs2d_tgt.get_view<const Real*,Host>();
+
+    for (int icol=0; icol<ngdofs_src; ++icol) {
+      CHECK (tgt_v[2*icol]==expected_copy(src_v[icol],icol));
+      ok &= catch_capture.lastAssertionPassed();
+    }
+    for (int icol=0; icol<ngdofs_src-1; ++icol) {
+      CHECK (tgt_v[2*icol+1]==expected_avg(src_v[icol],src_v[icol+1],icol));
+      ok &= catch_capture.lastAssertionPassed();
+    }
+    if (comm.am_i_root()) {
+      printf(" -> Checking masked 2d scalars .. %s\n",ok ? "PASS" : "FAIL");
+    }
+  }
+
+  // Scalar 3D
+  {
+    if (comm.am_i_root()) {
+      printf(" -> Checking masked 3d scalars ..\n");
+    }
+    bool ok = true;
+    auto src_v = gs3d_src.get_view<const Real**,Host>();
+    auto tgt_v = gs3d_tgt.get_view<const Real**,Host>();
+
+    for (int icol=0; icol<ngdofs_src; ++icol) {
+      for (int ilev=0; ilev<nlevs; ++ilev) {
+        CHECK (tgt_v(2*icol,ilev)==expected_copy(src_v(icol,ilev),icol));
+        ok &= catch_capture.lastAssertionPassed();
+      }
+    }
+    for (int icol=0; icol<ngdofs_src-1; ++icol) {
+      for (int ilev=0; ilev<nlevs; ++ilev) {
+        CHECK (tgt_v(2*icol+1,ilev)==expected_avg(src_v(icol,ilev),src_v(icol+1,ilev),icol));
+        ok &= catch_capture.lastAssertionPassed();
+      }
+    }
+    if (comm.am_i_root()) {
+      printf(" -> Checking masked 3d scalars .. %s\n",ok ? "PASS" : "FAIL");
+    }
+  }
+
+  // The tgt fields must carry a valid mask, marking the fully-masked cols
+  {
+    REQUIRE (s2d_tgt.has_valid_mask());
+    REQUIRE (s3d_tgt.has_valid_mask());
   }
 
   // Clean up

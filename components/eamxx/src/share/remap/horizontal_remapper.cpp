@@ -186,6 +186,10 @@ registration_ends_impl ()
       tgt_real_mask.get_header().get_alloc_properties().request_allocation(ps);
       m_name_to_tgt_real_mask[mask_name] = tgt_real_mask;
 
+      // Store where this real mask landed in the fields list, so that the refining
+      // matvec can grab its ov counterpart (see local_mat_vec_masked)
+      m_real_mask_field_idx[mask_name] = m_num_fields-1;
+
       // Create the int-valued tgt mask from the newly created real-valued tgt mask
       auto tgt_fid = create_tgt_fid(src_fid);
       tgt_mask = Field(tgt_fid);
@@ -639,11 +643,23 @@ local_mat_vec_masked (const Field& x, const Field& y) const
   using Pack        = ekat::Pack<Real,PackSize>;
   using PackInfo    = ekat::PackInfo<PackSize>;
 
+  const bool coarsen = m_remap_data->m_coarsening;
+
   const auto& src_layout = x.get_header().get_identifier().get_layout();
   const auto& mask_name = x.get_valid_mask().name();
-  const auto& mask = m_name_to_src_real_mask.at(mask_name);
+
+  // The mask must live on the same grid as x, since we index it with the
+  // very same col lids we use for x:
+  //  - coarsening: x is the src field, and col lids refer to the src grid
+  //  - refining  : x is the ov field, and col lids refer to the ov grid
+  const auto& mask = coarsen ? m_name_to_src_real_mask.at(mask_name)
+                             : m_ov_fields.at(m_real_mask_field_idx.at(mask_name));
+
+  // Same row grid logic as in local_mat_vec: the CRS matrix has one row per
+  // local dof of the ov grid (coarsening) or of the tgt grid (refining).
+  const auto row_grid = coarsen ? m_remap_data->m_overlap_grid : m_tgt_grid;
   const int rank = src_layout.rank();
-  const int nrows  = m_remap_data->m_overlap_grid->get_num_local_dofs();
+  const int nrows  = row_grid->get_num_local_dofs();
   auto row_offsets = m_remap_data->m_row_offsets;
   auto col_lids    = m_remap_data->m_col_lids;
   auto weights     = m_remap_data->m_weights;
@@ -1347,6 +1363,11 @@ void HorizontalRemapper::clean_up ()
   m_tgt_fields.clear();
   m_ov_fields.clear();
   m_needs_remap.clear();
+  m_name_to_src_int_mask.clear();
+  m_name_to_tgt_int_mask.clear();
+  m_name_to_src_real_mask.clear();
+  m_name_to_tgt_real_mask.clear();
+  m_real_mask_field_idx.clear();
 
   // Reset the state of the base class
   m_state = RepoState::Clean;

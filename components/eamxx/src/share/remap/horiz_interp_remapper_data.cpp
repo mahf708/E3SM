@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <numeric>
 #include <filesystem>
+#include <cstdio>
 
 namespace scream {
 
@@ -207,10 +208,19 @@ build (const std::shared_ptr<const AbstractGrid>& grid,
 
     // If this is a remap TO a lat-lon grid, setup some geo data that our output classes
     // will use to write to file using (lat,lon) layout rather than (ncol)
+    // NOTE: dst_grid_rank==2 only says the tgt grid is structured; setup_latlon_data
+    //       verifies it is also rectilinear, and bails out (returning false) if not.
     if (built_from_src and
         scorpio::has_dim(map_file,"dst_grid_rank") and
         scorpio::get_dimlen(map_file,"dst_grid_rank")==2) {
-      setup_latlon_data(gen_grid,map_file);
+      if (not setup_latlon_data(gen_grid,map_file)) {
+        // Not a lat-lon grid after all: make sure we did not leave partial geo data behind
+        for (const char* n : {"lat_idx","lon_idx"}) {
+          if (gen_grid->has_geometry_data(n)) {
+            gen_grid->delete_geometry_data(n);
+          }
+        }
+      }
     }
   }
 
@@ -394,7 +404,7 @@ create_crs_matrix_structures (std::vector<Triplet>& triplets)
   Kokkos::deep_copy(m_row_offsets,row_offsets_h);
 }
 
-void HorizRemapperData::
+bool HorizRemapperData::
 setup_latlon_data(const std::shared_ptr<AbstractGrid>& grid,
                   const std::string& map_file)
 {
@@ -413,18 +423,55 @@ setup_latlon_data(const std::shared_ptr<AbstractGrid>& grid,
   RealsClose cmp;
   std::set<Real,RealsClose> my_lats(cmp), my_lons(cmp);
 
+  const int nldofs = grid->get_num_local_dofs();
   auto pt_lat_h = pt_lat.get_view<const Real*,Host>();
   auto pt_lon_h = pt_lon.get_view<const Real*,Host>();
-  for (int i=0; i<grid->get_num_local_dofs(); ++i) {
+  for (int i=0; i<nldofs; ++i) {
     my_lats.insert(pt_lat_h(i));
     my_lons.insert(pt_lon_h(i));
   }
 
   const auto& comm = grid->get_comm();
+
+  // A map file with dst_grid_rank==2 does NOT guarantee that the tgt grid is a
+  // *rectilinear* lat-lon grid: any structured 2d grid (e.g., a regional grid on a
+  // Lambert conformal or rotated-pole projection) also has rank 2, but its lat/lon
+  // are curvilinear, so ncol != nlat*nlon. Setting up the (lat,lon) output layout
+  // for such a grid is catastrophic: every column has its own lat and lon value, so
+  // nlat ~ nlon ~ ncol, and output vars would be declared with ncol^2 entries.
+  // Detect this cheaply and locally: for a rectilinear grid, the local dofs form a
+  // contiguous chunk of a row-major (lat,lon) array, so the bounding box of the
+  // local points, nlat_loc*nlon_loc, is O(nldofs). For a curvilinear grid it is
+  // O(nldofs^2). Use a generous factor to stay clear of decomposition corner cases.
+  long long bbox = static_cast<long long>(my_lats.size())*my_lons.size();
+  int not_rectilinear = (nldofs>0 and bbox > 4ll*nldofs) ? 1 : 0;
+  comm.all_reduce(&not_rectilinear,1,MPI_MAX);
+  if (not_rectilinear) {
+    if (comm.am_i_root()) {
+      printf("Warning! The tgt grid in map file '%s' has dst_grid_rank=2, but its lat/lon\n"
+             "         are curvilinear (ncol != nlat*nlon), so output cannot use a (lat,lon)\n"
+             "         layout. Falling back to writing output with an 'ncol' dimension.\n",
+             map_file.c_str());
+    }
+    return false;
+  }
+
   auto lats = allgatherv_vec(std::vector<Real>(my_lats.begin(),my_lats.end()),comm);
   auto lons = allgatherv_vec(std::vector<Real>(my_lons.begin(),my_lons.end()),comm);
   int nlat = lats.size();
   int nlon = lons.size();
+
+  // Belt and braces: the local heuristic above is cheap, this is the exact condition.
+  const long long ncol = grid->get_num_global_dofs();
+  if (static_cast<long long>(nlat)*nlon != ncol) {
+    if (comm.am_i_root()) {
+      printf("Warning! The tgt grid in map file '%s' has dst_grid_rank=2, but nlat*nlon != ncol\n"
+             "         (nlat=%d, nlon=%d, ncol=%lld), so output cannot use a (lat,lon) layout.\n"
+             "         Falling back to writing output with an 'ncol' dimension.\n",
+             map_file.c_str(),nlat,nlon,ncol);
+    }
+    return false;
+  }
   
   // Re-create lat/lon geometry data with only lat (or lon) dim
   grid->delete_geometry_data("lat");
@@ -495,6 +542,8 @@ setup_latlon_data(const std::shared_ptr<AbstractGrid>& grid,
   }
   lat_idx.sync_to_dev();
   lon_idx.sync_to_dev();
+
+  return true;
 }
 
 std::shared_ptr<const HorizRemapperData>

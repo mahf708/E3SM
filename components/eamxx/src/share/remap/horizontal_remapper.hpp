@@ -158,6 +158,10 @@ protected:
   std::map<std::string,Field> m_name_to_tgt_int_mask;
   std::map<std::string,Field> m_name_to_src_real_mask;
   std::map<std::string,Field> m_name_to_tgt_real_mask;
+
+  // Index of each real-valued mask field within m_src_fields/m_tgt_fields/m_ov_fields.
+  // Needed by the refining matvec, which must use the ov version of the mask.
+  std::map<std::string,int>   m_real_mask_field_idx;
 };
 
 } // namespace scream

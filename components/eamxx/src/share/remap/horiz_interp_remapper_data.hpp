@@ -69,7 +69,10 @@ private:
   // its local part of the mat-vec product
   std::vector<Triplet>  get_my_triplets (const std::vector<Triplet>& triplets);
 
-  void setup_latlon_data(const std::shared_ptr<AbstractGrid>& grid,
+  // Sets up the geo data needed to write output with a (lat,lon) layout.
+  // Returns false (leaving the grid untouched) if the tgt grid is a structured
+  // but NOT rectilinear 2d grid, in which case output must stay on 'ncol'.
+  bool setup_latlon_data(const std::shared_ptr<AbstractGrid>& grid,
                          const std::string& map_file);
 
   void create_ov_grid (const std::vector<Triplet>& triplets);
