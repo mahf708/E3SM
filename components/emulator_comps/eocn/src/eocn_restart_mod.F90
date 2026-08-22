@@ -18,6 +18,7 @@ module eocn_restart_mod
 
   use shr_kind_mod      , only : r8 => shr_kind_r8
   use shr_sys_mod       , only : shr_sys_abort
+  use pio               , only : pio_offset_kind, pio_set_buffer_size_limit
 
   use eocnIO
   use eocnMod
@@ -43,9 +44,24 @@ module eocn_restart_mod
 
       type(file_desc_t) :: ncid
       integer :: i
+      integer(pio_offset_kind) :: prev_buffer_limit
 
       write(logunit_ocn,'(72a1)') ("-",i=1,60)
       write(logunit_ocn, *) 'restart_file_open: writing EOCN restart dataset '
+
+      ! EOCN is serial, so it writes whole global fields with pio_put_var
+      ! rather than a distributed darray.  Under pnetcdf those become buffered
+      ! puts that are not flushed until the file is closed, and this restart
+      ! holds both bracketing emulator states -- around 90 MB, comfortably over
+      ! the default limit, which aborts the run with "Attached buffer is too
+      ! small" after the science has already finished.  Serial netcdf has no
+      ! such buffer, which is why the restart test in VERIFICATION.md section 3
+      ! never caught it.
+      !
+      ! Raise the limit for the write and put it back afterwards, rather than
+      ! leaving it raised for every other component sharing the library.
+      call pio_set_buffer_size_limit(int(256*1024*1024, pio_offset_kind), &
+                                     prev_limit=prev_buffer_limit)
 
       call ncd_pio_createfile(ncid, trim(file))
       call set_restart_file_dimensions(ncid)
@@ -54,6 +70,8 @@ module eocn_restart_mod
 
       call eocn_restart(ncid, 'write')
       call ncd_pio_closefile(ncid)
+
+      call pio_set_buffer_size_limit(prev_buffer_limit)
 
       write(logunit_ocn, *) 'Successfully wrote out restart data at nstep = ',stepno
       write(logunit_ocn,'(72a1)') ("-",i=1,60)

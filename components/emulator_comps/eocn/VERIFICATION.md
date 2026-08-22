@@ -435,3 +435,30 @@ other fix was for.  What confirms they are right rather than merely tolerated
 is `seq_domain_check`: `ofrac` on the atmosphere grid agrees with one minus
 ELM's land fraction to 8.9e-15.  A hole that is real shows up there as a
 fraction mismatch; a hole that is correct does not.
+
+## 8. The restart write only worked because the test used serial netcdf
+
+With the map fixed, `F2010-ELM-EOCN-EICE` integrated all 96 steps of its two
+days, conserving energy, with no scanner hits from either emulator.  Then it
+aborted:
+
+```
+PIO: FATAL ERROR: Attached buffer is too small.
+  (file = eocn-f2010ice-4n.eocn.r.0001-01-03-00000.nc)
+```
+
+EOCN is serial, so it writes whole global fields with `pio_put_var` rather
+than a distributed `pio_write_darray`.  Under pnetcdf those become buffered
+puts that are not flushed until the file closes, and this restart carries both
+bracketing emulator states — 89.7 MB — which is over the default limit.
+
+Section 3's restart test did not catch this because the emulated case runs
+`PIO_TYPENAME = netcdf`, whose serial path has no attached buffer, while the
+F2010 case inherits `pnetcdf`.  The restart code was never wrong; it had
+simply never been executed on the path that fails.  Worth remembering when a
+component is only ever exercised in one compset: the compset carries settings
+that are part of what is being tested, whether or not anyone chose them.
+
+`eocn_restart_file_write` now raises the limit for the write and restores it
+afterwards, following `homme/src/common_io_mod.F90:123`, rather than leaving
+it raised for every other component sharing the library.
