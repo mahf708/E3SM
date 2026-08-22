@@ -114,6 +114,14 @@ python tools/make_atm_domain.py --map map_gauss180x360_to_ne30pg2_traave.nc \
 
 Point `eocn_model_file` and `eocn_ic_file` at the results in `user_nl_eocn`.
 
+## Running it
+
+```bash
+tools/run_eocn_pm-gpu.sh                    # both emulators, 11 days
+CASE=f2010 tools/run_eocn_pm-gpu.sh         # prognostic EAM over the emulated ocean
+STOP_N=110 CASE_NAME=eocn-long tools/run_eocn_pm-gpu.sh
+```
+
 See `VERIFICATION.md` for what has actually been run and measured.
 
 ## Known gaps
