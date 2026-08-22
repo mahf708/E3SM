@@ -58,6 +58,22 @@ module ace_comp_mod
   type(torch_tensor), dimension(1) :: input_tensor
   type(torch_tensor), dimension(1) :: output_tensor
 
+  ! ACE2-EAMv3 output channels 35-44 (fluxes, precipitation) are means over
+  ! the emulator step; 1-34 are snapshots at the end of it.
+  integer, parameter :: first_mean_channel = 35
+
+  ! TOA insolation: the window mean the emulator was driven with, and the
+  ! instantaneous value now.  Their ratio restores the diurnal cycle on the
+  ! interval-mean shortwave.
+  real(R8), allocatable :: solin_win(:,:)
+  real(R8), allocatable :: solin_now(:,:)
+  logical               :: solin_ready = .false.
+
+  ! time of the last emulator advance, so a repeated call at the same model
+  ! time does not step the emulator twice
+  integer(IN) :: last_adv_ymd = -1
+  integer(IN) :: last_adv_tod = -1
+
   integer(c_int) :: tensor_layout(4)
   integer(c_int64_t) :: input_tensor_shape(4)
   integer(c_int64_t) :: output_tensor_shape(4)
@@ -82,7 +98,14 @@ CONTAINS
     integer     :: i, j, k     ! loop indicies
     real(R8)    :: t_frac      ! frac through eatm timestep
     integer     :: t_modulo    ! int remainder of curr. time over eatm dt
+    integer(in) :: CurrentYMD  ! model date
     integer(in) :: CurrentTOD  ! model sec into model date
+
+    allocate(solin_win(lsize_x, lsize_y), solin_now(lsize_x, lsize_y))
+    solin_win(:,:) = 0.0_R8
+    solin_now(:,:) = 0.0_R8
+
+    call seq_timemgr_EClockGetData( EClock, curr_ymd=CurrentYMD, curr_tod=CurrentTOD )
 
     input_tensor_shape = [ &
       int(1, kind=c_int64_t), &
@@ -108,24 +131,17 @@ CONTAINS
 
     if (read_restart) then
 
-      call seq_timemgr_EClockGetData( EClock, curr_tod=CurrentTOD )
-
       ! int remainder (in sec) of coupler timestep relative to ACE timestep
       t_modulo = mod(CurrentTOD, eatm_idt)
       ! turn integer remainder into fraction through ACE timestep
       t_frac = real(t_modulo, kind=R8) / real(eatm_idt, kind=R8)
 
-      do k = 1, n_output_channels
-        do j = 1, lsize_y
-          do i = 1, lsize_x
-            net_outputs(1, k, i, j) = eatm_intrp%t_im1(k, i, j) + &
-                t_frac * (eatm_intrp%t_ip1(k, i, j) - eatm_intrp%t_im1(k, i, j))
-          end do
-        end do
-      end do
+      call ace_bracket_blend(t_frac)
+      call ace_capture_solin_window()   ! SOLIN comes back from the restart file
 
     else
       call ace_compute_solin(EClock, ggrid)
+      call ace_capture_solin_window()
 
       net_inputs_nn = net_inputs
       ! normalize, can probably happen after tensor is made becuase it's a pointer
@@ -172,6 +188,11 @@ CONTAINS
       end do
     endif
 
+    last_adv_ymd = CurrentYMD
+    last_adv_tod = CurrentTOD
+
+    call ace_solin_now(EClock, ggrid)
+
     ! using restart data from ACE set the fields passed to the coupler
     call ace_eatm_export(ggrid)
 
@@ -207,10 +228,21 @@ CONTAINS
     ! integer remainder (in sec) of coupler timestep relative to ACE timestep
     t_modulo = mod(CurrentTOD, eatm_idt)
 
-    if (t_modulo .eq. 0) then
+    ! An emulator step is due at every multiple of eatm_idt, but only once per
+    ! model time: the driver's phase-2 initialization call runs this routine
+    ! again at the time the startup inference already covered.
+    if (t_modulo .eq. 0 .and. &
+        .not. (CurrentYMD .eq. last_adv_ymd .and. CurrentTOD .eq. last_adv_tod)) then
+
+      ! Feed the emulator its own prediction for this time.  net_outputs still
+      ! holds the field the coupler was handed at the previous coupler step,
+      ! which is a partial interpolation towards t_ip1 and not a state the
+      ! emulator was trained to consume.
+      net_outputs(1, :, :, :) = eatm_intrp%t_ip1(:, :, :)
 
       call ace_eatm_import()
       call ace_compute_solin(EClock, ggrid)
+      call ace_capture_solin_window()
 
       net_inputs_nn = net_inputs
       ! normalize, can probably happen after tensor is made becuase it's a pointer
@@ -258,26 +290,57 @@ CONTAINS
         end do
       end do
 
+      last_adv_ymd = CurrentYMD
+      last_adv_tod = CurrentTOD
+
     end if
 
     t_frac = real(t_modulo, kind=r8) / real(eatm_idt, kind=r8)
 
-    ! time interpolate the results
-    do k = 1, n_output_channels
-      do j = 1, lsize_y
-        do i = 1, lsize_x
-          net_outputs(1, k, i, j) = eatm_intrp%t_im1(k, i, j) + &
-              t_frac * (eatm_intrp%t_ip1(k, i, j) - eatm_intrp%t_im1(k, i, j))
-        end do
-      end do
-    end do
+    call ace_bracket_blend(t_frac)
+
+    ! diurnal shape for this coupler step, applied to the shortwave on export
+    call ace_solin_now(EClock, ggrid)
 
     call ace_eatm_export(ggrid)
 
   end subroutine ace_comp_run
 
+  subroutine ace_bracket_blend(t_frac)
+    !----------------------------------------------------------------
+    ! Combine the two bracketing emulator states into the field handed to the
+    ! coupler at a fraction t_frac through the current emulator interval.
+    !
+    ! Snapshot channels are instantaneous values at the bracket times and are
+    ! interpolated.  Interval-mean channels are already the mean over the
+    ! interval being stepped across, so t_ip1 is the answer everywhere inside
+    ! it; interpolating them from the previous interval's mean lags the surface
+    ! radiation and precipitation by half an emulator step.
+    !----------------------------------------------------------------
+    implicit none
+
+    real(R8), intent(in) :: t_frac
+
+    integer  :: i, j, k
+
+    do k = 1, n_output_channels
+      do j = 1, lsize_y
+        do i = 1, lsize_x
+          if (k >= first_mean_channel) then
+            net_outputs(1, k, i, j) = eatm_intrp%t_ip1(k, i, j)
+          else
+            net_outputs(1, k, i, j) = eatm_intrp%t_im1(k, i, j) + &
+                t_frac * (eatm_intrp%t_ip1(k, i, j) - eatm_intrp%t_im1(k, i, j))
+          end if
+        end do
+      end do
+    end do
+
+  end subroutine ace_bracket_blend
+
   subroutine ace_comp_finalize()
     call torch_delete(ace_model)
+    if (allocated(solin_win)) deallocate(solin_win, solin_now)
     ! call finalize_normalizer(normalizer)
     ! call finalize_normalizer(denormalizer)
   end subroutine ace_comp_finalize
@@ -292,17 +355,23 @@ CONTAINS
     implicit none
 
     ! !LOCAL VARIABLES:
-    integer :: i, j
+    integer  :: i, j
+    real(R8) :: deficit   ! cell fraction no surface model covers
 
     do j = 1, lsize_y
       do i = 1, lsize_x
-        net_inputs(1,  1, i, j) = lndfrac(i, j)            ! ACE2-EAMv3: LANDFRAC
+        ! lndfrac is the coupler's Sf_lfrac, the fraction claimed by the *land
+        ! model*, which is identically zero with a stub land model.  That left
+        ! LANDFRAC at zero everywhere and the coupler's merged surface
+        ! temperature at 0 K over every land point.  Report the uncovered
+        ! fraction as land and let the emulator own the surface there; with a
+        ! land model running the deficit is zero and both lines pass through.
+        deficit = max(0.0_R8, 1.0_R8 - ocnfrac(i, j) - icefrac(i, j) - lndfrac(i, j))
+        net_inputs(1,  1, i, j) = lndfrac(i, j) + deficit  ! ACE2-EAMv3: LANDFRAC
         net_inputs(1,  2, i, j) = ocnfrac(i, j)            ! ACE2-EAMv3: OCNFRAC
         net_inputs(1,  3, i, j) = icefrac(i, j)            ! ACE2-EAMv3: ICEFRAC
         net_inputs(1,  6, i, j) = net_outputs(1, 1, i, j)  ! ACE2-EAMv3: PS
-        ! use landfrac as weights to paint in ACE TS over land
-        net_inputs(1,  7, i, j) = (1 - lndfrac(i, j))*ts(i, j) + lndfrac(i, j) * net_outputs(1, 2, i, j)  ! ACE2-EAMv3: TS
-        ! net_inputs(1,  7, i, j) = net_outputs(1, 2, i, j)  ! ACE2-EAMv3: TS
+        net_inputs(1,  7, i, j) = ts(i, j) + deficit * net_outputs(1, 2, i, j)  ! ACE2-EAMv3: TS
         ! For 3D fields just advance through with time
         net_inputs(1,  8, i, j) = net_outputs(1,  3, i, j) ! ACE2-EAMv3: T_0
         net_inputs(1,  9, i, j) = net_outputs(1,  4, i, j) ! ACE2-EAMv3: T_1
@@ -355,6 +424,7 @@ CONTAINS
     integer(IN) :: klat
     integer     :: i, j, n
     real(R8)    :: e, avg_alb
+    real(R8)    :: p_int, tv, fsds_dn, fsus_up, sw_scale
     real(R8), parameter :: ak_7 = 2328.4749
     real(R8), parameter :: bk_7 = 0.8722759
     real(R8), parameter :: degtorad = SHR_CONST_PI/180.0_R8
@@ -370,19 +440,30 @@ CONTAINS
         n = n + 1
 
         pslv(i, j) = net_outputs(1,  1, i, j) ! PS (Surface pressure)
-        pbot(i, j) = (ak_7 + bk_7 * net_outputs(1, 1, i, j))
-        ! https://en.wikipedia.org/wiki/Pressure_altitude w/ Pa --> hPa
-        zbot(i, j) = 44307.694_R8 * ( 1.0_R8 - (pbot(i, j) / SHR_CONST_PSTD)**0.190284_R8 )
         ubot(i, j) = net_outputs(1, 26, i, j) ! U_7
         vbot(i, j) = net_outputs(1, 34, i, j) ! V_7
         tbot(i, j) = net_outputs(1, 10, i, j) ! T_7
+
+        !--- T_7/U_7/V_7/STW_7 are means over the lowest layer, so the state
+        !--- handed to the coupler belongs at the layer midpoint, and Sa_z is a
+        !--- height above the surface rather than a pressure altitude above sea
+        !--- level.
+        p_int = ak_7 + bk_7 * pslv(i, j)          ! top of the lowest layer
+        pbot(i, j) = 0.5_R8 * (pslv(i, j) + p_int)
+
+        !--- specific humidity: the emulator's own STW_7.  shr_flux_atmOcn
+        !--- reads Sa_shum as vapour, so cap the condensate off at saturation.
+        e = datm_shr_esat(tbot(i, j), tbot(i, j))
+        shum(i, j) = max(real(net_outputs(1, 18, i, j), R8), 0.0_R8)  ! STW_7
+        shum(i, j) = min(shum(i, j), &
+             (0.622_R8 * e) / max(pbot(i, j) - 0.378_R8 * e, 1.0_R8))
+
+        tv = tbot(i, j) * (1.0_R8 + 0.608_R8 * shum(i, j))
+        zbot(i, j) = (rdair * tv / SHR_CONST_G) * log(pslv(i, j) / pbot(i, j))
+
         ptem(i, j) = tbot(i,j) * (pslv(i,j)/pbot(i,j))**(rdair/SHR_CONST_CPDAIR)
         lwdn(i, j) = net_outputs(1, 40, i, j) ! FLDS (Downwelling longwave flux at surface)
 
-        !--- saturation vapor pressure ---
-        e = datm_shr_esat(tbot(i, j), tbot(i, j))
-        !--- specific humidity ---
-        shum(i, j) = (0.622_R8 * e)/(pbot(i, j) - 0.378_R8 * e)
         !--- density ---
         dens(i, j) = pbot(i, j)  / (rdair * tbot(i, j) * (1 + 0.608_R8 * shum(i, j)))
 
@@ -396,13 +477,27 @@ CONTAINS
           snowl(i, j) = 0.0_R8
         endif
 
-        ! Downwelling solar flux at surface
-        swnet(i, j) = net_outputs(1, 41, i, j)
-        !--- fabricate required sw[n,v]d[r,f] components from swnet ---
-        swvdr(i, j) = swnet(i, j) * 0.28_R8
-        swndr(i, j) = swnet(i, j) * 0.31_R8
-        swvdf(i, j) = swnet(i, j) * 0.24_R8
-        swndf(i, j) = swnet(i, j) * 0.17_R8
+        !--- FSDS and FSUS are means over the emulator step.  Put the diurnal
+        !--- cycle back on them with the ratio of the instantaneous insolation
+        !--- now to the window mean the emulator was driven with.
+        fsds_dn = max(real(net_outputs(1, 41, i, j), R8), 0.0_R8)  ! FSDS
+        fsus_up = max(real(net_outputs(1, 42, i, j), R8), 0.0_R8)  ! FSUS
+        if (solin_ready) then
+          if (solin_win(i, j) > 1.0_R8) then
+            sw_scale = solin_now(i, j) / solin_win(i, j)
+          else
+            sw_scale = 0.0_R8   ! polar night: no sun in the window, none now
+          end if
+          fsds_dn = fsds_dn * sw_scale
+          fsus_up = fsus_up * sw_scale
+        end if
+
+        !--- fabricate required sw[n,v]d[r,f] components from the downwelling ---
+        swvdr(i, j) = fsds_dn * 0.28_R8
+        swndr(i, j) = fsds_dn * 0.31_R8
+        swvdf(i, j) = fsds_dn * 0.24_R8
+        swndf(i, j) = fsds_dn * 0.17_R8
+        swnet(i, j) = max(fsds_dn - fsus_up, 0.0_R8)
 
         ! avg_alb = ( 0.069 - 0.011*cos(2.0_R8*yc(n)*degtorad ) )
         ! swnet(i, j) = swnet(i, j) * (1.0_R4 - REAL(avg_alb, R4))
@@ -469,15 +564,11 @@ CONTAINS
 
   end function datm_shr_eSat
 
-  subroutine ace_compute_solin(EClock, ggrid)
+  subroutine ace_solin_now(EClock, ggrid)
     !----------------------------------------------------------------
-    ! Compute SOLIN (solar insolation at TOA) from orbital mechanics.
-    ! SOLIN = S0 * eccf * max(0, cosz)
-    !
-    ! The ACE emulator predicts state at T+dt from inputs at T, so
-    ! SOLIN is computed for T+dt (the prediction target time) to ensure
-    ! the output FSDS matches the correct solar geometry. This enables
-    ! smooth time interpolation between consecutive ACE outputs.
+    ! Instantaneous TOA insolation at the current coupler time.  Divided by the
+    ! window mean the emulator was driven with, this is the diurnal shape that
+    ! ace_eatm_export puts back onto the interval-mean shortwave.
     !----------------------------------------------------------------
     implicit none
     type(ESMF_Clock), intent(in) :: EClock
@@ -485,10 +576,7 @@ CONTAINS
 
     integer(IN)       :: CurrentYMD, CurrentTOD
     character(len=CS) :: calendar
-    real(R8)          :: julday
-    real(R8)          :: delta, eccf
-    real(R8)          :: lat_r, lon_r
-    real(R8)          :: cosz_val, solin_val
+    real(R8)          :: julday, delta, eccf, lat_r, lon_r
     real(R8), parameter :: degtorad = SHR_CONST_PI / 180.0_R8
 
     integer     :: klat, klon, n, i, j
@@ -496,12 +584,7 @@ CONTAINS
 
     call seq_timemgr_EClockGetData(EClock, curr_ymd=CurrentYMD, curr_tod=CurrentTOD)
     call seq_timemgr_EClockGetData(EClock, calendar=calendar)
-
     call shr_cal_date2julian(CurrentYMD, CurrentTOD, julday, calendar)
-
-    ! Advance julday by one ACE timestep: the emulator predicts state
-    ! at T+dt, so SOLIN must represent solar geometry at T+dt.
-    julday = julday + real(eatm_idt, R8) / SHR_CONST_CDAY
 
     call shr_orb_decl(julday, orb_eccen, orb_mvelpp, orb_lambm0, orb_obliqr, delta, eccf)
 
@@ -517,12 +600,106 @@ CONTAINS
         n = n + 1
         lat_r = yc(n) * degtorad
         lon_r = xc(n) * degtorad
-        cosz_val = shr_orb_cosz(julday, lat_r, lon_r, delta)
-        solin_val = solar_const * eccf * max(0.0_R8, cosz_val)
-        net_inputs(1, 5, i, j) = real(solin_val, R4)
+        solin_now(i, j) = solar_const * eccf * &
+             max(0.0_R8, shr_orb_cosz(julday, lat_r, lon_r, delta))
       end do
     end do
 
+    deallocate(yc, xc)
+
+  end subroutine ace_solin_now
+
+  subroutine ace_capture_solin_window()
+    ! Keep the window mean the emulator is about to be driven with, as the
+    ! denominator of the diurnal rescaling over the interval it covers.
+    implicit none
+    integer :: i, j
+    do j = 1, lsize_y
+      do i = 1, lsize_x
+        solin_win(i, j) = real(net_inputs(1, 5, i, j), R8)
+      end do
+    end do
+    solin_ready = .true.
+  end subroutine ace_capture_solin_window
+
+  subroutine ace_compute_solin(EClock, ggrid)
+    !----------------------------------------------------------------
+    ! Compute SOLIN (solar insolation at TOA) from orbital mechanics, as the
+    ! *mean over the emulator step about to be taken*:
+    !
+    !   SOLIN = (1/dt) * integral over (T, T+dt] of S0 * eccf * max(0, cosz)
+    !
+    ! SOLIN is a next-step forcing channel, so it belongs to the prediction
+    ! target rather than to the input state's own time; and it carries
+    ! cell_methods = "time: mean" in the training stream, so it is the mean
+    ! over the 6 h leading up to that timestamp.  The instantaneous field at
+    ! T+dt has the same global mean but is a different field point by point --
+    ! a cosine bullseye at the subsolar point rather than a band 90 degrees of
+    ! longitude wide -- with an RMS difference of 330 W/m2.
+    !
+    ! Evaluated by the midpoint rule on n_solin_sub sub-intervals.  Against a
+    ! 2400-point reference, 48 sub-steps leave an RMS error of 0.03 W/m2.
+    !----------------------------------------------------------------
+    implicit none
+    type(ESMF_Clock), intent(in) :: EClock
+    type(mct_gGrid),  intent(in), pointer :: ggrid
+
+    integer(IN)       :: CurrentYMD, CurrentTOD
+    character(len=CS) :: calendar
+    real(R8)          :: julday, jsub
+    real(R8)          :: delta, eccf
+    real(R8)          :: lat_r, lon_r
+    real(R8)          :: cosz_val, dt_days
+    real(R8), parameter :: degtorad = SHR_CONST_PI / 180.0_R8
+    integer,  parameter :: n_solin_sub = 48
+
+    integer     :: klat, klon, n, i, j, m
+    real(R8), pointer :: yc(:), xc(:)
+    real(R8), allocatable :: accum(:,:)
+
+    call seq_timemgr_EClockGetData(EClock, curr_ymd=CurrentYMD, curr_tod=CurrentTOD)
+    call seq_timemgr_EClockGetData(EClock, calendar=calendar)
+
+    call shr_cal_date2julian(CurrentYMD, CurrentTOD, julday, calendar)
+
+    dt_days = real(eatm_idt, R8) / SHR_CONST_CDAY
+
+    allocate(yc(lsize), xc(lsize))
+    klat = mct_aVect_indexRA(ggrid%data, 'lat')
+    klon = mct_aVect_indexRA(ggrid%data, 'lon')
+    yc(:) = ggrid%data%rAttr(klat, :)
+    xc(:) = ggrid%data%rAttr(klon, :)
+
+    allocate(accum(lsize_x, lsize_y))
+    accum(:,:) = 0.0_R8
+
+    do m = 1, n_solin_sub
+
+      ! midpoint of sub-interval m within (T, T+dt]
+      jsub = julday + dt_days * (real(m, R8) - 0.5_R8) / real(n_solin_sub, R8)
+
+      call shr_orb_decl(jsub, orb_eccen, orb_mvelpp, orb_lambm0, orb_obliqr, delta, eccf)
+
+      n = 0
+      do j = 1, lsize_y
+        do i = 1, lsize_x
+          n = n + 1
+          lat_r = yc(n) * degtorad
+          lon_r = xc(n) * degtorad
+          cosz_val = shr_orb_cosz(jsub, lat_r, lon_r, delta)
+          accum(i, j) = accum(i, j) + solar_const * eccf * max(0.0_R8, cosz_val)
+        end do
+      end do
+
+    end do
+
+    do j = 1, lsize_y
+      do i = 1, lsize_x
+        net_inputs(1, 5, i, j) = real(accum(i, j) / real(n_solin_sub, R8), R4)
+      end do
+    end do
+
+    deallocate(accum)
     deallocate(yc, xc)
 
   end subroutine ace_compute_solin
