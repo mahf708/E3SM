@@ -378,9 +378,32 @@ have predicted that asymmetry in advance.
 
 ### Why the emulated pair never saw it
 
+Because it never regrids.  `E2000-EATM-EOCN[-EICE]` puts the atmosphere and
+the ocean on the *same* grid:
+
+```
+a%gauss180x360_l%null_oi%gauss180x360 ...
+  ocn2atm_fmapname: "idmap"
+  atm2ocn_smapname: "idmap"
+```
+
+Every map in that compset is the identity, so neither this bug nor the land
+contamination of section 4 can exist there at all.  Sections 2, 2b, 3, 5 and 6
+are unaffected and their numbers stand as measured.
+
+This is worth stating plainly because the opposite is easy to assume: the
+emulated pair is not a weaker test that happened to miss these bugs, it is a
+configuration in which they are structurally impossible.  Everything in
+section 7 is the price of putting a prognostic atmosphere on its own native
+grid, and it is paid the moment the two grids differ.  The Python reference
+implementation in the `ace` repository shares that immunity for the same
+reason — both halves are tensors on one grid — so it cannot be used to catch
+this class of problem either.
+
+The second-order reason, which would have mattered had the grids differed:
 EATM does not read `Faxx_*`.  It diagnoses its own surface fluxes from its own
-state, so the poisoned fields pass through it untouched and unnoticed.  Eleven
-days of `E2000-EATM-EOCN-EICE` ran over the same broken map.  EAM reads them.
+state, so poisoned flux fields would pass through it unnoticed.  EAM reads
+them.
 
 This is the third time on this branch that the same shape of bug has appeared:
 a routine evaluated on cells where its inputs were never written.  EICE had it
