@@ -38,6 +38,12 @@ module ice_comp_mct
   ! step and the fluxes are diagnosed from it, so there is no restart file and
   ! nothing to keep bit-for-bit across one.
   !
+  ! The MCT driver runs ice before ocn within a coupling step, so the fraction
+  ! read here is the one EOCN published at the end of the previous step.  EOCN
+  ! republishes every step from its blended state (samudra_comp_mod.F90:252),
+  ! so this is a one coupling step lag -- thirty minutes on a field whose
+  ! underlying emulator step is five days.
+  !
   ! The grid is not read from disk.  It is published by the ocean at init
   ! (shr_emul_ice_put_grid) so that the two halves of the entity cannot
   ! disagree about the mesh, and so that a mismatched decomposition is a hard
