@@ -49,9 +49,23 @@ does not reach the atmosphere as a discontinuity.  Set
 `eocn_interp_state = .false.` to hold each state flat for its whole step
 instead.
 
-**Sea ice.**  Samudra carries its own sea ice internally
-(`ocean_sea_ice_fraction`, `iceVolumeTotal`) and EOCN does not hand it to a sea
-ice model or report a freeze/melt potential.  Run with a stub ice component.
+**Sea ice — the largest open gap.**  Samudra carries its own sea ice
+internally (`ocean_sea_ice_fraction`, `iceVolumeTotal`), and SamudrACE's
+ocean-to-atmosphere exchange is exactly `[ocean_sea_ice_fraction, sst]`.  EOCN
+exports the sea surface temperature but has nowhere to put the ice fraction:
+with a stub ice component the coupler sets the atmosphere's `ICEFRAC` to zero
+everywhere, while the emulator is predicting a global mean near 0.2.  The polar
+ocean therefore reaches the atmosphere as open water at the freezing point —
+the wrong albedo and the wrong turbulent exchange over roughly a tenth of the
+globe.  `VERIFICATION.md` measures what that costs.
+
+Closing it means giving the coupler an ice fraction.  The two routes worth
+considering, cheapest first: a minimal pass-through ice component that reports
+EOCN's `ocean_sea_ice_fraction` as its own domain fraction and surface state,
+or an EATM option to take `ICEFRAC` from the ocean's export rather than from
+`Sf_ifrac`.  The first keeps the coupler's fraction bookkeeping honest; the
+second is a smaller change but leaves the coupler's merge inconsistent with
+what the atmosphere is told.
 
 **Land.**  Samudra's published initial conditions carry NaN over every land
 cell, because an ocean state is undefined there.  A convolutional emulator
@@ -99,6 +113,8 @@ python tools/make_atm_domain.py --map map_gauss180x360_to_ne30pg2_traave.nc \
 ```
 
 Point `eocn_model_file` and `eocn_ic_file` at the results in `user_nl_eocn`.
+
+See `VERIFICATION.md` for what has actually been run and measured.
 
 ## Known gaps
 
