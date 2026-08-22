@@ -448,8 +448,12 @@ TEST_CASE ("refining_remapper") {
 // This test covers the *masked* refining path, i.e. what an online output stream
 // does when it remaps to a finer grid and the fields carry a valid mask (e.g., any
 // field that also went through vertical remapping to pressure levels).
-// The masked matvec used to be coarsening-only: it looped over the ov grid rows and
-// indexed the mask with ov-grid col lids, both of which are wrong when refining.
+// Mask handling was coarsening-only. When refining, the masked matvec was never even
+// dispatched (the check looked for a mask on the ov field, which never has one), so the
+// data was remapped WITHOUT the mask but still divided by the remapped mask afterwards,
+// inflating every tgt col that draws on a masked src col by 1/sum(w*m). The masked
+// kernel itself was also wrong for refining: it used the ov grid row count and a
+// src-grid mask, both of which mismatch the refining CRS layout.
 TEST_CASE ("refining_remapper_masked") {
   using gid_type = AbstractGrid::gid_type;
 

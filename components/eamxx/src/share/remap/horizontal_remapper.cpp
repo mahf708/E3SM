@@ -320,13 +320,25 @@ void HorizontalRemapper::remap_fwd_impl ()
     const auto& x = coarsen ? m_src_fields[i] : m_ov_fields[i];
     const auto& y = coarsen ? m_ov_fields[i] : m_tgt_fields[i];
 
-    const bool masked = m_track_mask and x.has_valid_mask();
+    // NOTE: check the SRC field for a mask, NOT x: when refining, x is the ov field,
+    //       which never has a mask attached to it. Testing x would silently take the
+    //       unmasked path, applying no mask to the data while still dividing by the
+    //       remapped mask in rescale_masked_fields.
+    const bool masked = m_track_mask and m_src_fields[i].has_valid_mask();
     if (masked) {
+      // The mat-vec indexes the mask with the same col lids it uses for x, so the
+      // mask must live on the same grid as x: the src grid when coarsening, the ov
+      // grid when refining.
+      const auto& mask_name = m_src_fields[i].get_valid_mask().name();
+      const auto& mask = coarsen
+                       ? m_name_to_src_real_mask.at(mask_name)
+                       : m_ov_fields.at(m_real_mask_field_idx.at(mask_name));
+
       // If possible, dispatch kernel with SCREAM_PACK_SIZE
       if (can_pack_field(x) and can_pack_field(y)) {
-        local_mat_vec_masked<SCREAM_PACK_SIZE>(x,y);
+        local_mat_vec_masked<SCREAM_PACK_SIZE>(x,y,mask);
       } else {
-        local_mat_vec_masked<1>(x,y);
+        local_mat_vec_masked<1>(x,y,mask);
       }
     } else {
       // If possible, dispatch kernel with SCREAM_PACK_SIZE
@@ -632,7 +644,7 @@ rescale_masked_fields (const Field& x, const Field& real_mask) const
 
 template<int PackSize>
 void HorizontalRemapper::
-local_mat_vec_masked (const Field& x, const Field& y) const
+local_mat_vec_masked (const Field& x, const Field& y, const Field& mask) const
 {
   if (m_timers_enabled)
     start_timer(name()+" matvec masked");
@@ -643,21 +655,11 @@ local_mat_vec_masked (const Field& x, const Field& y) const
   using Pack        = ekat::Pack<Real,PackSize>;
   using PackInfo    = ekat::PackInfo<PackSize>;
 
-  const bool coarsen = m_remap_data->m_coarsening;
-
   const auto& src_layout = x.get_header().get_identifier().get_layout();
-  const auto& mask_name = x.get_valid_mask().name();
-
-  // The mask must live on the same grid as x, since we index it with the
-  // very same col lids we use for x:
-  //  - coarsening: x is the src field, and col lids refer to the src grid
-  //  - refining  : x is the ov field, and col lids refer to the ov grid
-  const auto& mask = coarsen ? m_name_to_src_real_mask.at(mask_name)
-                             : m_ov_fields.at(m_real_mask_field_idx.at(mask_name));
 
   // Same row grid logic as in local_mat_vec: the CRS matrix has one row per
   // local dof of the ov grid (coarsening) or of the tgt grid (refining).
-  const auto row_grid = coarsen ? m_remap_data->m_overlap_grid : m_tgt_grid;
+  const auto row_grid = m_remap_data->m_coarsening ? m_remap_data->m_overlap_grid : m_tgt_grid;
   const int rank = src_layout.rank();
   const int nrows  = row_grid->get_num_local_dofs();
   auto row_offsets = m_remap_data->m_row_offsets;

@@ -84,7 +84,7 @@ public:
   template<int N>
   void local_mat_vec (const Field& f_src, const Field& f_tgt) const;
   template<int N>
-  void local_mat_vec_masked (const Field& f_src, const Field& f_tgt) const;
+  void local_mat_vec_masked (const Field& f_src, const Field& f_tgt, const Field& mask) const;
   template<int N>
   void rescale_masked_fields (const Field& f_tgt, const Field& f_mask) const;
   void pack_and_send ();
