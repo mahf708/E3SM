@@ -97,6 +97,11 @@ module ice_comp_mct
   ! working space for the emulator's fraction
   real(R8), allocatable :: ifrac_emul(:)
 
+  ! Where the bulk flux scheme may be evaluated.  Not the same as imask: at
+  ! init the coupler has not filled x2i yet, so the atmosphere state is all
+  ! zeros, and the scheme divides by air density and takes log(zbot).
+  integer(IN), allocatable :: fmask(:)
+
   ! x2i indices
   integer(IN) :: kswvdr, kswndr, kswvdf, kswndf
   integer(IN) :: kz, kua, kva, kptem, kshum, kdens, ktbot, ksalinity
@@ -196,7 +201,7 @@ CONTAINS
        imask = 0
     end where
 
-    allocate(ifrac_emul(lsize))
+    allocate(ifrac_emul(lsize), fmask(lsize))
     ifrac_emul = 0.0_R8
 
     call ice_SetGSMap_mct(gsMap)
@@ -265,7 +270,7 @@ CONTAINS
     type(mct_aVect) , intent(inout) :: i2x
 
     if (allocated(lonc))  deallocate(lonc, latc, areac, fracc, imask)
-    if (allocated(ifrac_emul)) deallocate(ifrac_emul)
+    if (allocated(ifrac_emul)) deallocate(ifrac_emul, fmask)
 
   end subroutine ice_final_mct
 
@@ -480,14 +485,48 @@ CONTAINS
     ! ignores these -- it diagnoses its own surface fluxes from its own state
     ! -- but EAM does not, so they have to be real numbers rather than zeros
     ! for the F2010-style compset to mean anything.
+    !
+    ! Evaluate them only where the atmosphere state is physical.  At init the
+    ! coupler has not filled x2i, so it is all zeros, and the scheme divides by
+    ! air density (eice_flux_atmice_mod.F90:144) and takes log(zbot) (:148).
+    ! Both are NaN at zero, and a NaN reaching the merge survives the ifrac
+    ! weighting that would have killed an ordinary large number -- which is how
+    ! it takes down CLUBB on the first physics step rather than showing up as
+    ! an obviously wrong flux.  EATM never reads these fields, so the emulated
+    ! pair does not notice; EAM does.
     if (ksen > 0 .and. kz > 0) then
+       do n = 1, lsize
+          if (imask(n) /= 0 .and. x2i%rAttr(kdens,n) > 0.0_R8 &
+                            .and. x2i%rAttr(kz,n)    > 0.0_R8) then
+             fmask(n) = 1
+          else
+             fmask(n) = 0
+          end if
+       end do
+
        call eice_flux_atmice( &
-            imask              , x2i%rAttr(kz,:)    , x2i%rAttr(kua,:)   , &
+            fmask              , x2i%rAttr(kz,:)    , x2i%rAttr(kua,:)   , &
             x2i%rAttr(kva,:)   , x2i%rAttr(kptem,:) , x2i%rAttr(kshum,:) , &
             x2i%rAttr(kdens,:) , x2i%rAttr(ktbot,:) , i2x%rAttr(kt,:)    , &
             i2x%rAttr(ksen,:)  , i2x%rAttr(klat,:)  , i2x%rAttr(klwup,:) , &
             i2x%rAttr(kevap,:) , i2x%rAttr(ktauxa,:), i2x%rAttr(ktauya,:), &
             i2x%rAttr(ktref,:) , i2x%rAttr(kqref,:) , logunit_ice )
+
+       ! The scheme fills skipped cells with spval.  Zero them instead: the
+       ! coupler merges these fields rather than testing them, and 1e30 times
+       ! a small ifrac is still enormous.
+       do n = 1, lsize
+          if (fmask(n) == 0) then
+             if (ksen   > 0) i2x%rAttr(ksen  ,n) = 0.0_R8
+             if (klat   > 0) i2x%rAttr(klat  ,n) = 0.0_R8
+             if (klwup  > 0) i2x%rAttr(klwup ,n) = 0.0_R8
+             if (kevap  > 0) i2x%rAttr(kevap ,n) = 0.0_R8
+             if (ktauxa > 0) i2x%rAttr(ktauxa,n) = 0.0_R8
+             if (ktauya > 0) i2x%rAttr(ktauya,n) = 0.0_R8
+             if (ktref  > 0) i2x%rAttr(ktref ,n) = i2x%rAttr(kt,n)
+             if (kqref  > 0) i2x%rAttr(kqref ,n) = 0.0_R8
+          end if
+       end do
     end if
 
     ! Ice/ocean fluxes.
@@ -512,6 +551,39 @@ CONTAINS
        if (ktauyo > 0 .and. ktauya > 0) i2x%rAttr(ktauyo,n) = i2x%rAttr(ktauya,n)
     end do
 
+    call eice_scan_avect(i2x, 'i2x')
+
   end subroutine ice_export_mct
+
+  !===============================================================================
+  subroutine eice_scan_avect( av, label )
+
+    ! Same check EOCN does on its own export, for the same reason: a NaN
+    ! leaving here is invisible until it surfaces as a negative absolute
+    ! temperature in the microphysics a dozen routines later.
+
+    implicit none
+    type(mct_aVect) , intent(in) :: av
+    character(len=*), intent(in) :: label
+
+    integer(IN) :: k, n, nbad
+    real(R8)    :: v
+    character(len=64) :: fname
+
+    do k = 1, mct_aVect_nRAttr(av)
+       nbad = 0
+       do n = 1, mct_aVect_lsize(av)
+          v = av%rAttr(k,n)
+          if (.not. (v == v) .or. abs(v) > 1.0e20_R8) nbad = nbad + 1
+       end do
+       if (nbad > 0) then
+          fname = mct_aVect_getRList2c(k, av)
+          write(logunit_ice,'(a,i6,a)') '(eice_scan_avect) '//trim(label)//' '// &
+               trim(fname)//': ', nbad, ' non-finite or out of range values'
+          call shr_sys_flush(logunit_ice)
+       end if
+    end do
+
+  end subroutine eice_scan_avect
 
 end module ice_comp_mct

@@ -452,7 +452,48 @@ CONTAINS
        end do
     end do
 
+    call eocn_scan_avect(o2x_o, 'o2x')
+
   end subroutine ocn_export_mct
+
+  !===============================================================================
+  subroutine eocn_scan_avect( av, label )
+
+    ! Report any coupler field leaving the emulator that is not a finite,
+    ! plausibly physical number.  A NaN or a 1e30 here is invisible until it
+    ! surfaces a dozen routines later as a negative absolute temperature in
+    ! the microphysics, which is a bad place to start looking.
+
+    implicit none
+    type(mct_aVect) , intent(in) :: av
+    character(len=*), intent(in) :: label
+
+    integer :: k, n, nbad
+    real(r8) :: v, vmin, vmax
+    character(len=64) :: fname
+
+    do k = 1, mct_aVect_nRAttr(av)
+       nbad = 0
+       vmin =  1.0e30_r8
+       vmax = -1.0e30_r8
+       do n = 1, mct_aVect_lsize(av)
+          v = av%rAttr(k,n)
+          if (.not. (v == v) .or. abs(v) > 1.0e20_r8) then
+             nbad = nbad + 1
+          else
+             vmin = min(vmin, v)
+             vmax = max(vmax, v)
+          end if
+       end do
+       if (nbad > 0) then
+          fname = mct_aVect_getRList2c(k, av)
+          write(logunit_ocn,'(a,i6,a)') '(eocn_scan_avect) '//trim(label)//' '// &
+               trim(fname)//': ', nbad, ' non-finite or out of range values'
+          call shr_sys_flush(logunit_ocn)
+       end if
+    end do
+
+  end subroutine eocn_scan_avect
 
   !===============================================================================
   subroutine eocn_read_namelist()
