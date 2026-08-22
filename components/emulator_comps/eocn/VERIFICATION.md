@@ -428,6 +428,30 @@ ESMF_RegridWeightGen -s ne30pg2_scrip -d gaussian_180x360_latlon.scrip \
 `ATM2OCN_SMAPNAME` and `ATM2OCN_VMAPNAME` at the new map; the ice maps follow
 the ocean ones because the two components share a grid.
 
+### The result, and the control that retires section 4
+
+Both prognostic-atmosphere compsets now integrate their two days, at
+`ne30pg2_gauss180x360`, 128 atmosphere ranks and one each for EOCN and EICE:
+
+| run | steps | P3 warnings | EOCN restart |
+| --- | --- | --- | --- |
+| `F2010-ELM-EOCN-EICE` | 96 / 96 | 0 | 89,707,168 B |
+| `F2010-ELM-EOCN` (`SICE`) | 96 / 96 | 0 | 89,707,168 B |
+
+Total energy is steady across the window and neither emulator's export scan
+fires.
+
+The second row is the one that matters.  It is the control for section 4's
+claim, and it is a real control rather than a re-run: **no ice component is
+present at all**, the compset is the same `SICE` one that used to abort on the
+first physics step, and the only thing that changed is the mapping weights.
+The crash is gone.  Whatever the missing sea ice costs this configuration
+physically -- and section 6 measures that it costs about 12 K of northern
+polar surface temperature -- it was never what killed the run.
+
+Building EICE remained worth doing, but section 6 is the evidence for it, not
+section 4.
+
 ### What to check when adding a new emulator grid
 
 Any lat-lon emulator grid whose outermost row lies poleward of the atmosphere's
