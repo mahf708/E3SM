@@ -5321,10 +5321,26 @@
 
     <gridmap atm_grid="ne30np4.pg2" ocn_grid="gauss180x360">
       <map name="ATM2OCN_FMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/ne30pg2/map_ne30pg2_to_gauss180x360_traave.20260822.nc</map>
-      <map name="ATM2OCN_SMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/ne30pg2/map_ne30pg2_to_gauss180x360_trbilin.20260822.nc</map>
-      <map name="ATM2OCN_VMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/ne30pg2/map_ne30pg2_to_gauss180x360_trbilin.20260822.nc</map>
-      <map name="OCN2ATM_FMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/gauss180x360/map_gauss180x360_to_ne30pg2_traave.20260822.nc</map>
-      <map name="OCN2ATM_SMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/gauss180x360/map_gauss180x360_to_ne30pg2_traave.20260822.nc</map>
+      <!-- The bilinear state/vector map needs nearest-neighbour extrapolation at
+           the poles.  ne30pg2 cell centres stop at |lat| = 88.94, so plain
+           bilinear leaves the two outermost Gaussian rows in each hemisphere
+           (552 cells at |lat| = 89.2366) unmapped.  ESMF's ignore_unmapped flag
+           then zeroes them, a2x_ox arrives at seq_flux_atmocn with
+           zbot = rbot = 0, and the flux kernel's log(zbot/zref) and division
+           by rbot poison xao_ox on the polar ocean cells.  Mapping that back
+           conservatively lands it on the four 88.94 atm columns, where EAM
+           dies in the microphysics.  The 20260822b map is built with
+           extrap_method neareststod and covers every destination cell. -->
+      <map name="ATM2OCN_SMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/ne30pg2/map_ne30pg2_to_gauss180x360_trbilin.20260822b.nc</map>
+      <map name="ATM2OCN_VMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/ne30pg2/map_ne30pg2_to_gauss180x360_trbilin.20260822b.nc</map>
+      <!-- Built from a source grid masked to ocean cells only.  An unmasked
+           map averages Gaussian land cells into every coastal ne30pg2 cell,
+           and the atm/ocn flux kernel never writes those cells
+           (seq_flux_mct.F90:1553 skips them), so the mapped xao fields carry
+           whatever was there.  It reaches EAM as Faxx_* and surfaces as a
+           negative absolute temperature in the microphysics. -->
+      <map name="OCN2ATM_FMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/gauss180x360/map_gauss180x360ocn_to_ne30pg2_traave.20260822.nc</map>
+      <map name="OCN2ATM_SMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/gauss180x360/map_gauss180x360ocn_to_ne30pg2_traave.20260822.nc</map>
     </gridmap>
 
     <gridmap atm_grid="gauss180x360" ocn_grid="IcoswISC30E3r5">

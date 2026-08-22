@@ -133,22 +133,24 @@ Then P3 aborts on the **first physics step** at column 19743, 88.94 N, 45 E —
 the polar cap — with a temperature of -3.6e31 K through the whole lower half of
 the column.
 
-I read this as the missing sea ice, in its sharpest form.  With a stub ice
-component the coupler tells EAM that the Arctic Ocean is **open water** at the
-freezing point under a -40 C atmosphere.  That is a physically enormous
-turbulent and radiative exchange, concentrated in the smallest cells on the
-grid, and a 30-minute physics step does not survive it.  The emulated
-atmosphere does not blow up in the same configuration only because it does not
-integrate anything — it drifts instead (section 2b).
+I read this as the missing sea ice, in its sharpest form: with a stub ice
+component the coupler tells EAM that the Arctic Ocean is open water at the
+freezing point under a -40 C atmosphere, which is an enormous exchange
+concentrated in the smallest cells on the grid.
 
-So this compset is blocked on the same gap as the drift, and closing that gap
-is the prerequisite for a prognostic atmosphere over this ocean, not an
-optimisation.  Two things I would check before anything else:
+**That reading was wrong.**  It is recorded here rather than quietly deleted
+because it is the kind of wrong that costs a day.  The story fit the symptom
+exactly — polar cap, first physics step, sea ice obviously absent — and every
+clause in it was individually true except the causal link.  Section 7 has the
+actual cause: a hole in the atmosphere-to-ocean mapping weights at the poles,
+which has nothing to do with sea ice.  Building EICE (section 6) did not fix
+this crash and could not have.
 
-1. rerun with a sea ice component (or the pass-through described in the README)
-   so `ICEFRAC` is not zero at the pole;
-2. failing that, a shorter atmosphere physics step, to confirm the blow-up is
-   the surface exchange rather than something structurally wrong in the merge.
+The measurement that broke the story: `So_ssq`, `So_re` and `So_ustar` were
+already at 4.6e40 in the coupler diagnostics.  Those are pure `xao` fields —
+the atmosphere/ocean flux kernel writes them and no ice component ever touches
+them — so whatever was wrong sat upstream of the ice, where an ice component
+cannot reach.
 
 ### What it took to get CIME this far
 
@@ -314,3 +316,122 @@ step.
 fraction, so it is no longer purely dead weight -- but `eatm_icefrac_from_ocn`
 and `shr_emul_ice_get`/`_put` are, and should go once nobody needs to
 reproduce section 5.
+
+## 7. Why `F2010-ELM-EOCN` really blew up: 552 unmapped cells at the poles
+
+The crash in section 4 is not about sea ice.  It is about four cells.
+
+### The evidence
+
+P3 reports the columns it is unhappy with.  Across the whole run there are
+exactly three of them — gcol 19740, 19743 and 19858 — and all three sit at
+latitude 88.9394 N, longitudes 315, 45 and 225.  Those are three of the four
+ne30pg2 cells in the northernmost row.  Nothing else on the globe is wrong.
+The temperature is garbage through every one of the 72 levels, from the
+surface to the model top, on the first physics step.
+
+A failure that is confined to the polar cap and total within it is a geometry
+problem, not a physics problem.
+
+### The cause
+
+`ATM2OCN_SMAPNAME` and `ATM2OCN_VMAPNAME` — the maps that carry the
+atmosphere's *state* to the ocean grid — were bilinear.  ne30pg2 cell centres
+stop at |lat| = 88.94.  The Gaussian 180x360 grid has two rows beyond that in
+each hemisphere, at |lat| = 89.2366.  Bilinear interpolation cannot
+extrapolate, so those 552 destination cells get no weights at all, and
+`ESMF_RegridWeightGen` was invoked with `--ignore_unmapped`, which turns that
+into silence rather than an error:
+
+```
+map_ne30pg2_to_gauss180x360_trbilin.20260822.nc
+  frac_b: 552 cells == 0, all at lat = ±89.2366
+```
+
+So `a2x_ox` arrives at the polar Gaussian rows as exact zeros — zero bottom
+height, zero air density, zero temperature.  `seq_flux_atmocn_mct` then runs
+there, because those cells are ocean and its only guard is the ocean mask
+(`seq_flux_mct.F90:1553`).  It takes `log(zbot/zref)` and divides by `rbot`.
+Both are undefined at zero.
+
+`xao_ox` is now poisoned on the polar ocean cells.  The ocean-to-atmosphere
+map is conservative and covers those cells completely (`frac_b = 1.0` at all
+four polar ne30pg2 cells — checked), so it delivers the poison, undiluted, to
+exactly the four columns P3 named.
+
+The whole chain is four steps and every step is silent.
+
+One more thing makes the attribution airtight rather than merely plausible.
+The hole exists in *both* hemispheres — 552 cells, 276 per pole — but Samudra's
+ocean mask is not symmetric:
+
+```
+lat =  89.2366   360 cells   360 ocean     (Arctic)
+lat = -89.2366   360 cells     0 ocean     (Antarctica)
+```
+
+`seq_flux_atmocn_mct` only evaluates where the ocean mask is set, so the
+southern hole is never touched and the northern one always is.  If the
+unmapped weights were the cause, the crash had to be northern-only.  Every
+failing column was northern.  A story that merely fit the symptom would not
+have predicted that asymmetry in advance.
+
+### Why the emulated pair never saw it
+
+EATM does not read `Faxx_*`.  It diagnoses its own surface fluxes from its own
+state, so the poisoned fields pass through it untouched and unnoticed.  Eleven
+days of `E2000-EATM-EOCN-EICE` ran over the same broken map.  EAM reads them.
+
+This is the third time on this branch that the same shape of bug has appeared:
+a routine evaluated on cells where its inputs were never written.  EICE had it
+at initialisation (section 6), the ocn-to-atm map had it over land, and the
+atm-to-ocn map has it at the poles.  Emulator components make it worse than
+usual, because an emulator that ignores a field cannot warn you that the field
+is wrong.
+
+### The fix
+
+Regenerate the state/vector map with nearest-neighbour extrapolation, and drop
+`--ignore_unmapped` so a future hole is an error:
+
+```
+ESMF_RegridWeightGen -s ne30pg2_scrip -d gaussian_180x360_latlon.scrip \
+  -m bilinear --src_type SCRIP --dst_type SCRIP \
+  --extrap_method neareststod \
+  -w map_ne30pg2_to_gauss180x360_trbilin.20260822b.nc --netcdf4
+```
+
+`frac_b` is now 1.0 for all 64800 destination cells.  `config_grids.xml` points
+`ATM2OCN_SMAPNAME` and `ATM2OCN_VMAPNAME` at the new map; the ice maps follow
+the ocean ones because the two components share a grid.
+
+### What to check when adding a new emulator grid
+
+Any lat-lon emulator grid whose outermost row lies poleward of the atmosphere's
+outermost cell centres has this problem, and every lat-lon grid does — a
+Gaussian or regular latitude grid always places a row nearer the pole than a
+cubed-sphere grid's outermost centres.  Before running anything prognostic:
+
+```python
+m = nc.Dataset(mapfile); fb = m.variables['frac_b'][:]
+print(mapfile, (fb == 0).sum())
+```
+
+on every map in `seq_maps.rc` that is not `idmap`.  It takes seconds and would
+have saved all of section 4.
+
+Read the answer with the mask in mind, though — a zero is only a hole if the
+destination cell expects coverage.  For this grid pair:
+
+| map | zeros | verdict |
+| --- | --- | --- |
+| `map_ne30pg2_to_gauss180x360_traave` | 0 | correct |
+| `map_ne30pg2_to_gauss180x360_trbilin.20260822b` | 0 | correct, after the fix |
+| `map_gauss180x360ocn_to_ne30pg2_traave` | 4801 | **correct** |
+
+The 4801 are ne30pg2 cells lying entirely over land.  They *should* receive no
+ocean, and masking the source grid to produce exactly that is what section 4's
+other fix was for.  What confirms they are right rather than merely tolerated
+is `seq_domain_check`: `ofrac` on the atmosphere grid agrees with one minus
+ELM's land fraction to 8.9e-15.  A hole that is real shows up there as a
+fraction mismatch; a hole that is correct does not.
