@@ -152,6 +152,42 @@ void write_map_file (const std::string& filename, const int ngdofs_src) {
   scorpio::release_file(filename);
 }
 
+// Write a map file that does NOT cover every tgt column: only the "copy" columns get
+// weights, the interpolated ones are left unmapped. This is what you get from a
+// regional tgt grid that is not fully contained in the src grid, or from a map built
+// with unmapped destination cells dropped.
+void write_partial_map_file (const std::string& filename, const int ngdofs_src) {
+  const int ngdofs_tgt = 2*ngdofs_src-1;
+  const int nnz = ngdofs_src;   // only the copies; no entries for the added dofs
+
+  scorpio::register_file(filename, scorpio::FileMode::Write);
+
+  scorpio::define_dim(filename, "n_a", ngdofs_src);
+  scorpio::define_dim(filename, "n_b", ngdofs_tgt);
+  scorpio::define_dim(filename, "n_s", nnz);
+
+  scorpio::define_var(filename, "col", {"n_s"}, "int");
+  scorpio::define_var(filename, "row", {"n_s"}, "int");
+  scorpio::define_var(filename, "S",   {"n_s"}, "double");
+
+  scorpio::enddef(filename);
+
+  std::vector<int> col(nnz), row(nnz);
+  std::vector<double> S(nnz);
+  const int gid_base = 1;
+  for (int i=0; i<ngdofs_src; ++i) {
+    col[i] = i+gid_base;
+    row[i] = i+gid_base;
+      S[i] = 1.0;
+  }
+
+  scorpio::write_var(filename,"row",row.data());
+  scorpio::write_var(filename,"col",col.data());
+  scorpio::write_var(filename,"S",  S.data());
+
+  scorpio::release_file(filename);
+}
+
 TEST_CASE ("refining_remapper") {
   using gid_type = AbstractGrid::gid_type;
 
@@ -609,6 +645,100 @@ TEST_CASE ("refining_remapper_masked") {
   }
 
   // Clean up
+  r = nullptr;
+  scorpio::finalize_subsystem();
+}
+
+// A map file is not obliged to provide weights for every tgt column. Rows with no
+// entries used to read weights(beg)/col_lids(beg) with beg==end, which is an
+// out-of-bounds read on the last local row (and silently picked up the next row's
+// entry for any other row).
+TEST_CASE ("refining_remapper_uncovered_tgt_cols") {
+  using gid_type = AbstractGrid::gid_type;
+
+  auto& catch_capture = Catch::getResultCapture();
+
+  ekat::Comm comm(MPI_COMM_WORLD);
+
+  int seed = get_random_test_seed(&comm);
+
+  scorpio::init_subsystem(comm);
+
+  const int ngdofs_src = 4*comm.size();
+  const int ngdofs_tgt = 2*ngdofs_src-1;
+  auto filename = "rr_partial_tests_map.np" + std::to_string(comm.size()) + ".nc";
+  write_partial_map_file(filename,ngdofs_src);
+
+  const int nlevs = std::max(SCREAM_PACK_SIZE,16);
+  auto src_grid = create_point_grid("src",ngdofs_src,nlevs,comm,1);
+  auto tgt_grid = create_point_grid("tgt",ngdofs_tgt,nlevs,comm,0);
+  auto dofs_h = tgt_grid->get_dofs_gids().get_view<gid_type*,Host>();
+  for (int i=0; i<tgt_grid->get_num_local_dofs(); ++i) {
+    int q = dofs_h[i] / 2;
+    if (dofs_h[i] % 2 == 0) {
+      dofs_h[i] = q + 1;
+    } else {
+      dofs_h[i] = ngdofs_src + q + 1;
+    }
+  }
+  tgt_grid->get_dofs_gids().sync_to_dev();
+
+  auto r = std::make_shared<HorizontalRemapper>(src_grid,tgt_grid,filename);
+
+  auto s2d_src = create_field("s2d_src",LayoutType::Scalar2D,*src_grid,seed++);
+  auto s3d_src = create_field("s3d_src",LayoutType::Scalar3D,*src_grid,seed++);
+  auto s2d_tgt = create_field("s2d_tgt",LayoutType::Scalar2D,*tgt_grid);
+  auto s3d_tgt = create_field("s3d_tgt",LayoutType::Scalar3D,*tgt_grid);
+
+  r->register_field(s2d_src,s2d_tgt);
+  r->register_field(s3d_src,s3d_tgt);
+  r->registration_ends();
+
+  r->remap_fwd();
+
+  auto gs2d_src = all_gather_field(s2d_src,comm);
+  auto gs3d_src = all_gather_field(s3d_src,comm);
+  auto gs2d_tgt = all_gather_field(s2d_tgt,comm);
+  auto gs3d_tgt = all_gather_field(s3d_tgt,comm);
+
+  gs2d_src.sync_to_host();
+  gs3d_src.sync_to_host();
+  gs2d_tgt.sync_to_host();
+  gs3d_tgt.sync_to_host();
+
+  {
+    if (comm.am_i_root()) {
+      printf(" -> Checking uncovered tgt cols .\n");
+    }
+    bool ok = true;
+    auto src2 = gs2d_src.get_view<const Real*,Host>();
+    auto tgt2 = gs2d_tgt.get_view<const Real*,Host>();
+    auto src3 = gs3d_src.get_view<const Real**,Host>();
+    auto tgt3 = gs3d_tgt.get_view<const Real**,Host>();
+
+    // Covered cols are still copied correctly
+    for (int icol=0; icol<ngdofs_src; ++icol) {
+      CHECK (tgt2[2*icol]==src2[icol]);
+      ok &= catch_capture.lastAssertionPassed();
+      for (int ilev=0; ilev<nlevs; ++ilev) {
+        CHECK (tgt3(2*icol,ilev)==src3(icol,ilev));
+        ok &= catch_capture.lastAssertionPassed();
+      }
+    }
+    // Uncovered cols must be zero, NOT whatever the next row's weight happened to be
+    for (int icol=0; icol<ngdofs_src-1; ++icol) {
+      CHECK (tgt2[2*icol+1]==0);
+      ok &= catch_capture.lastAssertionPassed();
+      for (int ilev=0; ilev<nlevs; ++ilev) {
+        CHECK (tgt3(2*icol+1,ilev)==0);
+        ok &= catch_capture.lastAssertionPassed();
+      }
+    }
+    if (comm.am_i_root()) {
+      printf(" -> Checking uncovered tgt cols . %s\n",ok ? "PASS" : "FAIL");
+    }
+  }
+
   r = nullptr;
   scorpio::finalize_subsystem();
 }
