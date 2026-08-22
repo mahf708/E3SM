@@ -226,3 +226,91 @@ stub land that is zero everywhere -- the real land fraction reaches EATM as the
 and `TS` to 0 K over every continent.  It silently reverted the
 `eatm_land_deficit` fix and cost 34 W/m2 that had nothing to do with sea ice.
 Anything reconstructing fractions inside EATM must key off `fl + deficit`.
+
+## 6. Closing the loop: EICE
+
+Section 5 ended with a prediction -- that the ice fraction has to enter the
+coupler's own bookkeeping rather than be substituted inside the atmosphere.
+`components/emulator_comps/eice/` does that.  It reports `Si_ifrac` and lets
+`seq_frac_mct.F90:651` compute the fractions, which is SamudrACE's identity
+written in E3SM's variables.  Everything else it reports -- albedos, surface
+temperature, atm/ice turbulent fluxes -- is `dice` in prescribed mode.
+
+Run: `E2000-EATM-EOCN-EICE`, `gauss180x360_gauss180x360`, 11 days, 1 task,
+against the two references from section 5.
+
+### The coupler now carries the ice
+
+Every `seq_domain_check` difference between the ice and ocean domains is
+exactly zero, because EICE takes its mesh from EOCN rather than reading one:
+
+```
+(seq_domain_check_grid) maximum difference for mask 0.00000000000000
+(seq_domain_check_grid) maximum difference for lat  0.00000000000000
+(seq_domain_check_grid) maximum difference for lon  0.00000000000000
+(seq_domain_check_grid) maximum difference for area 0.00000000000000
+```
+
+At day 6, weighted per unit sea surface, with `eatm_icefrac_from_ocn = .false.`
+so nothing is being substituted inside the atmosphere:
+
+| | ice fraction | `Sx_t` handed to the atm |
+|---|---:|---:|
+| | *global / NH polar* | *global / NH polar* |
+| no ice | 0.000 / 0.000 | 291.7 K / 272.7 K |
+| ice to the atmosphere only | 0.000 / 0.000 | 291.7 K / 272.7 K |
+| EICE | 0.174 / 0.743 | 287.1 K / 260.4 K |
+
+An Arctic ice fraction of 0.74 in January is credible, and the surface
+temperature the coupler merges for the atmosphere falls 12.3 K in that band.
+The middle row is the section 5 result restated: substituting the fraction
+inside EATM leaves the coupler's own fractions at zero, which is why it made
+things worse.
+
+### What the ice costs the ocean's forcing, and why it is divided back out
+
+Adding an ice component changes what the ocean receives.
+`prep_ocn_mod.F90:1218` builds every `Foxx_*` as
+`afrac*<atm flux> + ifrac*<ice flux>`, with `afrac` and `ifrac` renormalised by
+their sum -- on this grid exactly `1 - ocean_sea_ice_fraction`.
+
+Samudra was not trained on that.  In SamudrACE the ocean receives the
+atmosphere's whole-cell fluxes and accounts for its own ice internally;
+`ocean_sea_ice_fraction` is one of its prognostic outputs, not a boundary
+condition it is handed.  Letting the coupler scale the forcing down applies
+that insulation a second time, in precisely the cells where it is largest.
+`eocn_flux_ifrac_unweight` (default `.true.`) divides it back out.
+
+Global means of the two channels Samudra actually consumes, over its two 5-day
+flux windows:
+
+| | FSDS window 1 | FSDS window 2 | FLDS window 1 | FLDS window 2 |
+|---|---:|---:|---:|---:|
+| no ice (reference) | 123.1 | 126.9 | 224.4 | 222.8 |
+| EICE, unweight `.true.` | 121.3 | 123.8 | 204.7 | 197.8 |
+| EICE, unweight `.false.` | 107.3 | **98.2** | 183.1 | **160.0** |
+
+With the un-weighting off, the shortwave Samudra sees falls 22 % below the
+no-ice reference by the second window and the longwave 28 %, and the gap
+*widens* between windows -- the double-counted cooling feeds back through more
+ice and more attenuation.  With it on, the shortwave stays within 3 %.  The
+residual longwave decrease is not a weighting artefact: it is the atmosphere
+genuinely emitting less downward longwave now that it is colder over the ice,
+which is the response the whole exercise was after.
+
+Set `eocn_flux_ifrac_unweight = .false.` for an ocean model that does *not*
+carry its own ice, where the coupler's open-water split is the correct physics.
+
+### Still open
+
+`Si_t` is fabricated from a seasonal cycle (`dice_comp_mod.F90:670`) because
+Samudra carries a fraction and an ice volume but no surface energy balance.
+That is the weakest number in the component and the first thing to improve if
+the polar atmosphere still looks wrong.  `iceVolumeTotal` is predicted and
+currently unused; a thickness-dependent conduction term is the obvious next
+step.
+
+`shr_emul_ice_mod` now carries the grid handshake as well as the diagnostic
+fraction, so it is no longer purely dead weight -- but `eatm_icefrac_from_ocn`
+and `shr_emul_ice_get`/`_put` are, and should go once nobody needs to
+reproduce section 5.
