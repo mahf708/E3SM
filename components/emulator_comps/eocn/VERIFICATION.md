@@ -66,6 +66,44 @@ Neither is a defect in this component's plumbing; both are properties of
 running the two halves of a coupled emulator through a coupler that does not
 carry the channel they were trained to exchange.
 
+## 2b. The same case, continued to 111 days
+
+Continuing the run makes the shape of the problem clear.  The warming
+**saturates and turns over**; the salinity does not.
+
+| day | net (W/m2) | So_t (K) | So_s (g/kg) | Sa_tbot (K) |
+|---|---:|---:|---:|---:|
+| 1 | -18.3 | 286.855 | 33.527 | 283.642 |
+| 11 | -82.7 | 288.482 | 33.667 | 284.746 |
+| 31 | -121.3 | 290.148 | 33.939 | 286.017 |
+| 61 | -129.3 | 290.651 | 34.252 | 286.535 |
+| 81 | -157.3 | 290.658 | 34.432 | 286.497 |
+| 111 | -131.4 | 290.511 | 34.653 | 286.865 |
+
+The sea surface settles about **+3.8 K** above its initial state by day 70 and
+then eases back very slightly: the coupled emulator finds a quasi-equilibrium,
+it is just the wrong one.  Salinity, by contrast, rises monotonically by
+**1.1 g/kg in 111 days** and shows no sign of turning.
+
+The freshwater budget says why:
+
+| | evaporation | precipitation | E - P |
+|---|---:|---:|---:|
+| day 1 | 3.60 mm/day | 3.27 mm/day | +0.33 |
+| day 111 | 6.67 mm/day | 4.88 mm/day | +1.78 |
+
+Evaporation over the ocean nearly doubles, ending at a latent heat flux of
+193 W/m2 against an observed global ocean mean near 90.  That single number
+drives both drifts — it is most of the -130 W/m2 net heat loss and all of the
+salinity rise — and it is a surface-flux problem on the atmosphere side of the
+coupler, not something EOCN can fix.  The absent river runoff (`SROF`) accounts
+for perhaps 0.3 mm/day of the freshwater imbalance; the rest is evaporation.
+
+So the ordering of things to fix, on this evidence, is: the missing sea ice
+first (it is what exposes the polar ocean and inflates the turbulent fluxes),
+then the surface-flux formulation, and only then anything about EOCN's own
+5-day forcing lag.
+
 ## 3. Restart
 
 Restarting the same case from the day-6 restart and running to day 12

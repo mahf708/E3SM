@@ -421,7 +421,7 @@ CONTAINS
 
     namelist /eocn_inparm/ do_eocn, filename_eocn, eocn_emulator, &
          eocn_model_file, eocn_ic_file, eocn_model_device, eocn_rng_seed, &
-         eocn_interp_state, eocn_bldepth
+         eocn_interp_state
 
     do_eocn           = .true.
     filename_eocn     = ' '
@@ -431,7 +431,6 @@ CONTAINS
     eocn_model_device = 'gpu'
     eocn_rng_seed     = 0
     eocn_interp_state = .true.
-    eocn_bldepth      = 50.0_R8
 
     if (masterproc) then
        nu_nml = shr_file_getUnit()
@@ -455,7 +454,6 @@ CONTAINS
        write(logunit_ocn,*) '   eocn_model_device = ', trim(eocn_model_device)
        write(logunit_ocn,*) '   eocn_rng_seed     = ', eocn_rng_seed
        write(logunit_ocn,*) '   eocn_interp_state = ', eocn_interp_state
-       write(logunit_ocn,*) '   eocn_bldepth      = ', eocn_bldepth
     end if
 
     call shr_mpi_bcast(do_eocn,           mpicom_ocn)
@@ -466,7 +464,6 @@ CONTAINS
     call shr_mpi_bcast(eocn_model_device, mpicom_ocn)
     call shr_mpi_bcast(eocn_rng_seed,     mpicom_ocn)
     call shr_mpi_bcast(eocn_interp_state, mpicom_ocn)
-    call shr_mpi_bcast(eocn_bldepth,      mpicom_ocn)
 
   end subroutine eocn_read_namelist
 

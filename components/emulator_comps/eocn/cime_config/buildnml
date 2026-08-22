@@ -31,7 +31,6 @@ _ORDER = [
     "eocn_model_device",
     "eocn_rng_seed",
     "eocn_interp_state",
-    "eocn_bldepth",
 ]
 
 _QUOTED = {
