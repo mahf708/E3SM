@@ -1,0 +1,17 @@
+!----------------------------------------------------------------------------------
+! Users should add all user specific namelist changes below in the form of
+! namelist_var = new_namelist_value
+!
+! NOTE: which emulator EOCN drives is set with the xml variable EOCN_EMULATOR
+!       (./xmlchange EOCN_EMULATOR=SamudrACE-E3SMv3), not here.  The default
+!       traced model and initial condition follow from it.
+! NOTE: if the xml variable OCN_GRID is set to 'null' then build-namelist sets
+!       do_eocn = .false.
+!
+! Commonly overridden settings:
+!
+!   eocn_model_file   = '/path/to/samudra_ocn_traced_cuda.pt'
+!   eocn_ic_file      = '/path/to/samudra_ocn_ic.nc'
+!   eocn_model_device = 'gpu'   ! or 'cpu'; must match how the model was traced
+!   eocn_interp_state = .true.  ! .false. holds each emulator state for its whole step
+!----------------------------------------------------------------------------------

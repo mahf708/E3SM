@@ -1,0 +1,60 @@
+<?xml version="1.0"?>
+
+<definitions_variables>
+
+  <entry id="COMP_OCN">
+     <type>char</type>
+     <valid_values>eocn</valid_values>
+     <default_value>eocn</default_value>
+     <group>case_comp</group>
+     <file>env_case.xml</file>
+     <desc>Name of ocn component</desc>
+  </entry>
+
+  <entry id="EOCN_MODE">
+    <type>char</type>
+    <valid_values>ACTIVE,NULL</valid_values>
+    <default_value>ACTIVE</default_value>
+    <values>
+      <value compset="_EOCN" >ACTIVE</value>
+      <value grid="oi%null">NULL</value>
+    </values>
+    <group>build_component_eocn</group>
+    <file>env_build.xml</file>
+    <desc>mode for eocn model, NULL means eocn is turned off</desc>
+  </entry>
+
+  <entry id="EOCN_EMULATOR">
+    <type>char</type>
+    <valid_values>SamudrACE-E3SMv3</valid_values>
+    <default_value>SamudrACE-E3SMv3</default_value>
+    <group>run_component_eocn</group>
+    <file>env_run.xml</file>
+    <desc>Which emulator EOCN drives.  Selects the channel layout in
+      eocn_channels_mod.F90 and the default traced model / initial condition.
+      Must match the checkpoint that eocn_model_file was traced from.
+      SamudrACE-E3SMv3 : the ocean half of the coupled emulator -- Samudra on
+                         the 180x360 Gaussian grid, 19 depth levels, 5 day
+                         step, 92 in / 80 out</desc>
+  </entry>
+
+  <entry id="EOCN_NAMELIST_OPTS">
+    <type>char</type>
+    <valid_values></valid_values>
+    <default_value></default_value>
+    <group>run_component_eocn</group>
+    <file>env_run.xml</file>
+    <desc>EOCN-specific namelist settings for the EOCN build-namelist</desc>
+  </entry>
+
+  <description>
+    <desc compset="_EOCN">EOCN:</desc>
+  </description>
+
+  <help>
+    =========================================
+    EOCN naming conventions
+    =========================================
+  </help>
+
+</definitions_variables>

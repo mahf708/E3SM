@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+
+<compsets>
+
+  <help>
+  Compset format is explained in cime/config/e3sm/allactive/config_compsets.xml
+  or in the CIME documenation
+  </help>
+
+  <!---EOCN compsets -->
+
+  <!-- Prognostic EAM over the emulated ocean, everything else stubbed.
+       Note the coupler sets the atmosphere's land fraction to 1 - ocean
+       fraction (seq_frac_mct.F90:514), so with a stub land the merge hands
+       EAM a surface state weighted only by the ocean's share of each cell and
+       nothing over the continents.  Use F2010-ELM-EOCN unless that is exactly
+       what is being tested. -->
+  <compset>
+    <alias>F2010-EOCN</alias>
+    <lname>2010_EAM%CMIP6_SLND_SICE_EOCN_SROF_SGLC_SWAV</lname>
+  </compset>
+
+  <!-- the same, with a land model so the continents have a surface -->
+  <compset>
+    <alias>F2010-ELM-EOCN</alias>
+    <lname>2010_EAM%CMIP6_ELM%SPBC_SICE_EOCN_SROF_SGLC_SWAV</lname>
+  </compset>
+
+  <!-- both halves of SamudrACE, coupled through MCT; everything else stubbed -->
+  <compset>
+    <alias>E2000-EATM-EOCN</alias>
+    <lname>2000_EATM_SLND_SICE_EOCN_SROF_SGLC_SWAV</lname>
+  </compset>
+
+</compsets>

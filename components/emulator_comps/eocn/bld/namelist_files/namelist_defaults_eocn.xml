@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+
+<namelist_defaults>
+
+<!--
+Values used by default when creating the EOCN namelist.  Entries may be keyed
+on `emulator` (EOCN_EMULATOR) or on `ocn_grid` (OCN_GRID); an unkeyed entry is
+the fallback.
+-->
+
+<do_eocn>.true.</do_eocn>
+
+<!-- SCRIP description of the eocn grid, relative to DIN_LOC_ROOT -->
+<filename_eocn ocn_grid="gauss180x360">share/meshes/gaussian_180x360_latlon.scrip.20260127.nc</filename_eocn>
+
+<eocn_model_device>gpu</eocn_model_device>
+<eocn_rng_seed>0</eocn_rng_seed>
+<eocn_interp_state>.true.</eocn_interp_state>
+<eocn_bldepth>50.0</eocn_bldepth>
+
+<!--
+Traced TorchScript model and matching initial condition.  Absolute paths
+outside DIN_LOC_ROOT because neither the checkpoint nor its traced form is
+distributed with E3SM inputdata yet; override in user_nl_eocn.
+Produce them with tools/trace_eocn_model.py and tools/make_eocn_ic.py.
+-->
+<eocn_model_file emulator="SamudrACE-E3SMv3"
+  >/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/eocn/samudra_ocn_traced_cuda.pt</eocn_model_file>
+<eocn_ic_file emulator="SamudrACE-E3SMv3"
+  >/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/eocn/samudra_ocn_ic_0.nc</eocn_ic_file>
+
+</namelist_defaults>

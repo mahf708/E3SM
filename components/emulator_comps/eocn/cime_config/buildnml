@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+
+"""
+Namelist creator for E3SM's EOCN component.
+
+EOCN's namelist is small and entirely flat, so it is written here rather than
+through the perl build-namelist machinery EATM inherited.  Defaults come from
+bld/namelist_defaults_eocn.xml, keyed on the emulator and the ocean grid;
+user_nl_eocn overrides them line by line.
+"""
+
+import os, sys, re
+
+_CIMEROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..","..","..","cime")
+sys.path.append(os.path.join(_CIMEROOT, "scripts", "Tools"))
+
+from standard_script_setup import *
+from CIME.case import Case
+from CIME.utils import expect, safe_copy
+from CIME.buildnml import parse_input
+import xml.etree.ElementTree as ET
+
+logger = logging.getLogger(__name__)
+
+_ORDER = [
+    "do_eocn",
+    "filename_eocn",
+    "eocn_emulator",
+    "eocn_model_file",
+    "eocn_ic_file",
+    "eocn_model_device",
+    "eocn_rng_seed",
+    "eocn_interp_state",
+    "eocn_bldepth",
+]
+
+_QUOTED = {
+    "filename_eocn",
+    "eocn_emulator",
+    "eocn_model_file",
+    "eocn_ic_file",
+    "eocn_model_device",
+}
+
+
+###############################################################################
+def _defaults(srcroot, din_loc_root, emulator, ocn_grid, active):
+###############################################################################
+    """Resolve namelist defaults from namelist_defaults_eocn.xml.
+
+    A default may be keyed on the emulator or on the ocean grid; the most
+    specific match that applies wins, an unkeyed entry is the fallback.
+    """
+    path = os.path.join(srcroot, "components", "emulator_comps", "eocn", "bld",
+                        "namelist_files", "namelist_defaults_eocn.xml")
+    expect(os.path.exists(path), "missing {}".format(path))
+    root = ET.parse(path).getroot()
+
+    values = {}
+    for node in root:
+        if not isinstance(node.tag, str):
+            continue
+        attrs = node.attrib or {}
+        if "emulator" in attrs and attrs["emulator"] != emulator:
+            continue
+        if "ocn_grid" in attrs and attrs["ocn_grid"] != ocn_grid:
+            continue
+        values[node.tag] = "" if node.text is None else node.text.strip()
+
+    values["eocn_emulator"] = emulator
+    if not active:
+        values["do_eocn"] = ".false."
+
+    for key in ("filename_eocn", "eocn_model_file", "eocn_ic_file"):
+        v = values.get(key, "")
+        if v and not os.path.isabs(v):
+            values[key] = os.path.join(din_loc_root, v)
+
+    return values
+
+
+###############################################################################
+def _apply_user_nl(values, user_nl):
+###############################################################################
+    if not os.path.exists(user_nl):
+        return
+    with open(user_nl) as fd:
+        for line in fd:
+            line = line.split("!")[0].strip()
+            if not line or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip().lower()
+            val = val.strip()
+            if key in _QUOTED:
+                val = val.strip().strip("'\"")
+            values[key] = val
+
+
+###############################################################################
+def buildnml(case, caseroot, compname):
+###############################################################################
+    expect(compname == "eocn", compname)
+
+    os.chdir(caseroot)
+
+    casebuild    = case.get_value("CASEBUILD")
+    srcroot      = case.get_value("SRCROOT")
+    din_loc_root = case.get_value("DIN_LOC_ROOT")
+    ninst_ocn    = case.get_value("NINST_OCN")
+    ocn_grid     = case.get_value("OCN_GRID")
+    emulator     = case.get_value("EOCN_EMULATOR")
+    rundir       = case.get_value("RUNDIR")
+
+    ocnconf_dir = os.path.join(casebuild, "eocnconf")
+    if not os.path.isdir(ocnconf_dir):
+        os.mkdir(ocnconf_dir)
+
+    supported = ("null", "gauss180x360")
+    expect(ocn_grid in supported,
+           "OCN_GRID '{}' is not supported in eocn. Choose from: {}".format(
+               ocn_grid, ", ".join(supported)))
+
+    active = ocn_grid != "null"
+
+    for inst_counter in range(1, ninst_ocn + 1):
+        inst_string = "_{0:04d}".format(inst_counter) if ninst_ocn > 1 else ""
+
+        values = _defaults(srcroot, din_loc_root, emulator, ocn_grid, active)
+        _apply_user_nl(values, os.path.join(caseroot, "user_nl_eocn" + inst_string))
+
+        lines = ["&eocn_inparm"]
+        for key in _ORDER:
+            if key not in values:
+                continue
+            val = values[key]
+            if key in _QUOTED:
+                val = "'{}'".format(val)
+            lines.append("  {} = {}".format(key, val))
+        lines.append("/")
+        lines.append("")
+
+        nlfile = os.path.join(ocnconf_dir, "eocn_in")
+        with open(nlfile, "w") as fd:
+            fd.write("\n".join(lines))
+
+        # only the mesh lives under DIN_LOC_ROOT; the traced model and its
+        # initial condition are absolute paths outside inputdata for now
+        with open(os.path.join(casebuild, "eocn.input_data_list"), "w") as fd:
+            if active and values.get("filename_eocn"):
+                fd.write("mesh = {}\n".format(values["filename_eocn"]))
+
+        if os.path.exists(rundir):
+            safe_copy(nlfile, os.path.join(rundir, "eocn_in{}".format(inst_string)))
+
+
+###############################################################################
+def _main_func():
+###############################################################################
+    caseroot = parse_input(sys.argv)
+    with Case(caseroot) as case:
+        buildnml(case, caseroot, "eocn")
+
+if __name__ == "__main__":
+    _main_func()

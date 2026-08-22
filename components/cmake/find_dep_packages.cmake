@@ -48,10 +48,10 @@ if (USE_PETSC)
   find_package(PETSc REQUIRED)
 endif()
 
-# FTorch is only needed by the emulator components (eatm).  Requiring it
+# FTorch is only needed by the emulator components (eatm, eocn).  Requiring it
 # unconditionally would break every configuration on every machine that does
 # not have an FTorch install.
-if (COMP_ATM STREQUAL "eatm")
+if (COMP_ATM STREQUAL "eatm" OR COMP_OCN STREQUAL "eocn")
   find_package(FTorch REQUIRED)
   set(USE_FTORCH TRUE)
 endif()
