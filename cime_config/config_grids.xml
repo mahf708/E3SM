@@ -5319,7 +5319,7 @@
        <map name="LND2ATM_SMAPNAME">cpl/gridmaps/TL319/map_r05_to_TL319_traave.20240212.nc</map>
     </gridmap>
 
-    <gridmap atm_grid="ne30pg2" ocn_grid="gauss180x360">
+    <gridmap atm_grid="ne30np4.pg2" ocn_grid="gauss180x360">
       <map name="ATM2OCN_FMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/ne30pg2/map_ne30pg2_to_gauss180x360_traave.20260822.nc</map>
       <map name="ATM2OCN_SMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/ne30pg2/map_ne30pg2_to_gauss180x360_trbilin.20260822.nc</map>
       <map name="ATM2OCN_VMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/ne30pg2/map_ne30pg2_to_gauss180x360_trbilin.20260822.nc</map>

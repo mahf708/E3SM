@@ -74,16 +74,41 @@ EXPECTED = {
 }
 
 
-class SeaIceCorrected(nn.Module):
-    """Traceable wrapper adding the ocean corrector's sea-ice constraint."""
+class OceanWrapper(nn.Module):
+    """Traceable wrapper adding the two things the ACE tracing script omits.
 
-    def __init__(self, inner: nn.Module, sif_idx: int, zero_idx: list[int]):
+    **Input masking.**  fme's step zeroes masked input variables *in normalized
+    space* (`_apply_input_mask` in fme/core/step/single_module.py), which in
+    physical units means substituting each channel's training mean.  Samudra's
+    ocean state is masked by bathymetry -- a separate mask per depth level --
+    so on land, and below the sea floor, that is what the network was trained
+    to see.  Feeding a physical zero instead lands roughly -25 standard
+    deviations away on every masked cell, and a convolutional network with
+    circular padding spreads that far inland: without this the traced model
+    returns a 440 K global mean sea surface temperature.
+
+    **Sea ice.**  The ocean corrector clamps the sea ice fraction to [0, 1] and
+    zeroes the ice volume where the cell is ice free.  The tracing script only
+    knows the atmosphere corrector, so it drops this.
+    """
+
+    def __init__(self, inner: nn.Module, sif_idx: int, zero_idx: list[int],
+                 in_mask: torch.Tensor | None):
         super().__init__()
         self.inner = inner
         self.sif_idx = sif_idx
         self.register_buffer("zero_idx", torch.tensor(zero_idx, dtype=torch.long))
+        self.has_mask = in_mask is not None
+        if in_mask is not None:
+            means = inner.in_means.reshape(1, -1, 1, 1)
+            self.register_buffer("in_mask", in_mask)
+            self.register_buffer("in_fill", means * (1.0 - in_mask))
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        if self.has_mask:
+            n = self.in_mask.shape[1]
+            state = inputs[:, :n] * self.in_mask + self.in_fill
+            inputs = torch.cat([state, inputs[:, n:]], dim=1)
         out = self.inner(inputs)
         sif = torch.clamp(out[:, self.sif_idx], min=0.0, max=1.0)
         ice = (sif > 0.0).to(out.dtype)
@@ -93,6 +118,53 @@ class SeaIceCorrected(nn.Module):
             k = self.zero_idx[j].item()
             out[:, k] = out[:, k] * ice
         return out
+
+
+def _mask_name(channel: str) -> str | None:
+    """The mask_* variable that says where a given input channel is defined.
+
+    None means the channel is present everywhere: the surface fractions, and
+    the ten atmospheric fluxes, which come from the atmosphere and are defined
+    over land too.
+    """
+    for prefix in ("salinityCoarsened_", "temperatureCoarsened_",
+                   "velocityZonalCoarsened_", "velocityMeridionalCoarsened_"):
+        if channel.startswith(prefix):
+            return "mask_" + channel[len(prefix):]
+    if channel in ("sst", "ssh"):
+        return "mask_2d"
+    if channel in ("ocean_sea_ice_fraction", "iceVolumeTotal"):
+        return "mask_" + channel
+    return None
+
+
+def _build_input_mask(path: str, in_names: list[str], device: str):
+    if not path:
+        logger.warning("tracing without input masking; the network will see "
+                       "whatever fills the masked cells")
+        return None
+
+    import netCDF4  # noqa: PLC0415
+    import numpy as np  # noqa: PLC0415
+
+    d = netCDF4.Dataset(path)
+    nlat = len(d.dimensions["lat"])
+    nlon = len(d.dimensions["lon"])
+    mask = np.ones((len(in_names), nlat, nlon), dtype=np.float32)
+    n_masked = 0
+    for i, name in enumerate(in_names):
+        mname = _mask_name(name)
+        if mname is None:
+            continue
+        if mname not in d.variables:
+            raise SystemExit(
+                f"ERROR: {path} has no mask variable {mname!r} for channel {name!r}")
+        mask[i] = np.asarray(d[mname][:], dtype=np.float32)
+        n_masked += 1
+    d.close()
+    logger.info("built an input mask for %d of %d channels from %s",
+                n_masked, len(in_names), path)
+    return torch.from_numpy(mask[None]).to(device)
 
 
 def _load_ace_tracer(path: pathlib.Path):
@@ -137,6 +209,13 @@ def main() -> None:
         default=os.environ.get("EATM_TRACE_SCRIPT", "/pscratch/sd/m/mahf708/test_ace_repo/trace.py"),
     )
     parser.add_argument("--check-trace", action="store_true")
+    parser.add_argument(
+        "--mask-file",
+        default=("/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/initial_conditions/"
+                 "SamudrACE-E3SMv3-ICx3-train_ocean_ic.nc"),
+        help="file carrying the mask_* variables that say where each ocean "
+        "channel is defined; pass an empty string to trace without masking",
+    )
     args = parser.parse_args()
 
     tracer = _load_ace_tracer(pathlib.Path(args.trace_script))
@@ -167,6 +246,7 @@ def main() -> None:
         )
         _check(metadata, args.emulator)
 
+        n_in_state = metadata["n_input_channels"]
         out_names = [metadata["output_channels"][i] for i in range(len(metadata["output_channels"]))]
         if traceable.force_pos_idx.numel() == 0:
             step = tracer._unwrap_step(stash["stepper"])
@@ -186,7 +266,12 @@ def main() -> None:
             logger.info("restored %d force-positive channels", len(idx))
         sif_idx = out_names.index("ocean_sea_ice_fraction")
         zero_idx = [out_names.index("iceVolumeTotal")]
-        wrapped = SeaIceCorrected(traceable, sif_idx, zero_idx).to(args.device).eval()
+
+        in_names = [metadata["input_channels"][i] for i in range(n_in_state)]
+        in_mask = _build_input_mask(args.mask_file, in_names, args.device)
+        wrapped = OceanWrapper(traceable, sif_idx, zero_idx, in_mask)
+        wrapped = wrapped.to(args.device).eval()
+        metadata["input_masking"] = args.mask_file or "none"
 
         # Samudra's ConvNeXt blocks run under torch.utils.checkpoint when
         # checkpoint_strategy == "all".  That is a training-time memory trade
@@ -210,6 +295,7 @@ def main() -> None:
 
         n_in = metadata["n_input_channels"]
         n_forcing = metadata["n_forcing_channels"]
+
         n_lat, n_lon = metadata["n_lat"], metadata["n_lon"]
         example = torch.randn(1, n_in + n_forcing, n_lat, n_lon, device=args.device)
         logger.info(
