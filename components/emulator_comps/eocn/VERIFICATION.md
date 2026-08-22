@@ -509,3 +509,80 @@ that are part of what is being tested, whether or not anyone chose them.
 `eocn_restart_file_write` now raises the limit for the write and restores it
 afterwards, following `homme/src/common_io_mod.F90:123`, rather than leaving
 it raised for every other component sharing the library.
+
+## 9. The restart is not bit-reproducible, and section 3 could not have seen it
+
+Re-running the section 3 style restart check with EICE in the compset — six
+days straight through against three plus three, branching mid-window at day
+three — gives this for the coupler's ocean surface temperature:
+
+```
+        date   So_t ref   So_t rst        diff      max|d|
+0001-01-02 … 0001-01-06   identical      0.000e+00   0.000e+00
+0001-01-07   287.10904  287.10968        6.380e-04   2.602e-01
+```
+
+A float32 ULP at 287 K is about 3e-5 K, so 0.26 K is four orders of magnitude
+outside anything roundoff can explain.
+
+### It is the atmosphere, and it is by construction
+
+`eatm_torch_seed.cpp` says it plainly: the SamudrACE-E3SMv3 atmosphere is a
+`NoiseConditionedSFNO`, which draws random noise on every forward pass.
+`ace_comp_mod.F90:248` seeds libtorch once at initialisation with
+`eatm_rng_seed + stepno`.  A restarted run therefore re-seeds from that
+formula, while a continuous run's generator has advanced through however many
+draws it has made.  libtorch's generator state is never written to the
+restart, so the two noise sequences differ from the first step after the
+branch and nothing downstream can agree again.
+
+Comparing all coupler fields rather than just the sea surface temperature
+shows this immediately:
+
+| day | fields differing | largest |
+| --- | --- | --- |
+| 01-05 | 95 | `a2x_Sa_pbot`, 653 Pa |
+| 01-06 | 95 | `a2x_Sa_pbot`, 942 Pa |
+| 01-07 | 142 | `a2x_Sa_pbot`, 2021 Pa |
+
+The atmosphere is already 653 Pa apart on the first day after the branch.  The
+ocean only joins in on 01-07 because `So_t` is interpolated between emulator
+states that do not update until Samudra steps at 01-06; until then it is
+almost insensitive to what the atmosphere is doing.
+
+### What this says about section 3
+
+Section 3 reported the restart exact to one float32 ULP.  That measurement was
+made with `cmp_restart.py`, which compares one field, `o2x_So_t`.  Given a
+five-day emulator step, that field is nearly piecewise constant, so the test
+is blind to atmospheric divergence for days at a time and will report an exact
+match whenever the window happens not to contain a post-branch emulator step.
+
+The section 3 claim is therefore much narrower than it reads: EOCN's
+accumulators and bracketing states are carried across a restart correctly —
+which the 01-02 through 01-06 rows above do genuinely confirm, since any error
+there would have moved `So_t` at 01-06 — but *the coupled system is not
+reproducible across a restart at all*, and cannot be while the atmosphere is
+stochastic and its generator state is not persisted.
+
+### Two false starts worth recording
+
+`so_ifrac` looked like the culprit: it is read every coupling step by the flux
+un-weighting and published to EICE, but assigned only inside `samudra_export`,
+and it is not in the restart file.  The reasoning was wrong twice over.
+`samudra_comp_init` calls `samudra_export` before the first coupling step on a
+restart as well as a startup, so the value is always defined; and Samudra is
+deterministic, so the reconstructed value equals the one a continuous run
+would have held.  Persisting it changed the output not at all — bit for bit —
+which is what exposed the error in the diagnosis.
+
+Only the zero-initialisation was kept, and only to remove the dependence on
+`samudra_comp_init` continuing to behave that way.
+
+### What would have to change to make restarts reproducible
+
+Persist libtorch's generator state alongside the emulator state, or accept
+that restarts are statistically rather than bitwise equivalent and test them
+that way.  The second is the honest option for a stochastic model, and it
+means `cmp_restart.py` should compare distributions over many cells rather
+than reporting a max absolute difference that will never be zero.

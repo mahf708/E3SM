@@ -76,6 +76,12 @@ contains
     allocate(so_dhdx(lsize_x,lsize_y))
     allocate(so_dhdy(lsize_x,lsize_y))
     allocate(so_ifrac(lsize_x,lsize_y))
+    ! so_ifrac is read every coupling step by the flux un-weighting, and
+    ! published to EICE, but assigned only inside samudra_export.  In practice
+    ! samudra_comp_init calls that routine before the first coupling step on
+    ! both startup and restart, so the value is always defined by the time
+    ! anyone reads it -- this only removes the dependence on that being true.
+    so_ifrac = 0.0_R8
 
     allocate(cell_lat(lsize_x,lsize_y))
     allocate(cell_lon(lsize_x,lsize_y))
@@ -119,6 +125,7 @@ contains
     call t_stopf('EOCN_ALLOC')
 
   end subroutine eocn_comp_alloc
+
 
   !===============================================================================
   subroutine eocn_comp_init(Eclock, x2o, o2x, &
