@@ -123,9 +123,19 @@ class OceanWrapper(nn.Module):
 def _mask_name(channel: str) -> str | None:
     """The mask_* variable that says where a given input channel is defined.
 
-    None means the channel is present everywhere: the surface fractions, and
-    the ten atmospheric fluxes, which come from the atmosphere and are defined
-    over land too.
+    The ten atmospheric fluxes are defined over land too *in the training
+    data*, which is exactly why they have to be masked here.  Online they come
+    from the coupler as Foxx_*, which is identically zero wherever the ocean
+    fraction is zero -- 19908 of 64800 cells, 30.7% of the grid.  Leaving them
+    unmasked passes that structural zero straight into the network, where it
+    reads as a -1.0 sigma downward longwave and a -0.5 sigma shortwave over a
+    third of the domain, and a dilated ConvNeXt stack carries the
+    discontinuity well inland of every coast.  Masking them fills those cells
+    with each channel's training mean instead, which is what fme's
+    _apply_input_mask does to a masked channel and the closest thing to "no
+    information" the network has a representation for.
+
+    None still means genuinely present everywhere: the two surface fractions.
     """
     for prefix in ("salinityCoarsened_", "temperatureCoarsened_",
                    "velocityZonalCoarsened_", "velocityMeridionalCoarsened_"):
@@ -135,6 +145,8 @@ def _mask_name(channel: str) -> str | None:
         return "mask_2d"
     if channel in ("ocean_sea_ice_fraction", "iceVolumeTotal"):
         return "mask_" + channel
+    if channel in FORCING:
+        return "mask_2d"
     return None
 
 

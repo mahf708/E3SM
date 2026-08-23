@@ -35,6 +35,8 @@ module eocnMod
   integer, public       :: eocn_rng_seed       ! libtorch RNG seed; <0 leaves it unseeded
   logical, public       :: eocn_interp_state   ! interpolate between emulator brackets
   logical, public       :: eocn_flux_ifrac_unweight ! undo the coupler's open-water weighting
+  logical, public       :: eocn_unweight_stress     ! apply that un-weighting to TAUX/TAUY too
+  character(CS), public :: eocn_precip_units        ! units of the emulator's precipitation channels
 
   !--------------------------------------------------------------------------
   ! Imported coupler fluxes, accumulated over the emulator interval.

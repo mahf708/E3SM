@@ -363,7 +363,7 @@ CONTAINS
     type(mct_aVect), intent(inout) :: x2o_o
 
     integer  :: i, j, n
-    real(r8) :: swnet, fsds, w
+    real(r8) :: swnet, fsds, w, ws, cpl_ifrac
 
     n = 0
     do j = 1, lsize_y
@@ -391,15 +391,40 @@ CONTAINS
           ! expects.  Set eocn_flux_ifrac_unweight = .false. to keep the
           ! coupler's open-water values instead, which is the physically
           ! standard choice for a model that does *not* carry its own ice.
-          if (eocn_flux_ifrac_unweight) then
-             w = 1.0_r8 / max(1.0_r8 - so_ifrac(i,j), 0.01_r8)
+          ! Undo the coupler's open-water weighting using the fraction the
+          ! coupler actually weighted with -- Si_ifrac, which arrives in x2o --
+          ! rather than Samudra's own prediction.  Two things follow.  With a
+          ! stub ice component Si_ifrac is zero, so w is one and nothing is
+          ! un-weighted: the amplification that used to make E2000-EATM-EOCN
+          ! diverge cannot happen.  And where an ice component is present the
+          ! two agree to about 4e-3 rather than exactly, so this also removes a
+          ! small coupling-step lag between what the merge did and what is
+          ! divided back out.
+          if (eocn_flux_ifrac_unweight .and. index_x2o_Si_ifrac > 0) then
+             cpl_ifrac = min(max(x2o_o%rAttr(index_x2o_Si_ifrac,n), 0.0_r8), 1.0_r8)
+             w = 1.0_r8 / max(1.0_r8 - cpl_ifrac, 0.01_r8)
           else
              w = 1.0_r8
           end if
+          ! TAUX/TAUY are the exception.  prep_ocn builds them as
+          !   ifrac*i2x%Fioi_taux + afrac*xao%Faox_taux
+          ! -- a genuine weighted mean, because EICE reports the under-ice
+          ! stress equal to the atm/ice stress precisely so the merge
+          ! reconstructs the whole-cell stress Samudra was trained on
+          ! (eice/src/ice_comp_mct.F90, "The stress is passed through").
+          ! Every other channel here has no ice term and arrives scaled by
+          ! afrac, which is what w undoes.  Applying w to a field that is
+          ! already whole-cell multiplies it by 1/(1-ifrac), up to the 100x
+          ! the floor allows, in exactly the cells where the ice is thickest.
+          if (eocn_unweight_stress) then
+             ws = w
+          else
+             ws = 1.0_r8
+          end if
           if (index_x2o_Foxx_taux > 0) &
-               acc_taux(i,j) = acc_taux(i,j) + w*x2o_o%rAttr(index_x2o_Foxx_taux,n)
+               acc_taux(i,j) = acc_taux(i,j) + ws*x2o_o%rAttr(index_x2o_Foxx_taux,n)
           if (index_x2o_Foxx_tauy > 0) &
-               acc_tauy(i,j) = acc_tauy(i,j) + w*x2o_o%rAttr(index_x2o_Foxx_tauy,n)
+               acc_tauy(i,j) = acc_tauy(i,j) + ws*x2o_o%rAttr(index_x2o_Foxx_tauy,n)
           if (index_x2o_Foxx_lat > 0) &
                acc_lhflx(i,j) = acc_lhflx(i,j) + w*x2o_o%rAttr(index_x2o_Foxx_lat,n)
           if (index_x2o_Foxx_sen > 0) &
@@ -506,7 +531,7 @@ CONTAINS
     namelist /eocn_inparm/ do_eocn, filename_eocn, eocn_emulator, &
          eocn_model_file, eocn_ic_file, eocn_model_device, eocn_rng_seed, &
          eocn_interp_state, &
-         eocn_flux_ifrac_unweight
+         eocn_flux_ifrac_unweight, eocn_unweight_stress, eocn_precip_units
 
     do_eocn           = .true.
     filename_eocn     = ' '
@@ -517,6 +542,8 @@ CONTAINS
     eocn_rng_seed     = 0
     eocn_interp_state = .true.
     eocn_flux_ifrac_unweight = .true.
+    eocn_unweight_stress     = .false.
+    eocn_precip_units        = 'kg/m2/s'
 
     if (masterproc) then
        nu_nml = shr_file_getUnit()
@@ -541,6 +568,8 @@ CONTAINS
        write(logunit_ocn,*) '   eocn_rng_seed     = ', eocn_rng_seed
        write(logunit_ocn,*) '   eocn_interp_state = ', eocn_interp_state
        write(logunit_ocn,*) '   eocn_flux_ifrac_unweight = ', eocn_flux_ifrac_unweight
+       write(logunit_ocn,*) '   eocn_unweight_stress     = ', eocn_unweight_stress
+       write(logunit_ocn,*) '   eocn_precip_units        = ', trim(eocn_precip_units)
     end if
 
     call shr_mpi_bcast(do_eocn,           mpicom_ocn)
@@ -552,6 +581,8 @@ CONTAINS
     call shr_mpi_bcast(eocn_rng_seed,     mpicom_ocn)
     call shr_mpi_bcast(eocn_interp_state, mpicom_ocn)
     call shr_mpi_bcast(eocn_flux_ifrac_unweight, mpicom_ocn)
+    call shr_mpi_bcast(eocn_unweight_stress,     mpicom_ocn)
+    call shr_mpi_bcast(eocn_precip_units,        mpicom_ocn)
 
   end subroutine eocn_read_namelist
 

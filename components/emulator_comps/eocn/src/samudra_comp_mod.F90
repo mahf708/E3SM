@@ -269,7 +269,24 @@ contains
     implicit none
 
     integer  :: i, j
-    real(R8) :: w
+    real(R8) :: w, pscale
+
+    ! The coupler's precipitation is kg/m2/s.  Whether that needs converting
+    ! depends on the checkpoint, and the checkpoint says: its normalization
+    ! mean for surface_precipitation_rate is 2.82e-5, which is kg/m2/s, and the
+    ! atmosphere and ocean components carry identical statistics because the
+    ! reference coupler passes the channel through unconverted.  Dividing by
+    ! rhofw hands the network 1/1000 of the precipitation, a uniform -0.66
+    ! sigma dry anomaly on every step.  'kg/m2/s' passes it through.
+    select case (trim(eocn_precip_units))
+    case ('kg/m2/s', 'kg m-2 s-1')
+      pscale = 1.0_R8
+    case ('m/s')
+      pscale = 1.0_R8 / rhofw
+    case default
+      call shr_sys_abort('(samudra_import_forcing) ERROR: eocn_precip_units '// &
+           'must be "kg/m2/s" or "m/s", got "'//trim(eocn_precip_units)//'"')
+    end select
 
     if (acc_n <= 0) then
       write(logunit_ocn,'(a)') '(samudra_import_forcing) WARNING: no coupler '// &
@@ -283,8 +300,8 @@ contains
       do i = 1, lsize_x
         net_inputs(1, ix_in_taux,  i, j) = real(-acc_taux(i,j) * w, R4)
         net_inputs(1, ix_in_tauy,  i, j) = real(-acc_tauy(i,j) * w, R4)
-        net_inputs(1, ix_in_prec,  i, j) = real(max(acc_prec(i,j) * w, 0.0_R8) / rhofw, R4)
-        net_inputs(1, ix_in_snow,  i, j) = real(max(acc_snow(i,j) * w, 0.0_R8) / rhofw, R4)
+        net_inputs(1, ix_in_prec,  i, j) = real(max(acc_prec(i,j) * w, 0.0_R8) * pscale, R4)
+        net_inputs(1, ix_in_snow,  i, j) = real(max(acc_snow(i,j) * w, 0.0_R8) * pscale, R4)
         net_inputs(1, ix_in_flus,  i, j) = real(-acc_flus(i,j) * w, R4)
         net_inputs(1, ix_in_fsus,  i, j) = real( acc_fsus(i,j) * w, R4)
         net_inputs(1, ix_in_flds,  i, j) = real( acc_flds(i,j) * w, R4)
@@ -543,6 +560,7 @@ contains
     integer  :: i, j, n, ip, im, jp, jm
     real(R8) :: dx, dy, coslat
     real(R8) :: ifrac_flat(lsize_x*lsize_y)
+    real(R8) :: sst_flat(lsize_x*lsize_y)
 
     do j = 1, lsize_y
       do i = 1, lsize_x
@@ -600,9 +618,10 @@ contains
       do i = 1, lsize_x
         n = n + 1
         ifrac_flat(n) = so_ifrac(i,j)
+        sst_flat(n)   = so_t(i,j)
       end do
     end do
-    call shr_emul_ice_put(ifrac_flat)
+    call shr_emul_ice_put(ifrac_flat, sst_flat)
 
     if (verbose) then
       write(logunit_ocn,'(a,4f12.5)') &

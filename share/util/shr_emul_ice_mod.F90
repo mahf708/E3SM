@@ -36,8 +36,10 @@ module shr_emul_ice_mod
   save
 
   real(R8), allocatable :: ice_frac(:)   ! fraction of the sea surface, not of the cell
+  real(R8), allocatable :: sea_sst(:)    ! the ocean's own sea surface temperature (K)
   integer               :: nstored = 0
   logical               :: valid   = .false.
+  logical               :: sst_valid = .false.
 
   ! Grid, published once by the ocean at init so the ice half of the entity
   ! needs no I/O of its own and cannot disagree about the mesh.
@@ -53,16 +55,30 @@ module shr_emul_ice_mod
   public :: shr_emul_ice_get_grid
   public :: shr_emul_ice_grid_size
   public :: shr_emul_ice_grid_gsize
+  public :: shr_emul_ice_sst_avail
+  public :: shr_emul_ice_get_sst
 
 contains
 
   !===============================================================================
-  subroutine shr_emul_ice_put(frac)
+  subroutine shr_emul_ice_put(frac, sst)
 
-    ! Publish the emulator's sea ice fraction.  Called by the ocean once per
-    ! coupling step, after it has blended its bracketing states.
+    ! Publish the emulator's sea ice fraction, and optionally its sea surface
+    ! temperature.  Called by the ocean once per coupling step, after it has
+    ! blended its bracketing states.
+    !
+    ! The sea surface temperature is here because the coupler's merged Sx_t is
+    ! not what a prescribed-ocean atmosphere emulator was trained to consume.
+    ! SamudrACE's atmosphere config is
+    !     ocean = {surface_temperature_name: TS, ocean_fraction_name: OCNFRAC,
+    !              interpolate: true}
+    ! so its reference coupler builds TS = OCNFRAC*sst + (1-OCNFRAC)*TS_atm and
+    ! the atmosphere keeps its own predicted surface temperature over land *and
+    ! over sea ice*.  Reproducing that needs the ocean's unmerged sst, which no
+    ! x2a field carries.  See eatm_ts_from_ocn.
 
-    real(R8), intent(in) :: frac(:)
+    real(R8), intent(in)           :: frac(:)
+    real(R8), intent(in), optional :: sst(:)
 
     if (allocated(ice_frac)) then
       if (size(ice_frac) /= size(frac)) deallocate(ice_frac)
@@ -73,7 +89,45 @@ contains
     nstored     = size(frac)
     valid       = .true.
 
+    if (present(sst)) then
+      if (size(sst) == size(frac)) then
+        if (allocated(sea_sst)) then
+          if (size(sea_sst) /= size(sst)) deallocate(sea_sst)
+        end if
+        if (.not. allocated(sea_sst)) allocate(sea_sst(size(sst)))
+        sea_sst(:) = sst(:)
+        sst_valid  = .true.
+      end if
+    end if
+
   end subroutine shr_emul_ice_put
+
+  !===============================================================================
+  logical function shr_emul_ice_sst_avail(n)
+
+    ! Is there a published sea surface temperature of the size the caller
+    ! expects?  Separate from shr_emul_ice_avail because the fraction is
+    ! published by every ocean build and the temperature only by one that was
+    ! asked for it.
+
+    integer, intent(in) :: n
+
+    shr_emul_ice_sst_avail = sst_valid .and. (nstored == n) .and. allocated(sea_sst)
+
+  end function shr_emul_ice_sst_avail
+
+  !===============================================================================
+  subroutine shr_emul_ice_get_sst(sst)
+
+    real(R8), intent(out) :: sst(:)
+
+    if (.not. shr_emul_ice_sst_avail(size(sst))) then
+      sst(:) = 0.0_R8
+    else
+      sst(:) = sea_sst(:)
+    end if
+
+  end subroutine shr_emul_ice_get_sst
 
   !===============================================================================
   logical function shr_emul_ice_avail(n)

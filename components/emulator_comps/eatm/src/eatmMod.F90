@@ -34,6 +34,7 @@ module eatmMod
   character(CL), public :: eatm_model_device      ! 'cpu' or 'gpu'
   character(CL), public :: eatm_frzprec_units     ! units of the frozen precip channel
   logical, public       :: eatm_pass_forcing      ! append next-step forcing channels
+  logical, public       :: eatm_ts_from_ocn       ! build TS the way the reference prescriber does
   logical, public       :: eatm_legacy_surface    ! reproduce the pre-review surface diagnostics
   integer, public       :: eatm_iradsw            ! radiation interval (coupler steps)
   character(CL), public :: eatm_surface_layer     ! 'near_surface' or 'lowest_level'

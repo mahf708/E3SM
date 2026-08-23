@@ -8,6 +8,7 @@ module ocn_cpl_indices
   public
 
   ! coupler -> eocn
+  integer :: index_x2o_Si_ifrac   = 0   ! sea ice fraction the coupler merged with
   integer :: index_x2o_Foxx_taux  = 0   ! zonal wind stress on the ocean  (N/m2)
   integer :: index_x2o_Foxx_tauy  = 0   ! meridional wind stress          (N/m2)
   integer :: index_x2o_Foxx_swnet = 0   ! net shortwave into the ocean    (W/m2)
@@ -38,6 +39,7 @@ contains
     call mct_aVect_init(x2o, rList=seq_flds_x2o_fields, lsize=lsize)
     call mct_aVect_init(o2x, rList=seq_flds_o2x_fields, lsize=lsize)
 
+    index_x2o_Si_ifrac   = mct_avect_indexra(x2o,'Si_ifrac'  ,perrWith='quiet')
     index_x2o_Foxx_taux  = mct_avect_indexra(x2o,'Foxx_taux' ,perrWith='quiet')
     index_x2o_Foxx_tauy  = mct_avect_indexra(x2o,'Foxx_tauy' ,perrWith='quiet')
     index_x2o_Foxx_swnet = mct_avect_indexra(x2o,'Foxx_swnet',perrWith='quiet')

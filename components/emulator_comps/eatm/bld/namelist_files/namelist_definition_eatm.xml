@@ -195,6 +195,21 @@ reference height can explain.  See REVIEW.md #58 and #59.
 Default: 10.0
 </entry>
 
+<entry id="eatm_ts_from_ocn" type="logical" category="eatm"
+       group="eatm_inparm" valid_values="">
+Build the surface temperature handed to the emulator the way the checkpoint's
+own reference coupler does, rather than passing the coupler's merged Sx_t.
+SamudrACE's atmosphere declares a prescribed ocean with interpolate = .true.,
+so the reference computes TS = OCNFRAC*sst + (1 - OCNFRAC)*TS_atm with
+OCNFRAC = (1 - LANDFRAC)*(1 - ocean_sea_ice_fraction): over land and over sea
+ice the atmosphere keeps its own predicted surface temperature.  Sx_t instead
+fills the ice share with the ice component's surface temperature, which for
+EICE is a fabricated seasonal cycle.  Requires an ocean emulator publishing its
+unmerged sst on the same grid (shr_emul_ice_mod); falls back to Sx_t with a log
+line when that is not available, which is every compset without EOCN.
+Default: .true.
+</entry>
+
 <entry id="eatm_icefrac_from_ocn" type="logical" category="eatm"
        group="eatm_inparm" valid_values="" >
 Take ICEFRAC from the ocean emulator's own sea ice prediction instead of from

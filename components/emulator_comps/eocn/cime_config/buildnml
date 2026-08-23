@@ -32,6 +32,8 @@ _ORDER = [
     "eocn_rng_seed",
     "eocn_interp_state",
     "eocn_flux_ifrac_unweight",
+    "eocn_unweight_stress",
+    "eocn_precip_units",
 ]
 
 _QUOTED = {
@@ -40,6 +42,7 @@ _QUOTED = {
     "eocn_model_file",
     "eocn_ic_file",
     "eocn_model_device",
+    "eocn_precip_units",
 }
 
 

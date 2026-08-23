@@ -106,7 +106,6 @@ if [ "${CASE}" = "emul" ]; then
   cat >> user_nl_eatm <<EOF
 eatm_model_file = '${EATM_MODEL}'
 eatm_ic_file    = '${EATM_IC}'
-eatm_frzprec_units = 'm/s'
 EOF
 fi
 

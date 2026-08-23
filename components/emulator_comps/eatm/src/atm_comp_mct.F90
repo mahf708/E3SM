@@ -596,6 +596,7 @@ CONTAINS
     namelist /eatm_inparm / do_eatm, filename_eatm, &
          eatm_emulator, eatm_model_file, eatm_ic_file, eatm_model_device, &
          eatm_pass_forcing, eatm_legacy_surface, eatm_frzprec_units, eatm_iradsw, &
+         eatm_ts_from_ocn, &
          eatm_surface_layer, eatm_cap_shum, eatm_rng_seed, eatm_ref_height, eatm_sw_diurnal, &
          eatm_icefrac_from_ocn, &
          eatm_land_deficit, eatm_solin_window, eatm_clock_align, &
@@ -615,6 +616,7 @@ CONTAINS
     eatm_model_device   = 'gpu'
     eatm_frzprec_units  = 'kg/m2/s'
     eatm_pass_forcing   = .false.
+    eatm_ts_from_ocn    = .true.
     eatm_legacy_surface = .false.
     eatm_surface_layer  = 'near_surface'
     eatm_iradsw         = 1
@@ -653,6 +655,7 @@ CONTAINS
     call shr_mpi_bcast(eatm_model_device, mpicom_atm, 'eatm_model_device')
     call shr_mpi_bcast(eatm_frzprec_units, mpicom_atm, 'eatm_frzprec_units')
     call shr_mpi_bcast(eatm_pass_forcing, mpicom_atm, 'eatm_pass_forcing')
+    call shr_mpi_bcast(eatm_ts_from_ocn, mpicom_atm, 'eatm_ts_from_ocn')
     call shr_mpi_bcast(eatm_legacy_surface, mpicom_atm, 'eatm_legacy_surface')
     call shr_mpi_bcast(eatm_surface_layer, mpicom_atm, 'eatm_surface_layer')
     call shr_mpi_bcast(eatm_cap_shum, mpicom_atm, 'eatm_cap_shum')
@@ -688,6 +691,7 @@ CONTAINS
        write(logunit_atm,*) '   eatm_ic_file        = ', trim(eatm_ic_file)
        write(logunit_atm,*) '   eatm_model_device   = ', trim(eatm_model_device)
        write(logunit_atm,*) '   eatm_frzprec_units  = ', trim(eatm_frzprec_units)
+       write(logunit_atm,*) '   eatm_ts_from_ocn    = ', eatm_ts_from_ocn
        write(logunit_atm,*) '   eatm_pass_forcing   = ', eatm_pass_forcing
        write(logunit_atm,*) '   eatm_legacy_surface = ', eatm_legacy_surface
        write(logunit_atm,*) '   eatm_surface_layer  = ', trim(eatm_surface_layer)

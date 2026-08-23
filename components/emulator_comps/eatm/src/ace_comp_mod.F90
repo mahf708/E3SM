@@ -26,6 +26,7 @@ module ace_comp_mod
   use shr_orb_mod,  only: shr_orb_decl, shr_orb_cosz
   use shr_cal_mod,  only: shr_cal_date2julian
   use shr_emul_ice_mod, only: shr_emul_ice_get, shr_emul_ice_avail
+  use shr_emul_ice_mod, only: shr_emul_ice_get_sst, shr_emul_ice_sst_avail
 
   use ftorch, only: &
     torch_kCPU, &
@@ -1032,8 +1033,11 @@ CONTAINS
     real(R8) :: deficit   ! the rest, which the emulator owns
     real(R8) :: sif       ! emulator sea ice fraction, of the sea surface
     real(R8) :: land_true ! the land fraction EATM actually reports
+    real(R8) :: ocn_true  ! open-ocean fraction, the reference prescriber's OCNFRAC
     logical  :: use_emul_ice
     real(R8) :: ifrac_flat(lsize_x*lsize_y)
+    real(R8) :: sst_flat(lsize_x*lsize_y)
+    logical  :: use_ocn_ts
     integer  :: n
     real(R8) :: fo, fi, fl  ! individually bounded ocean / ice / land fractions
     integer  :: n_clip_frac, n_norm_frac   ! cells corrected, by kind
@@ -1080,6 +1084,26 @@ CONTAINS
            'no sea ice fraction of the right size; leaving ICEFRAC as the '// &
            'coupler gave it'
     end if
+    ! SamudrACE's atmosphere declares a prescribed ocean with interpolate:true,
+    ! so its reference coupler builds
+    !     TS = OCNFRAC*sst + (1 - OCNFRAC)*TS_atm,  OCNFRAC = (1-LANDFRAC)(1-sif)
+    ! and the atmosphere keeps its own predicted surface temperature over land
+    ! *and over sea ice*.  The coupler's merged Sx_t is a different quantity: it
+    ! fills the ice share with the ice component's own surface temperature,
+    ! which for EICE is a fabricated seasonal cycle.  Where the ocean has
+    ! published its unmerged sst, use the reference's formula instead.
+    use_ocn_ts = eatm_ts_from_ocn .and. eatm_land_deficit .and. &
+                 shr_emul_ice_avail(lsize_x*lsize_y) .and. &
+                 shr_emul_ice_sst_avail(lsize_x*lsize_y)
+    if (use_ocn_ts) then
+      call shr_emul_ice_get(ifrac_flat)
+      call shr_emul_ice_get_sst(sst_flat)
+    else if (eatm_ts_from_ocn) then
+      write(logunit_atm,'(a)') '(ace_eatm_import) NOTE: eatm_ts_from_ocn is set '// &
+           'but the ocean emulator has published no sea surface temperature of '// &
+           'the right size; using the coupler''s merged Sx_t'
+    end if
+
     n = 0
 
     do j = 1, lsize_y
@@ -1135,8 +1159,17 @@ CONTAINS
           end if
 
           if (ix_in_ts > 0) then
-            net_inputs(1, ix_in_ts, i, j) = real( &
-                 ts(i, j) + deficit * real(state(ix_out_ts, i, j), R8), R4)
+            if (use_ocn_ts) then
+              land_true = min(max(fl + deficit, 0.0_R8), 1.0_R8)
+              sif       = min(max(ifrac_flat(n), 0.0_R8), 1.0_R8)
+              ocn_true  = max((1.0_R8 - land_true) * (1.0_R8 - sif), 0.0_R8)
+              net_inputs(1, ix_in_ts, i, j) = real( &
+                   ocn_true * sst_flat(n) + &
+                   (1.0_R8 - ocn_true) * real(state(ix_out_ts, i, j), R8), R4)
+            else
+              net_inputs(1, ix_in_ts, i, j) = real( &
+                   ts(i, j) + deficit * real(state(ix_out_ts, i, j), R8), R4)
+            end if
           end if
 
         else

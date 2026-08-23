@@ -51,4 +51,12 @@
     <lname>2010_EAM%CMIP6_ELM%SPBC_EICE_EOCN_SROF_SGLC_SWAV</lname>
   </compset>
 
+  <!-- EAMxx (SCREAM) over the emulated ocean and its ice.  EAMxx is the
+       GPU-ready atmosphere, so this is the prognostic-atmosphere configuration
+       to prefer on pm-gpu; F2010-ELM-EOCN-EICE is the EAM equivalent. -->
+  <compset>
+    <alias>FSCREAM-EOCN-EICE</alias>
+    <lname>2010_SCREAM_ELM%SPBC_EICE_EOCN_SROF_SGLC_SWAV_SIAC_SESP</lname>
+  </compset>
+
 </compsets>

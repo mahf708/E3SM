@@ -82,9 +82,14 @@ of sea water rather than left at whatever the network produced there.
 | `E2000-EATM-EOCN` | `2000_EATM_SLND_SICE_EOCN_SROF_SGLC_SWAV` |
 | `F2010-EOCN` | `2010_EAM%CMIP6_SLND_SICE_EOCN_SROF_SGLC_SWAV` |
 | `F2010-ELM-EOCN` | `2010_EAM%CMIP6_ELM%SPBC_SICE_EOCN_SROF_SGLC_SWAV` |
+| `FSCREAM-EOCN-EICE` | `2010_SCREAM_ELM%SPBC_EICE_EOCN_SROF_SGLC_SWAV_SIAC_SESP` |
 
 Grids: `gauss180x360_gauss180x360` (both emulators on one grid, every map the
 identity) and `ne30pg2_gauss180x360` (prognostic EAM over the emulated ocean).
+
+`FSCREAM-EOCN-EICE` is the same configuration with EAMxx instead of EAM, which
+is the one to prefer on GPU hardware.  It runs at `ne30pg2_gauss180x360` on 4
+ranks per node; verified for two days on `pm-gpu` with 8 ranks.
 
 `F2010-EOCN` has a known problem: the coupler sets the atmosphere's land
 fraction to `1 - ocean fraction`, so with a stub land the merge hands EAM a
