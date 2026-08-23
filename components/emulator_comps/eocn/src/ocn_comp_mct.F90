@@ -16,6 +16,13 @@ module ocn_comp_mct
   use shr_file_mod    , only: shr_file_setlogunit, shr_file_setloglevel, shr_file_setio
   use shr_file_mod    , only: shr_file_freeunit
   use shr_mpi_mod     , only: shr_mpi_bcast
+  use shr_emul_flux_mod, only: shr_emul_flux_get, shr_emul_flux_avail,       &
+                               shr_emul_flux_nchan,                          &
+                               shr_emul_flux_taux,  shr_emul_flux_tauy,      &
+                               shr_emul_flux_prec,  shr_emul_flux_snow,      &
+                               shr_emul_flux_flus,  shr_emul_flux_fsus,      &
+                               shr_emul_flux_flds,  shr_emul_flux_fsds,      &
+                               shr_emul_flux_lhflx, shr_emul_flux_shflx
   use shr_sys_mod     , only: shr_sys_flush, shr_sys_abort
   use seq_flds_mod    , only: seq_flds_o2x_fields, seq_flds_x2o_fields
   use seq_flds_mod    , only: seq_flds_dom_coord, seq_flds_dom_other
@@ -373,11 +380,34 @@ CONTAINS
           ! Undo the coupler's open-water weighting.
           !
           ! With a sea ice component present the coupler hands the ocean only
-          ! the open-water share of every surface flux: prep_ocn_mod.F90:1218
-          ! builds each one as afrac*<atm or atm/ocn flux> + ifrac*<ice flux>,
+          ! the open-water share of the turbulent and longwave fluxes.  The
+          ! generic merge in prep_ocn_mod would combine an atmosphere term and
+          ! an ice term, but it skips every i2x field whose name begins Faii --
+          ! the atmosphere/ice fluxes -- so for these channels no ice term is
+          ! ever found and what the ocean receives is afrac*<atm/ocn flux> and
+          ! nothing else.  The coupler prints the merge it performed at
+          ! startup, and it reads
+          !     x2o%Foxx_lat  = + afrac*xao%Faox_lat
+          !     x2o%Foxx_sen  = + afrac*xao%Faox_sen
+          !     x2o%Foxx_lwup = + afrac*xao%Faox_lwup
+          !     x2o%Foxx_evap = + afrac*xao%Faox_evap
+          !     x2o%Faxa_lwdn = afrac*a2x%Faxa_lwdn
+          !     x2o%Faxa_rain = afrac*(a2x%Faxa_rainc + a2x%Faxa_rainl)*...
           ! with afrac and ifrac renormalised by their sum.  On this grid the
           ! ice and ocean share a mesh, so that normalised afrac is exactly
           ! 1 - so_ifrac.
+          !
+          ! Dividing by afrac therefore recovers the whole-cell atmosphere/
+          ! ocean flux and cannot amplify an ice contribution, because there
+          ! is none to amplify.  What it does not recover is the flux over the
+          ! ice-covered part of the cell, which is a different surface: under
+          ! heavy ice the true whole-cell flux is dominated by the atm/ice
+          ! term the ocean never sees, and this substitutes the open-water
+          ! flux for it.  The floor below caps that extrapolation at 100x,
+          ! which binds on about 14% of ocean cells in an ice-covered winter
+          ! and leaves them with roughly half the open-water flux.  Both the
+          ! substitution and the floor are gone on the reference forcing path;
+          ! see eocn_forcing_source.
           !
           ! Samudra was not trained on the open-water share.  In SamudrACE the
           ! ocean receives the atmosphere's whole-cell surface fluxes and
@@ -439,6 +469,20 @@ CONTAINS
              acc_prec(i,j) = acc_prec(i,j) + w*x2o_o%rAttr(index_x2o_Faxa_snow,n)
              acc_snow(i,j) = acc_snow(i,j) + w*x2o_o%rAttr(index_x2o_Faxa_snow,n)
           end if
+          ! Shortwave is the one channel here that the merge does give an ice
+          ! term:
+          !   Foxx_swnet = afracr*(open-water absorbed) + ifrac*i2x%Fioi_swpen
+          ! (prep_ocn_mod.F90:1111).  Unweighting that by 1/(1-ifrac) recovers
+          ! the open-water part and amplifies the penetrating part, which is
+          ! why this path is only correct while the ice component reports no
+          ! penetrating shortwave.  EICE sets Fioi_swpen to zero deliberately
+          ! (eice/src/ice_comp_mct.F90) and the stub ice has none, and those
+          ! are the only ice components any EOCN compset pairs with; a real
+          ! ice component would need Fioi_swpen carried into x2o so it could be
+          ! subtracted before the division.  The reference forcing path
+          ! (eocn_forcing_source = 'atm_raw') takes FSDS and FSUS straight from
+          ! the atmosphere emulator and sidesteps all of this, including the
+          ! assumed ocean albedo below.
           if (index_x2o_Foxx_swnet > 0) then
              swnet = w*x2o_o%rAttr(index_x2o_Foxx_swnet,n)
              fsds  = swnet / (1.0_r8 - ocn_albedo)
@@ -450,7 +494,63 @@ CONTAINS
 
     acc_n = acc_n + 1
 
+    call ocn_import_atm_raw()
+
   end subroutine ocn_import_mct
+
+  !===============================================================================
+  subroutine ocn_import_atm_raw()
+
+    ! Accumulate the atmosphere emulator's own generated forcing channels, when
+    ! one is sharing this executable and publishing them.
+    !
+    ! This is the path reference SamudrACE uses and the coupler cannot express:
+    ! the ten channels arrive exactly as the network produced them, so there is
+    ! no bulk-flux recomputation, no open-water weighting to undo, no assumed
+    ! ocean albedo to split the shortwave with, and no sign or unit change.
+    ! They are accumulated over the same window as the coupler's fields and on
+    ! the same steps, so the two are directly comparable at the boundary
+    ! whichever one eocn_forcing_source selects.
+
+    implicit none
+
+    integer  :: i, j, n
+    real(r8), allocatable, save :: f(:,:)
+    logical,  save :: warned = .false.
+
+    if (.not. shr_emul_flux_avail(lsize_x, lsize_y)) then
+       if (.not. warned .and. trim(eocn_forcing_source) == 'atm_raw') then
+          write(logunit_ocn,'(a)') '(ocn_import_atm_raw) WARNING: '// &
+               "eocn_forcing_source = 'atm_raw' but no emulator atmosphere is "// &
+               'publishing forcing channels on this grid; using the coupler fields'
+          warned = .true.
+       end if
+       return
+    end if
+
+    if (.not. allocated(f)) allocate(f(shr_emul_flux_nchan, lsize_x*lsize_y))
+    call shr_emul_flux_get(f, lsize_x, lsize_y)
+
+    n = 0
+    do j = 1, lsize_y
+       do i = 1, lsize_x
+          n = n + 1
+          raw_taux(i,j)  = raw_taux(i,j)  + f(shr_emul_flux_taux, n)
+          raw_tauy(i,j)  = raw_tauy(i,j)  + f(shr_emul_flux_tauy, n)
+          raw_prec(i,j)  = raw_prec(i,j)  + f(shr_emul_flux_prec, n)
+          raw_snow(i,j)  = raw_snow(i,j)  + f(shr_emul_flux_snow, n)
+          raw_flus(i,j)  = raw_flus(i,j)  + f(shr_emul_flux_flus, n)
+          raw_fsus(i,j)  = raw_fsus(i,j)  + f(shr_emul_flux_fsus, n)
+          raw_flds(i,j)  = raw_flds(i,j)  + f(shr_emul_flux_flds, n)
+          raw_fsds(i,j)  = raw_fsds(i,j)  + f(shr_emul_flux_fsds, n)
+          raw_lhflx(i,j) = raw_lhflx(i,j) + f(shr_emul_flux_lhflx,n)
+          raw_shflx(i,j) = raw_shflx(i,j) + f(shr_emul_flux_shflx,n)
+       end do
+    end do
+
+    raw_n = raw_n + 1
+
+  end subroutine ocn_import_atm_raw
 
   !===============================================================================
   subroutine ocn_export_mct( o2x_o )
@@ -531,7 +631,8 @@ CONTAINS
     namelist /eocn_inparm/ do_eocn, filename_eocn, eocn_emulator, &
          eocn_model_file, eocn_ic_file, eocn_model_device, eocn_rng_seed, &
          eocn_interp_state, &
-         eocn_flux_ifrac_unweight, eocn_unweight_stress, eocn_precip_units
+         eocn_flux_ifrac_unweight, eocn_unweight_stress, eocn_precip_units, &
+         eocn_forcing_source
 
     do_eocn           = .true.
     filename_eocn     = ' '
@@ -544,6 +645,7 @@ CONTAINS
     eocn_flux_ifrac_unweight = .true.
     eocn_unweight_stress     = .false.
     eocn_precip_units        = 'kg/m2/s'
+    eocn_forcing_source      = 'atm_raw'   ! must match namelist_defaults_eocn.xml
 
     if (masterproc) then
        nu_nml = shr_file_getUnit()
@@ -570,6 +672,7 @@ CONTAINS
        write(logunit_ocn,*) '   eocn_flux_ifrac_unweight = ', eocn_flux_ifrac_unweight
        write(logunit_ocn,*) '   eocn_unweight_stress     = ', eocn_unweight_stress
        write(logunit_ocn,*) '   eocn_precip_units        = ', trim(eocn_precip_units)
+       write(logunit_ocn,*) '   eocn_forcing_source      = ', trim(eocn_forcing_source)
     end if
 
     call shr_mpi_bcast(do_eocn,           mpicom_ocn)
@@ -583,6 +686,19 @@ CONTAINS
     call shr_mpi_bcast(eocn_flux_ifrac_unweight, mpicom_ocn)
     call shr_mpi_bcast(eocn_unweight_stress,     mpicom_ocn)
     call shr_mpi_bcast(eocn_precip_units,        mpicom_ocn)
+    call shr_mpi_bcast(eocn_forcing_source,      mpicom_ocn)
+
+    ! Validate here, not where the value is first used.  samudra_import_forcing
+    ! only runs on an emulator-step boundary, so a typo there would survive
+    ! initialisation, the grid setup and a ~380 MB TorchScript load and only
+    ! abort five simulated days in.
+    select case (trim(eocn_forcing_source))
+    case ('atm_raw', 'coupler')
+      ! ok
+    case default
+      call shr_sys_abort(trim(subname)//' ERROR: eocn_forcing_source must be '// &
+           '"atm_raw" or "coupler", got "'//trim(eocn_forcing_source)//'"')
+    end select
 
   end subroutine eocn_read_namelist
 

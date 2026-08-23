@@ -143,6 +143,24 @@ saturation by construction.
 Default: .true.
 </entry>
 
+<entry id="eatm_rng_per_step"
+       type="logical"
+       category="eatm"
+       group="eatm_inparm" >
+Reseed libtorch before every inference with eatm_rng_seed + the coupler step
+number, rather than once at initialization.
+
+Seeding once makes the seed a function of the restart step but not the RNG
+stream: a run that reaches step N from step 0 has drawn N times from a stream
+seeded at 0, while a restart at step M draws from a fresh stream seeded at M.
+The two atmospheres then diverge from the first inference after the restart,
+which is why an exact-restart test of the emulated pair fails in the atmosphere
+while the ocean is still bit-exact.  Setting this true makes the noise
+realization a function of the step index alone and the restart exact.
+
+Default: .false., because it changes the noise sequence of every existing run.
+</entry>
+
 <entry id="eatm_rng_seed"
        type="integer"
        category="eatm"

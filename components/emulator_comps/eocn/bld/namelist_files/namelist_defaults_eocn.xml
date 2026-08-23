@@ -21,14 +21,41 @@ the fallback.
 <eocn_precip_units>kg/m2/s</eocn_precip_units>
 
 <!--
+Where the ocean's ten forcing channels come from.
+
+  atm_raw  the atmosphere emulator's own generated channels, published in this
+           executable (shr_emul_flux_mod).  This is what reference SamudrACE
+           does, and the two checkpoints name the channels identically, so
+           they are used as they stand.  Falls back to `coupler`, once and
+           with a log line, if no emulator atmosphere is publishing, which
+           is the case for every EAM and EAMxx compset here.
+
+  coupler  the fields the MCT driver merged.  The turbulent fluxes are
+           recomputed from bulk formulae rather than the emulator's, every
+           channel arrives weighted to the open-water share, and the
+           shortwave has to be split into up and down with an assumed ocean
+           albedo.  The only option with a non-emulator atmosphere.
+-->
+<eocn_forcing_source>atm_raw</eocn_forcing_source>
+
+<!--
+The masked trace is the default, and the one to use.  It applies fme's input
+mask inside the graph, replacing every masked cell of every input channel with
+that channel's training mean.  This matters most for the state channels, which
+the emulator carries forward over land as well as ocean: fed back unmasked they
+are a physical value the network has no representation for, and VERIFICATION.md
+records what that produced: a 440 K sea surface.  `samudra_ocn_traced_cuda.pt`
+is the same network without the mask, kept only for measuring what the mask is
+worth.
+
 Traced TorchScript model and matching initial condition.  Absolute paths
 outside DIN_LOC_ROOT because neither the checkpoint nor its traced form is
 distributed with E3SM inputdata yet; override in user_nl_eocn.
 Produce them with tools/trace_eocn_model.py and tools/make_eocn_ic.py.
 -->
 <eocn_model_file emulator="SamudrACE-E3SMv3"
-  >/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/eocn/samudra_ocn_traced_cuda.pt</eocn_model_file>
+  >/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/eocn/samudra_ocn_traced_masked_cuda.pt</eocn_model_file>
 <eocn_ic_file emulator="SamudrACE-E3SMv3"
-  >/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/eocn/samudra_ocn_ic_0.nc</eocn_ic_file>
+  >/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/eocn/samudra_ocn_ic_0_icemask.nc</eocn_ic_file>
 
 </namelist_defaults>

@@ -11,7 +11,7 @@ user_nl_eocn overrides them line by line.
 
 import os, sys, re
 
-_CIMEROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..","..","..","cime")
+_CIMEROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..","..","..","..","cime")
 sys.path.append(os.path.join(_CIMEROOT, "scripts", "Tools"))
 
 from standard_script_setup import *
@@ -34,6 +34,7 @@ _ORDER = [
     "eocn_flux_ifrac_unweight",
     "eocn_unweight_stress",
     "eocn_precip_units",
+    "eocn_forcing_source",
 ]
 
 _QUOTED = {
@@ -43,6 +44,7 @@ _QUOTED = {
     "eocn_ic_file",
     "eocn_model_device",
     "eocn_precip_units",
+    "eocn_forcing_source",
 }
 
 
@@ -83,6 +85,23 @@ def _defaults(srcroot, din_loc_root, emulator, ocn_grid, active):
 
 
 ###############################################################################
+def _apply_opts(values, opts):
+###############################################################################
+    """Apply EOCN_NAMELIST_OPTS, a whitespace-separated list of key=value."""
+    for item in opts.split():
+        if "=" not in item:
+            expect(False, "EOCN_NAMELIST_OPTS entry '{}' is not key=value".format(item))
+        key, val = item.split("=", 1)
+        key = key.strip().lower()
+        expect(key in _ORDER,
+               "unrecognized namelist variable '{}' in EOCN_NAMELIST_OPTS. "
+               "Valid names: {}".format(key, ", ".join(_ORDER)))
+        if key in _QUOTED:
+            val = val.strip().strip("'\"")
+        values[key] = val
+
+
+###############################################################################
 def _apply_user_nl(values, user_nl):
 ###############################################################################
     if not os.path.exists(user_nl):
@@ -95,6 +114,14 @@ def _apply_user_nl(values, user_nl):
             key, val = line.split("=", 1)
             key = key.strip().lower()
             val = val.strip()
+            # Nothing downstream validates these names -- the emit loop below
+            # silently drops anything not in _ORDER, and there is no namelist
+            # definition file to reject it.  A misspelt eocn_forcing_source
+            # would therefore run on the XML default with no warning, which is
+            # the opposite of what the user asked for.  Refuse it here.
+            expect(key in _ORDER,
+                   "unrecognized namelist variable '{}' in {}. Valid names: {}".format(
+                       key, user_nl, ", ".join(_ORDER)))
             if key in _QUOTED:
                 val = val.strip().strip("'\"")
             values[key] = val
@@ -124,12 +151,19 @@ def buildnml(case, caseroot, compname):
            "OCN_GRID '{}' is not supported in eocn. Choose from: {}".format(
                ocn_grid, ", ".join(supported)))
 
-    active = ocn_grid != "null"
+    # EOCN_MODE=NULL is the other way to turn the emulator off, and until now
+    # it was declared but never read: the switch existed and did nothing.
+    eocn_mode = case.get_value("EOCN_MODE")
+    active = ocn_grid != "null" and str(eocn_mode).upper() != "NULL"
 
     for inst_counter in range(1, ninst_ocn + 1):
         inst_string = "_{0:04d}".format(inst_counter) if ninst_ocn > 1 else ""
 
         values = _defaults(srcroot, din_loc_root, emulator, ocn_grid, active)
+        # EOCN_NAMELIST_OPTS, then user_nl_eocn, so an explicit user_nl line
+        # still wins.  Both were previously ignored for anything but user_nl.
+        nml_opts = case.get_value("EOCN_NAMELIST_OPTS") or ""
+        _apply_opts(values, nml_opts)
         _apply_user_nl(values, os.path.join(caseroot, "user_nl_eocn" + inst_string))
 
         lines = ["&eocn_inparm"]

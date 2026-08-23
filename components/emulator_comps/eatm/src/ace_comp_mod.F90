@@ -27,6 +27,12 @@ module ace_comp_mod
   use shr_cal_mod,  only: shr_cal_date2julian
   use shr_emul_ice_mod, only: shr_emul_ice_get, shr_emul_ice_avail
   use shr_emul_ice_mod, only: shr_emul_ice_get_sst, shr_emul_ice_sst_avail
+  use shr_emul_flux_mod, only: shr_emul_flux_put, shr_emul_flux_nchan,      &
+                               shr_emul_flux_taux,  shr_emul_flux_tauy,     &
+                               shr_emul_flux_prec,  shr_emul_flux_snow,     &
+                               shr_emul_flux_flus,  shr_emul_flux_fsus,     &
+                               shr_emul_flux_flds,  shr_emul_flux_fsds,     &
+                               shr_emul_flux_lhflx, shr_emul_flux_shflx
 
   use ftorch, only: &
     torch_kCPU, &
@@ -92,6 +98,10 @@ module ace_comp_mod
   integer(c_int) :: model_device      ! torch_kCPU or torch_kCUDA
   integer        :: n_tensor_in       ! channels handed to the traced graph
   logical        :: frzprec_is_depth  ! frozen precip channel is m/s, not kg/m2/s
+
+  ! Buffer for the raw forcing channels published to an emulator ocean sharing
+  ! this executable; see eatm_publish_ocn_forcing.
+  real(R8), allocatable :: ocn_forcing_pub(:,:)
 
   !--------------------------------------------------------------------------
   ! Model time at which the emulator was last advanced.  The driver calls
@@ -164,6 +174,7 @@ module ace_comp_mod
   ! field over the window *is* the window mean by construction.  It is what
   ! datm does with an interval-mean shortwave (tintalgo = 'coszen').
   !--------------------------------------------------------------------------
+  integer               :: rng_stepno = 0    ! coupler step, for per-step RNG reseeding
   real(R8), allocatable :: solin_win(:,:)    ! window mean used for this step
   real(R8), allocatable :: solin_now(:,:)    ! instantaneous, this coupler step
   logical               :: solin_scale_ready = .false.
@@ -246,6 +257,7 @@ CONTAINS
       ! the emulator's stochasticity.  Adding stepno keeps the run reproducible
       ! (it is a function of the seed and the start date alone) while making the
       ! sequence continue rather than repeat.
+      rng_stepno = stepno
       call eatm_torch_manual_seed(int(eatm_rng_seed, c_int64_t) + int(stepno, c_int64_t))
       write(logunit_atm,'(a,i0,a,i0)') &
            '(ace_comp_init) libtorch RNG seeded with eatm_rng_seed + stepno = ', &
@@ -449,6 +461,7 @@ CONTAINS
 
     call seq_timemgr_EClockGetData( EClock, curr_ymd=CurrentYMD, curr_tod=CurrentTOD)
     call seq_timemgr_EClockGetData( EClock, stepno=stepno, dtime=cpl_idt)
+    rng_stepno = stepno
 
     ! integer remainder (in sec) of coupler timestep relative to ACE timestep
     t_modulo = mod(CurrentTOD, eatm_model_dt)
@@ -583,6 +596,7 @@ CONTAINS
     if (allocated(cell_lat))  deallocate(cell_lat)
     if (allocated(acc_lhf))   deallocate(acc_lhf, acc_shf, acc_lwup, acc_wsx, acc_wsy, acc_swabs, acc_cov)
     if (allocated(solin_win)) deallocate(solin_win, solin_now)
+    if (allocated(ocn_forcing_pub)) deallocate(ocn_forcing_pub)
   end subroutine ace_comp_finalize
 
   !===============================================================================
@@ -600,6 +614,17 @@ CONTAINS
     implicit none
 
     integer :: k
+
+    ! Seeding once at init makes the *seed* a function of the restart step, but
+    ! not the RNG *stream*: a run that reaches step N from step 0 has drawn N
+    ! times from a stream seeded at 0, while a restart at step M draws from a
+    ! fresh stream seeded at M, so the two see different noise from the first
+    ! inference onward.  Reseeding here makes the realization a function of the
+    ! step index alone, which is what an exact-restart test needs.  Off by
+    ! default because it changes the noise sequence of every existing run.
+    if (eatm_rng_per_step .and. eatm_rng_seed >= 0) &
+         call eatm_torch_manual_seed(int(eatm_rng_seed, c_int64_t) + &
+                                     int(rng_stepno, c_int64_t))
 
     net_inputs_nn(1, 1:n_input_channels, :, :) = net_inputs(1, :, :, :)
 
@@ -1434,6 +1459,8 @@ CONTAINS
       enddo
     enddo
 
+    call eatm_publish_ocn_forcing()
+
     ! Only worth logging on emulator steps: in between, every field below is a
     ! linear interpolation between two states already reported, so at
     ! ATM_NCPL=48 eleven of every twelve blocks are redundant.
@@ -1464,6 +1491,81 @@ CONTAINS
     call shr_sys_flush(logunit_atm)
 
   end subroutine ace_eatm_export
+
+  !===============================================================================
+  subroutine eatm_publish_ocn_forcing()
+
+    ! Publish the ten surface forcing channels the network just generated, for
+    ! an emulator ocean sharing this executable to consume directly.
+    !
+    ! These are the raw window-mean outputs, before any of the adaptation the
+    ! coupler fields above need: no diurnal redistribution of the shortwave (a
+    ! device for E3SM's surface models, which see a 30 minute step, and which
+    ! preserves the window mean anyway), no frozen-fraction unit conversion, no
+    ! split of the shortwave into four bands, no sign change.  Reference
+    ! SamudrACE hands the ocean exactly this -- the atmosphere's generated
+    ! channels, averaged over the ocean's step -- and the two checkpoints name
+    ! them identically, so the ocean can index them by name and use them as
+    ! they stand.  See shr_emul_flux_mod.
+    !
+    ! Nothing is published unless the emulator predicts all ten.  ACE2-EAMv3
+    ! has no TAUX/TAUY/FLUS/FSUS channels, and a partial set is worse than
+    ! none: the ocean would silently mix reference-path and coupler-path
+    ! forcing.  Its availability check then fails and it uses the coupler's
+    ! fields, which is the correct fallback.
+
+    implicit none
+
+    integer :: i, j, n
+    logical, save :: warned = .false.
+
+    if (ix_out_taux <= 0 .or. ix_out_tauy <= 0 .or. ix_out_precip <= 0 .or. &
+        ix_out_snow <= 0 .or. ix_out_flus  <= 0 .or. ix_out_fsus   <= 0 .or. &
+        ix_out_flds <= 0 .or. ix_out_fsds  <= 0 .or. ix_out_lhflx  <= 0 .or. &
+        ix_out_shflx <= 0) then
+       if (.not. warned) then
+          write(logunit_atm,'(a)') '(eatm_publish_ocn_forcing) this emulator does '// &
+               'not predict all ten ocean forcing channels; not publishing'
+          warned = .true.
+       end if
+       return
+    end if
+
+    if (.not. allocated(ocn_forcing_pub)) &
+         allocate(ocn_forcing_pub(shr_emul_flux_nchan, lsize_x*lsize_y))
+
+    n = 0
+    do j = 1, lsize_y
+      do i = 1, lsize_x
+        n = n + 1
+        ocn_forcing_pub(shr_emul_flux_taux, n) = real(net_outputs(1, ix_out_taux, i, j), R8)
+        ocn_forcing_pub(shr_emul_flux_tauy, n) = real(net_outputs(1, ix_out_tauy, i, j), R8)
+        ocn_forcing_pub(shr_emul_flux_flus, n) = real(net_outputs(1, ix_out_flus, i, j), R8)
+        ocn_forcing_pub(shr_emul_flux_fsus, n) = real(net_outputs(1, ix_out_fsus, i, j), R8)
+        ocn_forcing_pub(shr_emul_flux_flds, n) = real(net_outputs(1, ix_out_flds, i, j), R8)
+        ocn_forcing_pub(shr_emul_flux_fsds, n) = real(net_outputs(1, ix_out_fsds, i, j), R8)
+        ocn_forcing_pub(shr_emul_flux_lhflx,n) = real(net_outputs(1, ix_out_lhflx,i, j), R8)
+        ocn_forcing_pub(shr_emul_flux_shflx,n) = real(net_outputs(1, ix_out_shflx,i, j), R8)
+        ! The two precipitation channels are the only ones the network can
+        ! return negative, and the ocean's own corrector forces them positive
+        ! in the reference; clip here so the published mean is the mean of what
+        ! the ocean would have been given.
+        ocn_forcing_pub(shr_emul_flux_prec, n) = &
+             max(real(net_outputs(1, ix_out_precip, i, j), R8), 0.0_R8)
+        ! The frozen-precipitation channel is the one place where the emulator's
+        ! own unit may not be the ocean's: shr_emul_flux_snow is declared
+        ! kg/m2/s, so honour eatm_frzprec_units here exactly as the coupler
+        ! export path does a few hundred lines above.
+        ocn_forcing_pub(shr_emul_flux_snow, n) = &
+             max(real(net_outputs(1, ix_out_snow, i, j), R8), 0.0_R8)
+        if (frzprec_is_depth) ocn_forcing_pub(shr_emul_flux_snow, n) = &
+             ocn_forcing_pub(shr_emul_flux_snow, n) * rhofw
+      end do
+    end do
+
+    call shr_emul_flux_put(ocn_forcing_pub, lsize_x, lsize_y)
+
+  end subroutine eatm_publish_ocn_forcing
 
   !===============================================================================
   real(R8) function datm_shr_eSat(tK,tKbot)

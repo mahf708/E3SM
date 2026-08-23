@@ -186,7 +186,7 @@ CONTAINS
        call seq_infodata_PutData(infodata, &
             atm_nx=lsize_x, &
             atm_ny=lsize_y)
-  
+
        !----------------------------------------------------------------------------
        ! Create initial atm export state
        !----------------------------------------------------------------------------
@@ -378,7 +378,7 @@ CONTAINS
   subroutine atm_domain_mct( gsMap, dom_atm )
 
     ! !DESCRIPTION: This routine sets up the MCT domain
- 
+
     ! !INPUT/OUTPUT PARAMETERS:
     implicit none
     type(mct_gsMap), intent(in)    :: gsMap
@@ -597,7 +597,8 @@ CONTAINS
          eatm_emulator, eatm_model_file, eatm_ic_file, eatm_model_device, &
          eatm_pass_forcing, eatm_legacy_surface, eatm_frzprec_units, eatm_iradsw, &
          eatm_ts_from_ocn, &
-         eatm_surface_layer, eatm_cap_shum, eatm_rng_seed, eatm_ref_height, eatm_sw_diurnal, &
+         eatm_surface_layer, eatm_cap_shum, eatm_rng_seed, eatm_rng_per_step, &
+         eatm_ref_height, eatm_sw_diurnal, &
          eatm_icefrac_from_ocn, &
          eatm_land_deficit, eatm_solin_window, eatm_clock_align, &
          eatm_flux_interval_mean, eatm_autoregress_state
@@ -606,6 +607,7 @@ CONTAINS
     do_eatm             = .true.
     eatm_cap_shum       = .true.
     eatm_rng_seed       = 0
+    eatm_rng_per_step   = .false.
     eatm_ref_height     = 10.0_R8
     eatm_sw_diurnal     = .true.
     eatm_icefrac_from_ocn = .false.
@@ -660,6 +662,7 @@ CONTAINS
     call shr_mpi_bcast(eatm_surface_layer, mpicom_atm, 'eatm_surface_layer')
     call shr_mpi_bcast(eatm_cap_shum, mpicom_atm, 'eatm_cap_shum')
     call shr_mpi_bcast(eatm_rng_seed, mpicom_atm, 'eatm_rng_seed')
+    call shr_mpi_bcast(eatm_rng_per_step, mpicom_atm, 'eatm_rng_per_step')
     call shr_mpi_bcast(eatm_ref_height, mpicom_atm, 'eatm_ref_height')
     call shr_mpi_bcast(eatm_sw_diurnal, mpicom_atm, 'eatm_sw_diurnal')
     call shr_mpi_bcast(eatm_icefrac_from_ocn, mpicom_atm, 'eatm_icefrac_from_ocn')
@@ -697,6 +700,7 @@ CONTAINS
        write(logunit_atm,*) '   eatm_surface_layer  = ', trim(eatm_surface_layer)
        write(logunit_atm,*) '   eatm_cap_shum       = ', eatm_cap_shum
        write(logunit_atm,*) '   eatm_rng_seed       = ', eatm_rng_seed
+       write(logunit_atm,*) '   eatm_rng_per_step   = ', eatm_rng_per_step
        write(logunit_atm,*) '   eatm_ref_height     = ', eatm_ref_height
        write(logunit_atm,*) '   eatm_sw_diurnal     = ', eatm_sw_diurnal
        write(logunit_atm,*) '   eatm_icefrac_from_ocn = ', eatm_icefrac_from_ocn

@@ -4,9 +4,9 @@
 # build-namelist
 #
 # The simplest use of build-namelist is to execute it from the build directory where configure
-# was run.  By default it will use the config_cache.xml file that was written by 
-# eatm.cpl7.template to determine the build time properties of the executable, and will write 
-# the files that contain  the output namelists in that same directory. 
+# was run.  By default it will use the config_cache.xml file that was written by
+# eatm.cpl7.template to determine the build time properties of the executable, and will write
+# the files that contain  the output namelists in that same directory.
 #
 #--------------------------------------------------------------------------------------------
 
@@ -28,18 +28,18 @@ sub usage {
 SYNOPSIS
      build-namelist [options]
 
-     Build the eatm namelist 
+     Build the eatm namelist
 OPTIONS
-     -help [or -h]            	   Print usage to STDOUT.					    
-     -infile "filepath"       	   Specify a file or list of files (comma delimited) 	    
-                              	   containing namelists to read values from.			    
-     -namelist "namelist"     	   Specify namelist settings directly on the commandline by 	    
-                              	   supplying a string containing FORTRAN namelist syntax
-                              	      -namelist "&eatm_exp a=b/"		    
-     -print "level"           	   Print level for debugging:				    
-                              	      0 = silent						    
-                              	      1 = regular						    
-                              	      2 = verbose						    
+     -help [or -h]            	   Print usage to STDOUT.
+     -infile "filepath"       	   Specify a file or list of files (comma delimited)
+                                   containing namelists to read values from.
+     -namelist "namelist"     	   Specify namelist settings directly on the commandline by
+                                   supplying a string containing FORTRAN namelist syntax
+                                      -namelist "&eatm_exp a=b/"
+     -print "level"           	   Print level for debugging:
+                                      0 = silent
+                                      1 = regular
+                                      2 = verbose
      -caseroot                     CASEROOT directory variable
      -scriptsroot                  SCRIPTSROOT directory variable
      -simyr <year>                 Starting year to simulate (default 2000)
@@ -67,7 +67,7 @@ my $cmdline = "@ARGV";                 # Command line arguments to script
 my $cwd = getcwd();                    # current working directory
 my $cfgdir;                            # absolute pathname of directory that contains this script
 my $nm = "ProgName::";                 # name to use if script dies
-if ($ProgDir) { 
+if ($ProgDir) {
     $cfgdir = abs_path($ProgDir);
 } else {
     $cfgdir = $cwd;
@@ -80,12 +80,12 @@ my $outdirname = "$cwd";                  # Default name of output directory nam
 # Process command-line options.
 #
 my %opts = ( help        => 0,
-	     silent      => 0,
-	     caseroot    => 0,
-	     scriptsroot => 0,
+             silent      => 0,
+             caseroot    => 0,
+             scriptsroot => 0,
              simyr       => 2000,
-	     inst_string => 0,
-	    );
+             inst_string => 0,
+            );
 
 GetOptions(
     "h|help"        => \$opts{'help'},
@@ -95,7 +95,7 @@ GetOptions(
     "simyr=i"       => \$opts{'simyr'},
     "caseroot=s"    => \$opts{'caseroot'},
     "scriptsroot=s" => \$opts{'scriptsroot'},
-    "inst_string=s" => \$opts{'inst_string'},	   
+    "inst_string=s" => \$opts{'inst_string'},
 )  or usage();
 
 # Give usage message.
@@ -114,9 +114,9 @@ if (@ARGV) {
 my $print = $opts{'print'};
 my $eol = "\n";
 
-my $CASEROOT    = $opts{'caseroot'}; 
-my $SCRIPTSROOT = $opts{'scriptsroot'};       
-my $INST_STRING = $opts{'inst_string'}; 
+my $CASEROOT    = $opts{'caseroot'};
+my $SCRIPTSROOT = $opts{'scriptsroot'};
+my $INST_STRING = $opts{'inst_string'};
 
 if ($print>=2) { print "Setting eatm configuration script directory to $cfgdir$eol"; }
 
@@ -187,7 +187,7 @@ EOF
 if ($print>=2) { print "Using namelist definition file $nl_definition_file$eol"; }
 
 # The namelist defaults file contains default values for all required namelist variables.
-my $nl_defaults_file = "$cfgdir/namelist_files/namelist_defaults_eatm.xml"; 
+my $nl_defaults_file = "$cfgdir/namelist_files/namelist_defaults_eatm.xml";
 (-f "$nl_defaults_file")  or  die <<"EOF";
 ** $ProgName - Cannot find namelist defaults file \"$nl_defaults_file\" **
 EOF
@@ -204,7 +204,7 @@ require Build::Namelist;
 require Config::SetupTools;
 
 #-----------------------------------------------------------------------------------------------
-# Create a configuration object from the EATM config_cache.xml file. 
+# Create a configuration object from the EATM config_cache.xml file.
 my $cfg = Build::Config->new('config_cache.xml');
 
 # Create a namelist definition object.  This object provides a method for verifying that the
@@ -235,7 +235,7 @@ if (defined $opts{'namelist'}) {
     my $nl_arg_valid;
     eval { $nl_arg_valid = $definition->validate($nl_arg); };
     if ($@) {
-	die "$ProgName - ERROR: Invalid namelist variable in commandline arg '-namelist'.\n $@";
+        die "$ProgName - ERROR: Invalid namelist variable in commandline arg '-namelist'.\n $@";
     }
 
     # Merge input values into namelist.  Previously specified values have higher precedence
@@ -282,8 +282,8 @@ my $ATM_NCPL        = $xmlvars{'ATM_NCPL'};
 my $NCPL_BASE_PERIOD = $xmlvars{'NCPL_BASE_PERIOD'};
 
 (-d $DIN_LOC_ROOT)  or  mkdir $DIN_LOC_ROOT;
-if ($print>=2) { 
-    print "model inputdata root directory: $DIN_LOC_ROOT \n"; 
+if ($print>=2) {
+    print "model inputdata root directory: $DIN_LOC_ROOT \n";
 }
 
 ####################################
@@ -292,7 +292,7 @@ if ($print>=2) {
 
 if ($ATM_GRID eq "null") {
     if ($EATM_MODE ne "NULL") {
-	die "$ProgName ERROR:: ATM_GRID null EATM_MODE not NULL.\n";
+        die "$ProgName ERROR:: ATM_GRID null EATM_MODE not NULL.\n";
     }
 }
 
@@ -313,9 +313,11 @@ else {
     add_default($nl, 'eatm_surface_layer');
     add_default($nl, 'eatm_cap_shum');
     add_default($nl, 'eatm_rng_seed');
+    add_default($nl, 'eatm_rng_per_step');
     add_default($nl, 'eatm_ref_height');
     add_default($nl, 'eatm_sw_diurnal');
     add_default($nl, 'eatm_icefrac_from_ocn');
+    add_default($nl, 'eatm_ts_from_ocn');
     add_default($nl, 'eatm_frzprec_units');
     add_default($nl, 'eatm_iradsw');
 
@@ -436,8 +438,8 @@ sub add_default {
     # Query the definition to find which group the variable belongs to.  Exit if not found.
     my $group = $definition->get_group_name($var);
     unless ($group) {
-	my $fname = $definition->get_file_name();
-	die "$ProgName - ERROR: variable \"$var\" not found in namelist definition file $fname.\n";
+        my $fname = $definition->get_file_name();
+        die "$ProgName - ERROR: variable \"$var\" not found in namelist definition file $fname.\n";
     }
 
     # check whether the variable has a value in the namelist object -- if so then skip to end
@@ -447,17 +449,17 @@ sub add_default {
        # Look for a specified value in the options hash
 
        if (defined $opts{'val'}) {
-	   $val = $opts{'val'};
+           $val = $opts{'val'};
        }
        # or else get a value from namelist defaults object.
        # Note that if the 'val' key isn't in the hash, then just pass anything else
        # in %opts to the get_value method to be used as attributes that are matched
        # when looking for default values.
        else {
-	   $val = $defaults->get_value($var, \%opts);
+           $val = $defaults->get_value($var, \%opts);
 
            # Truncate model_version appropriately
-   
+
            if ( $var eq "model_version" ) {
                $val =~ /(URL: https:\/\/[a-zA-Z0-9._-]+\/)([a-zA-Z0-9\/._-]+)(\/bld\/.+)/;
                $val = $2;
@@ -465,13 +467,13 @@ sub add_default {
        }
 
        unless ( defined($val) ) {
-	   unless ($opts{'nofail'}) {
-	       die "$ProgName - No default value found for $var.\n" . 
+           unless ($opts{'nofail'}) {
+               die "$ProgName - No default value found for $var.\n" .
                    "            Are defaults provided? \n";
-	   }
-	   else {
-	       return;
-	   }
+           }
+           else {
+               return;
+           }
        }
 
 
@@ -482,13 +484,13 @@ sub add_default {
        # variable is defined to be an absolute pathname, then prepend
        # the model inputdata root directory.
        if (not defined $opts{'no_abspath'}) {
-	   if (defined $opts{'set_abspath'}) {
-	       $val = set_abs_filepath($val, $opts{'set_abspath'});
-	   } else {
-	       if ($is_input_pathname eq 'abs') {
-		   $val = set_abs_filepath($val, $DIN_LOC_ROOT);
-	       }
-	   }
+           if (defined $opts{'set_abspath'}) {
+               $val = set_abs_filepath($val, $opts{'set_abspath'});
+           } else {
+               if ($is_input_pathname eq 'abs') {
+                   $val = set_abs_filepath($val, $DIN_LOC_ROOT);
+               }
+           }
        }
 
        # query the definition to find out if the variable takes a string value.
@@ -497,7 +499,7 @@ sub add_default {
 
        # If the variable is a string, then add quotes if they're missing
        if ($str_len > 0) {
-	   $val = quote_string($val);
+           $val = quote_string($val);
        }
 
        # set the value in the namelist
@@ -525,56 +527,56 @@ sub check_input_files {
     my @groups = $nl->get_group_names();
     foreach my $group (@groups) {
 
-	# Look through all variables in each group
-	my @vars = $nl->get_variable_names($group);
-	foreach my $var (@vars) {
+        # Look through all variables in each group
+        my @vars = $nl->get_variable_names($group);
+        foreach my $var (@vars) {
 
-	    # Is the variable an input dataset?
-	    my $input_pathname_type = $definition->is_input_pathname($var);
+            # Is the variable an input dataset?
+            my $input_pathname_type = $definition->is_input_pathname($var);
 
-	    # If it is, check whether it exists locally and print status
-	    if ($input_pathname_type) {
+            # If it is, check whether it exists locally and print status
+            if ($input_pathname_type) {
 
-		# Get pathname of input dataset
-		my $pathname = $nl->get_variable_value($group, $var);
-		# Need to strip the quotes
-		$pathname =~ s/[\'\"]//g;
+                # Get pathname of input dataset
+                my $pathname = $nl->get_variable_value($group, $var);
+                # Need to strip the quotes
+                $pathname =~ s/[\'\"]//g;
 
-		if ($input_pathname_type eq 'abs') {
+                if ($input_pathname_type eq 'abs') {
                     if ($inputdata_rootdir) {
                         print OUTFILE "$var = $pathname\n";
                     }
                     else {
-		        if (-e $pathname) {  # use -e rather than -f since the absolute pathname
-			                     # might be a directory
-			    print "OK -- found $var = $pathname\n";
-		        }
-		        else {
-			    print "NOT FOUND:  $var = $pathname\n";
-		        }
+                        if (-e $pathname) {  # use -e rather than -f since the absolute pathname
+                                             # might be a directory
+                            print "OK -- found $var = $pathname\n";
+                        }
+                        else {
+                            print "NOT FOUND:  $var = $pathname\n";
+                        }
                     }
-		}
-		elsif ($input_pathname_type =~ m/rel:(.+)/o) {
-		    # The match provides the namelist variable that contains the
-		    # root directory for a relative filename
-		    my $rootdir_var = $1;
-		    my $rootdir = $nl->get_variable_value($group, $rootdir_var);
-		    $rootdir =~ s/[\'\"]//g;
+                }
+                elsif ($input_pathname_type =~ m/rel:(.+)/o) {
+                    # The match provides the namelist variable that contains the
+                    # root directory for a relative filename
+                    my $rootdir_var = $1;
+                    my $rootdir = $nl->get_variable_value($group, $rootdir_var);
+                    $rootdir =~ s/[\'\"]//g;
                     if ($inputdata_rootdir) {
                         $pathname = "$rootdir/$pathname";
                         print OUTFILE "$var = $pathname\n";
                     }
                     else {
-		        if (-f "$rootdir/$pathname") {
-			    print "OK -- found $var = $rootdir/$pathname\n";
-		        }
-		        else {
-			    print "NOT FOUND:  $var = $rootdir/$pathname\n";
-		        }
+                        if (-f "$rootdir/$pathname") {
+                            print "OK -- found $var = $rootdir/$pathname\n";
+                        }
+                        else {
+                            print "NOT FOUND:  $var = $rootdir/$pathname\n";
+                        }
                     }
-		}
-	    }
-	}
+                }
+            }
+        }
     }
     close OUTFILE if defined $inputdata_rootdir;
     return 0 if defined $inputdata_rootdir;
@@ -603,7 +605,7 @@ sub set_abs_filepath {
 
     my $out = $filepath;
     unless ( $filepath =~ /^\// ) {  # unless $filepath starts with a /
-	$out = "$rootdir/$filepath"; # prepend the root directory
+        $out = "$rootdir/$filepath"; # prepend the root directory
     }
     return $out;
 }
@@ -618,7 +620,7 @@ sub valid_option {
     $val =~ s/^\s+//;
     $val =~ s/\s+$//;
     foreach $expect (@expect) {
-	if ($val =~ /^$expect$/i) { return $expect; }
+        if ($val =~ /^$expect$/i) { return $expect; }
     }
     return undef;
 }

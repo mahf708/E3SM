@@ -2,7 +2,7 @@
 
 <definitions_variables>
 
-  <entry id="COMP_ATM"> 
+  <entry id="COMP_ATM">
      <type>char</type>
      <valid_values>eatm</valid_values>
      <default_value>eatm</default_value>
@@ -69,9 +69,9 @@
     <file>env_run.xml</file>
     <desc>EATM-specific namelist settings in the EATM build-namelist.
       EATM_NAMELIST_OPTS is normally set as a compset variable
-      and in general should not be modified for supported compsets. 
-      It is recommended that if you want to modify this value for your experiment, 
-      you should use your own user-defined component sets via using create_newcase 
+      and in general should not be modified for supported compsets.
+      It is recommended that if you want to modify this value for your experiment,
+      you should use your own user-defined component sets via using create_newcase
       with a compset_file argument.</desc>
   </entry>
 

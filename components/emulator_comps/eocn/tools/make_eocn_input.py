@@ -38,11 +38,15 @@ SCRIP = ("/global/cfs/cdirs/e3sm/inputdata/share/meshes/"
          "gaussian_180x360_latlon.scrip.20260127.nc")
 
 STATIC = ["LANDFRAC", "sea_surface_fraction"]
-# Not an emulator channel: Samudra's own ocean mask, which is where its state
-# is defined at all.  The sea surface fraction is nonzero on ~3200 more coastal
-# cells than the mask covers, and on those the emulator has no ocean to
-# predict -- so the mask, not the fraction, is what EOCN may export.
-EXTRA = ["mask_2d"]
+# Not emulator channels, but the two masks that say where its output means
+# anything.  mask_2d is where the ocean state is defined at all: the sea
+# surface fraction is nonzero on ~3200 more coastal cells than it covers, and
+# on those the emulator has no ocean to predict, so the mask and not the
+# fraction is what EOCN may export.  mask_ocean_sea_ice_fraction is tighter
+# still -- 25,923 cells against 44,892 -- and bounds the sea ice channels,
+# which were masked out of both the inputs and the targets everywhere else and
+# so carry no prediction there.
+EXTRA = ["mask_2d", "mask_ocean_sea_ice_fraction"]
 FORCING = ["TAUX", "TAUY", "surface_precipitation_rate",
            "frozen_precipitation_rate", "FLUS", "FSUS", "FLDS", "FSDS",
            "LHFLX", "SHFLX"]

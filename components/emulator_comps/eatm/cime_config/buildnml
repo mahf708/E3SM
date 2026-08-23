@@ -6,7 +6,7 @@ Namelist creator for E3SM's EATM component
 
 import os, sys
 
-_CIMEROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..","..","..","cime")
+_CIMEROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..","..","..","..","cime")
 sys.path.append(os.path.join(_CIMEROOT, "scripts", "Tools"))
 
 from standard_script_setup import *
@@ -37,10 +37,10 @@ def buildnml(case, caseroot, compname):
     run_refdate           = case.get_value("RUN_REFDATE")
     run_reftod            = case.get_value("RUN_REFTOD")
     scriptsroot           = case.get_value("SCRIPTSROOT")
-    
+
     atmconf_dir = os.path.join(casebuild, "eatmconf")
-    
-    compset = case.get_value("COMPSET") 
+
+    compset = case.get_value("COMPSET")
 
     if not os.path.isdir(atmconf_dir): os.mkdir(atmconf_dir)
 

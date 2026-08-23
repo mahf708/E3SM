@@ -40,6 +40,7 @@ module eatmMod
   character(CL), public :: eatm_surface_layer     ! 'near_surface' or 'lowest_level'
   logical, public       :: eatm_cap_shum          ! cap exported Sa_shum at saturation
   integer, public       :: eatm_rng_seed          ! libtorch RNG seed; <0 leaves it unseeded
+  logical, public       :: eatm_rng_per_step      ! reseed before every inference, so a restart reproduces
   logical, public       :: eatm_sw_diurnal        ! put the interval-mean shortwave back on a diurnal cycle
   ! Take ICEFRAC from the ocean emulator's own sea ice prediction rather than
   ! from the coupler's Sf_ifrac.  Diagnostic; see shr_emul_ice_mod.

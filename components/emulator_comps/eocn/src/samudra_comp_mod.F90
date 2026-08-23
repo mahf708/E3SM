@@ -269,7 +269,9 @@ contains
     implicit none
 
     integer  :: i, j
-    real(R8) :: w, pscale
+    real(R8) :: w, wr, pscale
+    logical  :: use_raw
+    logical, save :: warned_no_raw = .false.
 
     ! The coupler's precipitation is kg/m2/s.  Whether that needs converting
     ! depends on the checkpoint, and the checkpoint says: its normalization
@@ -278,6 +280,11 @@ contains
     ! reference coupler passes the channel through unconverted.  Dividing by
     ! rhofw hands the network 1/1000 of the precipitation, a uniform -0.66
     ! sigma dry anomaly on every step.  'kg/m2/s' passes it through.
+    ! pscale applies to the coupler path only.  On the raw path the ocean is
+    ! handed the atmosphere emulator's own channel in the atmosphere emulator's
+    ! own units, which is the whole point of that path, so there is nothing to
+    ! convert -- and the atmosphere converts its frozen-precipitation channel
+    ! before publishing (eatm_frzprec_units) so both slots arrive in kg/m2/s.
     select case (trim(eocn_precip_units))
     case ('kg/m2/s', 'kg m-2 s-1')
       pscale = 1.0_R8
@@ -296,23 +303,82 @@ contains
 
     w = 1.0_R8 / real(acc_n, R8)
 
-    do j = 1, lsize_y
-      do i = 1, lsize_x
-        net_inputs(1, ix_in_taux,  i, j) = real(-acc_taux(i,j) * w, R4)
-        net_inputs(1, ix_in_tauy,  i, j) = real(-acc_tauy(i,j) * w, R4)
-        net_inputs(1, ix_in_prec,  i, j) = real(max(acc_prec(i,j) * w, 0.0_R8) * pscale, R4)
-        net_inputs(1, ix_in_snow,  i, j) = real(max(acc_snow(i,j) * w, 0.0_R8) * pscale, R4)
-        net_inputs(1, ix_in_flus,  i, j) = real(-acc_flus(i,j) * w, R4)
-        net_inputs(1, ix_in_fsus,  i, j) = real( acc_fsus(i,j) * w, R4)
-        net_inputs(1, ix_in_flds,  i, j) = real( acc_flds(i,j) * w, R4)
-        net_inputs(1, ix_in_fsds,  i, j) = real( acc_fsds(i,j) * w, R4)
-        net_inputs(1, ix_in_lhflx, i, j) = real(-acc_lhflx(i,j) * w, R4)
-        net_inputs(1, ix_in_shflx, i, j) = real(-acc_shflx(i,j) * w, R4)
-      end do
-    end do
+    ! Which path forces the ocean.  'atm_raw' is the reference one: the
+    ! atmosphere emulator's own generated channels, in its own units and sign
+    ! convention, so nothing below is converted.  'coupler' is the fields the
+    ! MCT driver merged, which are recomputed with bulk formulae, weighted to
+    ! the open-water share, and carry no separate up/down shortwave -- all of
+    ! which the conversions below undo as far as they can be undone.
+    ! eocn_read_namelist has already rejected anything but these two.
+    use_raw = (trim(eocn_forcing_source) == 'atm_raw') .and. (raw_n > 0)
 
-    write(logunit_ocn,'(a,i0,a)') '(samudra_import_forcing) closed a ', acc_n, &
-         ' step flux window'
+    if (trim(eocn_forcing_source) == 'atm_raw' .and. .not. use_raw .and. &
+         .not. warned_no_raw) then
+      write(logunit_ocn,'(a)') '(samudra_import_forcing) no emulator atmosphere '// &
+           'is publishing raw forcing channels; forcing this ocean from the '// &
+           "coupler's merged fields for the rest of the run"
+      warned_no_raw = .true.
+    end if
+
+    if (use_raw) then
+      wr = 1.0_R8 / real(raw_n, R8)
+      do j = 1, lsize_y
+        do i = 1, lsize_x
+          net_inputs(1, ix_in_taux,  i, j) = real( raw_taux(i,j)  * wr, R4)
+          net_inputs(1, ix_in_tauy,  i, j) = real( raw_tauy(i,j)  * wr, R4)
+          net_inputs(1, ix_in_prec,  i, j) = real( raw_prec(i,j)  * wr, R4)
+          net_inputs(1, ix_in_snow,  i, j) = real( raw_snow(i,j)  * wr, R4)
+          net_inputs(1, ix_in_flus,  i, j) = real( raw_flus(i,j)  * wr, R4)
+          net_inputs(1, ix_in_fsus,  i, j) = real( raw_fsus(i,j)  * wr, R4)
+          net_inputs(1, ix_in_flds,  i, j) = real( raw_flds(i,j)  * wr, R4)
+          net_inputs(1, ix_in_fsds,  i, j) = real( raw_fsds(i,j)  * wr, R4)
+          net_inputs(1, ix_in_lhflx, i, j) = real( raw_lhflx(i,j) * wr, R4)
+          net_inputs(1, ix_in_shflx, i, j) = real( raw_shflx(i,j) * wr, R4)
+        end do
+      end do
+    else
+      do j = 1, lsize_y
+        do i = 1, lsize_x
+          net_inputs(1, ix_in_taux,  i, j) = real(-acc_taux(i,j) * w, R4)
+          net_inputs(1, ix_in_tauy,  i, j) = real(-acc_tauy(i,j) * w, R4)
+          net_inputs(1, ix_in_prec,  i, j) = real(max(acc_prec(i,j) * w, 0.0_R8) * pscale, R4)
+          net_inputs(1, ix_in_snow,  i, j) = real(max(acc_snow(i,j) * w, 0.0_R8) * pscale, R4)
+          net_inputs(1, ix_in_flus,  i, j) = real(-acc_flus(i,j) * w, R4)
+          net_inputs(1, ix_in_fsus,  i, j) = real( acc_fsus(i,j) * w, R4)
+          net_inputs(1, ix_in_flds,  i, j) = real( acc_flds(i,j) * w, R4)
+          net_inputs(1, ix_in_fsds,  i, j) = real( acc_fsds(i,j) * w, R4)
+          net_inputs(1, ix_in_lhflx, i, j) = real(-acc_lhflx(i,j) * w, R4)
+          net_inputs(1, ix_in_shflx, i, j) = real(-acc_shflx(i,j) * w, R4)
+        end do
+      end do
+    end if
+
+    ! What the other path would have given.  Both windows are accumulated on
+    ! every step whichever is in use, so this is the difference between the
+    ! reference forcing and what survives a trip through the coupler -- the
+    ! only place in the run where that is visible.
+    if (raw_n > 0) then
+      wr = 1.0_R8 / real(raw_n, R8)
+      ! The two columns are offset by one coupling step: the driver runs OCN
+      ! before ATM, so the raw sum closed here ends one step earlier than the
+      ! coupler sum.  Each is divided by its own counter, so there is no scale
+      ! error -- at a 5 day window and a 30 min step the offset is 0.4%.
+      write(logunit_ocn,'(a)') '(samudra_import_forcing) forcing path comparison'// &
+           ' (global mean, emulator sign convention):'
+      write(logunit_ocn,'(a)') &
+           '    channel        atm_raw      coupler         diff'
+      call compare_path('TAUX',  raw_taux,  wr, -1.0_R8, acc_taux,  w)
+      call compare_path('TAUY',  raw_tauy,  wr, -1.0_R8, acc_tauy,  w)
+      call compare_path('FLUS',  raw_flus,  wr, -1.0_R8, acc_flus,  w)
+      call compare_path('FSUS',  raw_fsus,  wr,  1.0_R8, acc_fsus,  w)
+      call compare_path('FLDS',  raw_flds,  wr,  1.0_R8, acc_flds,  w)
+      call compare_path('FSDS',  raw_fsds,  wr,  1.0_R8, acc_fsds,  w)
+      call compare_path('LHFLX', raw_lhflx, wr, -1.0_R8, acc_lhflx, w)
+      call compare_path('SHFLX', raw_shflx, wr, -1.0_R8, acc_shflx, w)
+    end if
+
+    write(logunit_ocn,'(a,i0,a,i0,a)') '(samudra_import_forcing) closed a ', acc_n, &
+         ' step flux window (', raw_n, ' with published raw forcing)'
     write(logunit_ocn,'(a,4f12.4)') '(samudra_import_forcing) means TAUX TAUY FSDS FLDS: ', &
          gmean(net_inputs(1, ix_in_taux,:,:)), gmean(net_inputs(1, ix_in_tauy,:,:)), &
          gmean(net_inputs(1, ix_in_fsds,:,:)), gmean(net_inputs(1, ix_in_flds,:,:))
@@ -320,6 +386,25 @@ contains
          gmean(net_inputs(1, ix_in_flus,:,:)), gmean(net_inputs(1, ix_in_fsus,:,:)), &
          gmean(net_inputs(1, ix_in_lhflx,:,:)), gmean(net_inputs(1, ix_in_shflx,:,:))
     call shr_sys_flush(logunit_ocn)
+
+  contains
+
+    subroutine compare_path(name, rawf, wraw, sgn, accf, wacc)
+
+      ! One line of the forcing-path comparison.  sgn carries the coupler
+      ! field into the emulator's convention, which is what the selection
+      ! above applies, so the two columns are like for like.
+
+      character(len=*), intent(in) :: name
+      real(R8),         intent(in) :: rawf(:,:), accf(:,:)
+      real(R8),         intent(in) :: wraw, sgn, wacc
+
+      write(logunit_ocn,'(4x,a8,3f13.4)') name, &
+           gmean(real(rawf * wraw, R4)), &
+           gmean(real(sgn * accf * wacc, R4)), &
+           gmean(real(rawf * wraw, R4)) - gmean(real(sgn * accf * wacc, R4))
+
+    end subroutine compare_path
 
   end subroutine samudra_import_forcing
 
@@ -339,6 +424,18 @@ contains
     acc_lhflx(:,:) = 0.0_R8
     acc_shflx(:,:) = 0.0_R8
     acc_n = 0
+
+    raw_taux(:,:)  = 0.0_R8
+    raw_tauy(:,:)  = 0.0_R8
+    raw_prec(:,:)  = 0.0_R8
+    raw_snow(:,:)  = 0.0_R8
+    raw_flus(:,:)  = 0.0_R8
+    raw_fsus(:,:)  = 0.0_R8
+    raw_flds(:,:)  = 0.0_R8
+    raw_fsds(:,:)  = 0.0_R8
+    raw_lhflx(:,:) = 0.0_R8
+    raw_shflx(:,:) = 0.0_R8
+    raw_n = 0
 
   end subroutine samudra_reset_accumulators
 
@@ -570,7 +667,20 @@ contains
           so_u(i,j)     = real(net_outputs(1, ix_out_uvel, i, j), R8)
           so_v(i,j)     = real(net_outputs(1, ix_out_vvel, i, j), R8)
           so_ssh(i,j)   = real(net_outputs(1, ix_out_ssh,  i, j), R8)
-          so_ifrac(i,j) = min(max(real(net_outputs(1, ix_out_sifrac, i, j), R8), 0.0_R8), 1.0_R8)
+          ! Only where the emulator's sea ice channel was trained.  Its mask
+          ! covers 25,923 cells against the ocean mask's 44,892, and outside it
+          ! the network's ice fraction is not a prediction -- fme masks the
+          ! channel on the way in and never reads it on the way out.  Exported
+          ! unconditionally it puts sea ice fractions above 0.5 in about 2,100
+          ! tropical and subtropical cells, which the coupler then treats as
+          ! ice-covered: those cells cool to 272 K against a reference 302 K,
+          ! and they are where essentially all of the sea surface temperature
+          ! error against fme lives.
+          if (ice_mask(i,j) > 0.5_R8) then
+            so_ifrac(i,j) = min(max(real(net_outputs(1, ix_out_sifrac, i, j), R8), 0.0_R8), 1.0_R8)
+          else
+            so_ifrac(i,j) = 0.0_R8
+          end if
         else
           so_t(i,j)     = tfrz_sw
           so_s(i,j)     = 34.7_R8

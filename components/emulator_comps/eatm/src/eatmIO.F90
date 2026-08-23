@@ -37,7 +37,7 @@ module eatmIO
   public :: ncd_inqdid         ! inquire dimension id
   public :: ncd_inqdname       ! inquire dimension name
   public :: ncd_inqdlen        ! inquire dimension length
-  public :: ncd_inqfdims       ! inquire file dimnesions 
+  public :: ncd_inqfdims       ! inquire file dimnesions
   public :: ncd_defvar         ! define variables
   public :: ncd_inqvid         ! inquire variable id
   public :: ncd_inqvname       ! inquire variable name
@@ -86,7 +86,7 @@ module eatmIO
      module procedure ncd_defvar_bygrid
   end interface
 
-  interface ncd_io 
+  interface ncd_io
      ! global scalar
      module procedure ncd_io_log_var0_nf
      module procedure ncd_io_int_var0_nf
@@ -129,7 +129,7 @@ module eatmIO
      integer           :: type
      integer           :: ndims
      integer           :: dims(4)
-     integer           :: dimids(4) 
+     integer           :: dimids(4)
   end type iodesc_plus_type
   integer,parameter      ,private :: max_iodesc = 100
   integer                ,private :: num_iodesc = 0
@@ -291,7 +291,7 @@ contains
     integer, intent(in)          :: value     ! Expected dimension size
     ! !LOCAL VARIABLES:
     integer :: dimid, dimlen    ! temporaries
-    integer :: status           ! error code      
+    integer :: status           ! error code
     character(len=*),parameter :: subname='check_dim' ! subroutine name
     !-----------------------------------------------------------------------
 
@@ -416,7 +416,7 @@ contains
     integer          , intent(out)  :: ns
     ! !LOCAL VARIABLES:
     integer  :: dimid                                ! netCDF id
-    integer  :: ier                                  ! error status 
+    integer  :: ier                                  ! error status
     character(len=32) :: subname = 'surfrd_filedims' ! subroutine name
     !-----------------------------------------------------------------------
 
@@ -444,7 +444,7 @@ contains
 !-----------------------------------------------------------------------
 
   subroutine ncd_inqvid(ncid,name,varid,vardesc,readvar)
-    
+
     !-----------------------------------------------------------------------
     ! !DESCRIPTION:
     ! Inquire on a variable ID
@@ -476,7 +476,7 @@ contains
        ret = PIO_inq_varid(ncid,name,vardesc)
     endif
     varid = vardesc%varid
- 
+
   end subroutine ncd_inqvid
 
 !-----------------------------------------------------------------------
@@ -684,7 +684,7 @@ contains
     integer :: n                   ! indices
     integer :: ldimid(4)           ! local dimid
     integer :: dimid0(1)           ! local dimid
-    integer :: status              ! error status 
+    integer :: status              ! error status
     integer :: lxtype              ! local external type (in case logical variable)
     type(var_desc_t)   :: vardesc  ! local vardesc
     character(len=128) :: dimname  ! temporary
@@ -715,7 +715,7 @@ contains
        write(logunit_atm,*) trim(subname),' ',trim(varname),lxtype,ndims,ldimid(1:ndims)
     endif
 
-    if (ndims >  0) then 
+    if (ndims >  0) then
        status = pio_inq_dimname(ncid,ldimid(ndims),dimname)
     end if
 
@@ -1007,7 +1007,7 @@ contains
     integer :: start(1), count(1)   ! output bounds
     integer :: status               ! error code
     logical :: varpresent           ! if true, variable is on tape
-    real(r8):: temp(1)              ! temporary                
+    real(r8):: temp(1)              ! temporary
     character(len=32) :: vname      ! variable error checking
     type(var_desc_t)  :: vardesc    ! local vardesc pointer
     character(len=*),parameter :: subname='ncd_io_real_var0_nf'
@@ -1123,7 +1123,7 @@ contains
 
        call ncd_inqvid(ncid, varname, varid, vardesc, readvar=varpresent)
        if (varpresent) then
-          allocate( idata(size(data)) ) 
+          allocate( idata(size(data)) )
           status = pio_get_var(ncid, varid, idata)
           data = (idata == 1)
           if ( any(idata /= 0 .and. idata /= 1) )then
@@ -1147,7 +1147,7 @@ contains
           count(1) = size(data)
        end if
        call ncd_inqvid  (ncid, varname, varid, vardesc)
-       allocate( idata(size(data)) ) 
+       allocate( idata(size(data)) )
        where( data )
           idata = 1
        elsewhere
@@ -1392,7 +1392,7 @@ contains
        call ncd_inqvid(ncid, varname, varid, vardesc)
        status = pio_put_var(ncid, varid, start, count, data)
 
-    endif   
+    endif
 
   end subroutine ncd_io_int_var2_nf
 
@@ -1400,7 +1400,7 @@ contains
 
   subroutine ncd_io_real_var2_nf(varname, data, flag, ncid, readvar, nt)
 
-    !------------------------------------------------------------------------ 
+    !------------------------------------------------------------------------
     ! !DESCRIPTION:
     ! netcdf I/O of global real 2D  array
     !
@@ -1462,7 +1462,7 @@ contains
        call ncd_inqvid  (ncid, varname, varid, vardesc)
        status = pio_put_var(ncid, varid, start, count, data)
 
-    endif   
+    endif
 
   end subroutine ncd_io_real_var2_nf
 
@@ -1586,7 +1586,7 @@ contains
           status = pio_put_var(ncid, varid, data)
        end if
 
-    endif   
+    endif
 
   end subroutine ncd_io_char_var2_nf
 
@@ -1650,16 +1650,16 @@ contains
     logical          , optional, intent(out):: readvar   ! true => variable is on initial dataset (read only)
     ! !LOCAL VARIABLES:
     character(len=32) :: dimname    ! temporary
-    integer           :: n          ! index      
+    integer           :: n          ! index
     integer           :: iodnum     ! iodesc num in list
     integer           :: varid      ! varid
     integer           :: ndims      ! ndims for var
     integer           :: ndims_iod  ! ndims iodesc for var
-    integer           :: dims(4)    ! dim sizes       
+    integer           :: dims(4)    ! dim sizes
     integer           :: dids(4)    ! dim ids
     integer           :: start(3)   ! netcdf start index
     integer           :: count(3)   ! netcdf count index
-    integer           :: status     ! error code  
+    integer           :: status     ! error code
     logical           :: varpresent ! if true, variable is on tape
     integer           :: xtype      ! netcdf data type
     integer                , pointer  :: compDOF(:)
@@ -1752,16 +1752,16 @@ contains
     logical          , optional, intent(out):: readvar   ! true => variable is on initial dataset (read only)
     ! !LOCAL VARIABLES:
     character(len=32) :: dimname    ! temporary
-    integer           :: n          ! index      
+    integer           :: n          ! index
     integer           :: iodnum     ! iodesc num in list
     integer           :: varid      ! varid
     integer           :: ndims      ! ndims for var
     integer           :: ndims_iod  ! ndims iodesc for var
-    integer           :: dims(4)    ! dim sizes       
+    integer           :: dims(4)    ! dim sizes
     integer           :: dids(4)    ! dim ids
     integer           :: start(3)   ! netcdf start index
     integer           :: count(3)   ! netcdf count index
-    integer           :: status     ! error code  
+    integer           :: status     ! error code
     integer, pointer  :: idata(:)   ! Temporary integer data to send to file
     logical           :: varpresent ! if true, variable is on tape
     integer           :: xtype      ! netcdf data type
@@ -1779,7 +1779,7 @@ contains
 
        call ncd_inqvid(ncid, varname, varid, vardesc, readvar=varpresent)
        if (varpresent) then
-          allocate( idata(size(data)) ) 
+          allocate( idata(size(data)) )
           status = pio_inq_varndims(ncid, vardesc, ndims)
           status = pio_inq_vardimid(ncid, vardesc, dids)
           status = pio_inq_vartype (ncid, vardesc, xtype)
@@ -1828,7 +1828,7 @@ contains
        if (present(nt)) then
           call pio_setframe(ncid, vardesc, int(nt,kind=PIO_OFFSET_KIND))
        end if
-       allocate( idata(size(data)) ) 
+       allocate( idata(size(data)) )
        where( data )
           idata = 1
        elsewhere
@@ -1872,12 +1872,12 @@ contains
     integer           :: varid      ! varid
     integer           :: ndims      ! ndims for var
     integer           :: ndims_iod  ! ndims iodesc for var
-    integer           :: n          ! index      
-    integer           :: dims(4)    ! dim sizes       
+    integer           :: n          ! index
+    integer           :: dims(4)    ! dim sizes
     integer           :: dids(4)    ! dim ids
     integer           :: start(3)   ! netcdf start index
     integer           :: count(3)   ! netcdf count index
-    integer           :: status     ! error code  
+    integer           :: status     ! error code
     logical           :: varpresent ! if true, variable is on tape
     integer           :: xtype      ! netcdf data type
     integer                , pointer  :: compDOF(:)
@@ -1955,12 +1955,12 @@ contains
   subroutine ncd_getiodesc(ncid, ndims, dims, dimids, xtype, iodnum)
 
     !------------------------------------------------------------------------
-    ! !DESCRIPTION: 
+    ! !DESCRIPTION:
     ! Returns an index to an io descriptor
     !
     ! !ARGUMENTS:
     type(file_desc_t), intent(inout) :: ncid       ! PIO file descriptor
-    integer          , intent(in)    :: ndims      ! ndims for var      
+    integer          , intent(in)    :: ndims      ! ndims for var
     integer          , intent(in)    :: dims(:)    ! dim sizes
     integer          , intent(in)    :: dimids(:)  ! dim ids
     integer          , intent(in)    :: xtype      ! file external type
@@ -1984,20 +1984,20 @@ contains
     do while (n <= num_iodesc .and. .not.found)
        if (ndims == iodesc_list(n)%ndims .and. xtype == iodesc_list(n)%type) then
           found = .true.
-          ! First found implies that dimension sizes are the same 
+          ! First found implies that dimension sizes are the same
           do m = 1,ndims
              if (dims(m) /= iodesc_list(n)%dims(m)) then
                 found = .false.
              endif
           enddo
-          ! If found - then also check that dimension names are equal - 
+          ! If found - then also check that dimension names are equal -
           ! dimension ids in iodescriptor are only used to query dimension
           ! names associated with that iodescriptor
           if (found) then
              do m = 1,ndims
                 status = PIO_inq_dimname(ncid,dimids(m),dimname_file)
                 status = PIO_inquire(ncid, ndimensions=ndims_file)
-                if (iodesc_list(n)%dimids(m) > ndims_file) then 
+                if (iodesc_list(n)%dimids(m) > ndims_file) then
                    found = .false.
                    exit
                 else
@@ -2023,7 +2023,7 @@ contains
 
     ! Creating a new io descriptor
 
-    if (ndims > 0) then 
+    if (ndims > 0) then
        num_iodesc = num_iodesc + 1
        if (num_iodesc > max_iodesc) then
           write(logunit_atm,*) trim(subname),' ERROR num_iodesc gt max_iodesc ',max_iodesc

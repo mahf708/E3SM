@@ -68,6 +68,21 @@ contains
     acc_lhflx = 0.0_R8 ; acc_shflx = 0.0_R8
     acc_n = 0
 
+    allocate(raw_taux(lsize_x,lsize_y))
+    allocate(raw_tauy(lsize_x,lsize_y))
+    allocate(raw_prec(lsize_x,lsize_y))
+    allocate(raw_snow(lsize_x,lsize_y))
+    allocate(raw_flus(lsize_x,lsize_y))
+    allocate(raw_fsus(lsize_x,lsize_y))
+    allocate(raw_flds(lsize_x,lsize_y))
+    allocate(raw_fsds(lsize_x,lsize_y))
+    allocate(raw_lhflx(lsize_x,lsize_y))
+    allocate(raw_shflx(lsize_x,lsize_y))
+    raw_taux = 0.0_R8 ; raw_tauy = 0.0_R8 ; raw_prec = 0.0_R8 ; raw_snow = 0.0_R8
+    raw_flus = 0.0_R8 ; raw_fsus = 0.0_R8 ; raw_flds = 0.0_R8 ; raw_fsds = 0.0_R8
+    raw_lhflx = 0.0_R8 ; raw_shflx = 0.0_R8
+    raw_n = 0
+
     allocate(so_t(lsize_x,lsize_y))
     allocate(so_s(lsize_x,lsize_y))
     allocate(so_u(lsize_x,lsize_y))
@@ -87,6 +102,8 @@ contains
     allocate(cell_lon(lsize_x,lsize_y))
     allocate(ocn_mask(lsize_x,lsize_y))
     ocn_mask = 1.0_R8
+    allocate(ice_mask(lsize_x,lsize_y))
+    ice_mask = 1.0_R8
 
     allocate(net_inputs(1, n_input_channels, lsize_x, lsize_y))
     allocate(net_outputs(1, n_output_channels, lsize_x, lsize_y))
@@ -208,8 +225,10 @@ contains
 
     deallocate(acc_taux, acc_tauy, acc_prec, acc_snow, acc_flus, acc_fsus)
     deallocate(acc_flds, acc_fsds, acc_lhflx, acc_shflx)
+    deallocate(raw_taux, raw_tauy, raw_prec, raw_snow, raw_flus, raw_fsus)
+    deallocate(raw_flds, raw_fsds, raw_lhflx, raw_shflx)
     deallocate(so_t, so_s, so_u, so_v, so_ssh, so_dhdx, so_dhdy, so_ifrac)
-    deallocate(cell_lat, cell_lon, ocn_mask)
+    deallocate(cell_lat, cell_lon, ocn_mask, ice_mask)
     deallocate(net_inputs, net_inputs_nn, net_outputs)
     deallocate(eocn_intrp%t_im1, eocn_intrp%t_ip1)
 

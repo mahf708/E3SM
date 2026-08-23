@@ -179,6 +179,16 @@ module eocn_restart_mod
              trim(subname)//' ERROR: restart is missing mask_2d')
       endif
 
+      if ( flag == 'define' ) then
+        call ncd_defvar(ncid=ncid, varname='mask_ocean_sea_ice_fraction', &
+             xtype=ncd_double, dim1name='lon', dim2name='lat', &
+             long_name='mask of the emulator sea ice channels', units='1')
+      elseif (flag == 'read' .or. flag == 'write') then
+        call ncd_io(varname='mask_ocean_sea_ice_fraction', data=ice_mask, &
+             ncid=ncid, flag=flag, readvar=readvar)
+        if (flag == 'read' .and. .not. readvar) ice_mask(:,:) = ocn_mask(:,:)
+      endif
+
       !--- partially accumulated coupler fluxes ---
       call restart_accumulator(ncid, flag, 'acc_taux',  acc_taux)
       call restart_accumulator(ncid, flag, 'acc_tauy',  acc_tauy)
@@ -191,11 +201,25 @@ module eocn_restart_mod
       call restart_accumulator(ncid, flag, 'acc_lhflx', acc_lhflx)
       call restart_accumulator(ncid, flag, 'acc_shflx', acc_shflx)
 
+      !--- and the same window taken from the atmosphere emulator directly ---
+      call restart_accumulator(ncid, flag, 'raw_taux',  raw_taux, required=.false.)
+      call restart_accumulator(ncid, flag, 'raw_tauy',  raw_tauy, required=.false.)
+      call restart_accumulator(ncid, flag, 'raw_prec',  raw_prec, required=.false.)
+      call restart_accumulator(ncid, flag, 'raw_snow',  raw_snow, required=.false.)
+      call restart_accumulator(ncid, flag, 'raw_flus',  raw_flus, required=.false.)
+      call restart_accumulator(ncid, flag, 'raw_fsus',  raw_fsus, required=.false.)
+      call restart_accumulator(ncid, flag, 'raw_flds',  raw_flds, required=.false.)
+      call restart_accumulator(ncid, flag, 'raw_fsds',  raw_fsds, required=.false.)
+      call restart_accumulator(ncid, flag, 'raw_lhflx', raw_lhflx, required=.false.)
+      call restart_accumulator(ncid, flag, 'raw_shflx', raw_shflx, required=.false.)
+
       if ( flag == 'define' ) then
         call ncd_defvar(ncid=ncid, varname='acc_n', xtype=ncd_int, &
              long_name='coupling steps accumulated into acc_*', units='1')
         call ncd_defvar(ncid=ncid, varname='eocn_elapsed', xtype=ncd_int, &
              long_name='seconds since the emulator last advanced', units='s')
+        call ncd_defvar(ncid=ncid, varname='raw_n', xtype=ncd_int, &
+             long_name='coupling steps accumulated into raw_*', units='1')
       elseif (flag == 'read' .or. flag == 'write') then
         call ncd_io(varname='acc_n', data=acc_n, ncid=ncid, flag=flag, &
              readvar=readvar)
@@ -205,6 +229,11 @@ module eocn_restart_mod
              flag=flag, readvar=readvar)
         if (flag == 'read' .and. .not. readvar) call shr_sys_abort( &
              trim(subname)//' ERROR: restart is missing eocn_elapsed')
+        ! Not fatal when missing: a restart written before the atmosphere's raw
+        ! forcing channels existed is still a valid restart of the coupler path.
+        call ncd_io(varname='raw_n', data=raw_n, ncid=ncid, flag=flag, &
+             readvar=readvar)
+        if (flag == 'read' .and. .not. readvar) raw_n = 0
       endif
 
     end subroutine eocn_restart
@@ -240,16 +269,20 @@ module eocn_restart_mod
 
     end subroutine restart_input_channel
 
-    subroutine restart_accumulator( ncid, flag, vname, field )
+    subroutine restart_accumulator( ncid, flag, vname, field, required )
 
       implicit none
       type(file_desc_t), intent(inout) :: ncid
       character(len=*) , intent(in)    :: flag
       character(len=*) , intent(in)    :: vname
       real(r8)         , intent(inout) :: field(:,:)
+      logical, optional, intent(in)    :: required
 
-      logical :: readvar
+      logical :: readvar, must
       character(len=*), parameter :: subname = '(restart_accumulator) '
+
+      must = .true.
+      if (present(required)) must = required
 
       if ( flag == 'define' ) then
         call ncd_defvar(ncid=ncid, varname=trim(vname), xtype=ncd_double, &
@@ -258,8 +291,11 @@ module eocn_restart_mod
       elseif (flag == 'read' .or. flag == 'write') then
         call ncd_io(varname=trim(vname), data=field, ncid=ncid, flag=flag, &
              readvar=readvar)
-        if (flag == 'read' .and. .not. readvar) call shr_sys_abort( &
-             trim(subname)//' ERROR: restart is missing '//trim(vname))
+        if (flag == 'read' .and. .not. readvar) then
+          if (must) call shr_sys_abort( &
+               trim(subname)//' ERROR: restart is missing '//trim(vname))
+          field(:,:) = 0.0_r8
+        end if
       endif
 
     end subroutine restart_accumulator
@@ -288,6 +324,21 @@ module eocn_restart_mod
       if (.not. readvar) call shr_sys_abort(trim(subname)// &
            ' ERROR: initial condition file has no variable mask_2d; rebuild it '// &
            'with tools/make_eocn_input.py')
+
+      ! The sea ice channels are masked more tightly than the ocean.  An
+      ! initial condition built before this mask was carried has only mask_2d;
+      ! fall back to it, which is the behaviour that put sea ice in the
+      ! tropics, and say so rather than doing it silently.
+      call ncd_io(varname='mask_ocean_sea_ice_fraction', data=ice_mask, &
+           ncid=ncid, flag='read', readvar=readvar)
+      if (.not. readvar) then
+        ice_mask(:,:) = ocn_mask(:,:)
+        write(logunit_ocn,'(a)') trim(subname)//' WARNING: initial condition '// &
+             'has no mask_ocean_sea_ice_fraction; the emulator sea ice fraction '// &
+             'will be exported wherever there is ocean, including where the '// &
+             'network was never trained to predict it.  Rebuild the initial '// &
+             'condition with tools/make_eocn_input.py.'
+      end if
 
       do c = 1, n_input_channels
         call ncd_inqvid(ncid, trim(in_names(c)), varid, vardesc, readvar=readvar)

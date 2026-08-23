@@ -453,16 +453,24 @@ CONTAINS
 
        ! Fabricated surface temperature, from dice_comp_mod.F90:670.  Samudra
        ! carries no ice surface energy balance, so there is nothing better to
-       ! use; this is what an AMIP run's ice does.  Blended back to freezing as
-       ! the fraction vanishes so that a cell with a sliver of ice does not
-       ! report a 260 K skin.
+       ! use; this is what an AMIP run's ice does.
+       !
+       ! Reported as the ice skin temperature over the ice-covered part of the
+       ! cell, and not blended towards freezing as the fraction vanishes, which
+       ! is what dice does and what every consumer of Si_t expects.  A cell with
+       ! a sliver of ice does not thereby report a 260 K skin: the coupler
+       ! weights this by the same fraction on its way to the atmosphere,
+       !     x2a%Sx_t = lfrac*Sl_t + ifrac*Si_t + ofrac*So_t
+       ! (prep_atm_merge), so blending by ifrac here as well would apply the
+       ! weight twice and leave the thermal anomaly scaled by ifrac**2.  The
+       ! same value is what eice_flux_atmice_mod evaluates the bulk fluxes over
+       ! the ice with, where a temperature pulled towards freezing by the open
+       ! water beside it is simply the wrong surface to use.
        if (latc(n) > 0.0_R8) then
           i2x%rAttr(kt,n) = 260.0_R8 + 10.0_R8*cos(cosArg)
        else
           i2x%rAttr(kt,n) = 260.0_R8 - 10.0_R8*cos(cosArg)
        end if
-       i2x%rAttr(kt,n) = tFrzSw + &
-            i2x%rAttr(kiFrac,n)*(i2x%rAttr(kt,n) - tFrzSw)
 
        if (kavsdr > 0) i2x%rAttr(kavsdr,n) = ax_vsdr
        if (kanidr > 0) i2x%rAttr(kanidr,n) = ax_nidr

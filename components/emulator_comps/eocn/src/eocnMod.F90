@@ -37,6 +37,7 @@ module eocnMod
   logical, public       :: eocn_flux_ifrac_unweight ! undo the coupler's open-water weighting
   logical, public       :: eocn_unweight_stress     ! apply that un-weighting to TAUX/TAUY too
   character(CS), public :: eocn_precip_units        ! units of the emulator's precipitation channels
+  character(CS), public :: eocn_forcing_source      ! 'coupler' or 'atm_raw'
 
   !--------------------------------------------------------------------------
   ! Imported coupler fluxes, accumulated over the emulator interval.
@@ -59,6 +60,27 @@ module eocnMod
   real(R8), dimension(:,:), allocatable, public :: acc_lhflx  ! W/m2, upward latent
   real(R8), dimension(:,:), allocatable, public :: acc_shflx  ! W/m2, upward sensible
   integer, public :: acc_n = 0                                ! coupling steps accumulated
+
+  ! The same ten channels again, taken instead from the atmosphere emulator's
+  ! own generated output when one is sharing this executable and publishing
+  ! them (shr_emul_flux_mod).  Accumulated alongside the coupler's fields on
+  ! every step, whichever is selected, so that a run reports what the other
+  ! path would have given it: the gap between them is the whole of what the
+  ! coupler's bulk-flux recomputation and open-water weighting do to the
+  ! forcing, and it is not otherwise measurable from inside a run.
+  ! Stored in the emulator's own sign convention -- positive upward for the
+  ! turbulent and upward radiative channels -- so they need no conversion.
+  real(R8), dimension(:,:), allocatable, public :: raw_taux
+  real(R8), dimension(:,:), allocatable, public :: raw_tauy
+  real(R8), dimension(:,:), allocatable, public :: raw_prec
+  real(R8), dimension(:,:), allocatable, public :: raw_snow
+  real(R8), dimension(:,:), allocatable, public :: raw_flus
+  real(R8), dimension(:,:), allocatable, public :: raw_fsus
+  real(R8), dimension(:,:), allocatable, public :: raw_flds
+  real(R8), dimension(:,:), allocatable, public :: raw_fsds
+  real(R8), dimension(:,:), allocatable, public :: raw_lhflx
+  real(R8), dimension(:,:), allocatable, public :: raw_shflx
+  integer, public :: raw_n = 0                                ! steps with a published set
 
   ! Seconds elapsed since the emulator last advanced.  Counted rather than
   ! derived from the calendar because the emulator step is longer than a day,
@@ -86,6 +108,13 @@ module eocnMod
   real(R8), dimension(:,:), allocatable, public :: cell_lat   ! degrees north
   real(R8), dimension(:,:), allocatable, public :: cell_lon   ! degrees east
   real(R8), dimension(:,:), allocatable, public :: ocn_mask   ! 1 where the emulator is valid
+
+  ! Where the emulator's sea ice channels mean anything.  Samudra's ocean mask
+  ! covers 44,892 cells, but ocean_sea_ice_fraction and iceVolumeTotal are
+  ! masked far more tightly in training -- 25,923 cells -- and outside that the
+  ! network was never shown ice and its output there is not a prediction.
+  ! Exporting it anyway puts sea ice in the tropics.  See samudra_export.
+  real(R8), dimension(:,:), allocatable, public :: ice_mask   ! 1 where sea ice is predicted
 
   real(kind=R4), dimension(:, :, :, :), allocatable, target, public :: net_inputs
   real(kind=R4), dimension(:, :, :, :), allocatable, target, public :: net_inputs_nn

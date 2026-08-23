@@ -11,18 +11,6 @@
      <desc>Name of ice component</desc>
   </entry>
 
-  <entry id="EICE_MODE">
-    <type>char</type>
-    <valid_values>ACTIVE,NULL</valid_values>
-    <default_value>ACTIVE</default_value>
-    <values>
-      <value compset="_EICE" >ACTIVE</value>
-    </values>
-    <group>build_component_eice</group>
-    <file>env_build.xml</file>
-    <desc>mode for eice model, NULL means eice is turned off</desc>
-  </entry>
-
   <description>
     <desc compset="_EICE">EICE:</desc>
   </description>
