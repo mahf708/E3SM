@@ -8,6 +8,10 @@
 #include "share/field/field_utils.hpp"
 #include "share/util/eamxx_universal_constants.hpp"
 
+#include <vector>
+#include <utility>
+#include <string>
+
 namespace scream {
 
 Field create_field (const std::string& name, const LayoutType lt, const AbstractGrid& grid)
@@ -28,6 +32,10 @@ Field create_field (const std::string& name, const LayoutType lt, const Abstract
       f.get_header().get_alloc_properties().request_allocation(SCREAM_PACK_SIZE);  break;
     case LayoutType::Vector3D:
       f = Field(FieldIdentifier(name,grid.get_3d_vector_layout(ILEV,ndims),ekat::units::none,gn));
+      f.get_header().get_alloc_properties().request_allocation(SCREAM_PACK_SIZE);  break;
+    case LayoutType::Tensor3D:
+      // rank 4: (COL,CMP,CMP,LEV). Needed to exercise the 'case 4' branch of the matvec kernels
+      f = Field(FieldIdentifier(name,grid.get_3d_tensor_layout(LEV,{ndims,ndims}),ekat::units::none,gn));
       f.get_header().get_alloc_properties().request_allocation(SCREAM_PACK_SIZE);  break;
     default:
       EKAT_ERROR_MSG ("Invalid layout type for this unit test.\n");
@@ -481,9 +489,88 @@ TEST_CASE ("refining_remapper") {
   scorpio::finalize_subsystem();
 }
 
+// ---------------------------------------------------------------------------
+// Helpers shared by the two tests below.
+//
+// Both tests fill the src fields with an ANALYTIC function of the global col id
+// and the non-col indices, rather than random numbers. That way every expected
+// tgt value is computable locally, with no MPI gather, so the checks work for
+// fields of any rank and at any rank count. The values are small integers, so
+// sums are exact and halving is exact: the checks can use ==, independent of
+// whether Real is float or double.
+// ---------------------------------------------------------------------------
+
+// Value stored at (gid,j,k,l) of a src field
+Real ref_val (const int gid, const int j, const int k, const int l) {
+  return 8.0*gid + 4.0*j + 2.0*k + 1.0*l;
+}
+
+// Visit every entry of a (host) field, calling fn(icol,j,k,l,entry_ref).
+// Missing dims are reported as index 0.
+template<typename T, typename Fn>
+void for_each_entry (const Field& f, Fn&& fn)
+{
+  const auto& fl = f.get_header().get_identifier().get_layout();
+  const int n0 = fl.dim(0);
+  const int d1 = fl.rank()>1 ? fl.dim(1) : 1;
+  const int d2 = fl.rank()>2 ? fl.dim(2) : 1;
+  const int d3 = fl.rank()>3 ? fl.dim(3) : 1;
+  switch (fl.rank()) {
+    case 1: {
+      auto v = f.get_view<T*,Host>();
+      for (int i=0; i<n0; ++i) fn(i,0,0,0,v(i));
+      break;
+    }
+    case 2: {
+      auto v = f.get_view<T**,Host>();
+      for (int i=0; i<n0; ++i) for (int j=0; j<d1; ++j) fn(i,j,0,0,v(i,j));
+      break;
+    }
+    case 3: {
+      auto v = f.get_view<T***,Host>();
+      for (int i=0; i<n0; ++i) for (int j=0; j<d1; ++j) for (int k=0; k<d2; ++k)
+        fn(i,j,k,0,v(i,j,k));
+      break;
+    }
+    case 4: {
+      auto v = f.get_view<T****,Host>();
+      for (int i=0; i<n0; ++i) for (int j=0; j<d1; ++j) for (int k=0; k<d2; ++k) for (int l=0; l<d3; ++l)
+        fn(i,j,k,l,v(i,j,k,l));
+      break;
+    }
+    default:
+      EKAT_ERROR_MSG ("Unexpected field rank in refining remapper unit test.\n");
+  }
+}
+
+// Fill a src field with ref_val, using the grid's global col ids
+void fill_src (const Field& f, const AbstractGrid& grid)
+{
+  using gid_type = AbstractGrid::gid_type;
+  auto gids_h = grid.get_dofs_gids().get_view<const gid_type*,Host>();
+  for_each_entry<Real>(f,[&](int i, int j, int k, int l, Real& x) {
+    x = ref_val(gids_h(i),j,k,l);
+  });
+  f.sync_to_dev();
+}
+
+// The layouts used by both tests. Together they hit every rank case of the
+// matvec kernels: rank 1, rank 2 (both packed and unpacked), rank 3 and rank 4.
+const std::vector<std::pair<std::string,LayoutType>>& test_layouts ()
+{
+  static const std::vector<std::pair<std::string,LayoutType>> lts = {
+    {"s2d",LayoutType::Scalar2D},   // rank 1
+    {"v2d",LayoutType::Vector2D},   // rank 2, no pack size requested
+    {"s3d",LayoutType::Scalar3D},   // rank 2, packed
+    {"v3d",LayoutType::Vector3D},   // rank 3, packed
+    {"t3d",LayoutType::Tensor3D},   // rank 4, packed
+  };
+  return lts;
+}
+
 // This test covers the *masked* refining path, i.e. what an online output stream
-// does when it remaps to a finer grid and the fields carry a valid mask (e.g., any
-// field that also went through vertical remapping to pressure levels).
+// does when it remaps to a finer grid and the fields carry a valid mask.
+//
 // Mask handling was coarsening-only. When refining, the masked matvec was never even
 // dispatched (the check looked for a mask on the ov field, which never has one), so the
 // data was remapped WITHOUT the mask but still divided by the remapped mask afterwards,
@@ -496,8 +583,6 @@ TEST_CASE ("refining_remapper_masked") {
   auto& catch_capture = Catch::getResultCapture();
 
   ekat::Comm comm(MPI_COMM_WORLD);
-
-  int seed = get_random_test_seed(&comm);
 
   scorpio::init_subsystem(comm);
 
@@ -524,124 +609,82 @@ TEST_CASE ("refining_remapper_masked") {
   // Build the remapper WITH mask tracking, like AtmosphereOutput does
   auto r = std::make_shared<HorizontalRemapper>(src_grid,tgt_grid,filename,true);
 
-  auto s2d_src = create_field("s2d_src",LayoutType::Scalar2D,*src_grid,seed++);
-  auto s3d_src = create_field("s3d_src",LayoutType::Scalar3D,*src_grid,seed++);
-  auto s2d_tgt = create_field("s2d_tgt",LayoutType::Scalar2D,*tgt_grid);
-  auto s3d_tgt = create_field("s3d_tgt",LayoutType::Scalar3D,*tgt_grid);
-
-  // Mask out src col with gid==masked_gid entirely (all levels).
-  // Note: gids are 1-based on the src grid.
+  // Mask out src col with gid==masked_gid entirely. Note: src gids are 1-based,
+  // and gid 2 participates both as a "copy" and in two averages, so this exercises
+  // fully-masked and partially-masked tgt cols at once.
   const int masked_gid = 2;
-  auto& m2d = s2d_src.create_valid_mask("s2d_mask",Field::MaskInit::Valid);
-  auto& m3d = s3d_src.create_valid_mask("s3d_mask",Field::MaskInit::Valid);
-
-  // create_valid_mask inits on device, so refresh the host mirrors before editing them
-  m2d.sync_to_host();
-  m3d.sync_to_host();
-
   auto src_gids_h = src_grid->get_dofs_gids().get_view<const gid_type*,Host>();
-  auto m2d_h = m2d.get_view<int*,Host>();
-  auto m3d_h = m3d.get_view<int**,Host>();
-  for (int i=0; i<src_grid->get_num_local_dofs(); ++i) {
-    if (src_gids_h(i)==masked_gid) {
-      m2d_h(i) = 0;
-      for (int k=0; k<nlevs; ++k) {
-        m3d_h(i,k) = 0;
-      }
-    }
-  }
-  m2d.sync_to_dev();
-  m3d.sync_to_dev();
 
-  r->register_field(s2d_src,s2d_tgt);
-  r->register_field(s3d_src,s3d_tgt);
+  std::vector<Field> src_f, tgt_f;
+  for (const auto& [name,lt] : test_layouts()) {
+    auto fsrc = create_field(name+"_src",lt,*src_grid);
+    auto ftgt = create_field(name+"_tgt",lt,*tgt_grid);
+    fill_src(fsrc,*src_grid);
+
+    auto& mask = fsrc.create_valid_mask(name+"_mask",Field::MaskInit::Valid);
+    // create_valid_mask inits on device, so refresh the host mirror before editing it
+    mask.sync_to_host();
+    for_each_entry<int>(mask,[&](int i, int, int, int, int& m) {
+      if (src_gids_h(i)==masked_gid) m = 0;
+    });
+    mask.sync_to_dev();
+
+    r->register_field(fsrc,ftgt);
+    src_f.push_back(fsrc);
+    tgt_f.push_back(ftgt);
+  }
   r->registration_ends();
 
   r->remap_fwd();
 
-  auto gs2d_src = all_gather_field(s2d_src,comm);
-  auto gs3d_src = all_gather_field(s3d_src,comm);
-  auto gs2d_tgt = all_gather_field(s2d_tgt,comm);
-  auto gs3d_tgt = all_gather_field(s3d_tgt,comm);
+  auto tgt_gids_h = tgt_grid->get_dofs_gids().get_view<const gid_type*,Host>();
 
-  gs2d_src.sync_to_host();
-  gs3d_src.sync_to_host();
-  gs2d_tgt.sync_to_host();
-  gs3d_tgt.sync_to_host();
-
-  constexpr auto fill_val = constants::fill_value<Real>;
-
-  // 0-based index, within the gathered src array, of the masked col
-  const int mcol = masked_gid-1;
-
-  // Expected value for the tgt col that copies src col icol
-  auto expected_copy = [&](Real src_val, int icol) {
-    return icol==mcol ? fill_val : src_val;
-  };
-  // Expected value for the tgt col that averages src cols icol and icol+1.
-  // The mask renormalizes the weights, so if exactly one of the two is masked,
-  // the result is the *other* one (not half of it).
-  auto expected_avg = [&](Real v0, Real v1, int icol) {
-    const bool m0 = icol!=mcol;
-    const bool m1 = (icol+1)!=mcol;
-    if (not m0 and not m1) return fill_val;
-    if (not m0) return v1;
-    if (not m1) return v0;
-    return (v0+v1)/2;
-  };
-
-  // Scalar 2D
-  {
+  for (size_t f=0; f<tgt_f.size(); ++f) {
+    const auto& name = test_layouts()[f].first;
     if (comm.am_i_root()) {
-      printf(" -> Checking masked 2d scalars ..\n");
+      printf(" -> Checking masked %s ..........\n",name.c_str());
     }
     bool ok = true;
-    auto src_v = gs2d_src.get_view<const Real*,Host>();
-    auto tgt_v = gs2d_tgt.get_view<const Real*,Host>();
 
-    for (int icol=0; icol<ngdofs_src; ++icol) {
-      CHECK (tgt_v[2*icol]==expected_copy(src_v[icol],icol));
-      ok &= catch_capture.lastAssertionPassed();
-    }
-    for (int icol=0; icol<ngdofs_src-1; ++icol) {
-      CHECK (tgt_v[2*icol+1]==expected_avg(src_v[icol],src_v[icol+1],icol));
-      ok &= catch_capture.lastAssertionPassed();
-    }
-    if (comm.am_i_root()) {
-      printf(" -> Checking masked 2d scalars .. %s\n",ok ? "PASS" : "FAIL");
-    }
-  }
-
-  // Scalar 3D
-  {
-    if (comm.am_i_root()) {
-      printf(" -> Checking masked 3d scalars ..\n");
-    }
-    bool ok = true;
-    auto src_v = gs3d_src.get_view<const Real**,Host>();
-    auto tgt_v = gs3d_tgt.get_view<const Real**,Host>();
-
-    for (int icol=0; icol<ngdofs_src; ++icol) {
-      for (int ilev=0; ilev<nlevs; ++ilev) {
-        CHECK (tgt_v(2*icol,ilev)==expected_copy(src_v(icol,ilev),icol));
-        ok &= catch_capture.lastAssertionPassed();
+    tgt_f[f].sync_to_host();
+    for_each_entry<Real>(tgt_f[f],[&](int i, int j, int k, int l, Real& got) {
+      const int g = tgt_gids_h(i);
+      Real expected;
+      if (g<=ngdofs_src) {
+        // "copy" col: takes src gid g with weight 1
+        expected = g==masked_gid ? constants::fill_value<Real>
+                                 : ref_val(g,j,k,l);
+      } else {
+        // "average" col: 0.5*src(c0) + 0.5*src(c1), renormalized by the mask
+        const int c0 = g-ngdofs_src;
+        const int c1 = c0+1;
+        const bool m0 = c0!=masked_gid;
+        const bool m1 = c1!=masked_gid;
+        if      (not m0 and not m1) expected = constants::fill_value<Real>;
+        else if (not m0)            expected = ref_val(c1,j,k,l);
+        else if (not m1)            expected = ref_val(c0,j,k,l);
+        else                        expected = (ref_val(c0,j,k,l)+ref_val(c1,j,k,l))/2;
       }
-    }
-    for (int icol=0; icol<ngdofs_src-1; ++icol) {
-      for (int ilev=0; ilev<nlevs; ++ilev) {
-        CHECK (tgt_v(2*icol+1,ilev)==expected_avg(src_v(icol,ilev),src_v(icol+1,ilev),icol));
-        ok &= catch_capture.lastAssertionPassed();
-      }
-    }
-    if (comm.am_i_root()) {
-      printf(" -> Checking masked 3d scalars .. %s\n",ok ? "PASS" : "FAIL");
-    }
-  }
+      CHECK (got==expected);
+      ok &= catch_capture.lastAssertionPassed();
+    });
 
-  // The tgt fields must carry a valid mask, marking the fully-masked cols
-  {
-    REQUIRE (s2d_tgt.has_valid_mask());
-    REQUIRE (s3d_tgt.has_valid_mask());
+    // The tgt field must also carry a valid mask, 0 exactly on the fully-masked cols
+    REQUIRE (tgt_f[f].has_valid_mask());
+    auto& tmask = tgt_f[f].get_valid_mask();
+    tmask.sync_to_host();
+    for_each_entry<int>(tmask,[&](int i, int, int, int, int& m) {
+      const int g = tgt_gids_h(i);
+      const bool fully_masked = (g<=ngdofs_src)
+                              ? g==masked_gid
+                              : (g-ngdofs_src==masked_gid and g-ngdofs_src+1==masked_gid);
+      CHECK (m==(fully_masked ? 0 : 1));
+      ok &= catch_capture.lastAssertionPassed();
+    });
+
+    if (comm.am_i_root()) {
+      printf(" -> Checking masked %s .......... %s\n",name.c_str(),ok ? "PASS" : "FAIL");
+    }
   }
 
   // Clean up
@@ -659,8 +702,6 @@ TEST_CASE ("refining_remapper_uncovered_tgt_cols") {
   auto& catch_capture = Catch::getResultCapture();
 
   ekat::Comm comm(MPI_COMM_WORLD);
-
-  int seed = get_random_test_seed(&comm);
 
   scorpio::init_subsystem(comm);
 
@@ -685,57 +726,41 @@ TEST_CASE ("refining_remapper_uncovered_tgt_cols") {
 
   auto r = std::make_shared<HorizontalRemapper>(src_grid,tgt_grid,filename);
 
-  auto s2d_src = create_field("s2d_src",LayoutType::Scalar2D,*src_grid,seed++);
-  auto s3d_src = create_field("s3d_src",LayoutType::Scalar3D,*src_grid,seed++);
-  auto s2d_tgt = create_field("s2d_tgt",LayoutType::Scalar2D,*tgt_grid);
-  auto s3d_tgt = create_field("s3d_tgt",LayoutType::Scalar3D,*tgt_grid);
-
-  r->register_field(s2d_src,s2d_tgt);
-  r->register_field(s3d_src,s3d_tgt);
+  std::vector<Field> tgt_f;
+  for (const auto& [name,lt] : test_layouts()) {
+    auto fsrc = create_field(name+"_src",lt,*src_grid);
+    auto ftgt = create_field(name+"_tgt",lt,*tgt_grid);
+    fill_src(fsrc,*src_grid);
+    // Poison the tgt field, so that "left untouched" cannot masquerade as "set to 0"
+    ftgt.deep_copy(-1);
+    r->register_field(fsrc,ftgt);
+    tgt_f.push_back(ftgt);
+  }
   r->registration_ends();
 
   r->remap_fwd();
 
-  auto gs2d_src = all_gather_field(s2d_src,comm);
-  auto gs3d_src = all_gather_field(s3d_src,comm);
-  auto gs2d_tgt = all_gather_field(s2d_tgt,comm);
-  auto gs3d_tgt = all_gather_field(s3d_tgt,comm);
+  auto tgt_gids_h = tgt_grid->get_dofs_gids().get_view<const gid_type*,Host>();
 
-  gs2d_src.sync_to_host();
-  gs3d_src.sync_to_host();
-  gs2d_tgt.sync_to_host();
-  gs3d_tgt.sync_to_host();
-
-  {
+  for (size_t f=0; f<tgt_f.size(); ++f) {
+    const auto& name = test_layouts()[f].first;
     if (comm.am_i_root()) {
-      printf(" -> Checking uncovered tgt cols .\n");
+      printf(" -> Checking uncovered %s ......\n",name.c_str());
     }
     bool ok = true;
-    auto src2 = gs2d_src.get_view<const Real*,Host>();
-    auto tgt2 = gs2d_tgt.get_view<const Real*,Host>();
-    auto src3 = gs3d_src.get_view<const Real**,Host>();
-    auto tgt3 = gs3d_tgt.get_view<const Real**,Host>();
 
-    // Covered cols are still copied correctly
-    for (int icol=0; icol<ngdofs_src; ++icol) {
-      CHECK (tgt2[2*icol]==src2[icol]);
+    tgt_f[f].sync_to_host();
+    for_each_entry<Real>(tgt_f[f],[&](int i, int j, int k, int l, Real& got) {
+      const int g = tgt_gids_h(i);
+      // Covered cols are copied; uncovered ones must be 0, NOT the neighbouring
+      // row's entry and NOT the poison value we pre-filled
+      const Real expected = g<=ngdofs_src ? ref_val(g,j,k,l) : 0;
+      CHECK (got==expected);
       ok &= catch_capture.lastAssertionPassed();
-      for (int ilev=0; ilev<nlevs; ++ilev) {
-        CHECK (tgt3(2*icol,ilev)==src3(icol,ilev));
-        ok &= catch_capture.lastAssertionPassed();
-      }
-    }
-    // Uncovered cols must be zero, NOT whatever the next row's weight happened to be
-    for (int icol=0; icol<ngdofs_src-1; ++icol) {
-      CHECK (tgt2[2*icol+1]==0);
-      ok &= catch_capture.lastAssertionPassed();
-      for (int ilev=0; ilev<nlevs; ++ilev) {
-        CHECK (tgt3(2*icol+1,ilev)==0);
-        ok &= catch_capture.lastAssertionPassed();
-      }
-    }
+    });
+
     if (comm.am_i_root()) {
-      printf(" -> Checking uncovered tgt cols . %s\n",ok ? "PASS" : "FAIL");
+      printf(" -> Checking uncovered %s ...... %s\n",name.c_str(),ok ? "PASS" : "FAIL");
     }
   }
 
