@@ -24,8 +24,45 @@
 
 #include <ekat_std_utils.hpp>
 
+#include <type_traits>
+#include <vector>
+
 namespace scream
 {
+
+namespace {
+
+// Homme's F90 interfaces are always double precision (Homme's real_kind is
+// always 8), while scream's Real is float in a single precision build. These
+// two helpers stage the data through a double buffer whenever the two types
+// differ, and pass the view's own data straight through otherwise.
+constexpr bool real_is_f90_real = std::is_same<Real,double>::value;
+
+// Hand 'f' a double* of 'size' entries to fill, then store the result in 'dst'.
+template<typename FunT>
+void get_from_f90 (Real* dst, const size_t size, const FunT& f) {
+  if constexpr (real_is_f90_real) {
+    f(dst);
+  } else {
+    std::vector<double> buf(size);
+    f(buf.data());
+    for (size_t i=0; i<size; ++i) { dst[i] = static_cast<Real>(buf[i]); }
+  }
+}
+
+// Hand 'f' a const double* holding a copy of 'src'.
+template<typename FunT>
+void send_to_f90 (const Real* src, const size_t size, const FunT& f) {
+  if constexpr (real_is_f90_real) {
+    f(src);
+  } else {
+    const std::vector<double> buf(src,src+size);
+    f(buf.data());
+  }
+}
+
+} // anonymous namespace
+
 
 HommeGridsManager::HommeGridsManager(const ekat::Comm &comm, const ekat::ParameterList &p)
  : m_comm(comm),
@@ -174,7 +211,11 @@ void HommeGridsManager::build_dynamics_grid () {
   auto lon_h     = lon.get_view<Real***,Host>();
 
   // Get (ie,igp,jgp,gid) data for each dof
-  get_dyn_grid_data_f90 (dg_dofs_h.data(),cg_dofs_h.data(),elgpgp_h.data(),elgids_h.data(), lat_h.data(), lon_h.data());
+  get_from_f90(lat_h.data(),lat_h.size(),[&](double* lat_d) {
+    get_from_f90(lon_h.data(),lon_h.size(),[&](double* lon_d) {
+      get_dyn_grid_data_f90 (dg_dofs_h.data(),cg_dofs_h.data(),elgpgp_h.data(),elgids_h.data(), lat_d, lon_d);
+    });
+  });
 
   dg_dofs.sync_to_dev();
   cg_dofs.sync_to_dev();
@@ -243,7 +284,13 @@ build_physics_grid (const ci_string& type, const ci_string& rebalance)
   auto area_h = area.get_view<Real*,Host>();
 
   // Get all specs of phys grid cols (gids, coords, area)
-  get_phys_grid_data_f90 (pg_code, dofs_h.data(), lat_h.data(), lon_h.data(), area_h.data());
+  get_from_f90(lat_h.data(),lat_h.size(),[&](double* lat_d) {
+    get_from_f90(lon_h.data(),lon_h.size(),[&](double* lon_d) {
+      get_from_f90(area_h.data(),area_h.size(),[&](double* area_d) {
+        get_phys_grid_data_f90 (pg_code, dofs_h.data(), lat_d, lon_d, area_d);
+      });
+    });
+  });
 
   dofs.sync_to_dev();
   lat.sync_to_dev();
@@ -355,11 +402,19 @@ initialize_vertical_coordinates (const nonconstgrid_ptr_type& dyn_grid) {
   // Set vcoords in f90
   // NOTE: homme does the check for these arrays, so no need to do any property check here
   const auto ps0 = Homme::PhysicalConstants::p0;
-  prim_set_hvcoords_f90 (ps0,
-                         hyai.get_internal_view_data<Real,Host>(),
-                         hybi.get_internal_view_data<Real,Host>(),
-                         hyam.get_internal_view_data<Real,Host>(),
-                         hybm.get_internal_view_data<Real,Host>());
+  const auto hyai_h = hyai.get_view<const Real*,Host>();
+  const auto hybi_h = hybi.get_view<const Real*,Host>();
+  const auto hyam_h = hyam.get_view<const Real*,Host>();
+  const auto hybm_h = hybm.get_view<const Real*,Host>();
+  send_to_f90(hyai_h.data(),hyai_h.size(),[&](const double* hyai_d) {
+   send_to_f90(hybi_h.data(),hybi_h.size(),[&](const double* hybi_d) {
+    send_to_f90(hyam_h.data(),hyam_h.size(),[&](const double* hyam_d) {
+     send_to_f90(hybm_h.data(),hybm_h.size(),[&](const double* hybm_d) {
+       prim_set_hvcoords_f90 (ps0, hyai_d, hybi_d, hyam_d, hybm_d);
+     });
+    });
+   });
+  });
 }
 
 void HommeGridsManager::
