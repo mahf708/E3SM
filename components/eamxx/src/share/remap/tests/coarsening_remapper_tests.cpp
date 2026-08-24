@@ -5,6 +5,7 @@
 #include "share/scorpio_interface/eamxx_scorpio_interface.hpp"
 #include "share/core/eamxx_setup_random_test.hpp"
 #include "share/field/field_utils.hpp"
+#include "share/util/eamxx_universal_constants.hpp"
 
 namespace scream {
 
@@ -452,6 +453,163 @@ TEST_CASE("coarsening_remap")
   }
 
   // Clean up scorpio stuff
+  scorpio::finalize_subsystem();
+}
+
+// ---------------------------------------------------------------------------
+// Masked coarsening.
+//
+// Mask tracking was originally a coarsening-only feature, so this direction was the
+// one that worked. It is covered end-to-end by io_remap_test, but had no direct unit
+// test, which left it exposed when the masked matvec was reworked to serve both
+// directions. This pins it down: the dispatch decision, the choice of mask field, and
+// the mask renormalization must all stay correct when coarsening.
+// ---------------------------------------------------------------------------
+
+// Value stored at (gid,j,k,l) of a src field. Small integers, so sums are exact and
+// halving is exact: the checks below can use == in single or double precision.
+Real cr_ref_val (const int gid, const int j, const int k, const int l) {
+  return 8.0*gid + 4.0*j + 2.0*k + 1.0*l;
+}
+
+// Visit every entry of a (host) field, calling fn(icol,j,k,l,entry_ref)
+template<typename T, typename Fn>
+void cr_for_each_entry (const Field& f, Fn&& fn)
+{
+  const auto& fl = f.get_header().get_identifier().get_layout();
+  const int n0 = fl.dim(0);
+  const int d1 = fl.rank()>1 ? fl.dim(1) : 1;
+  const int d2 = fl.rank()>2 ? fl.dim(2) : 1;
+  const int d3 = fl.rank()>3 ? fl.dim(3) : 1;
+  switch (fl.rank()) {
+    case 1: {
+      auto v = f.get_view<T*,Host>();
+      for (int i=0; i<n0; ++i) fn(i,0,0,0,v(i));
+      break;
+    }
+    case 2: {
+      auto v = f.get_view<T**,Host>();
+      for (int i=0; i<n0; ++i) for (int j=0; j<d1; ++j) fn(i,j,0,0,v(i,j));
+      break;
+    }
+    case 3: {
+      auto v = f.get_view<T***,Host>();
+      for (int i=0; i<n0; ++i) for (int j=0; j<d1; ++j) for (int k=0; k<d2; ++k)
+        fn(i,j,k,0,v(i,j,k));
+      break;
+    }
+    case 4: {
+      auto v = f.get_view<T****,Host>();
+      for (int i=0; i<n0; ++i) for (int j=0; j<d1; ++j) for (int k=0; k<d2; ++k) for (int l=0; l<d3; ++l)
+        fn(i,j,k,l,v(i,j,k,l));
+      break;
+    }
+    default:
+      EKAT_ERROR_MSG ("Unexpected field rank in coarsening remapper unit test.\n");
+  }
+}
+
+TEST_CASE("coarsening_remap_masked")
+{
+  using namespace ShortFieldTagsNames;
+  using gid_type = AbstractGrid::gid_type;
+  auto& catch_capture = Catch::getResultCapture();
+
+  ekat::Comm comm(MPI_COMM_WORLD);
+  int seed = get_random_test_seed(&comm);
+  scorpio::init_subsystem(comm);
+
+  std::string filename = "cr_masked_tests_map." + std::to_string(comm.size()) + ".nc";
+
+  // 4 tgt cols per rank, so that the two masked src cols below always exist
+  const int nldofs_tgt = 4;
+  const int ngdofs_tgt = nldofs_tgt*comm.size();
+  create_remap_file(filename, ngdofs_tgt);
+
+  const int ngdofs_src = ngdofs_tgt+1;
+  auto src_grid = build_src_grid(comm, ngdofs_src, seed);
+  auto remap = std::make_shared<HorizontalRemapper>(src_grid,filename,true);
+  auto tgt_grid = remap->get_tgt_grid();
+
+  // The map is tgt(g) = 0.5*src(g) + 0.5*src(g+1). Masking two ADJACENT src cols means
+  // tgt col M has both its contributors masked, exercising the fill-value path, while
+  // tgt cols M-1 and M+1 have exactly one masked contributor, exercising renormalization.
+  const int M = 3;
+  REQUIRE (M+1 <= ngdofs_src);
+
+  auto src_gids_h = src_grid->get_dofs_gids().get_view<const gid_type*,Host>();
+
+  // Every rank case of the matvec kernels: rank 1, rank 2 (unpacked and packed),
+  // rank 3 and rank 4.
+  const std::vector<std::pair<std::string,std::pair<LayoutType,FieldTag>>> layouts = {
+    {"s2d",{LayoutType::Scalar2D,ILEV}},   // rank 1
+    {"v2d",{LayoutType::Vector2D,ILEV}},   // rank 2, unpacked
+    {"s3d",{LayoutType::Scalar3D,LEV }},   // rank 2, packed
+    {"v3d",{LayoutType::Vector3D,LEV }},   // rank 3
+    {"t3d",{LayoutType::Tensor3D,LEV }},   // rank 4
+  };
+
+  std::vector<Field> tgt_f;
+  for (const auto& [name,cfg] : layouts) {
+    auto fsrc = create_field(name+"_src",cfg.first,*src_grid,cfg.second);
+    auto ftgt = create_field(name+"_tgt",cfg.first,*tgt_grid,cfg.second);
+
+    cr_for_each_entry<Real>(fsrc,[&](int i, int j, int k, int l, Real& x) {
+      x = cr_ref_val(src_gids_h(i),j,k,l);
+    });
+    fsrc.sync_to_dev();
+
+    auto& mask = fsrc.create_valid_mask(name+"_mask",Field::MaskInit::Valid);
+    mask.sync_to_host();
+    cr_for_each_entry<int>(mask,[&](int i, int, int, int, int& m) {
+      if (src_gids_h(i)==M or src_gids_h(i)==M+1) m = 0;
+    });
+    mask.sync_to_dev();
+
+    remap->register_field(fsrc,ftgt);
+    tgt_f.push_back(ftgt);
+  }
+  remap->registration_ends();
+
+  remap->remap_fwd();
+
+  auto tgt_gids_h = tgt_grid->get_dofs_gids().get_view<const gid_type*,Host>();
+
+  for (size_t f=0; f<tgt_f.size(); ++f) {
+    const auto& name = layouts[f].first;
+    root_print(" -> Checking masked coarsening " + name + " ...\n",comm);
+    bool ok = true;
+
+    tgt_f[f].sync_to_host();
+    cr_for_each_entry<Real>(tgt_f[f],[&](int i, int j, int k, int l, Real& got) {
+      const int g  = tgt_gids_h(i);
+      const int c0 = g;
+      const int c1 = g+1;
+      auto valid = [&](int c) { return c!=M and c!=M+1; };
+      Real expected;
+      if      (valid(c0) and valid(c1)) expected = (cr_ref_val(c0,j,k,l)+cr_ref_val(c1,j,k,l))/2;
+      else if (valid(c0))               expected = cr_ref_val(c0,j,k,l);
+      else if (valid(c1))               expected = cr_ref_val(c1,j,k,l);
+      else                              expected = constants::fill_value<Real>;
+      CHECK (got==expected);
+      ok &= catch_capture.lastAssertionPassed();
+    });
+
+    // tgt mask must be 0 exactly on the cols with no valid contributor
+    REQUIRE (tgt_f[f].has_valid_mask());
+    auto& tmask = tgt_f[f].get_valid_mask();
+    tmask.sync_to_host();
+    cr_for_each_entry<int>(tmask,[&](int i, int, int, int, int& m) {
+      const int g = tgt_gids_h(i);
+      const bool fully_masked = (g==M or g==M+1) and (g+1==M or g+1==M+1);
+      CHECK (m==(fully_masked ? 0 : 1));
+      ok &= catch_capture.lastAssertionPassed();
+    });
+
+    root_print(" -> Checking masked coarsening " + name + " ... " + (ok ? "PASS" : "FAIL") + "\n",comm);
+  }
+
+  remap = nullptr;
   scorpio::finalize_subsystem();
 }
 
