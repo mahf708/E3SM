@@ -23,6 +23,13 @@ if (NOT SCREAM_ONLY_GENERATE_BASELINES)
     MPI_RANKS 1 ${SCREAM_TEST_MAX_RANKS}
   )
 
+  # Test lat-lon output setup in the horiz remapper
+  CreateUnitTest(horiz_remapper_latlon
+    SOURCES horiz_remapper_latlon_tests.cpp
+    LIBS eamxx_remap
+    MPI_RANKS 1 ${SCREAM_TEST_MAX_RANKS}
+  )
+
   # Test vertical remap
   CreateUnitTest(vertical_remapper
     SOURCES vertical_remapper_tests.cpp
