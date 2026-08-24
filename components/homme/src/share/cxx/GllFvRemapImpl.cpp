@@ -133,8 +133,8 @@ template <typename T> using FV = Kokkos::View<T, Kokkos::LayoutLeft, HostMemSpac
 
 void GllFvRemapImpl
 ::init_data (const int nf, const int nf_max, const bool theta_hydrostatic_mode,
-             const Real* fv_metdet_r, const Real* g2f_remapd_r, const Real* f2g_remapd_r,
-             const Real* D_f_r, const Real* Dinv_f_r) {
+             const F90Real* fv_metdet_r, const F90Real* g2f_remapd_r, const F90Real* f2g_remapd_r,
+             const F90Real* D_f_r, const F90Real* Dinv_f_r) {
   using Kokkos::create_mirror_view;
   using Kokkos::deep_copy;
 
@@ -151,11 +151,12 @@ void GllFvRemapImpl
   const int nf2 = nf*nf, nf2_max = nf_max*nf_max;
   auto& d = m_data;
   d.nf2 = nf2;
-  const FV<const Real**>
+
+  const FV<const F90Real**>
     fg2f_remapd(g2f_remapd_r, np2, nf2_max),
     ff2g_remapd(f2g_remapd_r, nf2_max, np2),
     ffv_metdet(fv_metdet_r, nf2, d.nelemd);
-  const FV<const Real****>
+  const FV<const F90Real****>
     fD_f   (D_f_r,    nf2, 2, 2, d.nelemd),
     fDinv_f(Dinv_f_r, nf2, 2, 2, d.nelemd);
 

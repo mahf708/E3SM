@@ -3,9 +3,30 @@
 
 #include <mpi.h>
 
+#include <cstddef>
+#include <type_traits>
+#include <vector>
+
 extern "C"
 void compose_repro_sum(const double* send, double* recv,
                        int nlocal, int nfld, int fcomm);
+
+// compose_repro_sum is a reproducible sum over the nlocal entries of each of
+// the nfld fields, so 'send' holds nlocal*nfld values while 'recv' holds nfld.
+// The F90 routine is always double precision, so when Real is float we have to
+// stage the data through double buffers.
+template <class T>
+void compose_repro_sum_interface (const T* send, T* recv,
+                                  int nlocal, int nfld, int fcomm) {
+  if constexpr (std::is_same<T,double>::value) {
+    compose_repro_sum(send, recv, nlocal, nfld, fcomm);
+  } else {
+    std::vector<double> send_d(static_cast<std::size_t>(nlocal)*nfld), recv_d(nfld);
+    for (std::size_t i = 0; i < send_d.size(); ++i) send_d[i] = send[i];
+    compose_repro_sum(send_d.data(), recv_d.data(), nlocal, nfld, fcomm);
+    for (int i = 0; i < nfld; ++i) recv[i] = static_cast<T>(recv_d[i]);
+  }
+}
 
 namespace compose {
 namespace test {
@@ -15,7 +36,11 @@ int cedr_unittest();
 int cedr_unittest(MPI_Comm comm);
 int interpolate_unittest();
 
+#if HOMMEXX_SINGLE_PREC
+typedef float Real;
+#else
 typedef double Real;
+#endif
 typedef int Int;
 typedef Int Size;
 

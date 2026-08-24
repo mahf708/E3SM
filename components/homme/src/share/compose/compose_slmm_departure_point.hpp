@@ -168,7 +168,7 @@ int get_src_cell (const LocalMesh<ES>& m, // Local mesh.
       } else {
         // Ok, we really didn't do that very well. We're still failing to find
         // the element. Ramp up the atol even more.
-        atol = ko::max(1e3*atol,
+        atol = ko::max(Real(1e3)*atol,
                        std::sqrt(ko::NumericTraits<Real>::epsilon()));
       }
     }

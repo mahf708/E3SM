@@ -103,7 +103,7 @@ Int solve_1eq_bc_qp_2d (const Real* w, const Real* a, const Real b,
   // Get parameterized line.
   Real x_base[2];
   for (int i = 0; i < 2; ++i)
-    x_base[i] = 0.5*b/a[i];
+    x_base[i] = Real(0.5)*b/a[i];
   Real x_dir[] = {-a[1], a[0]};
 
   // Get the 4 alpha values.
@@ -256,7 +256,7 @@ Int solve_1eq_bc_qp (const Int n, const Real* w, const Real* a, const Real b,
     // every other potential bisection.
     const Real D = prev_step_bisect ? 0 : wall_dist*(lamhi - lamlo);
     if (lambda - lamlo < D || lamhi - lambda < D) {
-      lambda = 0.5*(lamlo + lamhi);
+      lambda = Real(0.5)*(lamlo + lamhi);
       ++nbisect;
       prev_step_bisect = true;
     } else {

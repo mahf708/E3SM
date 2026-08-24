@@ -8,15 +8,15 @@
 namespace slmm {
 
 static constexpr Real sqrt5 = 2.23606797749978969641; // std::sqrt(5.0);
-static constexpr Real oosqrt5 = 1.0 / sqrt5;
+static constexpr Real oosqrt5 = Real(1.0) / sqrt5;
 
 SLMM_KIF void gll_np4_eval (const Real x, Real y[4]) {
-  static constexpr Real oo8 = 1.0/8.0;
+  static constexpr Real oo8 = Real(1.0)/Real(8.0);
   const Real x2 = x*x;
-  y[0] = (1.0 - x)*(5.0*x2 - 1.0)*oo8;
-  y[1] = -sqrt5*oo8*(sqrt5 - 5.0*x)*(x2 - 1.0);
-  y[2] = -sqrt5*oo8*(sqrt5 + 5.0*x)*(x2 - 1.0);
-  y[3] = (1.0 + x)*(5.0*x2 - 1.0)*oo8;
+  y[0] = (Real(1.0) - x)*(Real(5.0)*x2 - Real(1.0))*oo8;
+  y[1] = -sqrt5*oo8*(sqrt5 - Real(5.0)*x)*(x2 - Real(1.0));
+  y[2] = -sqrt5*oo8*(sqrt5 + Real(5.0)*x)*(x2 - Real(1.0));
+  y[3] = (Real(1.0) + x)*(Real(5.0)*x2 - Real(1.0))*oo8;
 }
 
 // Linear interp in each region.

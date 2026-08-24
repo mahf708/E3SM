@@ -57,10 +57,13 @@ void ComposeTransportImpl::reset (const SimulationParams& params) {
 
   const bool independent_time_steps = params.dt_tracer_factor > params.dt_remap_factor;
 
-  sl_get_params(&m_data.nu_q, &m_data.hv_scaling, &m_data.hv_q, &m_data.hv_subcycle_q,
+  double nu_q, hv_scaling;
+  sl_get_params(&nu_q, &hv_scaling, &m_data.hv_q, &m_data.hv_subcycle_q,
                 &m_data.limiter_option, &m_data.cdr_check, &m_data.geometry_type,
                 &m_data.trajectory_nsubstep, &m_data.trajectory_nvelocity,
                 &m_data.diagnostics, &m_data.do_3d_turbulence);
+  m_data.nu_q = nu_q;
+  m_data.hv_scaling = hv_scaling;
 
   if (independent_time_steps != m_data.independent_time_steps or
       m_data.nelemd != num_elems or m_data.qsize != params.qsize) {

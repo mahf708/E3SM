@@ -209,9 +209,11 @@ struct DirkFunctorImpl {
     const int nvec = npack;
     const int maxiter = 20;
 #ifdef HOMMEXX_BFB_TESTING
-    const Real deltatol = 1e-6; // In bfb testing, use coarse tolerance, due to zeroulp calls
+    // In bfb testing, use a coarse tolerance, due to zeroulp calls
+    const Real deltatol = HOMMEXX_SINGLE_PREC ? 1e-3 : 1e-6;
 #else
-    const Real deltatol = 1e-11; // exit if newton increment < deltatol
+    // Exit if newton increment < deltatol
+    const Real deltatol = HOMMEXX_SINGLE_PREC ? 1e-5 : 1e-11;
 #endif
 
     const auto work = m_work;
@@ -254,7 +256,7 @@ struct DirkFunctorImpl {
       // View of xfull for use in the solver. We want xfull so that we
       // can use the nlevp-1 entry, which we make sure is 0, when convenient.
       LinearSystemSlot x = subview(xfull, Kokkos::pair<int,int>(0,nlev), a);
-      xfull(nlev,0)[0] = 0.0;
+      xfull(nlev,0)[0] = sp(0.0);
 
       const auto transpose4 = [&] (const int nt, const bool transpose_phi_np1 = true) {
         transpose(kv, nlev+1, subview(e_w_i      ,ie,nt,a,a,a), w_np1    );
@@ -674,7 +676,7 @@ struct DirkFunctorImpl {
     Real wmax;
     const auto tr = TeamThreadRange(kv.team, nlev);
     parallel_reduce(tr, f, Kokkos::Max<Real>(wmax));
-    return max(1.0, wmax);
+    return max(sp(1.0), wmax);
   }
 
   KOKKOS_INLINE_FUNCTION
@@ -840,7 +842,7 @@ struct DirkFunctorImpl {
       const auto vr = ThreadVectorRange(kv.team, nlev);
       parallel_reduce(vr, g, Kokkos::Min<Real>(alpha));
       // Step halfway to the distance at which at least one dphi is 0.
-      wrk(2,i)[s] = min(1.0, alpha)/2;
+      wrk(2,i)[s] = min(sp(1.0), alpha)/2;
     };
     const auto tr = TeamThreadRange(kv.team, static_cast<int>(scaln));
     parallel_for(tr, f);

@@ -102,6 +102,19 @@ OPTION(IS_BIG_ENDIAN "Whether the machine is big endian" FALSE)
 #  ${HOMME_BINARY_DIR}/tests/compilerTests/
 #  ${CMAKE_CURRENT_SOURCE_DIR}/cmake/compilerTests/isBigEndian.c)
 
+# Default use double precision
+OPTION(HOMMEXX_SINGLE_PREC "Use single precision for the Real type in HOMMEXX" FALSE)
+
+# Hommexx gets this from Hommexx_config.h, but the compose/cedr library does not
+# include it, and it declares its own Real. Define the macro for every target
+# under Homme, so that no two translation units can disagree on the size of Real
+# because of include order.
+IF (HOMMEXX_SINGLE_PREC)
+  ADD_DEFINITIONS(-DHOMMEXX_SINGLE_PREC=1)
+ELSE ()
+  ADD_DEFINITIONS(-DHOMMEXX_SINGLE_PREC=0)
+ENDIF ()
+
 # Default use quad precision
 OPTION(HOMME_QUAD_PREC "Default to try to use quadruple precision" TRUE)
 
@@ -141,6 +154,14 @@ IF (BUILD_HOMME_PREQX_KOKKOS OR BUILD_HOMME_THETA_KOKKOS)
 ENDIF ()
 IF (HOMME_BUILD_KOKKOS_DYCORE)
   SET (HOMME_USE_KOKKOS TRUE)
+
+  # Only theta-l_kokkos has been ported to single precision so far: preqx_kokkos
+  # still types its F90 interfaces with Real rather than F90Real, so it would
+  # not even compile against single precision data.
+  IF (HOMMEXX_SINGLE_PREC AND BUILD_HOMME_PREQX_KOKKOS)
+    MESSAGE (FATAL_ERROR "HOMMEXX_SINGLE_PREC=ON is not supported by preqx_kokkos. "
+                         "Set BUILD_HOMME_PREQX_KOKKOS=OFF, or build in double precision.")
+  ENDIF ()
 
   # This option will only help propagate tests, it won't make bfb builds.
   # Compiler flags should be set separately in *.cmake file.

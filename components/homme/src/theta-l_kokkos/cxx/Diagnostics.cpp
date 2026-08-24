@@ -41,18 +41,18 @@ void Diagnostics::init (const ElementsState& state, const ElementsGeometry& geom
   m_elem_ops.init(m_hvcoord);
 
   // F90 ptr to array (n1,n2,...,nK,nelemd) can be stuffed directly in an unmanaged view
-  // with scalar type Real*[nK]...[n2][n1] (with runtime dimension nelemd)
-  h_Qvar   = decltype(h_Qvar)  (elem_accum_qvar_ptr,   m_num_elems);
-  h_Qmass  = decltype(h_Qmass) (elem_accum_qmass_ptr,  m_num_elems);
-  h_Q1mass = decltype(h_Q1mass)(elem_accum_q1mass_ptr, m_num_elems);
+  // with scalar type F90Real*[nK]...[n2][n1] (with runtime dimension nelemd).
+  h_Qvar_f90   = decltype(h_Qvar_f90)  (elem_accum_qvar_ptr,   m_num_elems);
+  h_Qmass_f90  = decltype(h_Qmass_f90) (elem_accum_qmass_ptr,  m_num_elems);
+  h_Q1mass_f90 = decltype(h_Q1mass_f90)(elem_accum_q1mass_ptr, m_num_elems);
+
+  h_IEner_f90  = decltype(h_IEner_f90) (elem_accum_iener_ptr, m_num_elems);
+  h_KEner_f90  = decltype(h_KEner_f90) (elem_accum_kener_ptr, m_num_elems);
+  h_PEner_f90  = decltype(h_PEner_f90) (elem_accum_pener_ptr, m_num_elems);
 
   d_Qvar   = decltype(d_Qvar)  ("Qvar",   m_num_elems);
   d_Qmass  = decltype(d_Qmass) ("Qmass",  m_num_elems);
   d_Q1mass = decltype(d_Q1mass)("Q1mass", m_num_elems);
-
-  h_IEner  = decltype(h_IEner) (elem_accum_iener_ptr, m_num_elems);
-  h_KEner  = decltype(h_KEner) (elem_accum_kener_ptr, m_num_elems);
-  h_PEner  = decltype(h_PEner) (elem_accum_pener_ptr, m_num_elems);
 
   d_IEner  = decltype(d_IEner) ("Internal  Energy", m_num_elems);
   d_KEner  = decltype(d_KEner) ("Kinetic   Energy", m_num_elems);
@@ -99,12 +99,15 @@ void Diagnostics::init_buffers (const FunctorsBuffersManager& fbm) {
 }
 
 void Diagnostics::sync_diagnostics_to_host () {
-  Kokkos::deep_copy(h_IEner,  d_IEner);
-  Kokkos::deep_copy(h_PEner,  d_PEner);
-  Kokkos::deep_copy(h_KEner,  d_KEner);
-  Kokkos::deep_copy(h_Qvar,   d_Qvar);
-  Kokkos::deep_copy(h_Qmass,  d_Qmass);
-  Kokkos::deep_copy(h_Q1mass, d_Q1mass);
+  // NOTE: use deep_copy_convert rather than Kokkos::deep_copy, since the F90
+  //       views are always double, while the device views use Real, which is
+  //       float in a single precision build.
+  deep_copy_convert(h_IEner_f90,  d_IEner);
+  deep_copy_convert(h_PEner_f90,  d_PEner);
+  deep_copy_convert(h_KEner_f90,  d_KEner);
+  deep_copy_convert(h_Qvar_f90,   d_Qvar);
+  deep_copy_convert(h_Qmass_f90,  d_Qmass);
+  deep_copy_convert(h_Q1mass_f90, d_Q1mass);
 }
 
 void Diagnostics::run_diagnostics (const bool before_advance, const int ivar)

@@ -16,10 +16,10 @@ namespace Homme
 {
 
 void HybridVCoord::init(const Real ps0_in,
-                   CRCPtr hybrid_am_ptr,
-                   CRCPtr hybrid_ai_ptr,
-                   CRCPtr hybrid_bm_ptr,
-                   CRCPtr hybrid_bi_ptr)
+                   CF90Ptr hybrid_am_ptr,
+                   CF90Ptr hybrid_ai_ptr,
+                   CF90Ptr hybrid_bm_ptr,
+                   CF90Ptr hybrid_bi_ptr)
 {
   // Sanity checks
   assert(hybrid_am_ptr!=nullptr);
@@ -43,10 +43,10 @@ void HybridVCoord::init(const Real ps0_in,
   ExecViewUnmanaged<Real[NUM_PHYSICAL_LEV]> bm_unpacked(reinterpret_cast<Real*>(hybrid_bm.data()));
 
   // Create views of input pointers
-  HostViewUnmanaged<const Real[NUM_INTERFACE_LEV]> host_hybrid_ai(hybrid_ai_ptr);
-  HostViewUnmanaged<const Real[NUM_INTERFACE_LEV]> host_hybrid_bi(hybrid_bi_ptr);
-  HostViewUnmanaged<const Real[NUM_PHYSICAL_LEV]> host_hybrid_am(hybrid_am_ptr);
-  HostViewUnmanaged<const Real[NUM_PHYSICAL_LEV]> host_hybrid_bm(hybrid_bm_ptr);
+  HostViewUnmanaged<const F90Real[NUM_INTERFACE_LEV]> host_hybrid_ai(hybrid_ai_ptr);
+  HostViewUnmanaged<const F90Real[NUM_INTERFACE_LEV]> host_hybrid_bi(hybrid_bi_ptr);
+  HostViewUnmanaged<const F90Real[NUM_PHYSICAL_LEV]> host_hybrid_am(hybrid_am_ptr);
+  HostViewUnmanaged<const F90Real[NUM_PHYSICAL_LEV]> host_hybrid_bm(hybrid_bm_ptr);
 
   // Copy inputs into class members
   Kokkos::deep_copy(hybrid_ai, host_hybrid_ai);

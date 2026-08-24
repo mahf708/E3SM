@@ -178,13 +178,13 @@ void ttype5_timestep(const TimeLevel& tl, const Real dt, const Real eta_ave_w)
         const int igp = (it / (NP*NUM_LEV)) % NP;
         const int jgp = (it / NUM_LEV) % NP;
         const int ilev = it % NUM_LEV;
-        v(ie,nm1,0,igp,jgp,ilev) = (5.0*v(ie,nm1,0,igp,jgp,ilev)-v(ie,n0,0,igp,jgp,ilev))/4.0;
-        v(ie,nm1,1,igp,jgp,ilev) = (5.0*v(ie,nm1,1,igp,jgp,ilev)-v(ie,n0,1,igp,jgp,ilev))/4.0;
-        vtheta_dp(ie,nm1,igp,jgp,ilev) = (5.0*vtheta_dp(ie,nm1,igp,jgp,ilev)-vtheta_dp(ie,n0,igp,jgp,ilev))/4.0;
-        dp3d(ie,nm1,igp,jgp,ilev) = (5.0*dp3d(ie,nm1,igp,jgp,ilev)-dp3d(ie,n0,igp,jgp,ilev))/4.0;
+        v(ie,nm1,0,igp,jgp,ilev) = (sp(5.0)*v(ie,nm1,0,igp,jgp,ilev)-v(ie,n0,0,igp,jgp,ilev))/sp(4.0);
+        v(ie,nm1,1,igp,jgp,ilev) = (sp(5.0)*v(ie,nm1,1,igp,jgp,ilev)-v(ie,n0,1,igp,jgp,ilev))/sp(4.0);
+        vtheta_dp(ie,nm1,igp,jgp,ilev) = (sp(5.0)*vtheta_dp(ie,nm1,igp,jgp,ilev)-vtheta_dp(ie,n0,igp,jgp,ilev))/sp(4.0);
+        dp3d(ie,nm1,igp,jgp,ilev) = (sp(5.0)*dp3d(ie,nm1,igp,jgp,ilev)-dp3d(ie,n0,igp,jgp,ilev))/sp(4.0);
         if (!hydrostatic_mode) {
-          w(ie,nm1,igp,jgp,ilev) = (5.0*w(ie,nm1,igp,jgp,ilev)-w(ie,n0,igp,jgp,ilev))/4.0;
-          phinh(ie,nm1,igp,jgp,ilev) = (5.0*phinh(ie,nm1,igp,jgp,ilev)-phinh(ie,n0,igp,jgp,ilev))/4.0;
+          w(ie,nm1,igp,jgp,ilev) = (sp(5.0)*w(ie,nm1,igp,jgp,ilev)-w(ie,n0,igp,jgp,ilev))/sp(4.0);
+          phinh(ie,nm1,igp,jgp,ilev) = (sp(5.0)*phinh(ie,nm1,igp,jgp,ilev)-phinh(ie,n0,igp,jgp,ilev))/sp(4.0);
         }
     });
     // If NUM_LEV==NUM_LEV_P, the code above will take care also of the last interface
@@ -196,14 +196,14 @@ void ttype5_timestep(const TimeLevel& tl, const Real dt, const Real eta_ave_w)
            const int ie  =  it / (NP*NP);
            const int igp = (it / NP) % NP;
            const int jgp =  it % NP;
-           w(ie,nm1,igp,jgp,LAST_INT) = (5.0*w(ie,nm1,igp,jgp,LAST_INT)-w(ie,n0,igp,jgp,LAST_INT))/4.0;
+           w(ie,nm1,igp,jgp,LAST_INT) = (sp(5.0)*w(ie,nm1,igp,jgp,LAST_INT)-w(ie,n0,igp,jgp,LAST_INT))/sp(4.0);
       });
     }
   }
   Kokkos::fence();
 
   // Stage 5: u5 = (5u1-u0)/4 + 3dt/4 RHS(u4), t_rhs = t + dt/5 + dt/5 + dt/3 + 2dt/3
-  functor.run(RKStageData(nm1, np1, np1, qn0, 3.0*dt/4.0, 3.0*eta_ave_w/4.0));
+  functor.run(RKStageData(nm1, np1, np1, qn0, sp(3.0)*dt/sp(4.0), sp(3.0)*eta_ave_w/sp(4.0)));
   GPTLstop("ttype5_timestep");
 }
 
@@ -291,13 +291,13 @@ void ttype9_imex_timestep(const TimeLevel& tl,
         const int igp = (it / (NP*NUM_LEV)) % NP;
         const int jgp = (it / NUM_LEV) % NP;
         const int ilev = it % NUM_LEV;
-        v(ie,np1,0,igp,jgp,ilev) += (v(ie,nm1,0,igp,jgp,ilev)-v(ie,n0,0,igp,jgp,ilev))/4.0;
-        v(ie,np1,1,igp,jgp,ilev) += (v(ie,nm1,1,igp,jgp,ilev)-v(ie,n0,1,igp,jgp,ilev))/4.0;
-        vtheta_dp(ie,np1,igp,jgp,ilev) += (vtheta_dp(ie,nm1,igp,jgp,ilev)-vtheta_dp(ie,n0,igp,jgp,ilev))/4.0;
-        dp3d(ie,np1,igp,jgp,ilev)      += (dp3d(ie,nm1,igp,jgp,ilev)-dp3d(ie,n0,igp,jgp,ilev))/4.0;
+        v(ie,np1,0,igp,jgp,ilev) += (v(ie,nm1,0,igp,jgp,ilev)-v(ie,n0,0,igp,jgp,ilev))/sp(4.0);
+        v(ie,np1,1,igp,jgp,ilev) += (v(ie,nm1,1,igp,jgp,ilev)-v(ie,n0,1,igp,jgp,ilev))/sp(4.0);
+        vtheta_dp(ie,np1,igp,jgp,ilev) += (vtheta_dp(ie,nm1,igp,jgp,ilev)-vtheta_dp(ie,n0,igp,jgp,ilev))/sp(4.0);
+        dp3d(ie,np1,igp,jgp,ilev)      += (dp3d(ie,nm1,igp,jgp,ilev)-dp3d(ie,n0,igp,jgp,ilev))/sp(4.0);
         if (!hydrostatic_mode) { 
-          w(ie,np1,igp,jgp,ilev)       += (w(ie,nm1,igp,jgp,ilev)-w(ie,n0,igp,jgp,ilev))/4.0;
-          phinh(ie,np1,igp,jgp,ilev)   += (phinh(ie,nm1,igp,jgp,ilev)-phinh(ie,n0,igp,jgp,ilev))/4.0;
+          w(ie,np1,igp,jgp,ilev)       += (w(ie,nm1,igp,jgp,ilev)-w(ie,n0,igp,jgp,ilev))/sp(4.0);
+          phinh(ie,np1,igp,jgp,ilev)   += (phinh(ie,nm1,igp,jgp,ilev)-phinh(ie,n0,igp,jgp,ilev))/sp(4.0);
         }
     });
     if (NUM_LEV_P>NUM_LEV && !hydrostatic_mode) {
@@ -308,7 +308,7 @@ void ttype9_imex_timestep(const TimeLevel& tl,
            const int ie  =  it / (NP*NP);
            const int igp = (it / NP) % NP;
            const int jgp =  it % NP;
-           w(ie,np1,igp,jgp,LAST_INT)  += (w(ie,nm1,igp,jgp,LAST_INT)-w(ie,n0,igp,jgp,LAST_INT))/4.0;
+           w(ie,np1,igp,jgp,LAST_INT)  += (w(ie,nm1,igp,jgp,LAST_INT)-w(ie,n0,igp,jgp,LAST_INT))/sp(4.0);
       });  
     }
   }

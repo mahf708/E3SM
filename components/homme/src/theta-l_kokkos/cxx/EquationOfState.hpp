@@ -107,9 +107,9 @@ public:
     exner = (-PhysicalConstants::Rgas)*vtheta_dp / dphi;
     pnh = exner/PhysicalConstants::p0;
 #ifndef HOMMEXX_BFB_TESTING
-    pnh = pow(pnh,1.0/(1.0-PhysicalConstants::kappa));
+    pnh = pow(pnh,sp(1.0)/(sp(1.0)-PhysicalConstants::kappa));
 #else
-    pnh = bfb_pow(pnh,1.0/(1.0-PhysicalConstants::kappa));
+    pnh = bfb_pow(pnh,sp(1.0)/(sp(1.0)-PhysicalConstants::kappa));
 #endif
     pnh *= PhysicalConstants::p0;
     exner = pnh/exner;    
@@ -125,7 +125,7 @@ public:
       // Set dpnh_dp_i to 1.0
       Kokkos::parallel_for(Kokkos::ThreadVectorRange(kv.team,NUM_LEV_P),
                            [&](const int ilev) {
-        dpnh_dp_i(ilev) = 1.0;
+        dpnh_dp_i(ilev) = sp(1.0);
       });
     } else {
       // dp_i CANNOT alias dpnh_dp_i

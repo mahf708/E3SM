@@ -265,13 +265,24 @@ IF (${BUILD_HOMME_THETA_KOKKOS})
       ADD_SUBDIRECTORY(theta-nlev128)
     ENDIF()
 
-    ADD_SUBDIRECTORY(thetal_kokkos_ut)
+    IF (HOMMEXX_SINGLE_PREC)
+      # These unit tests compare against the (always double precision) Fortran
+      # implementation, with tolerances that only make sense in double precision.
+      MESSAGE(STATUS "HOMMEXX_SINGLE_PREC=ON: skipping thetal_kokkos_ut.")
+    ELSE ()
+      ADD_SUBDIRECTORY(thetal_kokkos_ut)
+    ENDIF ()
   endif()
 
 ENDIF()
 
 # Test some stuff in the shared folder
-ADD_SUBDIRECTORY (share_kokkos_ut)
+IF (HOMMEXX_SINGLE_PREC)
+  # See the note on thetal_kokkos_ut above.
+  MESSAGE(STATUS "HOMMEXX_SINGLE_PREC=ON: skipping share_kokkos_ut.")
+ELSE ()
+  ADD_SUBDIRECTORY (share_kokkos_ut)
+ENDIF ()
 
 IF (${BUILD_HOMME_PREQX_KOKKOS})
   ADD_SUBDIRECTORY(preqx-nlev26-kokkos)

@@ -41,8 +41,8 @@ public:
   typedef Phys3T::const_type CPhys3T;
 
   void init_data(const int nf, const int nf_max, const bool theta_hydrostatic_mode,
-                 const Real* fv_metdet, const Real* g2f_remapd, const Real* f2g_remapd,
-                 const Real* D_f, const Real* Dinv_f);
+                 const F90Real* fv_metdet, const F90Real* g2f_remapd, const F90Real* f2g_remapd,
+                 const F90Real* D_f, const F90Real* Dinv_f);
 
   // The following three routines provide dynamics-physics coupling for the
   // atmosphere model.

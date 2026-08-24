@@ -29,6 +29,11 @@
 # define HOMMEXX_MPI_ON_DEVICE 1
 #endif
 
+// Real is double unless the build explicitly asks for single precision.
+#ifndef HOMMEXX_SINGLE_PREC
+# define HOMMEXX_SINGLE_PREC 0
+#endif
+
 #include <Kokkos_Core.hpp>
 
 #ifdef HOMMEXX_ENABLE_GPU 

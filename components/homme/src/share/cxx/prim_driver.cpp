@@ -57,7 +57,7 @@ void initialize_dp3d_from_ps_c () {
   GPTLstop("tl-sc dp3d-from-ps");
 }
 
-void prim_run_subcycle_c (const Real& dt, int& nstep, int& nm1, int& n0, int& np1, 
+void prim_run_subcycle_c (const F90Real& dt, int& nstep, int& nm1, int& n0, int& np1,
                           const int& next_output_step, const int& nsplit_iteration)
 {
   GPTLstart("tl-sc prim_run_subcycle_c");
