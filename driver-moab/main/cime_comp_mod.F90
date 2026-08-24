@@ -1014,6 +1014,22 @@ contains
             write(logunit,'(2A,I0,A)') subname,' driver-moab does not yet support multi-driver'
             call shr_sys_abort( subname//':: Multi-driver not supported')
        endif
+       if (num_inst_max > 1) then
+          write(logunit,'(2A,I0)') subname, &
+               ' driver-moab does not yet support multi-instance, NINST_MAX = ', &
+               num_inst_max
+          write(logunit,'(2A)') subname, &
+               ' the coupler-side MOAB meshes and field tags are single-instance;'
+          write(logunit,'(2A)') subname, &
+               ' rebuild the case with COMP_INTERFACE=mct, or set NINST_<COMP>=1'
+          write(logunit,'(2A)') subname, &
+               ' see docs/dev-guide/moab-multi-instance.md'
+       endif
+    endif
+
+    ! Abort on all tasks, not just the coupler root, so the failure is deterministic.
+    if (num_inst_max > 1) then
+       call shr_sys_abort( subname//':: Multi-instance not supported')
     endif
 
     !----------------------------------------------------------
