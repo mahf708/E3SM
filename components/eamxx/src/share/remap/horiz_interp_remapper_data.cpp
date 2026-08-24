@@ -10,20 +10,13 @@
 #include <numeric>
 #include <filesystem>
 #include <cstdio>
+#include <limits>
+#include <vector>
 
 namespace scream {
 
 // Anonymous namespace to define a couple of utilities we need below
 namespace {
-
-struct RealsClose {
-  // Find the unique lat/lon values
-  bool operator()(Real a, Real b) const {
-    // To avoid issues with rounding when lat/lon were stored in nc file,
-    // only compare up to 4 digits after decimal point
-    return std::round(a * 10000) < std::round(b * 10000);
-  }
-};
 
 // Check whether two grids store the same GID values on every rank.
 // Fast path: if the dofs_gids fields alias each other (same allocation), return true immediately.
@@ -55,30 +48,6 @@ bool grids_have_same_gids (const std::shared_ptr<const AbstractGrid>& g1,
   return std::equal(h1.data(), h1.data()+n, h2.data());
 }
 
-// Helper fcn to gather the union of sets across MPI ranks
-std::vector<Real> allgatherv_vec (const std::vector<Real>& my_vals, const ekat::Comm& comm)
-{
-  // Step 1: Gather sizes of each local set
-  int my_size = my_vals.size();
-  std::vector<int> count(comm.size());
-  comm.all_gather(&my_size,count.data(),1);
-
-  // Step 2: compute offsets
-  std::vector<int> disp(comm.size(),0);
-  for (int i=1; i<comm.size(); ++i) {
-    disp[i] = disp[i-1] + count[i-1];
-  }
-
-  // Step 3: Gather all values from each rank
-  std::vector<Real> all_vals(disp.back()+count.back());
-  MPI_Allgatherv (my_vals.data(),my_size,ekat::get_mpi_type<Real>(),
-                  all_vals.data(),count.data(),disp.data(),
-                  ekat::get_mpi_type<Real>(),comm.mpi_comm());
-
-  // Step 4: remove duplicates
-  std::set<Real,RealsClose> vals_set(all_vals.begin(),all_vals.end());
-  return std::vector<Real>(vals_set.begin(),vals_set.end());
-}
 } // Anonymous namespace
 
 // -------------------------------------------------------------
@@ -410,140 +379,153 @@ setup_latlon_data(const std::shared_ptr<AbstractGrid>& grid,
 {
   using namespace ShortFieldTagsNames;
   using namespace ekat::units;
+  using gid_type = AbstractGrid::gid_type;
 
-  // Add lat/lon to the temp grid, and read from map file
   auto degN = none.rename("degrees_north");
   auto degE = none.rename("degrees_east");
 
-  // Declare lat/lon and read them from the map file.
-  // WARNING: the vars/dims names are different from what eamxx uses
+  const auto& comm = grid->get_comm();
+  const int nldofs = grid->get_num_local_dofs();
+  const long long ncol = grid->get_num_global_dofs();
+
+  // The per-column lat/lon read from the map file (yc_b/xc_b)
   auto pt_lat = grid->get_geometry_data("lat");
   auto pt_lon = grid->get_geometry_data("lon");
-
-  RealsClose cmp;
-  std::set<Real,RealsClose> my_lats(cmp), my_lons(cmp);
-
-  const int nldofs = grid->get_num_local_dofs();
   auto pt_lat_h = pt_lat.get_view<const Real*,Host>();
   auto pt_lon_h = pt_lon.get_view<const Real*,Host>();
-  for (int i=0; i<nldofs; ++i) {
-    my_lats.insert(pt_lat_h(i));
-    my_lons.insert(pt_lon_h(i));
-  }
 
-  const auto& comm = grid->get_comm();
-
-  // A map file with dst_grid_rank==2 does NOT guarantee that the tgt grid is a
-  // *rectilinear* lat-lon grid: any structured 2d grid (e.g., a regional grid on a
-  // Lambert conformal or rotated-pole projection) also has rank 2, but its lat/lon
-  // are curvilinear, so ncol != nlat*nlon. Setting up the (lat,lon) output layout
-  // for such a grid is catastrophic: every column has its own lat and lon value, so
-  // nlat ~ nlon ~ ncol, and output vars would be declared with ncol^2 entries.
-  // Detect this cheaply and locally: for a rectilinear grid, the local dofs form a
-  // contiguous chunk of a row-major (lat,lon) array, so the bounding box of the
-  // local points, nlat_loc*nlon_loc, is O(nldofs). For a curvilinear grid it is
-  // O(nldofs^2). Use a generous factor to stay clear of decomposition corner cases.
-  long long bbox = static_cast<long long>(my_lats.size())*my_lons.size();
-  int not_rectilinear = (nldofs>0 and bbox > 4ll*nldofs) ? 1 : 0;
-  comm.all_reduce(&not_rectilinear,1,MPI_MAX);
-  if (not_rectilinear) {
+  // A map file with dst_grid_rank==2 only says the tgt grid is STRUCTURED. It may still
+  // be curvilinear (e.g. a regional grid on a Lambert conformal or rotated-pole
+  // projection), in which case every column has its own lat AND lon, ncol != nlat*nlon,
+  // and a (lat,lon) output layout is meaningless: output vars would be declared with
+  // ~ncol^2 entries. So we must verify the grid really is rectilinear.
+  //
+  // NOTE: do NOT do this by gathering the set of distinct lat/lon values across ranks.
+  //       With the usual row-major decomposition every rank owns a full span of
+  //       longitudes, so every rank contributes ~nlon values and an allgatherv leaves
+  //       nranks*nlon values (plus a std::set over them) on EVERY rank. That is fine at
+  //       low resolution and fatal at high resolution: for a ~0.03 deg grid on a few
+  //       thousand ranks it is O(GB) per rank, which is precisely the regime where
+  //       online remap to a fine lat-lon grid is wanted.
+  //
+  //       Instead, take (nlon,nlat) from the map file's dst_grid_dims, reconstruct the
+  //       1d coord arrays with a single allreduce over nlat+nlon entries, and then
+  //       verify. That is O(nlat+nlon) memory and independent of the rank count.
+  if (not scorpio::has_var(map_file,"dst_grid_dims")) {
     if (comm.am_i_root()) {
-      printf("Warning! The tgt grid in map file '%s' has dst_grid_rank=2, but its lat/lon\n"
-             "         are curvilinear (ncol != nlat*nlon), so output cannot use a (lat,lon)\n"
-             "         layout. Falling back to writing output with an 'ncol' dimension.\n",
+      printf("Warning! Map file '%s' has dst_grid_rank=2 but no 'dst_grid_dims' var, so the\n"
+             "         tgt grid shape is unknown. Writing output with an 'ncol' dimension.\n",
              map_file.c_str());
     }
     return false;
   }
 
-  auto lats = allgatherv_vec(std::vector<Real>(my_lats.begin(),my_lats.end()),comm);
-  auto lons = allgatherv_vec(std::vector<Real>(my_lons.begin(),my_lons.end()),comm);
-  int nlat = lats.size();
-  int nlon = lons.size();
-
-  // Belt and braces: the local heuristic above is cheap, this is the exact condition.
-  const long long ncol = grid->get_num_global_dofs();
-  if (static_cast<long long>(nlat)*nlon != ncol) {
-    if (comm.am_i_root()) {
-      printf("Warning! The tgt grid in map file '%s' has dst_grid_rank=2, but nlat*nlon != ncol\n"
-             "         (nlat=%d, nlon=%d, ncol=%lld), so output cannot use a (lat,lon) layout.\n"
-             "         Falling back to writing output with an 'ncol' dimension.\n",
-             map_file.c_str(),nlat,nlon,ncol);
-    }
-    return false;
+  // read_var requires the file to be open (unlike has_var/get_dimlen, which peek),
+  // so open it ourselves if no one else has it open.
+  std::vector<int> dims(2);
+  const bool was_open = scorpio::is_file_open(map_file);
+  if (not was_open) {
+    scorpio::register_file(map_file,scorpio::FileMode::Read);
   }
-  
-  // Re-create lat/lon geometry data with only lat (or lon) dim
-  grid->delete_geometry_data("lat");
-  grid->delete_geometry_data("lon");
-  auto lat = grid->create_geometry_data("lat",FieldLayout({CMP},{nlat},{"lat"}),degN);
-  auto lon = grid->create_geometry_data("lon",FieldLayout({CMP},{nlon},{"lon"}),degE);
-  
-  auto lat_h = lat.get_view<Real*,Host>();
-  auto lon_h = lon.get_view<Real*,Host>();
-  std::copy_n(lats.begin(),nlat,lat_h.data());
-  std::copy_n(lons.begin(),nlon,lon_h.data());
-  lat.sync_to_dev();
-  lon.sync_to_dev();
-
-  auto scalar2d = grid->get_2d_scalar_layout();
-  auto lat_idx = grid->create_geometry_data("lat_idx",scalar2d,none,DataType::IntType);
-  auto lon_idx = grid->create_geometry_data("lon_idx",scalar2d,none,DataType::IntType);
-  lat_idx.get_header().set_extra_data("save_as_geo_data",false);
-  lon_idx.get_header().set_extra_data("save_as_geo_data",false);
-
-  auto lat_idx_h = lat_idx.get_view<int*,Host>();
-  auto lon_idx_h = lon_idx.get_view<int*,Host>();
-  constexpr Real tol = 1e-3;
-  const auto lat_beg = lat_h.data();
-  const auto lon_beg = lon_h.data();
-  for (int i=0; i<grid->get_num_local_dofs(); ++i) {
-    auto lat_it = std::upper_bound(lat_beg,lat_beg+nlat,pt_lat_h(i));
-    auto lon_it = std::upper_bound(lon_beg,lon_beg+nlon,pt_lon_h(i));
-    if (lat_it == lat_beg) {
-      lat_idx_h(i) = 0;
-    } else if (lat_it == lat_beg+nlat) {
-      lat_idx_h(i) = std::distance(lat_beg,lat_it)-1;
-    } else {
-      auto prev = std::distance(lat_beg,lat_it)-1;
-      auto next = prev+1;
-      if (std::abs(pt_lat_h(i)- lat_h(prev))<std::abs(pt_lat_h(i)- lat_h(next))) {
-        lat_idx_h(i) = prev;
-      } else {
-        lat_idx_h(i) = next;
-      }
-    }
-    EKAT_REQUIRE_MSG (std::abs(pt_lat_h(i)- lat_h(lat_idx_h(i)))<tol,
-      "[LatLonGrid] Error! Something went wrong when computing lat idx fields.\n"
-      " - curr col idx: " + std::to_string(i) + "\n"
-      " - curr col lat: " + std::to_string(pt_lat_h(i)) + "\n"
-      " - lat idx     : " + std::to_string(lat_idx_h(i)) + "\n"
-      " - lat values  : " + ekat::join(lats,",") + "\n");
-
-    if (lon_it == lon_beg) {
-      lon_idx_h(i) = 0;
-    } else if (lon_it == lon_beg+nlon) {
-      lon_idx_h(i) = std::distance(lon_beg,lon_it)-1;
-    } else {
-      auto prev = std::distance(lon_beg,lon_it)-1;
-      auto next = prev+1;
-      if (std::abs(pt_lon_h(i)- lon_h(prev))<std::abs(pt_lon_h(i)- lon_h(next))) {
-        lon_idx_h(i) = prev;
-      } else {
-        lon_idx_h(i) = next;
-      }
-    }
-    EKAT_REQUIRE_MSG (std::abs(pt_lon_h(i)- lon_h(lon_idx_h(i)))<tol,
-      "[LatLonGrid] Error! Something went wrong when computing lon idx fields.\n"
-      " - curr col idx: " + std::to_string(i) + "\n"
-      " - curr col lon: " + std::to_string(pt_lon_h(i)) + "\n"
-      " - lon idx     : " + std::to_string(lon_idx_h(i)) + "\n"
-      " - lon values  : " + ekat::join(lons,",") + "\n");
+  scorpio::read_var(map_file,"dst_grid_dims",dims.data());
+  if (not was_open) {
+    scorpio::release_file(map_file);
   }
-  lat_idx.sync_to_dev();
-  lon_idx.sync_to_dev();
 
-  return true;
+  // SCRIP stores grid_dims as (nx,ny), with nx varying fastest. Some tools swap them,
+  // so try the standard order first and fall back to the swapped one.
+  for (int attempt=0; attempt<2; ++attempt) {
+    const int nlon = attempt==0 ? dims[0] : dims[1];
+    const int nlat = attempt==0 ? dims[1] : dims[0];
+
+    if (nlat<=0 or nlon<=0 or static_cast<long long>(nlat)*nlon != ncol) {
+      continue;
+    }
+
+    // Reconstruct the 1d lat/lon arrays. Each rank fills only the entries it owns;
+    // a single MPI_MAX allreduce fills in the rest.
+    constexpr Real unset = std::numeric_limits<Real>::lowest();
+    std::vector<Real> lats(nlat,unset), lons(nlon,unset);
+
+    const gid_type gid_base = grid->get_global_min_partitioned_dim_gid();
+    auto gids_h = grid->get_dofs_gids().get_view<const gid_type*,Host>();
+    for (int i=0; i<nldofs; ++i) {
+      const long long g = static_cast<long long>(gids_h(i)) - gid_base;
+      lats[g/nlon] = pt_lat_h(i);
+      lons[g%nlon] = pt_lon_h(i);
+    }
+    comm.all_reduce(lats.data(),nlat,MPI_MAX);
+    comm.all_reduce(lons.data(),nlon,MPI_MAX);
+
+    // Tolerance tied to the grid spacing, so this works at any resolution: a point must
+    // sit much closer to its own coordinate than to the neighbouring one.
+    auto spacing_tol = [](const std::vector<Real>& v) {
+      if (v.size()<2) return static_cast<Real>(1e-6);
+      Real dmin = std::numeric_limits<Real>::max();
+      for (size_t k=1; k<v.size(); ++k) {
+        dmin = std::min(dmin,std::abs(v[k]-v[k-1]));
+      }
+      // Strict on purpose: a genuine rectilinear grid stores the SAME coordinate for
+      // every column in a row, so it matches to round-off. Anything that wanders an
+      // appreciable fraction of a cell is curvilinear. A false negative here is cheap
+      // (we just write on 'ncol'); a false positive gives bogus coordinates.
+      return std::max(static_cast<Real>(1e-9),static_cast<Real>(1e-3)*dmin);
+    };
+    const Real lat_tol = spacing_tol(lats);
+    const Real lon_tol = spacing_tol(lons);
+
+    int ok = 1;
+    for (int k=0; k<nlat and ok; ++k) if (lats[k]==unset) ok = 0;
+    for (int k=0; k<nlon and ok; ++k) if (lons[k]==unset) ok = 0;
+    // Every local column must match the coords implied by its global index. This is what
+    // actually distinguishes rectilinear from curvilinear.
+    for (int i=0; i<nldofs and ok; ++i) {
+      const long long g = static_cast<long long>(gids_h(i)) - gid_base;
+      if (std::abs(pt_lat_h(i)-lats[g/nlon])>lat_tol) ok = 0;
+      if (std::abs(pt_lon_h(i)-lons[g%nlon])>lon_tol) ok = 0;
+    }
+    comm.all_reduce(&ok,1,MPI_MIN);
+    if (not ok) {
+      continue;
+    }
+
+    // Confirmed rectilinear: replace the per-column lat/lon with 1d coord arrays,
+    // and store the (lat,lon) index of each local column for the IO decomposition.
+    grid->delete_geometry_data("lat");
+    grid->delete_geometry_data("lon");
+    auto lat = grid->create_geometry_data("lat",FieldLayout({CMP},{nlat},{"lat"}),degN);
+    auto lon = grid->create_geometry_data("lon",FieldLayout({CMP},{nlon},{"lon"}),degE);
+    std::copy_n(lats.begin(),nlat,lat.get_view<Real*,Host>().data());
+    std::copy_n(lons.begin(),nlon,lon.get_view<Real*,Host>().data());
+    lat.sync_to_dev();
+    lon.sync_to_dev();
+
+    auto scalar2d = grid->get_2d_scalar_layout();
+    auto lat_idx = grid->create_geometry_data("lat_idx",scalar2d,none,DataType::IntType);
+    auto lon_idx = grid->create_geometry_data("lon_idx",scalar2d,none,DataType::IntType);
+    lat_idx.get_header().set_extra_data("save_as_geo_data",false);
+    lon_idx.get_header().set_extra_data("save_as_geo_data",false);
+
+    auto lat_idx_h = lat_idx.get_view<int*,Host>();
+    auto lon_idx_h = lon_idx.get_view<int*,Host>();
+    for (int i=0; i<nldofs; ++i) {
+      const long long g = static_cast<long long>(gids_h(i)) - gid_base;
+      lat_idx_h(i) = g/nlon;
+      lon_idx_h(i) = g%nlon;
+    }
+    lat_idx.sync_to_dev();
+    lon_idx.sync_to_dev();
+
+    return true;
+  }
+
+  if (comm.am_i_root()) {
+    printf("Warning! The tgt grid in map file '%s' has dst_grid_rank=2, but it is not a\n"
+           "         rectilinear lat-lon grid (dst_grid_dims=[%d,%d], ncol=%lld), so output\n"
+           "         cannot use a (lat,lon) layout. Writing with an 'ncol' dimension instead.\n",
+           map_file.c_str(),dims[0],dims[1],ncol);
+  }
+  return false;
 }
 
 std::shared_ptr<const HorizRemapperData>
