@@ -537,6 +537,24 @@ endif()
 # scripts work correctly. We are not really interested in building/testing SCREAM.
 if (NOT DEFINED ENV{SCREAM_FAKE_ONLY})
 
+  # dexpr: the diagnostics expression parser shared with the rest of E3SM.
+  # NOTE: unlike EKAT, this is added in BOTH the standalone and the CIME build,
+  #       since CIME has no sharedlib equivalent to link against instead.
+  # NOTE: the tests must be off. They FetchContent Catch2 *v3* at configure time
+  #       (i.e. hit the network, possibly from a login node), while our own tests
+  #       use the Catch2 *v2* that arrives via EKAT. And CACHE/FORCE rather than a
+  #       plain set(), since dexpr declares these with option() and CMP0077 is not
+  #       reliably NEW under CIME, where the top-level project is not ours.
+  if (NOT TARGET dexpr)
+    set (DEXPR_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+    set (DEXPR_ENABLE_TOOL  OFF CACHE BOOL "" FORCE)
+    set (DEXPR_WERROR       OFF CACHE BOOL "" FORCE)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../share/dexpr
+                     ${CMAKE_BINARY_DIR}/externals/dexpr)
+    # CIME builds shared libs, so everything linked into them must be PIC.
+    set_target_properties(dexpr PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  endif()
+
   add_subdirectory(tpls)
   add_subdirectory(src)
 

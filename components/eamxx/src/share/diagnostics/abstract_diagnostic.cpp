@@ -19,6 +19,22 @@ AbstractDiagnostic (const ekat::Comm& comm,
 void AbstractDiagnostic::initialize ()
 {
   initialize_impl();
+
+  // Diags name their own output field by concatenating their params, e.g.
+  // BinaryOp builds "<arg1>_<op>_<arg2>". That name is not always the one the
+  // customer asked for: 'X_atm_backtend' is an alias for 'X_minus_X_prev_over_dt',
+  // and a diag built from an expression is named after the expression. Since
+  // customers look the field up by the name they requested, honor an explicit
+  // request when there is one.
+  // NOTE: aliasing shares the header's tracking, alloc props and extra data, so
+  //       masks, timestamps and avg-cnt bookkeeping all carry over.
+  if (m_params.isParameter("output_field_name")) {
+    const auto& name = m_params.get<std::string>("output_field_name");
+    if (name!=m_diagnostic_output.name()) {
+      m_diagnostic_output = m_diagnostic_output.alias(name);
+    }
+  }
+
   m_is_initialized = true;
 }
 

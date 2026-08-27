@@ -1059,6 +1059,9 @@ process_requested_fields()
   std::set<std::string> intermediate_names;
   for (const auto& spec : m_intermediate_aliases) {
     auto tokens = ekat::split(spec, ":=");
+    for (auto& t : tokens) {
+      t = ekat::trim(t);
+    }
     EKAT_REQUIRE_MSG(tokens.size()==2 && !tokens[0].empty() && !tokens[1].empty(),
         "Error! Invalid entry in 'aliases' section. Should be 'alias:=original'.\n"
         " - entry: " + spec + "\n");
@@ -1083,8 +1086,13 @@ process_requested_fields()
   }
 
   // Next, find out which field names are just aliases (using ':=' syntax)
+  // NOTE: spaces around ':=' are allowed, and stripped. An expression on the
+  //       rhs is a lot easier to read with them.
   for (auto& name : m_fields_names) {
     auto tokens = ekat::split(name,":=");
+    for (auto& t : tokens) {
+      t = ekat::trim(t);
+    }
     EKAT_REQUIRE_MSG(tokens.size()==2 or tokens.size()==1,
         "Error! Invalid alias request. Should be 'alias:=original'.\n"
         " - request: " + name + "\n");
@@ -1095,8 +1103,8 @@ process_requested_fields()
           " - first alias: " + tokens[0] + ":=" + m_alias_to_orig[tokens[0]] + "\n"
           " - second alias: " + tokens[0] + ":=" + tokens[1] + "\n");
       m_alias_to_orig[tokens[0]] = tokens[1];
-      name = tokens[0];
     }
+    name = tokens[0];
   }
 
   // In case someone has an alias of an alias, we need to resolve the TRUE orig names.
@@ -1200,6 +1208,10 @@ process_requested_fields()
   // This ensures we can evaluate diags in order at runtime
   bool done = false;
   std::set<std::string> remaining(m_fields_names.begin(),m_fields_names.end());
+  // By now m_fields_names holds exactly the variables that end up in the nc
+  // file: alias targets live in m_alias_to_orig, and the 'aliases' section
+  // entries are intermediates. Keep a copy, since 'remaining' shrinks below.
+  const std::set<std::string> written_names(remaining);
   for (const auto& it : m_alias_to_orig) {
     remaining.insert(it.second);
   }
@@ -1230,11 +1242,33 @@ process_requested_fields()
           remove_these.insert(name);
         }
       } else {
-        auto& diag = m_diag_repo[name];
-        if (not diag) {
-          // First time we run into this diag. Create it
-          diag = create_diagnostic(name,fm_model->get_grid());
-        }
+        // Reuse the diag if some other stream already built it, else create it.
+        // NOTE: don't put it in the (shared, static) repo until it has been
+        //       vetted below, or a stream that fails to build leaves it behind
+        //       for everyone else.
+        auto it = m_diag_repo.find(name);
+        auto diag = it==m_diag_repo.end()
+                  ? create_diagnostic(name,fm_model->get_grid())
+                  : it->second;
+
+        // A name resolved as an expression cannot be written to file: field
+        // names go into the nc file verbatim, and '(qc+qv)*p_mid' is not a
+        // usable variable name. It must be given one. Note this only rejects
+        // expressions we are asked to WRITE: as an alias target, as an
+        // 'aliases' intermediate, or as part of a larger expression, an
+        // expression is perfectly fine, and that is where they belong.
+        EKAT_REQUIRE_MSG (
+            not (written_names.count(name)==1 and
+                 diag->get_params().isParameter("from_expression")),
+            "Error! An expression must be given an output name.\n"
+            " - stream name: " + m_stream_name + "\n"
+            " - request: " + name + "\n"
+            " - instead of\n"
+            "     - " + name + "\n"
+            "   write\n"
+            "     - <name> := " + name + "\n");
+
+        m_diag_repo[name] = diag;
         // Add its deps to the list of fields to process (if not already in fm_model)
         bool deps_met = true;
         for (const auto& dep_name : diag->get_input_fields_names()) {

@@ -27,6 +27,13 @@ if (NOT SCREAM_ONLY_GENERATE_BASELINES)
     LABELS io diagnostics
   )
 
+  ## Test output of diagnostics requested as expressions
+  CreateUnitTest(io_dexpr
+    SOURCES io_dexpr.cpp
+    LIBS eamxx_io eamxx_diagnostics
+    LABELS io diagnostics
+  )
+
   ## Test conditional geo data output (io_output_if_dim_exists feature)
   CreateUnitTest(io_cond_geo
     SOURCES io_cond_geo.cpp
