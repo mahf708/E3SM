@@ -1,9 +1,17 @@
-cmake_minimum_required(VERSION 3.20)
+# 3.14 rather than something newer: this directory is add_subdirectory'd into
+# EAMxx, whose own floor is 3.14, and a higher floor here would silently raise
+# theirs. Nothing below needs a newer CMake.
+cmake_minimum_required(VERSION 3.14)
 
-project(dexpr
-  VERSION 0.1.0
-  DESCRIPTION "Lexer and parser for the diagnostics expression language"
-  LANGUAGES CXX)
+# Only claim to be a project when we are the top of the build. Under a parent
+# build, project() would reset PROJECT_NAME and friends inside this scope for
+# no benefit.
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  project(dexpr
+    VERSION 0.1.0
+    DESCRIPTION "Lexer and parser for the diagnostics expression language"
+    LANGUAGES CXX)
+endif()
 
 # This library is deliberately standalone: it has no Kokkos, MPI, netCDF or
 # EKAT dependency, and is not wired into the CIME/csm_share build. That is
@@ -17,6 +25,7 @@ add_library(dexpr
   src/lexer.cpp
   src/parser.cpp
   src/precedences.cpp
+  src/supported_functions.cpp
   src/tokens.cpp
 )
 

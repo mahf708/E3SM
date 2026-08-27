@@ -43,8 +43,10 @@ AST nodes are represented by a `std::variant`, visited through
 `Expression::visit`, which serves as a generic wrapper around `std::visit`.
 This design means the nodes should be stable and transformations acting on the AST can be easily added.
 
-The basic set of callable functions lives in one place, `supported_functions.hpp`.
-Nothing else in the library is diagnostics-specific.
+Callable functions are not baked in. `supported_functions.hpp` defines a
+`FunctionRegistry` a component fills in at init; see
+[Component-supplied functions](#component-supplied-functions) below. Nothing
+else in the library is diagnostics-specific.
 
 ### Parser terminology
 
@@ -78,11 +80,47 @@ Some terminology used throughout the implementation:
   It receives the expression to its left and parses the required expression(s) to its right.
   Example tokens include: aritmetic operators, logical operators, opening parenthesis, etc...
 
+## Component-supplied functions
+
+dexpr owns the grammar; a component owns the vocabulary. The parser accepts any
+call syntactically -- `foo(a, b=c)` parses the same whether or not `foo` exists
+-- and a component declares what it can actually evaluate by filling a
+`FunctionRegistry` and running `validate_calls` over the AST:
+
+```c++
+dexpr::FunctionRegistry reg;
+reg.add({.name = "mean",
+         .desc = "average over a dimension",
+         .min_positional = 1,
+         .max_positional = 1,           // -1 for variadic
+         .keywords = {{"weights", false}},
+         .form = dexpr::CallForm::Method});   // Free, Method or Any
+
+parser::Parser parser{Lexer{input}};
+const auto expr = parser.parse();
+dexpr::validate_calls(*expr, reg);      // throws ValidationError
+```
+
+`validate_calls` checks that each callee is a plain name, that the name is
+registered, that positional arity fits, that every keyword argument names a
+declared parameter and appears once, that required keywords are present, and
+that the call form matches. It collects every problem in the expression and
+throws once, so a user fixes them all in one pass rather than one build at a
+time. Unknown names come back with the registered set listed.
+
+Keeping this out of the parser is deliberate: the same expression can be
+checked against different components' vocabularies, and adding a callable
+requires no edit to this library.
+
+`builtin_functions()` holds the four generic callables (`where`, `sum`,
+`derivative`, `tend`) as an optional seed. Nothing consults it implicitly -- a
+component may seed from it or start empty.
+
 ## Building
 
 `dexpr` is deliberately standalone. It has no Kokkos, MPI, netCDF or EKAT
 dependency, it is not part of the CIME or `csm_share` build, and it requires
-only CMake 3.20 and a C++20 compiler:
+only CMake 3.14 and a C++20 compiler:
 
 ```shell
 ./run_tests.sh
@@ -122,14 +160,6 @@ Release, on every pull request touching this directory.
 
 Not implemented here, recorded so it is not rediscovered:
 
-- **Component-supplied functions.** The callable set is fixed in
-  `supported_functions.hpp` and nothing consults it, so `nope(x)` parses and is
-  never rejected. The plan is a registry a component fills in at init -- each
-  function's name, its parameters in positional order, and whether the call is
-  written free (`where(...)`) or as a method (`T_mid.interp(...)`) -- plus a
-  pass over the AST that checks calls against it. That pass stays out of the
-  parser on purpose, so `foo(a, b=c)` parses the same whether or not `foo`
-  exists.
 - **Operator syntax is fixed.** A registry would let a component add functions
   but not operators. A new operator means editing the token enum, the lexer,
   the precedence table and the parser's dispatch tables.

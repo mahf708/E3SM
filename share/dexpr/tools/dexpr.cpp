@@ -6,10 +6,12 @@
 namespace {
 
 void print_functions() {
-    std::cout << "Supported functions\n\n";
+    // The builtin seed only. A component registers its own vocabulary on top of
+    // this at init, so what a given model accepts is a superset of this list.
+    std::cout << "Builtin functions\n\n";
 
-    for (const auto& function : dexpr::supported) {
-        std::cout << "  " << function << '\n';
+    for (const auto& entry : dexpr::builtin_functions()) {
+        std::cout << "  " << entry.second << '\n';
     }
 }
 
