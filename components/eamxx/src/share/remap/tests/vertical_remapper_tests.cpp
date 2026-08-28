@@ -6,6 +6,8 @@
 #include "share/util/eamxx_timing.hpp"
 #include "share/field/field_utils.hpp"
 
+#include <cmath>
+
 namespace scream {
 
 constexpr int vec_dim = 3;
@@ -584,6 +586,255 @@ TEST_CASE ("vertical_remapper") {
   scorpio::finalize_subsystem();
 
   print ("Testing vertical remapper ... done!\n",comm);
+}
+
+TEST_CASE ("vertical_remapper_conservative") {
+  using namespace ShortFieldTagsNames;
+
+  // Fields flagged as VerticalRemapper::Extensive hold a layer-integrated
+  // quantity (e.g. a layer optical depth), so they must be remapped in a way
+  // that preserves their column sum, rather than interpolated point-wise.
+
+  ekat::Comm comm(MPI_COMM_WORLD);
+
+  print ("Testing conservative vertical remapper ...\n",comm);
+
+  constexpr int nldofs = 2;
+  const int nlevs_src = 2*SCREAM_PACK_SIZE + 2;
+
+  auto src_grid = build_grid(comm, nldofs, nlevs_src);
+
+  // Build a p_int profile spanning [ptop,pbot], with layers that get thinner
+  // toward the surface (as they do in the model), and the matching p_mid.
+  auto make_pint = [&](const std::shared_ptr<AbstractGrid>& grid,
+                       const Real ptop, const Real pbot) {
+    const int nlevs = grid->get_num_vertical_levels();
+    FieldIdentifier fid("p_int",grid->get_3d_scalar_layout(ILEV),ekat::units::Pa,grid->name());
+    Field p (fid);
+    p.get_header().get_alloc_properties().request_allocation(SCREAM_PACK_SIZE);
+    p.allocate_view();
+    auto v = p.get_view<Real**,Host>();
+    for (int i=0; i<nldofs; ++i) {
+      for (int k=0; k<=nlevs; ++k) {
+        const Real s = static_cast<Real>(k)/nlevs;
+        v(i,k) = ptop + (pbot-ptop)*std::pow(s,Real(1.6));
+      }
+    }
+    p.sync_to_dev();
+    return p;
+  };
+  auto make_pmid = [&](const Field& pint) {
+    const auto& fid_int = pint.get_header().get_identifier();
+    const int nlevs = fid_int.get_layout().dims().back()-1;
+    auto grid_name = fid_int.get_grid_name();
+    auto layout = fid_int.get_layout();
+    layout.strip_dim(ILEV);
+    layout.append_dim(LEV,nlevs);
+    FieldIdentifier fid("p_mid",layout,ekat::units::Pa,grid_name);
+    Field p (fid);
+    p.get_header().get_alloc_properties().request_allocation(SCREAM_PACK_SIZE);
+    p.allocate_view();
+    auto vi = pint.get_view<const Real**,Host>();
+    auto vm = p.get_view<Real**,Host>();
+    for (int i=0; i<nldofs; ++i) {
+      for (int k=0; k<nlevs; ++k) {
+        vm(i,k) = 0.5*(vi(i,k)+vi(i,k+1));
+      }
+    }
+    p.sync_to_dev();
+    return p;
+  };
+
+  // Column sum of a 3d field, per (col[,comp])
+  auto col_sums = [&](const Field& f) {
+    f.sync_to_host();
+    const auto& l = f.get_header().get_identifier().get_layout();
+    const int nlevs = l.dims().back();
+    std::vector<Real> sums;
+    if (f.rank()==2) {
+      auto v = f.get_view<const Real**,Host>();
+      for (int i=0; i<nldofs; ++i) {
+        Real s = 0;
+        for (int k=0; k<nlevs; ++k) s += v(i,k);
+        sums.push_back(s);
+      }
+    } else {
+      auto v = f.get_view<const Real***,Host>();
+      for (int i=0; i<nldofs; ++i) {
+        for (int j=0; j<vec_dim; ++j) {
+          Real s = 0;
+          for (int k=0; k<nlevs; ++k) s += v(i,j,k);
+          sums.push_back(s);
+        }
+      }
+    }
+    return sums;
+  };
+
+  // Fill a src field with rho(col,comp)*dp(k), i.e. a density that is constant
+  // in pressure. A conservative remap must then return rho*dp_tgt exactly.
+  auto fill_const_density = [&](const Field& f, const Field& pint) {
+    const auto& l = f.get_header().get_identifier().get_layout();
+    const int nlevs = l.dims().back();
+    auto vi = pint.get_view<const Real**,Host>();
+    if (f.rank()==2) {
+      auto v = f.get_view<Real**,Host>();
+      for (int i=0; i<nldofs; ++i) {
+        for (int k=0; k<nlevs; ++k) v(i,k) = (i+1)*(vi(i,k+1)-vi(i,k));
+      }
+    } else {
+      auto v = f.get_view<Real***,Host>();
+      for (int i=0; i<nldofs; ++i) {
+        for (int j=0; j<vec_dim; ++j) {
+          for (int k=0; k<nlevs; ++k) v(i,j,k) = (i+1)*(j+2)*(vi(i,k+1)-vi(i,k));
+        }
+      }
+    }
+    f.sync_to_dev();
+  };
+
+  // Fill a src field with an arbitrary positive profile
+  auto fill_bumpy = [&](const Field& f, const Field& pmid) {
+    const auto& l = f.get_header().get_identifier().get_layout();
+    const int nlevs = l.dims().back();
+    auto vm = pmid.get_view<const Real**,Host>();
+    auto val = [&](int i, int j, int k) {
+      return (i+1)*(j+1)*(1 + std::sin(0.37*k) * 0.9) * std::exp(-vm(i,k)/50000.0) + 1e-3;
+    };
+    if (f.rank()==2) {
+      auto v = f.get_view<Real**,Host>();
+      for (int i=0; i<nldofs; ++i)
+        for (int k=0; k<nlevs; ++k) v(i,k) = val(i,0,k);
+    } else {
+      auto v = f.get_view<Real***,Host>();
+      for (int i=0; i<nldofs; ++i)
+        for (int j=0; j<vec_dim; ++j)
+          for (int k=0; k<nlevs; ++k) v(i,j,k) = val(i,j,k);
+    }
+    f.sync_to_dev();
+  };
+
+  const Real tol = 1e4*std::numeric_limits<Real>::epsilon();
+
+  // Sweep over: tgt finer/coarser than src, and tgt column narrower/wider/equal
+  // to the src column (so that the src column has to be clipped or padded).
+  for (int nlevs_tgt : {nlevs_src/2, nlevs_src, 2*nlevs_src}) {
+    for (auto ptop_pbot : { std::make_pair(Real(50),Real(1000)),   // same column
+                            std::make_pair(Real(80),Real( 950)),   // narrower tgt
+                            std::make_pair(Real(20),Real(1080))})  // wider tgt
+    {
+      const Real ptop_tgt = ptop_pbot.first;
+      const Real pbot_tgt = ptop_pbot.second;
+      const bool same_column = ptop_tgt==Real(50) and pbot_tgt==Real(1000);
+
+      print ("************************************************\n",comm);
+      print ("      nlevs src/tgt: %d / %d\n",comm,nlevs_src,nlevs_tgt);
+      print ("      tgt column   : [%.0f, %.0f]\n",comm,ptop_tgt,pbot_tgt);
+      print ("************************************************\n",comm);
+
+      auto tgt_grid = src_grid->clone("tgt",true);
+      tgt_grid->reset_vertical_configuration(nlevs_tgt, AbstractGrid::VKind::Model);
+
+      auto pint_src = make_pint(src_grid,50,1000);
+      auto pmid_src = make_pmid(pint_src);
+      auto pint_tgt = make_pint(tgt_grid,ptop_tgt,pbot_tgt);
+      auto pmid_tgt = make_pmid(pint_tgt);
+
+      auto src_s3d = create_field("s3d",src_grid,false,false,false,LEV,SCREAM_PACK_SIZE);
+      auto src_v3d = create_field("v3d",src_grid,false,false,true ,LEV,SCREAM_PACK_SIZE);
+      auto tgt_s3d = create_field("s3d",tgt_grid,false,false,false,LEV,SCREAM_PACK_SIZE);
+      auto tgt_v3d = create_field("v3d",tgt_grid,false,false,true ,LEV,SCREAM_PACK_SIZE);
+
+      auto remap = std::make_shared<VerticalRemapper>(src_grid,tgt_grid);
+      remap->set_source_pressure (pmid_src);
+      remap->set_source_pressure (pint_src);
+      remap->set_target_pressure (pmid_tgt);
+      remap->set_target_pressure (pint_tgt);
+
+      remap->register_field(src_s3d,tgt_s3d);
+      remap->register_field(src_v3d,tgt_v3d);
+      remap->set_remap_kind("s3d",VerticalRemapper::Extensive);
+      remap->set_remap_kind("v3d",VerticalRemapper::Extensive);
+      remap->registration_ends();
+
+      // ---- 1. a density that is constant in pressure is reproduced exactly ---- //
+      // NOTE: this only holds when src and tgt span the same column; otherwise
+      //       the clipped part of the src column piles up in the edge layers.
+      if (same_column) {
+        print (" -> checking constant density is reproduced exactly ...\n",comm);
+        fill_const_density(src_s3d,pint_src);
+        fill_const_density(src_v3d,pint_src);
+        remap->remap_fwd();
+
+        auto expected_s3d = create_field("s3d",tgt_grid,false,false,false,LEV,SCREAM_PACK_SIZE);
+        auto expected_v3d = create_field("v3d",tgt_grid,false,false,true ,LEV,SCREAM_PACK_SIZE);
+        fill_const_density(expected_s3d,pint_tgt);
+        fill_const_density(expected_v3d,pint_tgt);
+
+        for (auto p : {std::make_pair(tgt_s3d,expected_s3d), std::make_pair(tgt_v3d,expected_v3d)}) {
+          auto rel_diff = p.first.clone("rel_diff", CloneFlags::CopyData);
+          rel_diff.update(p.second,1,-1);
+          rel_diff.scale_inv(p.second);
+          REQUIRE_THAT (inf_norm(rel_diff).as<Real>(), Catch::Matchers::WithinAbs(0,tol));
+        }
+        print (" -> checking constant density is reproduced exactly ... done!\n",comm);
+      }
+
+      // ---- 2. the column sum is preserved for an arbitrary profile ---- //
+      print (" -> checking column sums are preserved ...\n",comm);
+      fill_bumpy(src_s3d,pmid_src);
+      fill_bumpy(src_v3d,pmid_src);
+      remap->remap_fwd();
+
+      for (auto p : {std::make_pair(src_s3d,tgt_s3d), std::make_pair(src_v3d,tgt_v3d)}) {
+        auto s_src = col_sums(p.first);
+        auto s_tgt = col_sums(p.second);
+        REQUIRE (s_src.size()==s_tgt.size());
+        for (size_t n=0; n<s_src.size(); ++n) {
+          const Real rel = std::abs(s_tgt[n]-s_src[n])/std::abs(s_src[n]);
+          REQUIRE (rel < tol);
+        }
+      }
+      print (" -> checking column sums are preserved ... done!\n",comm);
+
+      // ---- 3. a non-negative src gives a non-negative tgt ---- //
+      print (" -> checking non-negativity ...\n",comm);
+      tgt_s3d.sync_to_host();
+      {
+        auto v = tgt_s3d.get_view<const Real**,Host>();
+        for (int i=0; i<nldofs; ++i) {
+          for (int k=0; k<nlevs_tgt; ++k) {
+            REQUIRE (v(i,k)>=0);
+          }
+        }
+      }
+      print (" -> checking non-negativity ... done!\n",comm);
+    }
+  }
+
+  // ---- 4. interface fields cannot be flagged as extensive ---- //
+  {
+    auto tgt_grid = src_grid->clone("tgt",true);
+    tgt_grid->reset_vertical_configuration(nlevs_src/2, AbstractGrid::VKind::Model);
+    auto pint_src = make_pint(src_grid,50,1000);
+    auto pmid_src = make_pmid(pint_src);
+    auto pint_tgt = make_pint(tgt_grid,50,1000);
+    auto pmid_tgt = make_pmid(pint_tgt);
+
+    auto src_i = create_field("s3d_i",src_grid,false,false,false,ILEV,SCREAM_PACK_SIZE);
+    auto tgt_i = create_field("s3d_i",tgt_grid,false,false,false,ILEV,SCREAM_PACK_SIZE);
+
+    auto remap = std::make_shared<VerticalRemapper>(src_grid,tgt_grid);
+    remap->set_source_pressure (pmid_src);
+    remap->set_source_pressure (pint_src);
+    remap->set_target_pressure (pmid_tgt);
+    remap->set_target_pressure (pint_tgt);
+    remap->register_field(src_i,tgt_i);
+    remap->set_remap_kind("s3d_i",VerticalRemapper::Extensive);
+    REQUIRE_THROWS (remap->registration_ends());
+  }
+
+  print ("Testing conservative vertical remapper ... done!\n",comm);
 }
 
 } // namespace scream

@@ -26,6 +26,21 @@ public:
     TopAndBot = Top | Bot
   };
 
+  // How a field's values relate to the vertical grid it is defined on:
+  //  - Intensive: the value is a point-wise sample at the layer midpoint
+  //    (e.g. a mixing ratio, a single scattering albedo). Remapping it means
+  //    interpolating it at the target midpoints.
+  //  - Extensive: the value is the integral of some density over the layer
+  //    (e.g. a layer aerosol optical depth, which is the extinction integrated
+  //    through the layer). Such a quantity is proportional to the layer
+  //    thickness, so interpolating it point-wise would rescale the column sum
+  //    by the ratio of the src/tgt layer thicknesses. These fields are instead
+  //    remapped conservatively, so that the column sum is preserved.
+  enum RemapKind {
+    Intensive,
+    Extensive
+  };
+
   VerticalRemapper (const grid_ptr_type& src_grid,
                     const std::string& map_file);
 
@@ -35,6 +50,10 @@ public:
   ~VerticalRemapper () = default;
 
   void set_extrapolation_type (const ExtrapType etype, const TopBot where = TopAndBot);
+
+  // Declare how a field must be remapped. Must be called BEFORE registration_ends().
+  // Only fields defined at layer midpoints can be marked as Extensive.
+  void set_remap_kind (const std::string& field_name, const RemapKind kind);
 
   void set_source_pressure (const Field& p);
   void set_target_pressure (const Field& p);
@@ -69,6 +88,9 @@ public:
 
   void extrapolate (const Field& f_src, const Field& f_tgt,
                     const Field& p_src, const Field& p_tgt) const;
+
+  void apply_conservative_remap (const Field& f_src, const Field& f_tgt,
+                                 const Field& p_src, const Field& p_tgt) const;
 
   template<int N>
   void setup_lin_interp (const ekat::LinInterp<Real,N>& lin_interp,
@@ -110,13 +132,19 @@ protected:
   //      1. If either src or tgt field has LEV or ILEV, li_vtag takes that tag.
   //      2. If neither field has it (i.e., both src and tgt grids have vkind=Pressure),
   //         li_vtag defaults to LEVP.
+  //  - kind: whether the field is remapped point-wise or conservatively.
   struct FType {
     bool packs_supported = false;
     FieldTag li_vtag  = FieldTag::Invalid;
     FieldTag src_vtag = FieldTag::Invalid;
     FieldTag tgt_vtag = FieldTag::Invalid;
+    RemapKind kind = Intensive;
   };
   std::map<std::string,FType> m_field2type;
+
+  // Remap kind requested by the user, keyed by field name. Fields missing
+  // from this map are remapped as Intensive (the default).
+  std::map<std::string,RemapKind> m_remap_kind;
 
   // Maps to store the interpolation operators, keyed by the logical 'li_vtag'.
   // We maintain separate packed and scalar variants to maximize SIMD usage.

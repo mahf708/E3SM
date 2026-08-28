@@ -14,6 +14,7 @@
 
 #include <ekat_team_policy_utils.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <regex>
@@ -840,6 +841,22 @@ create_vert_remapper (const VertRemapData& data)
   }
 }
 
+void DataInterpolation::
+set_extensive_fields (const strvec_t& field_names)
+{
+  EKAT_REQUIRE_MSG (not m_data_initialized,
+      "[DataInterpolation] Error! Cannot set extensive fields after the data interpolation was initialized.\n");
+
+  for (const auto& n : field_names) {
+    auto it = std::find_if(m_fields.begin(),m_fields.end(),
+                           [&](const Field& f) { return f.name()==n; });
+    EKAT_REQUIRE_MSG (it!=m_fields.end(),
+        "[DataInterpolation] Error! Field marked as extensive is not among the interpolated fields.\n"
+        " - field name : " + n + "\n");
+  }
+  m_extensive_fields = field_names;
+}
+
 void DataInterpolation::register_fields_in_remappers ()
 {
   EKAT_REQUIRE_MSG (m_vert_remapper!=nullptr,
@@ -848,6 +865,15 @@ void DataInterpolation::register_fields_in_remappers ()
   // Register fields in the remappers. Vertical first, since we only have model-grid fields
   for (int i=0; i<m_nfields; ++i) {
     m_vert_remapper->register_field_from_tgt(m_fields[i]);
+  }
+  if (not m_extensive_fields.empty()) {
+    auto vremap = std::dynamic_pointer_cast<VerticalRemapper>(m_vert_remapper);
+    EKAT_REQUIRE_MSG (vremap!=nullptr,
+        "[DataInterpolation] Error! Extensive fields require a VerticalRemapper, but the vertical\n"
+        "                    remapper in use is not one (was a custom remapper provided?).\n");
+    for (const auto& n : m_extensive_fields) {
+      vremap->set_remap_kind(n,VerticalRemapper::Extensive);
+    }
   }
   m_vert_remapper->registration_ends();
 

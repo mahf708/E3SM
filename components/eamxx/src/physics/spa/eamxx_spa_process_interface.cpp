@@ -39,13 +39,17 @@ void SPA::create_requests()
 
   // Define the different field layouts that will be used for this process
   auto scalar3d_mid    = m_model_grid->get_3d_scalar_layout(LEV);
+  auto scalar3d_int    = m_model_grid->get_3d_scalar_layout(ILEV);
   auto scalar2d        = m_model_grid->get_2d_scalar_layout();
   auto scalar1d_mid    = m_model_grid->get_vertical_layout(LEV);
   auto scalar3d_swband = m_model_grid->get_3d_vector_layout(LEV,nswbands,"swband");
   auto scalar3d_lwband = m_model_grid->get_3d_vector_layout(LEV,nlwbands,"lwband");
 
   // Set of fields used strictly as input
+  // NOTE: p_int is needed to get the model layer thicknesses right when remapping
+  //       the layer optical depths conservatively (see initialize_impl)
   add_field<Required>("p_mid"      , scalar3d_mid, Pa,     grid_name, ps);
+  add_field<Required>("p_int"      , scalar3d_int, Pa,     grid_name, ps);
 
   // Set of fields used strictly as output
   add_field<Computed>("nccn",        scalar3d_mid,    1/kg, grid_name, ps);
@@ -74,19 +78,25 @@ void SPA::initialize_impl (const RunType /* run_type */)
   auto spa_map_file  = m_params.get<std::string>("spa_remap_file","");
   auto time_interpolation_method = m_params.get<std::string>("time_interpolation_method","yearly_periodic");
 
-  // SPA doesn't really *need* pint, but DataInterpolation does. It's important to stress that
-  // NO FIELD VALUES from p_int are accessed in the DataInterpolation we build, since we
-  // don't remap any field on interfaces. But when the VerticalRemapper in the DataInterpolation
-  // is setup, pint must store the correct layout of a field defined at interfaces; it does not
-  // have to have COL dimension. It just need to have the ILEV tag in the layout AND have alloc
-  // properties compatible with SCREAM_PACK_SIZE.
-  // NOTE: we could just add p_int as a required field, but that would be misleading in the DAG
+  // The DataInterpolation needs pmid to interpolate the intensive fields at the
+  // model midpoints, and pint to know the model layer thicknesses, which is what
+  // makes the remap of the layer optical depths below conservative.
   auto pmid = get_field_in("p_mid");
-  Field pint(FieldIdentifier("p_int",m_model_grid->get_vertical_layout(ILEV),Pa,m_model_grid->name()));
-  pint.get_header().get_alloc_properties().request_allocation(SCREAM_PACK_SIZE);
-  pint.allocate_view();
+  auto pint = get_field_in("p_int");
 
   m_data_interpolation = std::make_shared<DataInterpolation>(m_model_grid,spa_fields);
+
+  // AER_TAU_SW/AER_TAU_LW are LAYER optical depths, i.e. the aerosol extinction
+  // integrated through the layer, so they scale with the layer thickness; the
+  // column AOD is their arithmetic sum. Interpolating them point-wise from the
+  // data grid to the model grid would rescale that sum by the ratio of the
+  // data/model layer thicknesses (e.g. it roughly DOUBLES the AOD when L80 data
+  // is mapped onto the L128 model grid). Flag them so that they are remapped
+  // conservatively instead, which leaves the column AOD unchanged.
+  // NOTE: the other SPA fields (CCN3, AER_SSA_SW, AER_G_SW) are intensive, and
+  //       are correctly handled by the default point-wise interpolation.
+  m_data_interpolation->set_extensive_fields({"AER_TAU_SW","AER_TAU_LW"});
+
   if (time_interpolation_method=="yearly_periodic") {
     m_data_interpolation->setup_periodic_time_database ({spa_data_file});
   } else if (time_interpolation_method=="linear") {

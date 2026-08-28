@@ -31,6 +31,10 @@ TEST_CASE ("exceptions")
   util::TimeStamp t1 ({2020,1,1},{0,0,0});
   REQUIRE_THROWS (interp->init_time_interpolation(t1,DataInterpolation::Linear)); // linear timeline, but t0>last_slice
 
+  // Only fields that are actually being interpolated can be flagged as extensive
+  REQUIRE_THROWS (interp->set_extensive_fields({"not_a_field"}));
+  REQUIRE_NOTHROW (interp->set_extensive_fields({fields[0].name()}));
+
   scorpio::finalize_subsystem();
 }
 

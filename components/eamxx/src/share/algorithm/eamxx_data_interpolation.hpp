@@ -76,6 +76,13 @@ public:
   void setup_static_database (const strvec_t& input_files,
                               int time_index = -1);
 
+  // Declare which of the interpolated fields are layer-integrated (extensive)
+  // quantities, i.e. proportional to the layer thickness (e.g. a layer optical
+  // depth). Such fields are remapped conservatively in the vertical, so that
+  // their column sum is preserved when the data and model grids differ.
+  // Must be called BEFORE init_time_interpolation()/run().
+  void set_extensive_fields (const strvec_t& field_names);
+
   void create_horiz_remappers (const std::string& map_file = "");
   void create_horiz_remappers (const std::string& map_file,
                                const std::shared_ptr<IOPDataManager>& iop_data_manager);
@@ -161,6 +168,9 @@ protected:
   std::shared_ptr<AbstractGrid>       m_grid_after_hremap;
 
   std::vector<Field>                  m_fields;
+
+  // Names of the fields that must be remapped conservatively in the vertical
+  strvec_t                            m_extensive_fields;
 
   // Use two horiz remappers, so we only set them up once (it may be costly)
   std::shared_ptr<AbstractRemapper> m_horiz_remapper_beg;

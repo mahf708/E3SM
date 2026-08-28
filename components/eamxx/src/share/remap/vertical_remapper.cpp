@@ -81,6 +81,15 @@ set_extrapolation_type (const ExtrapType etype, const TopBot where)
 }
 
 void VerticalRemapper::
+set_remap_kind (const std::string& field_name, const RemapKind kind)
+{
+  EKAT_REQUIRE_MSG (get_state()!=RepoState::Closed,
+      "[VerticalRemapper::set_remap_kind] Error! Remap kind must be set before registration_ends().\n"
+      " - field name: " + field_name + "\n");
+  m_remap_kind[field_name] = kind;
+}
+
+void VerticalRemapper::
 set_source_pressure (const Field& p)
 {
   set_pressure (p, "source");
@@ -147,6 +156,23 @@ registration_ends_impl ()
 
     ft.src_vtag = src.rank()>0 ? src_layout.tags().back() : INV;
     ft.tgt_vtag = tgt.rank()>0 ? tgt_layout.tags().back() : INV;
+
+    auto kind_it = m_remap_kind.find(src.name());
+    ft.kind = kind_it==m_remap_kind.end() ? Intensive : kind_it->second;
+    if (ft.kind==Extensive) {
+      // A layer-integrated quantity only makes sense at layer midpoints: an
+      // interface-valued field has no layer to integrate over.
+      EKAT_REQUIRE_MSG (ft.src_vtag!=ILEV and ft.tgt_vtag!=ILEV,
+          "[VerticalRemapper::registration_ends_impl] Error! Only midpoint fields can be remapped conservatively.\n"
+          " - field name: " + src.name() + "\n"
+          " - src layout: " + src_layout.to_string() + "\n"
+          " - tgt layout: " + tgt_layout.to_string() + "\n");
+      EKAT_REQUIRE_MSG (ft.src_vtag==LEV or ft.src_vtag==LEVP,
+          "[VerticalRemapper::registration_ends_impl] Error! Field marked as Extensive has no vertical dimension.\n"
+          " - field name: " + src.name() + "\n"
+          " - src layout: " + src_layout.to_string() + "\n");
+    }
+
     if (ft.src_vtag==LEV or ft.src_vtag==ILEV or ft.src_vtag==LEVP) {
       // Sanity check: pressure fields MUST be set by now
       EKAT_REQUIRE_MSG (m_src_pressure.count(ft.src_vtag)>0,
@@ -240,6 +266,8 @@ void VerticalRemapper::create_lin_interp()
   for (auto& [name, ft] : m_field2type) {
     if (ft.li_vtag == FieldTag::Invalid)
       continue; // Does not have the vertical dimension
+    if (ft.kind == Extensive)
+      continue; // Remapped conservatively, without the linear interpolator
 
     EKAT_REQUIRE_MSG (m_src_pressure.count(ft.src_vtag)>0,
         "[VerticalRemapper::create_lin_interp] Error! Required src pressure field was not set.\n"
@@ -408,12 +436,17 @@ void VerticalRemapper::remap_fwd_impl ()
     if (type.li_vtag!=INV) {
       const auto& x_src = src_pressure(type.src_vtag);
       const auto& x_tgt = tgt_pressure(type.tgt_vtag);
-      if (type.packs_supported) {
+      if (type.kind==Extensive) {
+        // The conservative remap needs no extrapolation: it clips the src column
+        // to the tgt one, so that all of the src content lands in a tgt layer.
+        apply_conservative_remap(f_src,f_tgt,x_src,x_tgt);
+      } else if (type.packs_supported) {
         apply_vertical_interpolation(m_lin_interp_packed.at(type.li_vtag),f_src,f_tgt,x_src,x_tgt);
+        extrapolate(f_src,f_tgt,x_src,x_tgt);
       } else {
         apply_vertical_interpolation(m_lin_interp_scalar.at(type.li_vtag),f_src,f_tgt,x_src,x_tgt);
+        extrapolate(f_src,f_tgt,x_src,x_tgt);
       }
-      extrapolate(f_src,f_tgt,x_src,x_tgt);
     } else {
       // There is nothing to do, this field does not need vertical interpolation,
       // so just copy it over.  Note, if this field has its own mask data make
@@ -738,6 +771,269 @@ extrapolate (const Field& f_src,
   }
   if (m_timers_enabled)
     stop_timer(name() + " extrapolate");
+}
+
+namespace {
+
+// Pressure of the k-th layer face (k=0,...,nlevs) of a vertical profile.
+// If the profile's interface pressures were provided (has_int=true), they are
+// used as is. Otherwise the faces are inferred from the nlevs layer midpoints,
+// by placing interior faces halfway between consecutive midpoints and linearly
+// extrapolating the top/bottom ones. That fallback is exact when each midpoint
+// is the average of its two faces (as it is for a hybrid sigma-pressure
+// coordinate) AND the layer thickness varies linearly; in general it misplaces
+// a face by a fraction of the local layer thickness, which redistributes a
+// small amount of the remapped quantity between neighboring layers, but never
+// changes the column sum.
+template<typename PMidView, typename PIntView>
+KOKKOS_INLINE_FUNCTION
+Real layer_face (const PMidView& pmid, const PIntView& pint, const bool has_int,
+                 const int nlevs, const int k)
+{
+  if (has_int) {
+    return pint(k);
+  }
+  if (nlevs==1) {
+    // A single layer carries no thickness information
+    return pmid(0);
+  }
+  if (k==0) {
+    const Real p = Real(1.5)*pmid(0) - Real(0.5)*pmid(1);
+    return p>0 ? p : Real(0);
+  }
+  if (k==nlevs) {
+    return Real(1.5)*pmid(nlevs-1) - Real(0.5)*pmid(nlevs-2);
+  }
+  return Real(0.5)*(pmid(k-1) + pmid(k));
+}
+
+// Conservatively remap one column of a layer-integrated (extensive) quantity
+// from the src to the tgt vertical grid.
+//
+// The src value y_src(j) is the integral of some density over the src layer j,
+// so it is spread uniformly (in pressure) over that layer and re-integrated
+// over each tgt layer:
+//
+//   y_tgt(i) = sum_j y_src(j) * |[a_i,b_i] intersect [p_j,p_j+1]| / (p_j+1 - p_j)
+//
+// which is equivalent to interpolating the cumulative profile at the tgt faces.
+// The src faces are clipped to the tgt column, so the src column is always
+// fully contained in the tgt one and sum_i y_tgt(i) == sum_j y_src(j) exactly.
+// Src layers lying entirely outside the tgt column (e.g. below the model
+// surface, when the src column has a higher surface pressure) collapse onto the
+// tgt top/bottom face, and their content is deposited in the first/last tgt
+// layer rather than being dropped.
+template<typename TeamT, typename PSrcView, typename PTgtView,
+         typename YSrcView, typename YTgtView>
+KOKKOS_INLINE_FUNCTION
+void conservative_remap_col (const TeamT& team,
+                             const PSrcView& xm_src, const PSrcView& xi_src,
+                             const bool has_int_src, const int nsrc,
+                             const PTgtView& xm_tgt, const PTgtView& xi_tgt,
+                             const bool has_int_tgt, const int ntgt,
+                             const YSrcView& y_src, const YTgtView& y_tgt)
+{
+  auto tgt_face = [&](const int k) {
+    return layer_face(xm_tgt,xi_tgt,has_int_tgt,ntgt,k);
+  };
+
+  const Real p_top = tgt_face(0);
+  const Real p_bot = tgt_face(ntgt);
+
+  auto src_face = [&](const int k) {
+    const Real p = layer_face(xm_src,xi_src,has_int_src,nsrc,k);
+    return p<p_top ? p_top : (p>p_bot ? p_bot : p);
+  };
+
+  auto remap_lev = [&](const int i) {
+    const Real a = tgt_face(i);
+    const Real b = tgt_face(i+1);
+
+    // Binary search for the first src layer whose bottom face reaches [a,b].
+    // NOTE: the search uses >= (rather than >) so that collapsed src layers
+    //       sitting exactly on p_top are picked up by the first tgt layer.
+    int lo = 0, hi = nsrc-1;
+    while (lo<hi) {
+      const int mid = (lo+hi)/2;
+      if (src_face(mid+1)>=a) hi = mid;
+      else                    lo = mid+1;
+    }
+
+    Real acc = 0;
+    for (int j=lo; j<nsrc; ++j) {
+      const Real pl = src_face(j);
+      if (pl>b) break; // this src layer, and all the ones below it, are past [a,b]
+      const Real pu = src_face(j+1);
+      const Real dp = pu - pl;
+      if (dp<=0) {
+        if (pl>=a and (pl<b or i==(ntgt-1))) {
+          acc += y_src(j);
+        }
+      } else {
+        const Real l = a>pl ? a : pl;
+        const Real u = b<pu ? b : pu;
+        if (u>l) {
+          acc += y_src(j)*(u-l)/dp;
+        }
+      }
+    }
+    y_tgt(i) = acc;
+  };
+  Kokkos::parallel_for (Kokkos::TeamVectorRange(team,ntgt), remap_lev);
+}
+
+} // anonymous namespace
+
+void VerticalRemapper::
+apply_conservative_remap (const Field& f_src,
+                          const Field& f_tgt,
+                          const Field& p_src,
+                          const Field& p_tgt) const
+{
+  using namespace ShortFieldTagsNames;
+
+  if (m_timers_enabled)
+    start_timer(name() + " run CR");
+
+  using TPF = ekat::TeamPolicyFactory<DefaultDevice::execution_space>;
+
+  using view2d = typename KokkosTypes<DefaultDevice>::view<const Real**>;
+  using view1d = typename KokkosTypes<DefaultDevice>::view<const Real*>;
+
+  const auto& f_src_l = f_src.get_header().get_identifier().get_layout();
+  const auto& f_tgt_l = f_tgt.get_header().get_identifier().get_layout();
+  const int ncols = m_src_grid->get_num_local_dofs();
+  const int nlevs_src = f_src_l.dims().back();
+  const int nlevs_tgt = f_tgt_l.dims().back();
+
+  // The layer faces are what makes this remap conservative, so use the actual
+  // interface pressures if the user provided them, and only fall back on
+  // inferring the faces from the midpoints when they did not.
+  // NOTE: a src/tgt grid with vkind=Pressure has no notion of interfaces, so
+  //       for those we always infer the faces from the midpoints.
+  auto get_pint = [&](const std::map<FieldTag,Field>& pressures, const int nlevs) {
+    Field p;
+    auto it = pressures.find(ILEV);
+    if (it!=pressures.end()) {
+      const auto& l = it->second.get_header().get_identifier().get_layout();
+      EKAT_REQUIRE_MSG (l.dims().back()==nlevs+1,
+          "[VerticalRemapper::apply_conservative_remap] Error! Interface pressure has the wrong number of levels.\n"
+          " - pressure name  : " + it->second.name() + "\n"
+          " - pressure nlevs : " + std::to_string(l.dims().back()) + "\n"
+          " - expected nlevs : " + std::to_string(nlevs+1) + "\n");
+      p = it->second;
+    }
+    return p;
+  };
+  const auto pi_src = get_pint(m_src_pressure,nlevs_src);
+  const auto pi_tgt = get_pint(m_tgt_pressure,nlevs_tgt);
+
+  const bool has_int_src = pi_src.is_allocated();
+  const bool has_int_tgt = pi_tgt.is_allocated();
+
+  const bool src1d = p_src.rank()==1;
+  const bool tgt1d = p_tgt.rank()==1;
+  const bool src_int1d = has_int_src and pi_src.rank()==1;
+  const bool tgt_int1d = has_int_tgt and pi_tgt.rank()==1;
+
+  view2d p_src2d_v, p_tgt2d_v, pi_src2d_v, pi_tgt2d_v;
+  view1d p_src1d_v, p_tgt1d_v, pi_src1d_v, pi_tgt1d_v;
+  if (src1d) {
+    p_src1d_v = p_src.get_view<const Real*>();
+  } else {
+    p_src2d_v = p_src.get_view<const Real**>();
+  }
+  if (tgt1d) {
+    p_tgt1d_v = p_tgt.get_view<const Real*>();
+  } else {
+    p_tgt2d_v = p_tgt.get_view<const Real**>();
+  }
+  if (has_int_src) {
+    if (src_int1d) pi_src1d_v = pi_src.get_view<const Real*>();
+    else           pi_src2d_v = pi_src.get_view<const Real**>();
+  }
+  if (has_int_tgt) {
+    if (tgt_int1d) pi_tgt1d_v = pi_tgt.get_view<const Real*>();
+    else           pi_tgt2d_v = pi_tgt.get_view<const Real**>();
+  }
+
+  switch(f_src.rank()) {
+    case 2:
+    {
+      auto f_src_v = f_src.get_view<const Real**>();
+      auto f_tgt_v = f_tgt.get_view<      Real**>();
+      auto policy = TPF::get_default_team_policy(ncols,nlevs_tgt);
+
+      using MemberType = typename decltype(policy)::member_type;
+      auto lambda = KOKKOS_LAMBDA(const MemberType& team)
+      {
+        const int icol = team.league_rank();
+
+        auto x_src = p_src1d_v;
+        auto x_tgt = p_tgt1d_v;
+        if (not src1d)
+          x_src = ekat::subview(p_src2d_v,icol);
+        if (not tgt1d)
+          x_tgt = ekat::subview(p_tgt2d_v,icol);
+
+        auto xi_src = pi_src1d_v;
+        auto xi_tgt = pi_tgt1d_v;
+        if (has_int_src and not src_int1d)
+          xi_src = ekat::subview(pi_src2d_v,icol);
+        if (has_int_tgt and not tgt_int1d)
+          xi_tgt = ekat::subview(pi_tgt2d_v,icol);
+
+        conservative_remap_col(team,x_src,xi_src,has_int_src,nlevs_src,
+                                    x_tgt,xi_tgt,has_int_tgt,nlevs_tgt,
+                               ekat::subview(f_src_v,icol),
+                               ekat::subview(f_tgt_v,icol));
+      };
+      Kokkos::parallel_for("VerticalRemapper::apply_conservative_remap",policy,lambda);
+      break;
+    }
+    case 3:
+    {
+      auto f_src_v = f_src.get_view<const Real***>();
+      auto f_tgt_v = f_tgt.get_view<      Real***>();
+      const int ncomps = f_tgt_l.get_vector_dim();
+      auto policy = TPF::get_default_team_policy(ncols*ncomps,nlevs_tgt);
+
+      using MemberType = typename decltype(policy)::member_type;
+      auto lambda = KOKKOS_LAMBDA(const MemberType& team)
+      {
+        const int icol = team.league_rank() / ncomps;
+        const int icmp = team.league_rank() % ncomps;
+
+        auto x_src = p_src1d_v;
+        auto x_tgt = p_tgt1d_v;
+        if (not src1d)
+          x_src = ekat::subview(p_src2d_v,icol);
+        if (not tgt1d)
+          x_tgt = ekat::subview(p_tgt2d_v,icol);
+
+        auto xi_src = pi_src1d_v;
+        auto xi_tgt = pi_tgt1d_v;
+        if (has_int_src and not src_int1d)
+          xi_src = ekat::subview(pi_src2d_v,icol);
+        if (has_int_tgt and not tgt_int1d)
+          xi_tgt = ekat::subview(pi_tgt2d_v,icol);
+
+        conservative_remap_col(team,x_src,xi_src,has_int_src,nlevs_src,
+                                    x_tgt,xi_tgt,has_int_tgt,nlevs_tgt,
+                               ekat::subview(f_src_v,icol,icmp),
+                               ekat::subview(f_tgt_v,icol,icmp));
+      };
+      Kokkos::parallel_for("VerticalRemapper::apply_conservative_remap",policy,lambda);
+      break;
+    }
+    default:
+      EKAT_ERROR_MSG (
+          "[VerticalRemapper::apply_conservative_remap] Error! Unsupported field rank.\n"
+          " - src field name: " + f_src.name() + "\n"
+          " - src field rank: " + std::to_string(f_src.rank()) + "\n");
+  }
+  if (m_timers_enabled)
+    stop_timer(name() + " run CR");
 }
 
 } // namespace scream
