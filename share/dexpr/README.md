@@ -93,7 +93,10 @@ reg.add({.name = "mean",
          .desc = "average over a dimension",
          .min_positional = 1,           // a method call's receiver is not
          .max_positional = 1,           // counted as a positional argument
-         .keywords = {{"weights", false}}});
+         .keywords = {{"weights", false}},
+         .example = "T_mid.mean('lev', weights='dp')"});
+
+dexpr::validate_registry(reg);          // the vocabulary describes itself
 
 parser::Parser parser{Lexer{input}};
 const auto expr = parser.parse();
@@ -115,9 +118,41 @@ Keeping this out of the parser is deliberate: the same expression can be
 checked against different components' vocabularies, and adding a callable
 requires no edit to this library.
 
+### Checking a vocabulary
+
+Every spec carries an `example` of how the call is actually written, and
+`validate_registry` proves each one parses, passes `validate_calls` against the
+registry it belongs to, and really calls the function that declared it. So a
+vocabulary is checked against itself: declare `mean` as taking no positional
+arguments while writing `T_mid.mean('lev')`, and you hear about it the moment
+the registry is built rather than the first time a user writes that call. Run it
+from a unit test, or straight from the code that fills the registry -- EAMxx
+does the latter, in `eamxx_dexpr_diags.cpp`.
+
+The command line tool checks expressions and the builtin vocabulary directly:
+
+```shell
+dexpr functions          # list the builtins, with an example of each
+dexpr check "x.where(y>0) + 3*z"
+dexpr check-registry     # every builtin against its own example
+```
+
+`dexpr check` knows only the builtins, since a component's vocabulary lives in
+that component; a component checks against its own registry with the same two
+calls shown above.
+
+What this does NOT check is whether the component can actually evaluate the
+call -- that a registered name has a case in whatever turns the AST into work.
+A component covers that by running its own examples through its own builder, as
+EAMxx does in `src/share/io/tests/create_diag.cpp`.
+
 `builtin_functions()` holds the four generic callables (`where`, `sum`,
 `derivative`, `tend`) as an optional seed. Nothing consults it implicitly -- a
 component may seed from it or start empty.
+
+`FunctionRegistry::add` rejects a spec that cannot be satisfied at all -- no
+name, a positional arity with no valid count, a keyword argument that is
+nameless or repeated -- so those never reach `validate_registry`.
 
 ## Building
 

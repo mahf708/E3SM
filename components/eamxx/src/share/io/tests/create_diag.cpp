@@ -2,6 +2,7 @@
 
 #include "share/diagnostics/register_diagnostics.hpp"
 
+#include "share/io/eamxx_dexpr_diags.hpp"
 #include "share/io/eamxx_io_utils.hpp"
 #include "share/grid/point_grid.hpp"
 
@@ -424,6 +425,20 @@ TEST_CASE("create_diag")
     auto d2 = create_diagnostic("BlaH_123_where_qv_gt_0.01",grid);
     REQUIRE (std::dynamic_pointer_cast<ConditionalSampling>(d2)!=nullptr);
     REQUIRE_FALSE (d2->get_params().isParameter("from_expression"));
+  }
+
+  SECTION ("dexpr_every_registered_function_is_buildable") {
+    // The check a customer wants after adding a function: dexpr has already
+    // proved each example matches the spec that declared it (validate_registry,
+    // run where the registry is built), and this proves the translator really
+    // turns each one into a diagnostic. Registering a function and forgetting
+    // the translator case is otherwise only caught when someone writes it.
+    const auto examples = dexpr_diagnostic_examples();
+    REQUIRE (examples.size()>0);
+    for (const auto& e : examples) {
+      INFO ("example: " + e);
+      REQUIRE (create_diagnostic(e,grid)!=nullptr);
+    }
   }
 
   SECTION ("dexpr_marks_what_it_built") {

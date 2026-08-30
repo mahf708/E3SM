@@ -1,5 +1,7 @@
 #include <dexpr/supported_functions.hpp>
 
+#include <dexpr/lexer.hpp>
+#include <dexpr/parser.hpp>
 #include <dexpr/tokens.hpp>
 
 #include <algorithm>
@@ -42,6 +44,9 @@ std::string FunctionSpec::to_string() const {
 
   str_ += ")";
   str_ += "\n--- " + desc;
+  if (!example.empty()) {
+    str_ += "\n--- e.g. " + example;
+  }
 
   return str_;
 }
@@ -49,6 +54,25 @@ std::string FunctionSpec::to_string() const {
 void FunctionRegistry::add(FunctionSpec spec) {
   if (spec.name.empty()) {
     throw std::invalid_argument("dexpr: cannot register a function with no name");
+  }
+  // Structural checks only; whether the spec matches how the call is actually
+  // written is what validate_registry() answers, using the example.
+  if (spec.min_positional < 0 || spec.max_positional < spec.min_positional) {
+    throw std::invalid_argument("dexpr: function '" + spec.name +
+                                "' has an impossible positional arity");
+  }
+  for (auto it = spec.keywords.begin(); it != spec.keywords.end(); ++it) {
+    if (it->name.empty()) {
+      throw std::invalid_argument("dexpr: function '" + spec.name +
+                                  "' has a keyword argument with no name");
+    }
+    if (std::find_if(spec.keywords.begin(), it, [&](const ParamSpec& p) {
+          return p.name == it->name;
+        }) != it) {
+      throw std::invalid_argument("dexpr: function '" + spec.name +
+                                  "' declares argument '" + it->name +
+                                  "' more than once");
+    }
   }
   // A silently-replaced spec is a bug that only shows up as a confusing
   // validation message much later, so refuse rather than overwrite.
@@ -81,22 +105,26 @@ const FunctionRegistry& builtin_functions() {
            .desc = "applies condition to operand",
            .min_positional = 1,
            .max_positional = 1,
-           .keywords = {}});
+           .keywords = {},
+           .example = "x.where(y>0)"});
     r.add({.name = "sum",
            .desc = "sums operand over designated indices (int or name)",
            .min_positional = 0,
            .max_positional = 0,
-           .keywords = {{"dims", true}}});
+           .keywords = {{"dims", true}},
+           .example = "x.sum(dims=['col'])"});
     r.add({.name = "derivative",
            .desc = "takes derivative w.r.t. `dx` over designated dimension",
            .min_positional = 1,
            .max_positional = 1,
-           .keywords = {{"dims", false}}});
+           .keywords = {{"dims", false}},
+           .example = "x.derivative(dx, dims=['lev'])"});
     r.add({.name = "tend",
            .desc = "calculates the tendency of a variable over time",
            .min_positional = 0,
            .max_positional = 0,
-           .keywords = {}});
+           .keywords = {},
+           .example = "x.tend()"});
     return r;
   }();
   return reg;
@@ -301,6 +329,87 @@ void validate_calls(const ast::Expression& root, const FunctionRegistry& reg) {
   Validator v{reg};
   v.run(root);
   auto errors = v.take_errors();
+  if (!errors.empty()) {
+    throw ValidationError(errors);
+  }
+}
+
+namespace {
+
+// True if any call anywhere in `e` targets `name`. Used to catch an example
+// that parses and validates but demonstrates some other function.
+bool calls_function(const ast::Expression& e, const std::string& name) {
+  return e.visit([&](const auto& node) -> bool {
+    using T = std::decay_t<decltype(node)>;
+    if constexpr (std::is_same_v<T, ast::FuncExpression>) {
+      const auto callee = node.function->visit(CalleeVisitor{});
+      if (callee.name != nullptr && *callee.name == name) {
+        return true;
+      }
+      if (callee.receiver != nullptr && calls_function(*callee.receiver, name)) {
+        return true;
+      }
+      for (const auto& arg : node.args) {
+        if (calls_function(*arg, name)) {
+          return true;
+        }
+      }
+      return false;
+    } else if constexpr (std::is_same_v<T, ast::BinaryExpression>) {
+      return calls_function(*node.left, name) || calls_function(*node.right, name);
+    } else if constexpr (std::is_same_v<T, ast::UnaryExpression>) {
+      return calls_function(*node.right, name);
+    } else if constexpr (std::is_same_v<T, ast::ArrayExpression>) {
+      for (const auto& el : node.elements) {
+        if (calls_function(*el, name)) {
+          return true;
+        }
+      }
+      return false;
+    } else {
+      return false;
+    }
+  });
+}
+
+} // namespace
+
+void validate_registry(const FunctionRegistry& reg) {
+  std::vector<std::string> errors;
+
+  for (const auto& entry : reg) {
+    const auto& spec = entry.second;
+    const std::string where = "'" + spec.name + "': ";
+
+    if (spec.example.empty()) {
+      errors.push_back(where + "no example; give one showing how the call is written");
+      continue;
+    }
+
+    ast::ExprPtr expr;
+    try {
+      parser::Parser parser{Lexer{spec.example}};
+      expr = parser.parse();
+    } catch (const std::exception& e) {
+      errors.push_back(where + "example '" + spec.example +
+                       "' does not parse: " + e.what());
+      continue;
+    }
+
+    try {
+      validate_calls(*expr, reg);
+    } catch (const ValidationError& e) {
+      errors.push_back(where + "example '" + spec.example +
+                       "' does not match the spec: " + e.what());
+      continue;
+    }
+
+    if (!calls_function(*expr, spec.name)) {
+      errors.push_back(where + "example '" + spec.example + "' never calls '" +
+                       spec.name + "'");
+    }
+  }
+
   if (!errors.empty()) {
     throw ValidationError(errors);
   }

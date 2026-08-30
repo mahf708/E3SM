@@ -18,17 +18,20 @@ FunctionRegistry test_registry() {
            .desc = "average over a dimension",
            .min_positional = 1,
            .max_positional = 1,
-           .keywords = {{"weights", false}}});
+           .keywords = {{"weights", false}},
+           .example = "T_mid.mean('lev')"});
   reg.add({.name = "prev",
            .desc = "value at the previous step",
            .min_positional = 0,
            .max_positional = 0,
-           .keywords = {}});
+           .keywords = {},
+           .example = "T_mid.prev()"});
   reg.add({.name = "clamp",
            .desc = "bound a field",
            .min_positional = 1,
            .max_positional = 2,
-           .keywords = {{"fill", true}}});
+           .keywords = {{"fill", true}},
+           .example = "clamp(T_mid, fill=0)"});
   return reg;
 }
 
@@ -50,6 +53,24 @@ bool contains(const std::string& haystack, const std::string& needle) {
   return haystack.find(needle) != std::string::npos;
 }
 
+// Returns "" if `reg` describes itself consistently, else the error message.
+std::string registry_error(const FunctionRegistry& reg) {
+  try {
+    validate_registry(reg);
+  } catch (const ValidationError& e) {
+    return e.what();
+  }
+  return "";
+}
+
+// A spec with every field spelled out; designated initializers must name them
+// all under -Wmissing-field-initializers.
+FunctionSpec spec(std::string name, int min_pos, int max_pos,
+                  std::vector<ParamSpec> kws, std::string example) {
+  return FunctionSpec{std::move(name), "a description", min_pos, max_pos,
+                      std::move(kws),  std::move(example)};
+}
+
 } // anonymous namespace
 
 TEST_CASE("registry_add_and_find") {
@@ -57,9 +78,9 @@ TEST_CASE("registry_add_and_find") {
   CHECK(reg.find("mean") == nullptr);
   CHECK_FALSE(reg.contains("mean"));
 
-  reg.add({.name = "mean", .desc = "average", .keywords = {}});
+  reg.add(spec("mean", 0, 0, {}, "x.mean()"));
   REQUIRE(reg.find("mean") != nullptr);
-  CHECK(reg.find("mean")->desc == "average");
+  CHECK(reg.find("mean")->desc == "a description");
   CHECK(reg.contains("mean"));
 
   // Lookups are case sensitive, like identifiers everywhere else.
@@ -68,14 +89,14 @@ TEST_CASE("registry_add_and_find") {
 
 TEST_CASE("registry_rejects_duplicates") {
   FunctionRegistry reg;
-  reg.add({.name = "mean", .desc = "first", .keywords = {}});
-  CHECK_THROWS_AS(reg.add({.name = "mean", .desc = "second", .keywords = {}}),
+  reg.add(spec("mean", 0, 0, {}, "x.mean()"));
+  CHECK_THROWS_AS(reg.add(spec("mean", 0, 0, {}, "x.mean()")),
                   std::invalid_argument);
   // The first registration is the one that stands.
   REQUIRE(reg.find("mean") != nullptr);
-  CHECK(reg.find("mean")->desc == "first");
+  CHECK(reg.find("mean")->example == "x.mean()");
 
-  CHECK_THROWS_AS(reg.add({.name = "", .desc = "nameless", .keywords = {}}),
+  CHECK_THROWS_AS(reg.add(spec("", 0, 0, {}, "x()")),
                   std::invalid_argument);
 }
 
@@ -198,12 +219,76 @@ TEST_CASE("validate_rejects_non_name_callee") {
                  "call target is not a function name"));
 }
 
+TEST_CASE("registry_rejects_malformed_specs") {
+  FunctionRegistry reg;
+  // Arity that can never be satisfied
+  CHECK_THROWS_AS(reg.add(spec("a", 2, 1, {}, "x.a(1)")), std::invalid_argument);
+  CHECK_THROWS_AS(reg.add(spec("b", -1, -1, {}, "x.b()")), std::invalid_argument);
+  // Keyword arguments that cannot be addressed
+  CHECK_THROWS_AS(reg.add(spec("c", 0, 0, {{"", true}}, "x.c()")),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(reg.add(spec("e", 0, 0, {{"dims", true}, {"dims", false}}, "x.e()")),
+                  std::invalid_argument);
+  // None of them landed
+  CHECK(reg.names().empty());
+}
+
+TEST_CASE("validate_registry_accepts_a_self_consistent_vocabulary") {
+  CHECK(registry_error(test_registry()) == "");
+  // The builtins must describe themselves correctly too
+  CHECK(registry_error(builtin_functions()) == "");
+}
+
+TEST_CASE("validate_registry_catches_a_spec_its_example_contradicts") {
+  // The point of the check: you declare one arity and write another. Nothing
+  // rejects that until a user writes the call, unless the registry is checked.
+  FunctionRegistry wrong_arity;
+  wrong_arity.add(spec("mean", 0, 0, {}, "T_mid.mean('lev')"));
+  CHECK(contains(registry_error(wrong_arity), "does not match the spec"));
+
+  // A keyword the spec never declared
+  FunctionRegistry wrong_kw;
+  wrong_kw.add(spec("mean", 1, 1, {}, "T_mid.mean('lev', weights='dp')"));
+  CHECK(contains(registry_error(wrong_kw), "has no argument 'weights'"));
+
+  // A required keyword the example forgets
+  FunctionRegistry missing_kw;
+  missing_kw.add(spec("isel", 0, 0, {{"lev", true}}, "T_mid.isel()"));
+  CHECK(contains(registry_error(missing_kw), "requires argument 'lev'"));
+
+  // An example that is not an expression at all
+  FunctionRegistry unparseable;
+  unparseable.add(spec("mean", 1, 1, {}, "T_mid.mean('lev'"));
+  CHECK(contains(registry_error(unparseable), "does not parse"));
+
+  // An example demonstrating somebody else's function
+  FunctionRegistry wrong_function;
+  wrong_function.add(spec("mean", 1, 1, {}, "T_mid.mean('lev')"));
+  wrong_function.add(spec("prev", 0, 0, {}, "T_mid.mean('lev')"));
+  CHECK(contains(registry_error(wrong_function), "never calls 'prev'"));
+
+  // No example at all: nothing to check the spec against
+  FunctionRegistry no_example;
+  no_example.add(spec("mean", 1, 1, {}, ""));
+  CHECK(contains(registry_error(no_example), "no example"));
+}
+
+TEST_CASE("validate_registry_reports_every_bad_spec_at_once") {
+  FunctionRegistry reg;
+  reg.add(spec("a", 0, 0, {}, "x.a("));
+  reg.add(spec("b", 0, 0, {}, ""));
+  const auto msg = registry_error(reg);
+  CHECK(contains(msg, "'a'"));
+  CHECK(contains(msg, "'b'"));
+}
+
 TEST_CASE("function_spec_to_string") {
   FunctionSpec s{.name = "mean",
                  .desc = "average over a dimension",
                  .min_positional = 1,
                  .max_positional = 2,
-                 .keywords = {{"weights", false}, {"dim", true}}};
+                 .keywords = {{"weights", false}, {"dim", true}},
+                 .example = "T_mid.mean('lev', dim='x')"};
   const auto str = s.to_string();
   CHECK(contains(str, "mean("));
   CHECK(contains(str, "<arg>"));
@@ -211,6 +296,10 @@ TEST_CASE("function_spec_to_string") {
   CHECK(contains(str, "[weights=..]"));
   CHECK(contains(str, "dim=.."));
   CHECK(contains(str, "average over a dimension"));
+
+  // The example is part of the listing, so `dexpr functions` shows how to write
+  // the call rather than only its shape.
+  CHECK(contains(str, "e.g. T_mid.mean('lev', dim='x')"));
 }
 
 } // namespace dexpr

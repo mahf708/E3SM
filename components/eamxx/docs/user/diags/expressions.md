@@ -145,3 +145,20 @@ The set of callable functions is registered by EAMxx, in
 `components/eamxx/src/share/io/eamxx_dexpr_diags.cpp`, not by `dexpr` itself.
 Adding one means adding a `FunctionSpec` to the registry there and a case to the
 translator that maps it onto a diagnostic; nothing under `share/dexpr` changes.
+
+Each `FunctionSpec` carries an `example` of how the call is written. That is not
+just documentation: two checks use it, so a function that does not hang together
+fails fast rather than at the moment a user first writes it.
+
+- `dexpr::validate_registry`, called where the registry is built, proves the
+  example parses, matches the spec that declared it (arity, keyword names,
+  required keywords), and really calls that function. Declare `mean` as taking
+  no positional arguments while writing `T_mid.mean('lev')` and this catches it.
+- The `dexpr_every_registered_function_is_buildable` case in
+  `src/share/io/tests/create_diag.cpp` runs every example through
+  `create_diagnostic`, so a function registered without a translator case is
+  caught too.
+
+So adding a function means: register it with an example, translate it, and both
+checks come along for free. The `dexpr` command line tool does the same for the
+generic vocabulary -- `dexpr check "<expr>"` and `dexpr check-registry`.

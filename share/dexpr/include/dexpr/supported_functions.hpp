@@ -10,6 +10,12 @@
  * That split is deliberate: parsing stays independent of who is asking, so the
  * same expression can be checked against different components' vocabularies,
  * and a component adds a callable without editing anything in this library.
+ *
+ * Every spec carries an `example` of how the call is written, and
+ * validate_registry() proves each example parses, validates against the very
+ * spec that declared it, and really calls that function. So a vocabulary is
+ * checked against itself: get the arity or the keywords wrong and the function
+ * you just added fails immediately, rather than the first time a user writes it.
  */
 #ifndef DEXPR_SUPPORTED_FUNCTIONS_HPP
 #define DEXPR_SUPPORTED_FUNCTIONS_HPP
@@ -43,7 +49,12 @@ struct FunctionSpec {
 
   std::vector<ParamSpec> keywords;
 
-  // "name(arg, kw=..)\n--- desc", the listing the `dexpr` tool prints.
+  // One way the call is actually written, e.g. "T_mid.mean('lev')". Doubles as
+  // the documentation and as what validate_registry() checks the spec against,
+  // so the two cannot drift apart.
+  std::string example;
+
+  // "name(arg, kw=..)\n--- desc\n--- e.g. example", the `dexpr` tool listing.
   std::string to_string() const;
 };
 
@@ -55,8 +66,9 @@ inline std::ostream& operator<<(std::ostream& os, const FunctionSpec& function) 
 // messages are stable rather than hash-order.
 class FunctionRegistry {
 public:
-  // Throws std::invalid_argument if the name is already registered: two specs
-  // for one name means one of them is silently dead.
+  // Throws std::invalid_argument if the spec is malformed (no name, impossible
+  // arity, a nameless or repeated keyword) or if the name is already
+  // registered: two specs for one name means one of them is silently dead.
   void add(FunctionSpec spec);
 
   const FunctionSpec* find(std::string_view name) const;
@@ -88,6 +100,14 @@ public:
 //
 // Kept out of the parser on purpose -- see the file comment.
 void validate_calls(const ast::Expression& root, const FunctionRegistry& reg);
+
+// Checks a whole vocabulary against itself: every spec must carry an example,
+// and that example must parse, pass validate_calls() against `reg`, and call
+// the function that declared it. Collects every problem and throws once.
+//
+// This is the check to run after registering a new function -- from a unit
+// test, or straight from the code that builds the registry.
+void validate_registry(const FunctionRegistry& reg);
 
 } // namespace dexpr
 

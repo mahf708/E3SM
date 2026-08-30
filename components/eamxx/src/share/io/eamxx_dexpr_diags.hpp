@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace scream {
 
@@ -45,6 +46,13 @@ namespace scream {
 std::shared_ptr<AbstractDiagnostic>
 dexpr_create_diagnostic (const std::string& expr,
                          const std::shared_ptr<const AbstractGrid>& grid);
+
+// One example call per supported function, e.g. "T_mid.isel(lev=10)". dexpr
+// already checks each example against the spec that declared it; this exposes
+// them so a test can go one step further and prove every registered function is
+// actually buildable. A function registered without a matching case in the
+// translator is otherwise only caught when a user happens to write that call.
+std::vector<std::string> dexpr_diagnostic_examples ();
 
 } // namespace scream
 

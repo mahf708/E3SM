@@ -21,68 +21,6 @@ using dexpr::TokenTypes;
 namespace ast = dexpr::ast;
 
 // ---------------------------------------------------------------------------
-// The EAMxx vocabulary
-// ---------------------------------------------------------------------------
-// Spelled after xarray wherever there is an honest analogue, since that is what
-// users already reach for when post-processing the output these diags replace.
-// This lives here, not in share/dexpr: dexpr owns the grammar, we own the
-// vocabulary, and adding a diag here touches nothing in that library.
-const dexpr::FunctionRegistry& eamxx_registry ()
-{
-  static const dexpr::FunctionRegistry reg = [] {
-    dexpr::FunctionRegistry r;
-
-    r.add({.name = "isel",
-           .desc = "value at a vertical index: X.isel(lev=10), X.isel(lev=-1)",
-           .min_positional = 0, .max_positional = 0,
-           .keywords = {{"lev",true}}});
-    r.add({.name = "interp",
-           .desc = "value interpolated to a pressure or height: "
-                   "X.interp(plev=500,units='hPa'), X.interp(z=10,reference='surface')",
-           .min_positional = 0, .max_positional = 0,
-           .keywords = {{"plev",false},{"z",false},{"units",false},{"reference",false}}});
-    r.add({.name = "mean",
-           .desc = "average over a dimension: X.mean('col'), X.mean('lev',weights='dp')",
-           .min_positional = 1, .max_positional = 1,
-           .keywords = {{"weights",false}}});
-    r.add({.name = "sum",
-           .desc = "sum over a dimension: X.sum('lev'), X.sum('lev',weights='dz')",
-           .min_positional = 1, .max_positional = 1,
-           .keywords = {{"weights",false}}});
-    r.add({.name = "where",
-           .desc = "keep values where a condition holds: X.where(qv>0.01)",
-           .min_positional = 1, .max_positional = 1,
-           .keywords = {}});
-    r.add({.name = "differentiate",
-           .desc = "vertical derivative w.r.t. pressure or height: X.differentiate('p')",
-           .min_positional = 1, .max_positional = 1,
-           .keywords = {}});
-    r.add({.name = "histogram",
-           .desc = "counts per bin, given the bin edges: X.histogram([0,1,2])",
-           .min_positional = 1, .max_positional = 1,
-           .keywords = {}});
-    r.add({.name = "zonal_mean",
-           .desc = "average within latitude bands: X.zonal_mean(bins=20)",
-           .min_positional = 0, .max_positional = 0,
-           .keywords = {{"bins",true}}});
-    r.add({.name = "prev",
-           .desc = "value at the previous time step: X.prev()",
-           .min_positional = 0, .max_positional = 0,
-           .keywords = {}});
-    r.add({.name = "over_dt",
-           .desc = "value divided by the time step: X.over_dt()",
-           .min_positional = 0, .max_positional = 0,
-           .keywords = {}});
-    r.add({.name = "tend",
-           .desc = "tendency over the time step, i.e. (X-X.prev()).over_dt()",
-           .min_positional = 0, .max_positional = 0,
-           .keywords = {}});
-    return r;
-  }();
-  return reg;
-}
-
-// ---------------------------------------------------------------------------
 // Small helpers over the AST
 // ---------------------------------------------------------------------------
 
@@ -255,6 +193,90 @@ void translate_binary (const ast::BinaryExpression& e, const ast::Expression& se
   params.set<std::string>("arg1",name_of(*e.left));
   params.set<std::string>("arg2",name_of(*e.right));
   params.set<std::string>("binary_op",op);
+}
+
+// ---------------------------------------------------------------------------
+// The EAMxx vocabulary
+// ---------------------------------------------------------------------------
+// Spelled after xarray wherever there is an honest analogue, since that is what
+// users already reach for when post-processing the output these diags replace.
+// This lives here, not in share/dexpr: dexpr owns the grammar, we own the
+// vocabulary, and adding a diag here touches nothing in that library.
+//
+// It sits directly above translate_call() because the two are a pair: every
+// entry registered here needs a case there. Nothing in the type system enforces
+// that, so two checks do -- validate_registry() below proves each spec matches
+// its own example, and the create_diag test builds every example, which fails
+// if a function is registered with no case to translate it.
+const dexpr::FunctionRegistry& eamxx_registry ()
+{
+  static const dexpr::FunctionRegistry reg = [] {
+    dexpr::FunctionRegistry r;
+
+    r.add({.name = "isel",
+           .desc = "value at a vertical index (-1 or 'model_bot' is the bottom)",
+           .min_positional = 0, .max_positional = 0,
+           .keywords = {{"lev",true}},
+           .example = "T_mid.isel(lev=10)"});
+    r.add({.name = "interp",
+           .desc = "value interpolated to a pressure ('plev') or height ('z')",
+           .min_positional = 0, .max_positional = 0,
+           .keywords = {{"plev",false},{"z",false},{"units",false},{"reference",false}},
+           .example = "T_mid.interp(plev=500,units='hPa')"});
+    r.add({.name = "mean",
+           .desc = "average over a dimension ('col' or 'lev')",
+           .min_positional = 1, .max_positional = 1,
+           .keywords = {{"weights",false}},
+           .example = "T_mid.mean('lev',weights='dp')"});
+    r.add({.name = "sum",
+           .desc = "sum over a dimension ('lev')",
+           .min_positional = 1, .max_positional = 1,
+           .keywords = {{"weights",false}},
+           .example = "T_mid.sum('lev',weights='dz')"});
+    r.add({.name = "where",
+           .desc = "keep values where a condition holds",
+           .min_positional = 1, .max_positional = 1,
+           .keywords = {},
+           .example = "T_mid.where(qv>0.01)"});
+    r.add({.name = "differentiate",
+           .desc = "vertical derivative w.r.t. pressure ('p') or height ('z')",
+           .min_positional = 1, .max_positional = 1,
+           .keywords = {},
+           .example = "T_mid.differentiate('p')"});
+    r.add({.name = "histogram",
+           .desc = "counts per bin, given the bin edges",
+           .min_positional = 1, .max_positional = 1,
+           .keywords = {},
+           .example = "T_mid.histogram([0,1,2])"});
+    r.add({.name = "zonal_mean",
+           .desc = "average within latitude bands",
+           .min_positional = 0, .max_positional = 0,
+           .keywords = {{"bins",true}},
+           .example = "T_mid.zonal_mean(bins=20)"});
+    r.add({.name = "prev",
+           .desc = "value at the previous time step",
+           .min_positional = 0, .max_positional = 0,
+           .keywords = {},
+           .example = "T_mid.prev()"});
+    r.add({.name = "over_dt",
+           .desc = "value divided by the time step",
+           .min_positional = 0, .max_positional = 0,
+           .keywords = {},
+           .example = "T_mid.over_dt()"});
+    r.add({.name = "tend",
+           .desc = "tendency over the time step, i.e. (X-X.prev()).over_dt()",
+           .min_positional = 0, .max_positional = 0,
+           .keywords = {},
+           .example = "T_mid.tend()"});
+
+    // Every spec must describe itself correctly: its example has to parse,
+    // validate against the very spec that declared it, and call it. Adding a
+    // function with the arity or keywords spelled wrong fails here, the first
+    // time anything touches the registry, rather than when a user writes it.
+    dexpr::validate_registry(r);
+    return r;
+  }();
+  return reg;
 }
 
 void translate_call (const Call& call, const ast::Expression& self,
@@ -493,6 +515,15 @@ dexpr_create_diagnostic (const std::string& expr,
   params.set<bool>("from_expression",true);
 
   return DiagnosticFactory::instance().create(diag_name,grid->get_comm(),params,grid);
+}
+
+std::vector<std::string> dexpr_diagnostic_examples ()
+{
+  std::vector<std::string> out;
+  for (const auto& entry : eamxx_registry()) {
+    out.push_back(entry.second.example);
+  }
+  return out;
 }
 
 } // namespace scream
