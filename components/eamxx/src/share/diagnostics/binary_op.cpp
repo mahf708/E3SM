@@ -2,6 +2,7 @@
 
 #include "share/physics/physics_constants.hpp"
 
+#include <cmath>
 #include <cstdlib>
 
 namespace {
@@ -27,6 +28,9 @@ bool str2real (const std::string& s, Real& value) {
   const double d = std::strtod(startptr,&endptr);
 
   if (endptr==startptr or *endptr!='\0') return false;
+  // strtod also accepts "nan" and "inf". Those are field names as far as we are
+  // concerned, not numbers anyone meant to multiply by.
+  if (not std::isfinite(d)) return false;
 
   value = static_cast<Real>(d);
   return true;
