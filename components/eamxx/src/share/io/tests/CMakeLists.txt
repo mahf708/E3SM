@@ -28,10 +28,13 @@ if (NOT SCREAM_ONLY_GENERATE_BASELINES)
   )
 
   ## Test output of diagnostics requested as expressions
+  ## NOTE: multi-rank like io_diags, since what this checks is a field making it
+  ##       through an output stream, and that is where the decomposition lives.
   CreateUnitTest(io_dexpr
     SOURCES io_dexpr.cpp
     LIBS eamxx_io eamxx_diagnostics
     LABELS io diagnostics
+    MPI_RANKS 1 ${SCREAM_TEST_MAX_RANKS}
   )
 
   ## Test conditional geo data output (io_output_if_dim_exists feature)
