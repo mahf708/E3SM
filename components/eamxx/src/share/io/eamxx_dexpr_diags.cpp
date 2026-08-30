@@ -31,64 +31,52 @@ const dexpr::FunctionRegistry& eamxx_registry ()
 {
   static const dexpr::FunctionRegistry reg = [] {
     dexpr::FunctionRegistry r;
-    using dexpr::CallForm;
 
     r.add({.name = "isel",
            .desc = "value at a vertical index: X.isel(lev=10), X.isel(lev=-1)",
            .min_positional = 0, .max_positional = 0,
-           .keywords = {{"lev",true}},
-           .form = CallForm::Method});
+           .keywords = {{"lev",true}}});
     r.add({.name = "interp",
            .desc = "value interpolated to a pressure or height: "
                    "X.interp(plev=500,units='hPa'), X.interp(z=10,reference='surface')",
            .min_positional = 0, .max_positional = 0,
-           .keywords = {{"plev",false},{"z",false},{"units",false},{"reference",false}},
-           .form = CallForm::Method});
+           .keywords = {{"plev",false},{"z",false},{"units",false},{"reference",false}}});
     r.add({.name = "mean",
            .desc = "average over a dimension: X.mean('col'), X.mean('lev',weights='dp')",
            .min_positional = 1, .max_positional = 1,
-           .keywords = {{"weights",false}},
-           .form = CallForm::Method});
+           .keywords = {{"weights",false}}});
     r.add({.name = "sum",
            .desc = "sum over a dimension: X.sum('lev'), X.sum('lev',weights='dz')",
            .min_positional = 1, .max_positional = 1,
-           .keywords = {{"weights",false}},
-           .form = CallForm::Method});
+           .keywords = {{"weights",false}}});
     r.add({.name = "where",
            .desc = "keep values where a condition holds: X.where(qv>0.01)",
            .min_positional = 1, .max_positional = 1,
-           .keywords = {},
-           .form = CallForm::Method});
+           .keywords = {}});
     r.add({.name = "differentiate",
            .desc = "vertical derivative w.r.t. pressure or height: X.differentiate('p')",
            .min_positional = 1, .max_positional = 1,
-           .keywords = {},
-           .form = CallForm::Method});
+           .keywords = {}});
     r.add({.name = "histogram",
            .desc = "counts per bin, given the bin edges: X.histogram([0,1,2])",
            .min_positional = 1, .max_positional = 1,
-           .keywords = {},
-           .form = CallForm::Method});
+           .keywords = {}});
     r.add({.name = "zonal_mean",
            .desc = "average within latitude bands: X.zonal_mean(bins=20)",
            .min_positional = 0, .max_positional = 0,
-           .keywords = {{"bins",true}},
-           .form = CallForm::Method});
+           .keywords = {{"bins",true}}});
     r.add({.name = "prev",
            .desc = "value at the previous time step: X.prev()",
            .min_positional = 0, .max_positional = 0,
-           .keywords = {},
-           .form = CallForm::Method});
+           .keywords = {}});
     r.add({.name = "over_dt",
            .desc = "value divided by the time step: X.over_dt()",
            .min_positional = 0, .max_positional = 0,
-           .keywords = {},
-           .form = CallForm::Method});
+           .keywords = {}});
     r.add({.name = "tend",
            .desc = "tendency over the time step, i.e. (X-X.prev()).over_dt()",
            .min_positional = 0, .max_positional = 0,
-           .keywords = {},
-           .form = CallForm::Method});
+           .keywords = {}});
     return r;
   }();
   return reg;

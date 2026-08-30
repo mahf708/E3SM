@@ -25,20 +25,12 @@ std::string FunctionSpec::to_string() const {
     first = false;
     str_ += "<arg>";
   }
-  if (max_positional < 0) {
+  for (int i = min_positional; i < max_positional; ++i) {
     if (!first) {
       str_ += ", ";
     }
     first = false;
-    str_ += "<arg>...";
-  } else {
-    for (int i = min_positional; i < max_positional; ++i) {
-      if (!first) {
-        str_ += ", ";
-      }
-      first = false;
-      str_ += "[<arg>]";
-    }
+    str_ += "[<arg>]";
   }
   for (const auto& kw : keywords) {
     if (!first) {
@@ -82,14 +74,6 @@ std::vector<std::string> FunctionRegistry::names() const {
   return out;
 }
 
-std::string FunctionRegistry::to_string() const {
-  std::string out;
-  for (auto it = fns_.begin(); it != fns_.end(); ++it) {
-    out += it->second.to_string() + "\n";
-  }
-  return out;
-}
-
 const FunctionRegistry& builtin_functions() {
   static const FunctionRegistry reg = [] {
     FunctionRegistry r;
@@ -97,26 +81,22 @@ const FunctionRegistry& builtin_functions() {
            .desc = "applies condition to operand",
            .min_positional = 1,
            .max_positional = 1,
-           .keywords = {},
-           .form = CallForm::Any});
+           .keywords = {}});
     r.add({.name = "sum",
            .desc = "sums operand over designated indices (int or name)",
            .min_positional = 0,
            .max_positional = 0,
-           .keywords = {{"dims", true}},
-           .form = CallForm::Any});
+           .keywords = {{"dims", true}}});
     r.add({.name = "derivative",
            .desc = "takes derivative w.r.t. `dx` over designated dimension",
            .min_positional = 1,
            .max_positional = 1,
-           .keywords = {{"dims", false}},
-           .form = CallForm::Any});
+           .keywords = {{"dims", false}}});
     r.add({.name = "tend",
            .desc = "calculates the tendency of a variable over time",
            .min_positional = 0,
            .max_positional = 0,
-           .keywords = {},
-           .form = CallForm::Any});
+           .keywords = {}});
     return r;
   }();
   return reg;
@@ -133,19 +113,16 @@ ValidationError::ValidationError(const std::vector<std::string>& errors)
 
 namespace {
 
-// The callee of a call, plus how the call was written. `f(x)` puts an
-// Identifier directly under FuncExpression::function; `x.f(y)` puts a
-// BinaryExpression{Dot} there, whose right child is the name.
+// The callee of a call. `f(x)` puts an Identifier directly under
+// FuncExpression::function; `x.f(y)` puts a BinaryExpression{Dot} there, whose
+// right child is the name and whose left child is the receiver.
 struct Callee {
   const std::string* name = nullptr; // null when the callee is not a plain name
-  CallForm form = CallForm::Free;
   const ast::Expression* receiver = nullptr; // non-null for the method form
 };
 
 struct CalleeVisitor {
-  Callee operator()(const ast::Identifier& e) const {
-    return {&e.value, CallForm::Free, nullptr};
-  }
+  Callee operator()(const ast::Identifier& e) const { return {&e.value, nullptr}; }
   Callee operator()(const ast::BinaryExpression& e) const {
     if (e.op != TokenTypes::Dot) {
       return {};
@@ -155,7 +132,7 @@ struct CalleeVisitor {
     return e.right->visit([&](const auto& node) -> Callee {
       using T = std::decay_t<decltype(node)>;
       if constexpr (std::is_same_v<T, ast::Identifier>) {
-        return {&node.value, CallForm::Method, e.left.get()};
+        return {&node.value, e.left.get()};
       } else {
         return {};
       }
@@ -163,18 +140,6 @@ struct CalleeVisitor {
   }
   template <typename T> Callee operator()(const T&) const { return {}; }
 };
-
-std::string form_to_string(CallForm form) {
-  switch (form) {
-  case CallForm::Free:
-    return "free-standing, f(..)";
-  case CallForm::Method:
-    return "method, x.f(..)";
-  case CallForm::Any:
-    break;
-  }
-  return "either form";
-}
 
 // Keyword arguments are Assign binary expressions in the argument list, so the
 // two kinds are separated after parsing rather than during it.
@@ -276,12 +241,6 @@ private:
       return;
     }
 
-    if (spec->form != CallForm::Any && spec->form != callee.form) {
-      errors_.push_back("'" + name + "' must be written " +
-                        form_to_string(spec->form) + ", not " +
-                        form_to_string(callee.form));
-    }
-
     int positional = 0;
     std::set<std::string> seen_keywords;
     for (const auto& arg : e.args) {
@@ -311,7 +270,7 @@ private:
     }
 
     if (positional < spec->min_positional ||
-        (spec->max_positional >= 0 && positional > spec->max_positional)) {
+        positional > spec->max_positional) {
       errors_.push_back("'" + name + "' takes " +
                         arity_to_string(*spec) + ", got " +
                         std::to_string(positional));
@@ -325,10 +284,6 @@ private:
   }
 
   static std::string arity_to_string(const FunctionSpec& spec) {
-    if (spec.max_positional < 0) {
-      return "at least " + std::to_string(spec.min_positional) +
-             " positional argument(s)";
-    }
     if (spec.min_positional == spec.max_positional) {
       return std::to_string(spec.min_positional) + " positional argument(s)";
     }

@@ -91,10 +91,9 @@ call syntactically -- `foo(a, b=c)` parses the same whether or not `foo` exists
 dexpr::FunctionRegistry reg;
 reg.add({.name = "mean",
          .desc = "average over a dimension",
-         .min_positional = 1,
-         .max_positional = 1,           // -1 for variadic
-         .keywords = {{"weights", false}},
-         .form = dexpr::CallForm::Method});   // Free, Method or Any
+         .min_positional = 1,           // a method call's receiver is not
+         .max_positional = 1,           // counted as a positional argument
+         .keywords = {{"weights", false}}});
 
 parser::Parser parser{Lexer{input}};
 const auto expr = parser.parse();
@@ -103,10 +102,14 @@ dexpr::validate_calls(*expr, reg);      // throws ValidationError
 
 `validate_calls` checks that each callee is a plain name, that the name is
 registered, that positional arity fits, that every keyword argument names a
-declared parameter and appears once, that required keywords are present, and
-that the call form matches. It collects every problem in the expression and
-throws once, so a user fixes them all in one pass rather than one build at a
-time. Unknown names come back with the registered set listed.
+declared parameter and appears once, and that required keywords are present. It
+collects every problem in the expression and throws once, so a user fixes them
+all in one pass rather than one build at a time. Unknown names come back with
+the registered set listed.
+
+Whether a call is written `f(x)` or `x.f()` is not dexpr's business: both parse,
+and the receiver of a method call is simply not counted as a positional
+argument. A component that implements only one spelling rejects the other.
 
 Keeping this out of the parser is deliberate: the same expression can be
 checked against different components' vocabularies, and adding a callable

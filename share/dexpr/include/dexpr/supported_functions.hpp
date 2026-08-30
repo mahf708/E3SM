@@ -32,26 +32,16 @@ struct ParamSpec {
   bool required = false;
 };
 
-// How a call may be written. Most component functions read best in one form
-// only: `where(x)` free-standing is meaningless without an operand, while
-// `x.tend()` reads wrong as `tend(x)`.
-enum class CallForm {
-  Any,     // both `f(x)` and `x.f()`
-  Free,    // only `f(x)`
-  Method,  // only `x.f()`
-};
-
 struct FunctionSpec {
   std::string name;
   std::string desc;
 
-  // Positional arity, not counting keyword arguments. -1 max means variadic.
+  // Positional arity, not counting keyword arguments. For a method call `x.f()`
+  // the receiver is not positional, so `x.mean('lev')` has one.
   int min_positional = 0;
   int max_positional = 0;
 
   std::vector<ParamSpec> keywords;
-
-  CallForm form = CallForm::Any;
 
   // "name(arg, kw=..)\n--- desc", the listing the `dexpr` tool prints.
   std::string to_string() const;
@@ -73,14 +63,9 @@ public:
   bool contains(std::string_view name) const { return find(name) != nullptr; }
 
   std::vector<std::string> names() const;
-  bool empty() const { return fns_.empty(); }
-  std::size_t size() const { return fns_.size(); }
 
   auto begin() const { return fns_.begin(); }
   auto end() const { return fns_.end(); }
-
-  // Every spec, one per line, for help text and error messages.
-  std::string to_string() const;
 
 private:
   // std::less<> so lookups take a string_view without allocating.
@@ -98,8 +83,8 @@ public:
 
 // Checks every call in the tree against `reg`: that the callee is a plain name,
 // that the name is registered, that positional arity fits, that each keyword
-// argument names a declared parameter, that required keywords are present, and
-// that the call form matches. Collects every problem and throws once.
+// argument names a declared parameter, and that required keywords are present.
+// Collects every problem and throws once.
 //
 // Kept out of the parser on purpose -- see the file comment.
 void validate_calls(const ast::Expression& root, const FunctionRegistry& reg);

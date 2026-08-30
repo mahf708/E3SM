@@ -258,11 +258,6 @@ TEST_CASE ("io_with_expressions")
   // variable of that name, which nothing downstream can handle. It has to be
   // given a name -- note this is decided by how the name RESOLVED, not by which
   // characters it contains.
-  // NOTE: throwing part-way through setup leaves the diag in the static
-  //       m_diag_repo (the stream never got far enough to own it, so its
-  //       destructor has nothing to erase), which Kokkos then reports as an
-  //       allocation freed after finalize. Noisy, but harmless, and a property
-  //       of that static rather than of anything under test here.
   {
     auto bad = output_params("io_dexpr_unnamed",gname,{"qv*T_mid"});
     OutputManager om_bad;

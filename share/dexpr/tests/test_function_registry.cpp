@@ -18,26 +18,17 @@ FunctionRegistry test_registry() {
            .desc = "average over a dimension",
            .min_positional = 1,
            .max_positional = 1,
-           .keywords = {{"weights", false}},
-           .form = CallForm::Method});
+           .keywords = {{"weights", false}}});
   reg.add({.name = "prev",
            .desc = "value at the previous step",
            .min_positional = 0,
            .max_positional = 0,
-           .keywords = {},
-           .form = CallForm::Method});
+           .keywords = {}});
   reg.add({.name = "clamp",
            .desc = "bound a field",
            .min_positional = 1,
            .max_positional = 2,
-           .keywords = {{"fill", true}},
-           .form = CallForm::Any});
-  reg.add({.name = "concat",
-           .desc = "join any number of fields",
-           .min_positional = 1,
-           .max_positional = -1,
-           .keywords = {},
-           .form = CallForm::Free});
+           .keywords = {{"fill", true}}});
   return reg;
 }
 
@@ -63,12 +54,10 @@ bool contains(const std::string& haystack, const std::string& needle) {
 
 TEST_CASE("registry_add_and_find") {
   FunctionRegistry reg;
-  CHECK(reg.empty());
   CHECK(reg.find("mean") == nullptr);
   CHECK_FALSE(reg.contains("mean"));
 
   reg.add({.name = "mean", .desc = "average", .keywords = {}});
-  CHECK(reg.size() == 1);
   REQUIRE(reg.find("mean") != nullptr);
   CHECK(reg.find("mean")->desc == "average");
   CHECK(reg.contains("mean"));
@@ -93,11 +82,10 @@ TEST_CASE("registry_rejects_duplicates") {
 TEST_CASE("registry_names_are_ordered") {
   const auto reg = test_registry();
   const auto names = reg.names();
-  REQUIRE(names.size() == 4);
+  REQUIRE(names.size() == 3);
   CHECK(names[0] == "clamp");
-  CHECK(names[1] == "concat");
-  CHECK(names[2] == "mean");
-  CHECK(names[3] == "prev");
+  CHECK(names[1] == "mean");
+  CHECK(names[2] == "prev");
 }
 
 TEST_CASE("builtin_functions_are_seeded") {
@@ -118,8 +106,10 @@ TEST_CASE("validate_accepts_well_formed_calls") {
   CHECK(validation_error("T_mid.prev()", reg) == "");
   CHECK(validation_error("clamp(T_mid, fill=0)", reg) == "");
   CHECK(validation_error("clamp(T_mid, 1, fill=0)", reg) == "");
-  CHECK(validation_error("concat(a)", reg) == "");
-  CHECK(validation_error("concat(a, b, c, d)", reg) == "");
+  // dexpr does not care whether a call is written `f(x)` or `x.f()`: the
+  // receiver is simply not counted as a positional argument. A component that
+  // only implements one spelling rejects the other itself.
+  CHECK(validation_error("T_mid.clamp(1, fill=0)", reg) == "");
 
   // Expressions with no calls at all are trivially valid.
   CHECK(validation_error("(qc+qv)*p_mid", reg) == "");
@@ -132,7 +122,7 @@ TEST_CASE("validate_rejects_unknown_function") {
   const auto msg = validation_error("T_mid.meen('lev')", reg);
   CHECK(contains(msg, "unknown function 'meen'"));
   // The message lists what the component does offer, so the fix is visible.
-  CHECK(contains(msg, "clamp, concat, mean, prev"));
+  CHECK(contains(msg, "clamp, mean, prev"));
 
   CHECK(contains(validation_error("nope(x)", FunctionRegistry{}),
                  "no functions are registered"));
@@ -149,8 +139,6 @@ TEST_CASE("validate_rejects_bad_arity") {
                  "'prev' takes 0 positional argument(s), got 1"));
   CHECK(contains(validation_error("clamp(fill=0)", reg),
                  "'clamp' takes 1 to 2 positional argument(s), got 0"));
-  CHECK(contains(validation_error("concat()", reg),
-                 "'concat' takes at least 1 positional argument(s), got 0"));
 
   // Keyword arguments do not count towards positional arity.
   CHECK(validation_error("T_mid.mean('lev', weights='dp')", reg) == "");
@@ -169,18 +157,6 @@ TEST_CASE("validate_rejects_bad_keywords") {
                  "got argument 'weights' more than once"));
   CHECK(contains(validation_error("clamp(T_mid)", reg),
                  "'clamp' requires argument 'fill'"));
-}
-
-TEST_CASE("validate_enforces_call_form") {
-  const auto reg = test_registry();
-
-  CHECK(contains(validation_error("mean(T_mid, 'lev')", reg),
-                 "'mean' must be written method, x.f(..)"));
-  CHECK(contains(validation_error("T_mid.concat(b)", reg),
-                 "'concat' must be written free-standing, f(..)"));
-  // CallForm::Any accepts both spellings.
-  CHECK(validation_error("clamp(a, fill=0)", reg) == "");
-  CHECK(validation_error("a.clamp(b, fill=0)", reg) == "");
 }
 
 TEST_CASE("validate_recurses_into_operands_and_arguments") {
@@ -227,8 +203,7 @@ TEST_CASE("function_spec_to_string") {
                  .desc = "average over a dimension",
                  .min_positional = 1,
                  .max_positional = 2,
-                 .keywords = {{"weights", false}, {"dim", true}},
-                 .form = CallForm::Method};
+                 .keywords = {{"weights", false}, {"dim", true}}};
   const auto str = s.to_string();
   CHECK(contains(str, "mean("));
   CHECK(contains(str, "<arg>"));
@@ -236,10 +211,6 @@ TEST_CASE("function_spec_to_string") {
   CHECK(contains(str, "[weights=..]"));
   CHECK(contains(str, "dim=.."));
   CHECK(contains(str, "average over a dimension"));
-
-  FunctionSpec variadic{.name = "concat", .desc = "join", .min_positional = 1,
-                        .max_positional = -1, .keywords = {}};
-  CHECK(contains(variadic.to_string(), "<arg>..."));
 }
 
 } // namespace dexpr
