@@ -2,21 +2,23 @@
  * @file atm.hpp
  * @brief Atmosphere emulator component declaration.
  *
- * Defines the EmulatorAtm class which implements an AI-based atmosphere
+ * Defines the Atm class which implements an AI-based atmosphere
  * component for E3SM. Inherits from the Emulator base class and adds
  * atmosphere-specific coupling, field management, and inference.
  */
 
-#ifndef EMULATORATM_HPP
-#define EMULATORATM_HPP
+#ifndef EAMXX_ATM_HPP
+#define EAMXX_ATM_HPP
 
-#include "emulator.hpp"
-#include "emulator_c_api.hpp"
+#include <emulator.hpp> // should be called "component"
+#include <emulator_c_api.hpp>
 #include <memory>
 #include <string>
 #include <vector>
 
-namespace emulator {
+#include <mpi.h>
+
+namespace eamxx {
 
 /**
  * @brief Atmosphere emulator component.
@@ -31,7 +33,7 @@ namespace emulator {
  * as nx * ny. Lat/lon coordinates are stored and passed to MCT in degrees.
  *
  * ## Lifecycle
- * 1. Constructor creates EmulatorAtm with ATM_COMP type
+ * 1. Constructor creates Atm with ATM_COMP type
  * 2. create_instance() sets MPI, comp_id, parses config for grid dims
  * 3. set_grid_data() sets spatial decomposition (optional override)
  * 4. init_coupling_indices() parses MCT field lists
@@ -40,26 +42,40 @@ namespace emulator {
  * 7. run() executes time steps (import -> inference -> export)
  * 8. finalize() cleans up resources
  */
-class EmulatorAtm : public Emulator {
+class Atm : public Emulator {
 public:
-  EmulatorAtm();
-  ~EmulatorAtm() override = default;
+  Atm();
+
+  Atm(const Atm&) = delete;
+  ~Atm() = default;
+
+  Atm& operator=(const Atm&) = delete;
 
   // =========================================================================
   // Setup methods (called before initialize)
   // =========================================================================
 
   /**
-   * @brief Set MPI communicator, component ID, and run settings.
+   * @brief Create and register an EAMxx instance with the given options.
    */
-  void create_instance(int comm, int comp_id,
-                       const std::string &input_file,
-                       const std::string &log_file,
-                       int run_type, int start_ymd, int start_tod);
-
+  void create_instance(const MPI_Fint f_comm, const int atm_id,
+                       const char* input_yaml_file,
+                       const char* atm_log_file,
+                       const int run_type,
+                       const int run_start_ymd,
+                       const int run_start_tod,
+                       const int case_start_ymd,
+                       const int case_start_tod,
+                       const char* calendar_name);{
+                     /*const char* caseid,
+                       const char* rest_caseid,
+                       const char* hostname,
+                       const char* username,
+                       const char* versionid);*/
   /**
    * @brief Set grid decomposition data from driver.
    */
+  // FIXME: does this pertain to EAMxx?
   void set_grid_data(const EmulatorGridDesc& grid) override;
 
   /**
@@ -71,16 +87,14 @@ public:
   /**
    * @brief Set up coupling buffer pointers from MCT.
    */
-  void setup_coupling(const CouplingDesc& cpl) override;
+  void setup_coupling(const EmulatorCouplingDesc& cpl) override;
 
   // =========================================================================
   // Accessors
   // =========================================================================
 
-  int get_num_local_cols() const override { return m_num_local_cols; }
-  int get_num_global_cols() const override { return m_num_global_cols; }
-  int get_nx() const override { return m_nx; }
-  int get_ny() const override { return m_ny; }
+  int get_num_local_cols() const override;
+  int get_num_global_cols() const override;
   void get_local_col_gids(int *gids) const override;
   void get_cols_latlon(double *lat, double *lon) const override;
   void get_cols_area(double *area) const override;
@@ -93,13 +107,10 @@ protected:
   void print_extra_info(std::ostream& os) const override {};
 
 private:
+  
   // =========================================================================
   // Grid and decomposition
   // =========================================================================
-  int m_nx = 0;                ///< Grid x-dimension
-  int m_ny = 0;                ///< Grid y-dimension
-  int m_num_local_cols = 0;    ///< Local columns on this rank
-  int m_num_global_cols = 0;   ///< Total global columns
   std::vector<int> m_col_gids; ///< Global IDs for local columns
   std::vector<double> m_lat;   ///< Latitude [degrees]
   std::vector<double> m_lon;   ///< Longitude [degrees]
@@ -130,6 +141,6 @@ private:
   void process_outputs();
 };
 
-} // namespace emulator
+} // namespace eamxx
 
-#endif // EMULATORATM_HPP
+#endif // EAMXX_ATM_HPP
