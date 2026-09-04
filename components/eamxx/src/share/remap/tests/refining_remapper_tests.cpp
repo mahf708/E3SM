@@ -606,14 +606,32 @@ TEST_CASE ("refining_remapper_masked") {
   }
   tgt_grid->get_dofs_gids().sync_to_dev();
 
-  // Build the remapper WITH mask tracking, like AtmosphereOutput does
-  auto r = std::make_shared<HorizontalRemapper>(src_grid,tgt_grid,filename,true);
-
   // Mask out src col with gid==masked_gid entirely. Note: src gids are 1-based,
   // and gid 2 participates both as a "copy" and in two averages, so this exercises
   // fully-masked and partially-masked tgt cols at once.
   const int masked_gid = 2;
   auto src_gids_h = src_grid->get_dofs_gids().get_view<const gid_type*,Host>();
+
+  // A tgt col is valid if its remapped mask (= fraction of valid contributors, here)
+  // exceeds the threshold. Run twice: with a permissive threshold of 0, so a col with
+  // ANY valid contributor is kept and renormalized, and with the default (0.5, strict),
+  // where a col that is exactly half masked is invalid. Both are legitimate settings
+  // and they disagree exactly on the half-masked cols.
+  for (const bool permissive : {true,false}) {
+  if (comm.am_i_root()) {
+    printf(" -> mask threshold: %s\n",permissive ? "0 (permissive)" : "default");
+  }
+
+  // Build the remapper WITH mask tracking, like AtmosphereOutput does
+  auto r = std::make_shared<HorizontalRemapper>(src_grid,tgt_grid,filename,true);
+  if (permissive) {
+    r->set_mask_threshold(0);
+  }
+  // Given the number of valid contributors out of the total, is the tgt col valid?
+  auto is_valid = [&](int nvalid, int ntot) {
+    const Real mr = Real(nvalid)/ntot;
+    return permissive ? mr>0 : mr>0.5;
+  };
 
   std::vector<Field> src_f, tgt_f;
   for (const auto& [name,lt] : test_layouts()) {
@@ -652,18 +670,19 @@ TEST_CASE ("refining_remapper_masked") {
       Real expected;
       if (g<=ngdofs_src) {
         // "copy" col: takes src gid g with weight 1
-        expected = g==masked_gid ? constants::fill_value<Real>
-                                 : ref_val(g,j,k,l);
+        const int nvalid = g==masked_gid ? 0 : 1;
+        expected = is_valid(nvalid,1) ? ref_val(g,j,k,l) : constants::fill_value<Real>;
       } else {
-        // "average" col: 0.5*src(c0) + 0.5*src(c1), renormalized by the mask
+        // "average" col: 0.5*src(c0) + 0.5*src(c1), renormalized over the valid ones
         const int c0 = g-ngdofs_src;
         const int c1 = c0+1;
         const bool m0 = c0!=masked_gid;
         const bool m1 = c1!=masked_gid;
-        if      (not m0 and not m1) expected = constants::fill_value<Real>;
-        else if (not m0)            expected = ref_val(c1,j,k,l);
-        else if (not m1)            expected = ref_val(c0,j,k,l);
-        else                        expected = (ref_val(c0,j,k,l)+ref_val(c1,j,k,l))/2;
+        const int nvalid = int(m0)+int(m1);
+        if (not is_valid(nvalid,2))  expected = constants::fill_value<Real>;
+        else if (not m0)             expected = ref_val(c1,j,k,l);
+        else if (not m1)             expected = ref_val(c0,j,k,l);
+        else                         expected = (ref_val(c0,j,k,l)+ref_val(c1,j,k,l))/2;
       }
       CHECK (got==expected);
       ok &= catch_capture.lastAssertionPassed();
@@ -675,10 +694,14 @@ TEST_CASE ("refining_remapper_masked") {
     tmask.sync_to_host();
     for_each_entry<int>(tmask,[&](int i, int, int, int, int& m) {
       const int g = tgt_gids_h(i);
-      const bool fully_masked = (g<=ngdofs_src)
-                              ? g==masked_gid
-                              : (g-ngdofs_src==masked_gid and g-ngdofs_src+1==masked_gid);
-      CHECK (m==(fully_masked ? 0 : 1));
+      bool valid;
+      if (g<=ngdofs_src) {
+        valid = is_valid(g==masked_gid ? 0 : 1, 1);
+      } else {
+        const int c0 = g-ngdofs_src;
+        valid = is_valid(int(c0!=masked_gid)+int(c0+1!=masked_gid), 2);
+      }
+      CHECK (m==(valid ? 1 : 0));
       ok &= catch_capture.lastAssertionPassed();
     });
 
@@ -686,9 +709,9 @@ TEST_CASE ("refining_remapper_masked") {
       printf(" -> Checking masked %s .......... %s\n",name.c_str(),ok ? "PASS" : "FAIL");
     }
   }
-
-  // Clean up
   r = nullptr;
+  } // permissive loop
+
   scorpio::finalize_subsystem();
 }
 
@@ -763,6 +786,96 @@ TEST_CASE ("refining_remapper_uncovered_tgt_cols") {
       printf(" -> Checking uncovered %s ...... %s\n",name.c_str(),ok ? "PASS" : "FAIL");
     }
   }
+
+  r = nullptr;
+  scorpio::finalize_subsystem();
+}
+
+// The one-grid ctor decides which side its input grid is on with a POINTER comparison
+// against the cached remap data's src grid. But HorizRemapperDataRepo deliberately accepts
+// any grid whose gids match (so different output streams can share one map file), so a
+// second grid object hits the cache, fails the pointer test, and the remapper silently
+// treats the src grid as the tgt: get_tgt_grid() ends up with n_a cols, not n_b.
+TEST_CASE ("refining_remapper_cached_direction") {
+  ekat::Comm comm(MPI_COMM_WORLD);
+  scorpio::init_subsystem(comm);
+
+  const int ngdofs_src = 4*comm.size();
+  const int ngdofs_tgt = 2*ngdofs_src-1;
+  auto filename = "rr_cache_tests_map.np" + std::to_string(comm.size()) + ".nc";
+  write_map_file(filename,ngdofs_src);
+
+  const int nlevs = std::max(SCREAM_PACK_SIZE,16);
+  auto src1 = create_point_grid("src",ngdofs_src,nlevs,comm,1);
+  // A different grid OBJECT with the same gids (a shallow clone shares the gids allocation)
+  auto src2 = src1->clone("src_clone",true);
+
+  auto r1 = std::make_shared<HorizontalRemapper>(src1,filename);
+  auto r2 = std::make_shared<HorizontalRemapper>(src2,filename);  // cache hit on the map file
+
+  // Both remappers were handed the SRC grid, so both must remap n_a -> n_b
+  CHECK (r1->get_src_grid()->get_num_global_dofs()==ngdofs_src);
+  CHECK (r1->get_tgt_grid()->get_num_global_dofs()==ngdofs_tgt);
+  CHECK (r2->get_src_grid()->get_num_global_dofs()==ngdofs_src);
+  CHECK (r2->get_tgt_grid()->get_num_global_dofs()==ngdofs_tgt);
+
+  r1 = nullptr;
+  r2 = nullptr;
+  scorpio::finalize_subsystem();
+}
+
+// A masked field with no COL dim is not remapped, just copied, and registration hands its
+// tgt an alias of the src mask. The rescale loop then looked up a tgt REAL mask for it,
+// which was never created, and threw std::out_of_range.
+TEST_CASE ("refining_remapper_masked_non_col_field") {
+  using gid_type = AbstractGrid::gid_type;
+
+  ekat::Comm comm(MPI_COMM_WORLD);
+  scorpio::init_subsystem(comm);
+
+  const int ngdofs_src = 4*comm.size();
+  const int ngdofs_tgt = 2*ngdofs_src-1;
+  auto filename = "rr_noncol_tests_map.np" + std::to_string(comm.size()) + ".nc";
+  write_map_file(filename,ngdofs_src);
+
+  const int nlevs = std::max(SCREAM_PACK_SIZE,16);
+  auto src_grid = create_point_grid("src",ngdofs_src,nlevs,comm,1);
+  auto tgt_grid = create_point_grid("tgt",ngdofs_tgt,nlevs,comm,0);
+  auto dofs_h = tgt_grid->get_dofs_gids().get_view<gid_type*,Host>();
+  for (int i=0; i<tgt_grid->get_num_local_dofs(); ++i) {
+    int q = dofs_h[i] / 2;
+    dofs_h[i] = (dofs_h[i] % 2 == 0) ? q + 1 : ngdofs_src + q + 1;
+  }
+  tgt_grid->get_dofs_gids().sync_to_dev();
+
+  auto r = std::make_shared<HorizontalRemapper>(src_grid,tgt_grid,filename,true);
+
+  // A (LEV) field: no COL, so no remap. Give it a mask anyway.
+  auto s1d_src = create_field("s1d_src",LayoutType::Scalar1D,*src_grid);
+  auto s1d_tgt = create_field("s1d_tgt",LayoutType::Scalar1D,*tgt_grid);
+  for_each_entry<Real>(s1d_src,[&](int i, int, int, int, Real& x) { x = 1.0 + i; });
+  s1d_src.sync_to_dev();
+  s1d_src.create_valid_mask("s1d_mask",Field::MaskInit::Valid);
+
+  // Plus an ordinary masked COL field, so that mask tracking has real work to do
+  auto s2d_src = create_field("s2d_src",LayoutType::Scalar2D,*src_grid);
+  auto s2d_tgt = create_field("s2d_tgt",LayoutType::Scalar2D,*tgt_grid);
+  fill_src(s2d_src,*src_grid);
+  s2d_src.create_valid_mask("s2d_mask",Field::MaskInit::Valid);
+
+  r->register_field(s1d_src,s1d_tgt);
+  r->register_field(s2d_src,s2d_tgt);
+  r->registration_ends();
+
+  REQUIRE_NOTHROW (r->remap_fwd());
+
+  // The non-COL field is a straight copy, and keeps a mask
+  s1d_tgt.sync_to_host();
+  s1d_src.sync_to_host();
+  for_each_entry<Real>(s1d_tgt,[&](int i, int, int, int, Real& got) {
+    CHECK (got == 1.0 + i);
+  });
+  CHECK (s1d_tgt.has_valid_mask());
 
   r = nullptr;
   scorpio::finalize_subsystem();

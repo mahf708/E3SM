@@ -528,8 +528,6 @@ TEST_CASE("coarsening_remap_masked")
 
   const int ngdofs_src = ngdofs_tgt+1;
   auto src_grid = build_src_grid(comm, ngdofs_src, seed);
-  auto remap = std::make_shared<HorizontalRemapper>(src_grid,filename,true);
-  auto tgt_grid = remap->get_tgt_grid();
 
   // The map is tgt(g) = 0.5*src(g) + 0.5*src(g+1). Masking two ADJACENT src cols means
   // tgt col M has both its contributors masked, exercising the fill-value path, while
@@ -538,6 +536,21 @@ TEST_CASE("coarsening_remap_masked")
   REQUIRE (M+1 <= ngdofs_src);
 
   auto src_gids_h = src_grid->get_dofs_gids().get_view<const gid_type*,Host>();
+
+  // See the refining test: run with a permissive threshold (0) where a half-masked col is
+  // kept and renormalized, and with the default (0.5, strict) where it is invalid.
+  for (const bool permissive : {true,false}) {
+  root_print(std::string(" -> mask threshold: ") + (permissive ? "0 (permissive)" : "default") + "\n",comm);
+
+  auto remap = std::make_shared<HorizontalRemapper>(src_grid,filename,true);
+  if (permissive) {
+    remap->set_mask_threshold(0);
+  }
+  auto tgt_grid = remap->get_tgt_grid();
+  auto is_valid = [&](int nvalid, int ntot) {
+    const Real mr = Real(nvalid)/ntot;
+    return permissive ? mr>0 : mr>0.5;
+  };
 
   // Every rank case of the matvec kernels: rank 1, rank 2 (unpacked and packed),
   // rank 3 and rank 4.
@@ -586,11 +599,12 @@ TEST_CASE("coarsening_remap_masked")
       const int c0 = g;
       const int c1 = g+1;
       auto valid = [&](int c) { return c!=M and c!=M+1; };
+      const int nvalid = int(valid(c0))+int(valid(c1));
       Real expected;
-      if      (valid(c0) and valid(c1)) expected = (cr_ref_val(c0,j,k,l)+cr_ref_val(c1,j,k,l))/2;
+      if      (not is_valid(nvalid,2))  expected = constants::fill_value<Real>;
+      else if (valid(c0) and valid(c1)) expected = (cr_ref_val(c0,j,k,l)+cr_ref_val(c1,j,k,l))/2;
       else if (valid(c0))               expected = cr_ref_val(c0,j,k,l);
-      else if (valid(c1))               expected = cr_ref_val(c1,j,k,l);
-      else                              expected = constants::fill_value<Real>;
+      else                              expected = cr_ref_val(c1,j,k,l);
       CHECK (got==expected);
       ok &= catch_capture.lastAssertionPassed();
     });
@@ -601,12 +615,117 @@ TEST_CASE("coarsening_remap_masked")
     tmask.sync_to_host();
     cr_for_each_entry<int>(tmask,[&](int i, int, int, int, int& m) {
       const int g = tgt_gids_h(i);
-      const bool fully_masked = (g==M or g==M+1) and (g+1==M or g+1==M+1);
-      CHECK (m==(fully_masked ? 0 : 1));
+      auto valid = [&](int c) { return c!=M and c!=M+1; };
+      CHECK (m==(is_valid(int(valid(g))+int(valid(g+1)),2) ? 1 : 0));
       ok &= catch_capture.lastAssertionPassed();
     });
 
     root_print(" -> Checking masked coarsening " + name + " ... " + (ok ? "PASS" : "FAIL") + "\n",comm);
+  }
+  remap = nullptr;
+  } // permissive loop
+
+  scorpio::finalize_subsystem();
+}
+
+// Same map as create_remap_file, but every third tgt row is left unmapped, so that on
+// every rank an unmapped tgt col sits BEFORE a mapped one.
+void create_partial_remap_file(const std::string& filename, const int ngdofs_tgt)
+{
+  const int ngdofs_src = ngdofs_tgt + 1;
+  const int gid_base = 1;
+  std::vector<int> col, row;
+  std::vector<double> S;
+  for (int i=0; i<ngdofs_tgt; ++i) {
+    if (i%3==1) continue;    // tgt gids 2,5,8,... get no entries at all
+    row.push_back(gid_base + i);   col.push_back(gid_base + i);   S.push_back(0.5);
+    row.push_back(gid_base + i);   col.push_back(gid_base + i+1); S.push_back(0.5);
+  }
+  const int nnz = row.size();
+
+  scorpio::register_file(filename, scorpio::FileMode::Write);
+  scorpio::define_dim(filename,"n_a", ngdofs_src);
+  scorpio::define_dim(filename,"n_b", ngdofs_tgt);
+  scorpio::define_dim(filename,"n_s", nnz);
+  scorpio::define_var(filename,"col",{"n_s"},"int");
+  scorpio::define_var(filename,"row",{"n_s"},"int");
+  scorpio::define_var(filename,"S"  ,{"n_s"},"double");
+  scorpio::enddef(filename);
+  scorpio::write_var(filename,"row",row.data());
+  scorpio::write_var(filename,"col",col.data());
+  scorpio::write_var(filename,"S",    S.data());
+  scorpio::release_file(filename);
+}
+
+// When coarsening, the MPI unpack is a reduction grouped by tgt col. The offsets table
+// for that grouping was only written for tgt cols that appear in the map, so an unmapped
+// col left a hole and the prefix sum restarted from 0 after it: every mapped col after a
+// hole then pulled in contributions belonging to some other col. Silent data corruption,
+// on exactly the maps a regional tgt grid produces.
+TEST_CASE("coarsening_remap_uncovered_tgt_cols")
+{
+  using namespace ShortFieldTagsNames;
+  using gid_type = AbstractGrid::gid_type;
+  auto& catch_capture = Catch::getResultCapture();
+
+  ekat::Comm comm(MPI_COMM_WORLD);
+  int seed = get_random_test_seed(&comm);
+  scorpio::init_subsystem(comm);
+
+  std::string filename = "cr_partial_tests_map." + std::to_string(comm.size()) + ".nc";
+
+  // 4 tgt cols per rank: with every 3rd col unmapped, each rank has a hole before a mapped col
+  const int nldofs_tgt = 4;
+  const int ngdofs_tgt = nldofs_tgt*comm.size();
+  create_partial_remap_file(filename, ngdofs_tgt);
+
+  const int ngdofs_src = ngdofs_tgt+1;
+  auto src_grid = build_src_grid(comm, ngdofs_src, seed);
+  auto remap = std::make_shared<HorizontalRemapper>(src_grid,filename);
+  auto tgt_grid = remap->get_tgt_grid();
+
+  auto src_gids_h = src_grid->get_dofs_gids().get_view<const gid_type*,Host>();
+
+  const std::vector<std::pair<std::string,std::pair<LayoutType,FieldTag>>> layouts = {
+    {"s2d",{LayoutType::Scalar2D,ILEV}},
+    {"v2d",{LayoutType::Vector2D,ILEV}},
+    {"s3d",{LayoutType::Scalar3D,LEV }},
+    {"v3d",{LayoutType::Vector3D,LEV }},
+    {"t3d",{LayoutType::Tensor3D,LEV }},
+  };
+
+  std::vector<Field> tgt_f;
+  for (const auto& [name,cfg] : layouts) {
+    auto fsrc = create_field(name+"_src",cfg.first,*src_grid,cfg.second);
+    auto ftgt = create_field(name+"_tgt",cfg.first,*tgt_grid,cfg.second);
+    cr_for_each_entry<Real>(fsrc,[&](int i, int j, int k, int l, Real& x) {
+      x = cr_ref_val(src_gids_h(i),j,k,l);
+    });
+    fsrc.sync_to_dev();
+    remap->register_field(fsrc,ftgt);
+    tgt_f.push_back(ftgt);
+  }
+  remap->registration_ends();
+
+  remap->remap_fwd();
+
+  auto tgt_gids_h = tgt_grid->get_dofs_gids().get_view<const gid_type*,Host>();
+
+  for (size_t f=0; f<tgt_f.size(); ++f) {
+    const auto& name = layouts[f].first;
+    root_print(" -> Checking partial-map coarsening " + name + " ...\n",comm);
+    bool ok = true;
+
+    tgt_f[f].sync_to_host();
+    cr_for_each_entry<Real>(tgt_f[f],[&](int i, int j, int k, int l, Real& got) {
+      const int g = tgt_gids_h(i);              // 1-based
+      const bool covered = ((g-1)%3) != 1;
+      const Real expected = covered ? (cr_ref_val(g,j,k,l)+cr_ref_val(g+1,j,k,l))/2 : 0;
+      CHECK (got==expected);
+      ok &= catch_capture.lastAssertionPassed();
+    });
+
+    root_print(" -> Checking partial-map coarsening " + name + " ... " + (ok ? "PASS" : "FAIL") + "\n",comm);
   }
 
   remap = nullptr;
