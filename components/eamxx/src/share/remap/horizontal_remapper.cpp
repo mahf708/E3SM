@@ -376,6 +376,11 @@ void HorizontalRemapper::remap_fwd_impl ()
   // Rescale any fields that had the mask applied, and compute tgt field mask by comparing tgt_mask_real against threshold
   if (m_track_mask) {
     for (int i=0; i<m_num_fields; ++i) {
+      if (m_needs_remap[i]==0) {
+        // Not remapped (no COL dim): the tgt is a plain copy of the src, carrying an
+        // alias of the src mask. There is no remapped real mask to rescale by.
+        continue;
+      }
       auto& f_tgt = m_tgt_fields[i];
       if (f_tgt.has_valid_mask()) {
         const auto& mask_name = f_tgt.get_valid_mask().name();
