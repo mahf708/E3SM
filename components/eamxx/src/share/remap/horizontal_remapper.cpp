@@ -55,7 +55,16 @@ HorizontalRemapper (const grid_ptr_type& grid,
   // Horiz remappers are built from a map file, which only goes in one direction
   m_bwd_allowed = false;
 
-  auto built_from_src = grid==m_remap_data->m_src_grid;
+  // Decide which side the input grid is on from its size. The repo hands back cached
+  // data for ANY grid with matching gids, so a pointer comparison against the cached
+  // src grid fails for a second grid object (e.g. a clone), and would silently treat a
+  // src grid as the tgt. n_a!=n_b is enforced in HorizRemapperData::build, so global
+  // col count identifies the side unambiguously.
+  const auto built_from_src = grid->get_num_global_dofs()==m_remap_data->m_src_grid->get_num_global_dofs();
+  EKAT_REQUIRE_MSG (built_from_src or grid->get_num_global_dofs()==m_remap_data->m_tgt_grid->get_num_global_dofs(),
+      "Error! Grid matches neither side of the cached remap data.\n"
+      " - grid name: " + grid->name() + "\n"
+      " - grid ncol: " + std::to_string(grid->get_num_global_dofs()) + "\n");
   // The grids really only matter for the horiz part. We may have 2+ remappers with
   // grids that only differ in terms of number of levs. Such remappers cannot
   // store the same generated grid.
