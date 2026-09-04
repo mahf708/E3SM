@@ -1322,20 +1322,34 @@ void HorizontalRemapper::setup_mpi_data_structures ()
     m_export_lids_offsets       = view_1d<int>("m_export_lids_offsets",num_tgt_lids+1);
     auto export_idxs_sorted_by_lid_h = Kokkos::create_mirror_view(m_export_idxs_sorted_by_lid);
     auto export_lids_offsets_h       = Kokkos::create_mirror_view(m_export_lids_offsets);
-    std::map<int,std::vector<int>> lid2idxs;
+    // Group exports by tgt lid with a dense count + prefix sum over EVERY tgt lid.
+    // A tgt col with no map entries (common for regional tgt grids) must get an
+    // empty range, not a hole: writing offsets only for lids that appear in the map
+    // left the following entries at 0, restarting the prefix sum after each hole and
+    // pointing every later col at some other col's contributions.
     auto lids_h = imp_exp->export_lids_h();
-    auto pids_h = imp_exp->export_pids_h();
-    for (int idx=0; idx<imp_exp->num_exports(); ++idx) {
-      lid2idxs[imp_exp->export_lids_h()[idx]].push_back(idx);
+    const int num_exports = imp_exp->num_exports();
+    std::vector<int> counts(num_tgt_lids,0);
+    for (int idx=0; idx<num_exports; ++idx) {
+      const int lid = lids_h[idx];
+      EKAT_REQUIRE_MSG (lid>=0 and lid<num_tgt_lids,
+          "Error! Export lid out of range in HorizontalRemapper::setup_mpi_data_structures.\n"
+          " - lid: " + std::to_string(lid) + "\n"
+          " - num tgt lids: " + std::to_string(num_tgt_lids) + "\n");
+      ++counts[lid];
     }
-    int pos = 0;
     export_lids_offsets_h[0] = 0;
-    for (const auto& [lid,idxs] : lid2idxs) {
-      for (auto idx : idxs) {
-        export_idxs_sorted_by_lid_h[pos] = idx;
-        ++pos;
-      }
-      export_lids_offsets_h[lid+1] = export_lids_offsets_h[lid] + idxs.size();
+    for (int lid=0; lid<num_tgt_lids; ++lid) {
+      export_lids_offsets_h[lid+1] = export_lids_offsets_h[lid] + counts[lid];
+    }
+    EKAT_REQUIRE_MSG (export_lids_offsets_h[num_tgt_lids]==num_exports,
+        "Error! Export offsets do not sum to the number of exports.\n");
+    std::vector<int> cursor(num_tgt_lids);
+    for (int lid=0; lid<num_tgt_lids; ++lid) {
+      cursor[lid] = export_lids_offsets_h[lid];
+    }
+    for (int idx=0; idx<num_exports; ++idx) {
+      export_idxs_sorted_by_lid_h[cursor[lids_h[idx]]++] = idx;
     }
     Kokkos::deep_copy(m_export_idxs_sorted_by_lid,export_idxs_sorted_by_lid_h);
     Kokkos::deep_copy(m_export_lids_offsets,export_lids_offsets_h);
