@@ -960,9 +960,16 @@ void AtmosphereOutput::set_decompositions(const std::string& filename)
     auto lon_idx_h = m_io_grid->get_geometry_data("lon_idx").get_view<const int*,Host>();
     int ncols = m_io_grid->get_num_local_dofs();
     int nlon = m_io_grid->get_geometry_data("lon").get_header().get_identifier().get_layout().size();
+    int nlat = m_io_grid->get_geometry_data("lat").get_header().get_identifier().get_layout().size();
     std::vector<scorpio::offset_t> offsets(ncols);
     for (int i=0; i<ncols; ++i) {
-      offsets[i] = lat_idx_h(i)*nlon + lon_idx_h(i);
+      EKAT_REQUIRE_MSG (lat_idx_h(i)>=0 and lat_idx_h(i)<nlat and lon_idx_h(i)>=0 and lon_idx_h(i)<nlon,
+          "Error! lat/lon index out of range while setting the lat-lon decomposition.\n"
+          " - col: " + std::to_string(i) + ", lat_idx: " + std::to_string(lat_idx_h(i)) +
+          ", lon_idx: " + std::to_string(lon_idx_h(i)) + ", nlat: " + std::to_string(nlat) +
+          ", nlon: " + std::to_string(nlon) + "\n");
+      // Widen BEFORE multiplying: int*int overflows long before offset_t would
+      offsets[i] = static_cast<scorpio::offset_t>(lat_idx_h(i))*nlon + lon_idx_h(i);
     }
     scorpio::set_dims_decomp(filename,{"lat","lon"},offsets);
   } else {

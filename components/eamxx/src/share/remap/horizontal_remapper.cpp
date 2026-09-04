@@ -10,6 +10,7 @@
 #include <ekat_pack_utils.hpp>
 
 #include <numeric>
+#include <limits>
 #include <filesystem>
 
 namespace scream
@@ -585,7 +586,10 @@ rescale_masked_fields (const Field& x, const Field& real_mask) const
                             [&](const int j){
           m_sub(j) = mr_sub(j) > mask_threshold;                  
           if (m_sub(j).any()) {
-            x_sub(j).set(m_sub(j),x_sub(j)/mr_sub(j),fv_pack);
+            // Masked-off lanes have mr==0: give them a harmless denominator before dividing
+            Pack den = mr_sub(j);
+            den.set(!m_sub(j),Real(1));
+            x_sub(j).set(m_sub(j),x_sub(j)/den,fv_pack);
           } else {
             x_sub(j) = fv_pack;
           }
@@ -613,7 +617,10 @@ rescale_masked_fields (const Field& x, const Field& real_mask) const
           const int k = idx % dim2;
           m_sub(j,k) = mr_sub(j,k) > mask_threshold;                  
           if (m_sub(j,k).any()) {
-            x_sub(j,k).set(m_sub(j,k),x_sub(j,k)/mr_sub(j,k),fv_pack);
+            // Masked-off lanes have mr==0: give them a harmless denominator before dividing
+            Pack den = mr_sub(j,k);
+            den.set(!m_sub(j,k),Real(1));
+            x_sub(j,k).set(m_sub(j,k),x_sub(j,k)/den,fv_pack);
           } else {
             x_sub(j,k) = fv_pack;
           }
@@ -643,7 +650,10 @@ rescale_masked_fields (const Field& x, const Field& real_mask) const
           const int l =  idx % dim3;
           m_sub(j,k,l) = mr_sub(j,k,l) > mask_threshold;                  
           if (m_sub(j,k,l).any()) {
-            x_sub(j,k,l).set(m_sub(j,k,l),x_sub(j,k,l)/mr_sub(j,k,l),fv_pack);
+            // Masked-off lanes have mr==0: give them a harmless denominator before dividing
+            Pack den = mr_sub(j,k,l);
+            den.set(!m_sub(j,k,l),Real(1));
+            x_sub(j,k,l).set(m_sub(j,k,l),x_sub(j,k,l)/den,fv_pack);
           } else {
             x_sub(j,k,l) = fv_pack;
           }
@@ -1313,19 +1323,31 @@ void HorizontalRemapper::setup_mpi_data_structures ()
     int ncols_send = pids_send_offsets_h(pid+1)-pids_send_offsets_h(pid);
     if (ncols_send>0) {
       auto send_ptr = m_mpi_send_buffer.data() + pids_send_offsets_h(pid)*total_col_size;
-      auto send_count = ncols_send*total_col_size;
+      const long long send_count_ll = static_cast<long long>(ncols_send)*total_col_size;
+      EKAT_REQUIRE_MSG (send_count_ll<=std::numeric_limits<int>::max(),
+          "Error! Horiz remap send message too large for an MPI int count.\n"
+          " - peer rank: " + std::to_string(pid) + "\n"
+          " - cols: " + std::to_string(ncols_send) + ", col size: " + std::to_string(total_col_size) + "\n"
+          " - count: " + std::to_string(send_count_ll) + "\n");
+      const int send_count = static_cast<int>(send_count_ll);
       auto& req = m_send_req.emplace_back();
-      MPI_Send_init (send_ptr, send_count, mpi_real, pid,
-                     0, mpi_comm, &req);
+      check_mpi_call(MPI_Send_init (send_ptr, send_count, mpi_real, pid, 0, mpi_comm, &req),
+                     "[HorizontalRemapper] creating persistent send request");
     }
     // Recv request
     int ncols_recv = pids_recv_offsets_h(pid+1)-pids_recv_offsets_h(pid);
     if (ncols_recv>0) {
       auto recv_ptr = m_mpi_recv_buffer.data() + pids_recv_offsets_h(pid)*total_col_size;
-      auto recv_count = ncols_recv*total_col_size;
+      const long long recv_count_ll = static_cast<long long>(ncols_recv)*total_col_size;
+      EKAT_REQUIRE_MSG (recv_count_ll<=std::numeric_limits<int>::max(),
+          "Error! Horiz remap recv message too large for an MPI int count.\n"
+          " - peer rank: " + std::to_string(pid) + "\n"
+          " - cols: " + std::to_string(ncols_recv) + ", col size: " + std::to_string(total_col_size) + "\n"
+          " - count: " + std::to_string(recv_count_ll) + "\n");
+      const int recv_count = static_cast<int>(recv_count_ll);
       auto& req = m_recv_req.emplace_back();
-      MPI_Recv_init (recv_ptr, recv_count, mpi_real, pid,
-                     0, mpi_comm, &req);
+      check_mpi_call(MPI_Recv_init (recv_ptr, recv_count, mpi_real, pid, 0, mpi_comm, &req),
+                     "[HorizontalRemapper] creating persistent recv request");
     }
   }
 

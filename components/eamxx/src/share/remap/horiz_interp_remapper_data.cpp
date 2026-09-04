@@ -42,6 +42,9 @@ bool grids_have_same_gids (const std::shared_ptr<const AbstractGrid>& g1,
     return false;
   }
 
+  // The gids may have been written on device (e.g. by a grids manager); compare current values
+  gids1.sync_to_host();
+  gids2.sync_to_host();
   const auto h1 = gids1.get_view<const gid_type*, Host>();
   const auto h2 = gids2.get_view<const gid_type*, Host>();
   const int n = g1->get_num_local_dofs();
