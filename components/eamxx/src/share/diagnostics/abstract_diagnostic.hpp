@@ -85,6 +85,16 @@ public:
   // Compute the diagnostic (skips if inputs have not changed since last call)
   void compute (const util::TimeStamp& ts);
 
+  // How many times compute() was asked for a value, and how many times that
+  // actually reached compute_impl(). The two differ by the memoization skips,
+  // so the pair answers two questions that look alike and are not: how often
+  // this diagnostic is REQUESTED (once per stream that wants it) and how often
+  // it is EVALUATED. A diagnostic shared between two streams shows twice the
+  // calls and the same number of evaluations; one that is silently duplicated
+  // shows two objects with one call each.
+  long long get_num_compute_calls () const { return m_num_compute_calls; }
+  long long get_num_compute_impl  () const { return m_num_compute_impl;  }
+
 protected:
 
   // Derived classes override this for any setup needed after fields are set.
@@ -113,6 +123,10 @@ protected:
   std::map<std::string,Field>   m_fields_in;
 
   bfbhash::HashType             m_last_eval_ts_hash = 0;
+
+  // See get_num_compute_calls/get_num_compute_impl above.
+  long long m_num_compute_calls = 0;
+  long long m_num_compute_impl  = 0;
 
   bool m_is_initialized = false;
 };

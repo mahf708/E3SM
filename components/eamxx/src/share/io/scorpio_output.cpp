@@ -197,7 +197,19 @@ AtmosphereOutput::AtmosphereOutput(const ekat::Comm &comm, const ekat::Parameter
   }
 
   // Then we 1) create aliases, and b) create diagnostics, adding alias/diag fields to fm_model
+  // Parsing, call validation, lowering and dependency resolution all happen in
+  // here, once per stream. That is the "setup cost" half of the claim that
+  // expressions are free at run time, so it needs a number of its own.
+  start_timer("EAMxx::IO::setup_fields");
   process_requested_fields ();
+  stop_timer("EAMxx::IO::setup_fields");
+
+  // Report the lowered graph. This is the cheapest way to see how many
+  // diagnostic objects a stream actually built, which is not obvious from the
+  // request list: nested subexpressions add nodes, and equal requests share
+  // them.
+  m_atm_logger->debug("[EAMxx::scorpio_output] stream '" + m_stream_name + "': "
+      + std::to_string(m_diagnostics.size()) + " diagnostic object(s) lowered");
 
   // Avg count only makes sense if we have
   //  - non-instant output
@@ -481,7 +493,12 @@ run (const std::string& filename, const util::TimeStamp& ts,
 
   // Update all diagnostics, we need to do this before applying the remapper
   // to make sure that the remapped fields are the most up to date.
+  // This is the timer that separates expression evaluation from everything
+  // else the stream does. Without it an every-step output stream is an I/O
+  // benchmark, since the remap timers below were the only ones here.
+  start_timer("EAMxx::IO::diagnostics");
   computes(ts,allow_invalid_fields);
+  stop_timer("EAMxx::IO::diagnostics");
 
   auto apply_remap = [&](AbstractRemapper& remapper)
   {
@@ -518,6 +535,7 @@ run (const std::string& filename, const util::TimeStamp& ts,
   // We do count++ only where the fields are NOT equal to the fill value.
   // Note, we assume that all fields that share a layout are also masked/filled in the same way.
   if (m_track_avg_cnt) {
+    start_timer("EAMxx::IO::avg_cnt");
     // Since 2+ fields may have same avg count, make sure we update the counts only ONCE.
     for (auto& [fname, count] : m_field_to_avg_count) {
       count.get_header().set_extra_data("updated",false);
@@ -558,6 +576,10 @@ run (const std::string& filename, const util::TimeStamp& ts,
 
       // Handle writing the average count variables to file
       if (is_write_step) {
+        // NOTE: this nests inside EAMxx::IO::avg_cnt, since the counts are
+        // written from the same loop that updates them. GPTL reports the
+        // nesting, so the parent's exclusive time is still the counting work.
+        start_timer("EAMxx::IO::sync_and_write");
         // Bring data to host
         count.sync_to_host();
 
@@ -577,6 +599,7 @@ run (const std::string& filename, const util::TimeStamp& ts,
         auto func_finish = std::chrono::steady_clock::now();
         auto duration_loc = std::chrono::duration_cast<std::chrono::milliseconds>(func_finish - func_start);
         duration_write += duration_loc.count();
+        stop_timer("EAMxx::IO::sync_and_write");
 
         // If it's an output step, for Avg we need to ensure count>threshold.
         // If count<=threshold, we set count=fill_value, so that fill_val propagates
@@ -596,6 +619,7 @@ run (const std::string& filename, const util::TimeStamp& ts,
       }
       count.get_header().set_extra_data("updated",true);
     }
+    stop_timer("EAMxx::IO::avg_cnt");
   }
 
   // Take care of updating and possibly writing fields.
@@ -616,6 +640,7 @@ run (const std::string& filename, const util::TimeStamp& ts,
         "This indicates the field was marked may_be_filled after output initialization or tracking logic missed it." );
     }
 
+    start_timer("EAMxx::IO::accumulate");
     switch (m_avg_type) {
       case OutputAvgType::Instant:
         f_out.deep_copy(f_in);  break; // Note: if f_in aliases f_out, this is a no-op
@@ -628,6 +653,7 @@ run (const std::string& filename, const util::TimeStamp& ts,
       default:
         EKAT_ERROR_MSG ("Unexpected/unsupported averaging type.\n");
     }
+    stop_timer("EAMxx::IO::accumulate");
 
     if (is_write_step) {
       // NOTE: we don't divide by the avg cnt for checkpoint output
@@ -650,6 +676,7 @@ run (const std::string& filename, const util::TimeStamp& ts,
       }
 
       // Write to file
+      start_timer("EAMxx::IO::sync_and_write");
       auto func_start = std::chrono::steady_clock::now();
       if (m_transpose) {
         const auto& id = f_out.get_header().get_identifier();
@@ -668,6 +695,7 @@ run (const std::string& filename, const util::TimeStamp& ts,
       auto func_finish = std::chrono::steady_clock::now();
       auto duration_loc = std::chrono::duration_cast<std::chrono::milliseconds>(func_finish - func_start);
       duration_write += duration_loc.count();
+      stop_timer("EAMxx::IO::sync_and_write");
     }
   }
 

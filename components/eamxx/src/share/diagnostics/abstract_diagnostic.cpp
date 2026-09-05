@@ -1,5 +1,7 @@
 #include "share/diagnostics/abstract_diagnostic.hpp"
 
+#include "share/util/eamxx_timing.hpp"
+
 #include <ekat_std_utils.hpp>
 
 namespace scream
@@ -57,6 +59,8 @@ Field AbstractDiagnostic::get () const
 
 void AbstractDiagnostic::compute (const util::TimeStamp& ts)
 {
+  ++m_num_compute_calls;
+
   // Compute a hash of ts with all the timestamps of the input fields
   bfbhash::HashType tsh = 0;
   for (auto it : m_fields_in) {
@@ -71,7 +75,14 @@ void AbstractDiagnostic::compute (const util::TimeStamp& ts)
     return;
   }
 
+  // Timed per diagnostic CLASS, not per instance: a stream can hold dozens of
+  // instances, and a per-instance timer would bury the answer in noise. The
+  // per-instance question is answered by the counters instead.
+  const std::string timer_name = "EAMxx::diag::" + name();
+  start_timer(timer_name);
   compute_impl ();
+  stop_timer(timer_name);
+  ++m_num_compute_impl;
 
   // Update timestamp info
   m_diagnostic_output.get_header().get_tracking().update_time_stamp(ts);
