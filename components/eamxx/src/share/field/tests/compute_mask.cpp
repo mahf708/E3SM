@@ -37,6 +37,34 @@ TEST_CASE ("compute_mask") {
     Field m2 (fid2d);
     m2.allocate_view();
     REQUIRE_THROWS(compute_mask(f,1,Comparison::EQ,m2)); // incompatible layouts
+
+    // Comparing two fields with DIFFERENT units is meaningless, and both
+    // operands carry units, so it is rejected.
+    Field mask_i (fid3di);
+    mask_i.allocate_view();
+    FieldIdentifier fid3d_K ("bar", {tags3d,dims3d}, K, "some_grid");
+    FieldIdentifier fid3d_Pa("baz", {tags3d,dims3d}, Pa, "some_grid");
+    Field f_K (fid3d_K), f_Pa (fid3d_Pa);
+    f_K.allocate_view();
+    f_Pa.allocate_view();
+    REQUIRE_THROWS(compute_mask(f_K,f_Pa,Comparison::GT,mask_i)); // K vs Pa
+
+    // Same units compare fine...
+    FieldIdentifier fid3d_K2 ("qux", {tags3d,dims3d}, K, "some_grid");
+    Field f_K2 (fid3d_K2);
+    f_K2.allocate_view();
+    REQUIRE_NOTHROW(compute_mask(f_K,f_K2,Comparison::GT,mask_i));
+
+    // ...and a field that never declared units is not evidence of a
+    // mismatch, so it is compared without complaint.
+    FieldIdentifier fid3d_inv ("quux", {tags3d,dims3d}, Units::invalid(), "some_grid");
+    Field f_inv (fid3d_inv);
+    f_inv.allocate_view();
+    REQUIRE_NOTHROW(compute_mask(f_K,f_inv,Comparison::GT,mask_i));
+
+    // A scalar threshold carries no units at all: it is taken in the field's
+    // own units and cannot be checked. It must still work.
+    REQUIRE_NOTHROW(compute_mask(f_K,273.15,Comparison::LT,mask_i));
   }
 
   SECTION ("check") {

@@ -369,6 +369,30 @@ void compute_mask (const Field& lhs, const Field& rhs, Comparison CMP, const Fie
       " - LHS name: " + lhs.name() + "\n"
       " - LHS rank: " + std::to_string(lhs.rank()) + "\n");
 
+  // Units. Arithmetic is unit-checked in BinaryOp; comparison was not, so
+  // 'T_mid > qv' compared a temperature with a mixing ratio and returned a
+  // mask. Check it where the information exists: both operands are fields, so
+  // both carry units, and disagreeing units cannot be a meaningful comparison.
+  //
+  // Skipped when either side is INVALID, following the same convention as
+  // transpose(): a field that never declared units is not evidence of a
+  // mismatch. The scalar-threshold overload above has nothing to check
+  // against and compares against stored values in the field's own units --
+  // see the note in docs/user/diags/expressions.md.
+  {
+    using namespace ekat::units;
+    const auto& lhs_units = lhs.get_header().get_identifier().get_units();
+    const auto& rhs_units = rhs.get_header().get_identifier().get_units();
+    if (lhs_units!=Units::invalid() and rhs_units!=Units::invalid()) {
+      EKAT_REQUIRE_MSG (lhs_units==rhs_units,
+          "Error! Cannot compare two fields with different units.\n"
+          " - lhs name : " + lhs.name() + "\n"
+          " - rhs name : " + rhs.name() + "\n"
+          " - lhs units: " + lhs_units.get_si_string() + "\n"
+          " - rhs units: " + rhs_units.get_si_string() + "\n");
+    }
+  }
+
   // Allocation
   EKAT_REQUIRE_MSG (lhs.is_allocated(),
       "Error! LHS field was not yet allocated.\n"

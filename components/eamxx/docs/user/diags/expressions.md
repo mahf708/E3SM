@@ -108,6 +108,14 @@ Notes:
   `weights` for `'lev'` is `'dp'` or `'dz'`.
 - `where` takes a single comparison. `and`/`or` are not supported; chain
   `where(..)` calls instead.
+- **A scalar threshold is in the field's own units, as the model stores them.**
+  `T_mid.where(T_mid<273.15)` is degrees kelvin because that is what `T_mid`
+  holds; `p_mid.where(p_mid>85000)` is pascals, not hectopascals. There is
+  nowhere to write a unit on the number, so nothing can check it for you --
+  the model's base units are the contract. A comparison between two *fields*
+  is checked: `T_mid.where(T_mid>qv)` is rejected, because both operands carry
+  units and they disagree. (Fields that never declared units are not checked,
+  since a missing declaration is not evidence of a mismatch.)
 - **`mask` and `lev` are placeholders, not fields.** Neither exists in the field
   manager, and neither means anything on its own. `mask` is only legal as the
   receiver of `.where(..)`: `mask.where(cond)` is the 0/1 indicator of `cond`

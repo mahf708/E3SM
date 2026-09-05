@@ -41,6 +41,12 @@ public:
   // initialization and, when the sampled input carries its own mask, at every
   // step: the intersection in compute_impl() is destructive, so the level
   // mask has to be laid down fresh before it.
+  //
+  // NOTE: this must stay above the 'protected:' below, inside the region the
+  //       KOKKOS_ENABLE_CUDA block makes public. It launches a parallel_for
+  //       with an extended lambda, and nvcc requires the enclosing member
+  //       function to be public. Moving it down compiles on CPU and fails on
+  //       GPU.
   void set_lev_mask(Field& mask);
 
 protected:
