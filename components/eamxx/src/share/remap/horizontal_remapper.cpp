@@ -55,7 +55,24 @@ HorizontalRemapper (const grid_ptr_type& grid,
   // Horiz remappers are built from a map file, which only goes in one direction
   m_bwd_allowed = false;
 
-  auto built_from_src = grid==m_remap_data->m_src_grid;
+  // Which end of the map is this grid? Compare by GIDs, not by object
+  // identity. The data repo is keyed on the map FILE and explicitly admits a
+  // grid that is GID-identical but not the same object, so a second stream
+  // sharing a map file receives the first stream's cached data. If that second
+  // stream sits on top of a vertical remap, its grid is
+  // VerticalRemapper::create_tgt_grid's clone -- same GIDs, different object,
+  // deliberately different name -- and an identity test silently concludes it
+  // is the map's TARGET. The remapper is then built backwards and produces a
+  // degenerate same-size mapping with wrong values, on a successful run.
+  const bool same_as_src = grids_have_same_gids(grid,m_remap_data->m_src_grid);
+  const bool same_as_tgt = grids_have_same_gids(grid,m_remap_data->m_tgt_grid);
+  EKAT_REQUIRE_MSG (same_as_src or same_as_tgt,
+      "Error! Grid is neither end of the map in this remap file.\n"
+      " - remapper: " + name() + "\n"
+      " - grid name: " + grid->name() + "\n"
+      " - map src grid: " + m_remap_data->m_src_grid->name() + "\n"
+      " - map tgt grid: " + m_remap_data->m_tgt_grid->name() + "\n");
+  auto built_from_src = same_as_src;
   // The grids really only matter for the horiz part. We may have 2+ remappers with
   // grids that only differ in terms of number of levs. Such remappers cannot
   // store the same generated grid.
