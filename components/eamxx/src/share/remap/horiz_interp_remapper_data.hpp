@@ -10,6 +10,15 @@
 
 namespace scream {
 
+// Check whether two grids store the same GID values on every rank. This is the
+// notion of "the same grid" that HorizRemapperDataRepo uses when it decides a
+// cached entry may be reused, so anything reasoning about a cached entry has to
+// use the same notion: a grid can be GID-identical to the one the data was
+// built from and still be a different object, e.g. the clone that
+// VerticalRemapper::create_tgt_grid makes.
+bool grids_have_same_gids (const std::shared_ptr<const AbstractGrid>& g1,
+                           const std::shared_ptr<const AbstractGrid>& g2);
+
 enum class InterpType {
   Refine,
   Coarsen
