@@ -150,6 +150,12 @@ public:
 
   long long res_dep_memory_footprint() const;
 
+  // The lowered diagnostic graph, in evaluation order. Exposed so that a test
+  // or a benchmark can read each node's compute counts (see
+  // AbstractDiagnostic::get_num_compute_calls / _impl) and answer whether two
+  // streams shared an object or silently built two.
+  const std::list<diag_ptr_type>& get_diagnostics () const { return m_diagnostics; }
+
   std::shared_ptr<const AbstractGrid>
   get_io_grid() const
   {
