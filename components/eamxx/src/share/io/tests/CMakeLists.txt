@@ -35,6 +35,15 @@ if (NOT SCREAM_ONLY_GENERATE_BASELINES)
     MPI_RANKS 1 ${SCREAM_TEST_MAX_RANKS}
   )
 
+  ## Regression: averaged conditional sampling, its valid-sample counts, and
+  ## the intersection in chained where(). Hand-computed values.
+  CreateUnitTest(io_dexpr_masks
+    SOURCES io_dexpr_masks.cpp
+    LIBS eamxx_io eamxx_diagnostics
+    LABELS io diagnostics
+    MPI_RANKS 1 ${SCREAM_TEST_MAX_RANKS}
+  )
+
   ## Test conditional geo data output (io_output_if_dim_exists feature)
   CreateUnitTest(io_cond_geo
     SOURCES io_cond_geo.cpp

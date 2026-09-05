@@ -162,41 +162,51 @@ void ConditionalSampling::initialize_impl()
   } else {
     m_diagnostic_output = m_fields_in.at(m_input_f).clone(m_diag_name);
     m_diagnostic_output.create_valid_mask();
+    // Wherever the condition fails we write the fill value, so say so. Every
+    // other diagnostic that creates a mask sets this, and Field::update reads
+    // it to choose the fill-aware accumulation path; without it an averaged
+    // X.where(C) sums fill values as though they were data.
+    m_diagnostic_output.get_header().set_may_be_filled(true);
   }
 
   // If lhs is "lev" but diag is not "mask", we can still precompute the diag mask by
   // broadcasting m_lev_mask
   if (m_lhs_is_lev and not m_diag_is_mask) {
     auto mask = m_diagnostic_output.get_valid_mask();
-    const auto& dims = mask.get_header().get_identifier().get_layout().dims();
-    auto lev_mask_v = m_lev_mask.get_view<const int*>();
-    switch (mask.rank()) {
-      case 1:
-        mask.deep_copy(m_lev_mask);
-        break;
-      case 2:
-        {
-          auto mask_v = mask.get_view<int**>();
-          auto set_idx = KOKKOS_LAMBDA(int i, int k) {
-            mask_v(i,k) = lev_mask_v(k);
-          };
-          MDRange<2> p({0,0},{dims[0],dims[1]});
-          Kokkos::parallel_for(p,set_idx);
-        } break;
-      case 3:
-        {
-          auto mask_v = mask.get_view<int***>();
-          auto set_idx = KOKKOS_LAMBDA(int i, int j, int k) {
-            mask_v(i,j,k) = lev_mask_v(k);
-          };
-          MDRange<3> p({0,0,0},{dims[0],dims[1],dims[2]});
-          Kokkos::parallel_for(p,set_idx);
-        } break;
-      default:
-        EKAT_ERROR_MSG ("Error! Unsupported rank  in ConditionalSampling initialization.\n"
-            " - diag name: " + m_diag_name + "\n"
-            " - diag rank: " + std::to_string(mask.rank()) + "\n");
-    }
+    set_lev_mask(mask);
+  }
+}
+
+void ConditionalSampling::set_lev_mask(Field& mask)
+{
+  const auto& dims = mask.get_header().get_identifier().get_layout().dims();
+  auto lev_mask_v = m_lev_mask.get_view<const int*>();
+  switch (mask.rank()) {
+    case 1:
+      mask.deep_copy(m_lev_mask);
+      break;
+    case 2:
+      {
+        auto mask_v = mask.get_view<int**>();
+        auto set_idx = KOKKOS_LAMBDA(int i, int k) {
+          mask_v(i,k) = lev_mask_v(k);
+        };
+        MDRange<2> p({0,0},{dims[0],dims[1]});
+        Kokkos::parallel_for(p,set_idx);
+      } break;
+    case 3:
+      {
+        auto mask_v = mask.get_view<int***>();
+        auto set_idx = KOKKOS_LAMBDA(int i, int j, int k) {
+          mask_v(i,j,k) = lev_mask_v(k);
+        };
+        MDRange<3> p({0,0,0},{dims[0],dims[1],dims[2]});
+        Kokkos::parallel_for(p,set_idx);
+      } break;
+    default:
+      EKAT_ERROR_MSG ("Error! Unsupported rank in ConditionalSampling.\n"
+          " - diag name: " + m_diag_name + "\n"
+          " - diag rank: " + std::to_string(mask.rank()) + "\n");
   }
 }
 
@@ -220,6 +230,21 @@ void ConditionalSampling::compute_impl()
 
   if (not m_diag_is_mask) {
     const auto& f = m_fields_in.at(m_input_f);
+    // The condition decides which elements we WANT; the input's own mask
+    // decides which ones actually hold data. Chained sampling is the
+    // documented way to spell a conjunction, so X.where(C1).where(C2) must be
+    // the intersection: without this, an element that C1 rejected still holds
+    // a fill value, and C2 alone would mark it valid and copy the fill value
+    // through as a number.
+    if (f.has_valid_mask()) {
+      if (m_lhs_is_lev) {
+        // The level mask was laid down once at initialization and is not
+        // recomputed above. Scaling it in place every step would erode it a
+        // little more each time, so restore it before intersecting.
+        set_lev_mask(mask);
+      }
+      mask.scale(f.get_valid_mask());
+    }
     m_diagnostic_output.deep_copy(f,mask);
     constexpr auto fv = constants::fill_value<Real>;
     m_diagnostic_output.deep_copy(fv,mask,true);

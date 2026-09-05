@@ -155,8 +155,13 @@ xarray, on the same arguments. The rest have no xarray spelling we could adopt:
 | `over_dt`, `tend` | no xarray equivalent |
 | `mean('lev', weights=..)` | xarray would be `weighted(dp).mean('lev')`, again a chain |
 
-`X.mean('lev', weights='dp')` is `(X*dp).sum('lev')/dp.sum('lev')`, but computed
-in one sweep rather than as three diagnostics.
+`X.mean('lev', weights='dp')` is `(X*dp).sum('lev')/dp.sum('lev')`, expressed as
+one diagnostic rather than as a graph of three. One diagnostic object is not the
+same thing as one kernel: `VertContract` updates its weight field, contracts a
+numerator, contracts a denominator, and divides. What the method form buys you is
+a named, unit-checked, mask-aware primitive, not a fused sweep. (The internal
+`1/g` that converts pressure thickness to mass per area cancels between numerator
+and denominator, so the explicit spelling needs no gravity correction to match.)
 
 Two operand names have no xarray analogue at all, because they are not fields:
 `mask` and `lev`, both inherited from the underscore syntax and both legal only

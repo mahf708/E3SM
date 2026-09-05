@@ -37,6 +37,12 @@ public:
 
   void initialize_impl();
 
+  // Broadcast m_lev_mask over the diagnostic's layout. Used both at
+  // initialization and, when the sampled input carries its own mask, at every
+  // step: the intersection in compute_impl() is destructive, so the level
+  // mask has to be laid down fresh before it.
+  void set_lev_mask(Field& mask);
+
 protected:
 
   std::string m_diag_name;      // X_where_Y_comp_Z

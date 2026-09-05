@@ -1126,16 +1126,35 @@ process_requested_fields()
     name = tokens[0];
   }
 
-  // In case someone has an alias of an alias, we need to resolve the TRUE orig names.
-  bool has_multiple_aliasing_layers = false;
-  do {
-    for (auto it : m_alias_to_orig) {
-      if (m_alias_to_orig.count(it.second)>0) {
-        it.second = m_alias_to_orig[it.second];
-        has_multiple_aliasing_layers = true;
-      }
+  // An alias may point at another alias ('b := a' together with 'c := b').
+  // We deliberately do NOT flatten the chain here. The processing loop below
+  // defers an alias whose target is not yet in the field manager, so 'c'
+  // resolves on a pass after 'b' does, and 'alias_of' then records what the
+  // user actually wrote rather than a rewritten target.
+  //
+  // What that loop cannot detect is a CYCLE: with 'a := b' and 'b := a'
+  // neither name ever reaches the field manager, so it makes no progress and
+  // dies on the generic "endless loop" guard further down, which cannot say
+  // why. Diagnose it here, where the whole chain is in hand.
+  for (const auto& it : m_alias_to_orig) {
+    const auto& alias = it.first;
+    std::vector<std::string> chain{alias};
+    auto cur = it.second;
+    while (m_alias_to_orig.count(cur)>0) {
+      chain.push_back(cur);
+      EKAT_REQUIRE_MSG (cur!=alias,
+          "Error! Circular alias definition.\n"
+          " - stream name: " + m_stream_name + "\n"
+          " - cycle: " + ekat::join(chain," := ") + "\n");
+      // A chain longer than the number of aliases must have revisited some
+      // name, even one this walk did not start from.
+      EKAT_REQUIRE_MSG (chain.size()<=m_alias_to_orig.size(),
+          "Error! Alias chain does not terminate.\n"
+          " - stream name: " + m_stream_name + "\n"
+          " - chain: " + ekat::join(chain," := ") + "\n");
+      cur = m_alias_to_orig.at(cur);
     }
-  } while (has_multiple_aliasing_layers);
+  }
 
   EKAT_REQUIRE_MSG (not has_duplicates(m_fields_names),
       "Error! The list of requested output fields contains duplicates.\n"
@@ -1181,34 +1200,57 @@ process_requested_fields()
     // Add the field to the diag group
     diag_field.get_header().get_tracking().add_group("diagnostic");
 
-    // Some diags need some extra setup or trigger extra behaviors
+    // A few diagnostic classes can SHARE one avg count between all the fields
+    // they produce, because those fields are invalid in exactly the same
+    // places: every field interpolated to 500hPa is missing wherever 500hPa is
+    // below ground, so one avg_count_500hPa serves them all.
     std::string diag_avg_cnt_name = "";
+    bool shares_a_count = false;
     auto& params = diag->get_params();
     if (diag->name()=="FieldAtPressureLevel") {
       diag_avg_cnt_name = "_"
                         + params.get<std::string>("pressure_value")
                         + params.get<std::string>("pressure_units");
-      m_track_avg_cnt |= m_avg_type!=OutputAvgType::Instant;
+      shares_a_count = true;
     } else if (diag->name()=="FieldAtHeight") {
       if (params.get<std::string>("surface_reference")=="sealevel") {
         diag_avg_cnt_name = "_"
                           + params.get<std::string>("height_value")
                           + params.get<std::string>("height_units") + "_above_sealevel";
-        m_track_avg_cnt |= m_avg_type!=OutputAvgType::Instant;
+        shares_a_count = true;
       }
     } else if (diag->name()=="AerosolOpticalDepth550nm") {
-      m_track_avg_cnt = m_track_avg_cnt || m_avg_type!=OutputAvgType::Instant;
       diag_avg_cnt_name = "_" + diag->name();
+      shares_a_count = true;
     }
     else if (diag_field.get_header().has_extra_data("mask_data")) {
-      m_track_avg_cnt = m_track_avg_cnt || m_avg_type!=OutputAvgType::Instant;
       diag_avg_cnt_name = "_" + diag_field.name();
+      shares_a_count = true;
     }
 
-    // If specified, set avg_cnt tracking for this diagnostic.
-    if (m_track_avg_cnt) {
-      m_field_to_avg_cnt_suffix.emplace(diag_field.name(),diag_avg_cnt_name);
+    if (shares_a_count) {
+      if (m_avg_type!=OutputAvgType::Instant) {
+        m_track_avg_cnt = true;
+        m_field_to_avg_cnt_suffix.emplace(diag_field.name(),diag_avg_cnt_name);
+      }
+      return;
     }
+
+    // Every other diagnostic gets the same treatment a model field gets:
+    // enrolled if and only if its OUTPUT can contain fill values, and given a
+    // count of its own.
+    //
+    // Both halves of that matter, and the previous version got both wrong.
+    // Keying enrollment on the class list alone left a fill-aware output with
+    // no count at all -- an averaged X.where(C) or X.tend() would reach the
+    // safety check in run(). And falling through to an emplace guarded by the
+    // stream-level m_track_avg_cnt flag, with an empty suffix, gave whatever
+    // did get enrolled a count keyed only by LAYOUT, shared with every other
+    // fill-aware field of the same shape. That is correct only when those
+    // fields happen to carry the same mask, and silently divides by the wrong
+    // denominator when they do not. Which of the two happened depended on the
+    // order in which the stream's requests were resolved.
+    check_for_avg_cnt(diag_field);
   };
 
   // Now process each requested field, if possible. We can process a field if either:
@@ -1258,6 +1300,14 @@ process_requested_fields()
           const auto& orig = fm_model->get_field(m_alias_to_orig[name]);
           auto alias = orig.alias(name);
           fm_model->add_field(alias);
+          // An alias shares its target's header extra data, so it is
+          // fill-aware exactly when the target is. It still needs enrolling
+          // under its OWN name: the stream writes 'a1', and looks its avg
+          // count up by that name, while the target was enrolled as the
+          // diagnostic's internal name ('X_where_C1_gt_0'). Miss that and the
+          // lookup falls through to a count keyed only by layout, shared with
+          // every other fill-aware field of the same shape.
+          check_for_avg_cnt(alias);
           remove_these.insert(name);
         }
       } else {
