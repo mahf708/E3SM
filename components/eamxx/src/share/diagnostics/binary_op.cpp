@@ -235,6 +235,20 @@ BinaryOp(const ekat::Comm &comm,
     m_field_in_names.push_back(m_arg1_name);
   if (m_arg2_is_field)
     m_field_in_names.push_back(m_arg2_name);
+
+  // Say which operands were resolved out of the constants dictionary rather
+  // than requested as fields. This diagnostic cannot tell whether such a name
+  // ALSO names a field -- it has a grid but no field manager -- and a name
+  // that is both is a silent wrong answer, not an error: the units work out
+  // and the values are plausible. Whoever creates the diagnostic does have
+  // the field manager, so record the names and let that caller check.
+  const auto& dict = physics::Constants<Real>::dictionary();
+  std::vector<std::string> from_dict;
+  for (const auto& n : {m_arg1_name, m_arg2_name}) {
+    if (dict.find(n)!=dict.end())
+      from_dict.push_back(n);
+  }
+  m_params.set<std::vector<std::string>>("constant_operands",from_dict);
 }
 
 void BinaryOp::initialize_impl()
