@@ -44,6 +44,16 @@ if (NOT SCREAM_ONLY_GENERATE_BASELINES)
     MPI_RANKS 1 ${SCREAM_TEST_MAX_RANKS}
   )
 
+  ## Regression: two fields interpolated to ONE pressure level must not share
+  ## one valid-sample count. Requested by canonical name, because the ':='
+  ## spelling writes under an alias and cannot reach the branch under test.
+  CreateUnitTest(io_dexpr_plev_avg_cnt
+    SOURCES io_dexpr_plev_avg_cnt.cpp
+    LIBS eamxx_io eamxx_diagnostics
+    LABELS io diagnostics
+    MPI_RANKS 1 ${SCREAM_TEST_MAX_RANKS}
+  )
+
   ## Test conditional geo data output (io_output_if_dim_exists feature)
   CreateUnitTest(io_cond_geo
     SOURCES io_cond_geo.cpp
