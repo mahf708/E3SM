@@ -1228,72 +1228,49 @@ process_requested_fields()
     // Add the field to the diag group
     diag_field.get_header().get_tracking().add_group("diagnostic");
 
-    // A few diagnostic classes are given ONE avg count shared between every
-    // field they produce at the same level, justified by the claim that those
-    // fields are "invalid in exactly the same places: every field interpolated
-    // to 500hPa is missing wherever 500hPa is below ground".
+    // Diagnostics are enrolled exactly like model fields: a count of their
+    // own, if and only if their OUTPUT can contain fill values.
     //
-    // THAT JUSTIFICATION IS FALSE. FieldAtPressureLevel's output mask is not
-    // purely geometric: field_at_pressure_level.cpp validates a column only
-    // where the level is in range AND the bracketing SOURCE values are valid,
+    // There used to be an exception here. FieldAtPressureLevel, FieldAtHeight
+    // at sea level, and AerosolOpticalDepth550nm shared ONE count between
+    // every field they produce at the same level, justified by the claim that
+    // those fields are "invalid in exactly the same places: every field
+    // interpolated to 500hPa is missing wherever 500hPa is below ground".
+    //
+    // That is false whenever the INPUT carries a mask of its own.
+    // field_at_pressure_level.cpp validates a column only where the level is
+    // in range AND the bracketing source values are valid,
     //
     //     if (not masked or (fmask(icol,k1)!=0 and fmask(icol,k1-1)!=0))
     //
-    // and FieldAtHeight does the same. So T_mid_at_500hPa and
-    // Tmasked_at_500hPa, with Tmasked := T_mid.where(qv>0.01), land here with
-    // the same suffix "_500hPa" and genuinely different masks -- and one of
-    // them is then divided by the other's denominator. That is finding 21
-    // again, which was fixed for the general enrollment path below while these
-    // class-based exceptions were left alone.
+    // and field_at_height.cpp does the same. Only the first half of that is
+    // geometric. Two fields at one level therefore differ wherever their
+    // inputs do, and sharing a denominator divides one of them by a count that
+    // never saw its samples.
     //
-    // Note which requests reach this. An output written as
+    // Measured, on a two-day ne4pg2 case asking for T_mid_at_500hPa alongside
+    // Tmasked_at_500hPa with Tmasked := T_mid.where(qv>0.01), where qv>0.01 is
+    // nowhere true at 500hPa: the file carried one avg_count_500hPa_ncol equal
+    // to 12, and Tmasked_at_500hPa was written as 0 K in all 1536 columns with
+    // no fill flag. Its accumulator was 0 because every contribution was fill
+    // and correctly skipped; dividing that by 12 instead of by 0 turned "no
+    // valid samples" into a temperature of absolute zero. The same expression
+    // spelled 'p := T_mid.where(qv>0.01).interp(p_mid=500)' came back correctly
+    // as all-fill, because ':=' makes the written name an alias, and aliases
+    // are enrolled per-field below. So the bug was reachable only through the
+    // ordinary YAML spelling, which is the one users write.
     //
-    //     p := T_mid.interp(p_mid=500,units='hPa')
+    // The exception bought one count variable per level instead of one per
+    // field. It is not worth a fabricated field, and per-field counts are
+    // already what every other fill-aware output gets after finding 21.
     //
-    // does NOT: ':=' registers p as an alias, the diagnostic is built under
-    // its canonical name T_mid_at_500hPa, the shared suffix is emplaced under
-    // THAT name, and the name actually written to the file is the alias, which
-    // is enrolled per-field by check_for_avg_cnt(alias) further down. So every
-    // aliased output already gets its own count and the shared entry addresses
-    // a variable no file contains. A plain field_names request for
-    // T_mid_at_500hPa reaches it directly.
-    std::string diag_avg_cnt_name = "";
-    bool shares_a_count = false;
-    auto& params = diag->get_params();
-    if (diag->name()=="FieldAtPressureLevel") {
-      diag_avg_cnt_name = "_"
-                        + params.get<std::string>("pressure_value")
-                        + params.get<std::string>("pressure_units");
-      shares_a_count = true;
-    } else if (diag->name()=="FieldAtHeight") {
-      if (params.get<std::string>("surface_reference")=="sealevel") {
-        diag_avg_cnt_name = "_"
-                          + params.get<std::string>("height_value")
-                          + params.get<std::string>("height_units") + "_above_sealevel";
-        shares_a_count = true;
-      }
-    } else if (diag->name()=="AerosolOpticalDepth550nm") {
-      diag_avg_cnt_name = "_" + diag->name();
-      shares_a_count = true;
-    }
-    else if (diag_field.get_header().has_extra_data("mask_data")) {
-      diag_avg_cnt_name = "_" + diag_field.name();
-      shares_a_count = true;
-    }
-
-    if (shares_a_count) {
-      if (m_avg_type!=OutputAvgType::Instant) {
-        m_track_avg_cnt = true;
-        m_field_to_avg_cnt_suffix.emplace(diag_field.name(),diag_avg_cnt_name);
-      }
-      return;
-    }
-
-    // Every other diagnostic gets the same treatment a model field gets:
-    // enrolled if and only if its OUTPUT can contain fill values, and given a
-    // count of its own.
+    // Note the deleted branch also set m_track_avg_cnt for a FieldAtHeight
+    // whose input has no mask. Such an output is not fill-aware at all --
+    // field_at_height.cpp extrapolates rather than filling when it has no
+    // input mask -- so it needs no count, and check_for_avg_cnt correctly
+    // gives it none.
     //
-    // Both halves of that matter, and the previous version got both wrong.
+    // Both halves of that rule matter, and an earlier version got both wrong.
     // Keying enrollment on the class list alone left a fill-aware output with
     // no count at all -- an averaged X.where(C) or X.tend() would reach the
     // safety check in run(). And falling through to an emplace guarded by the
