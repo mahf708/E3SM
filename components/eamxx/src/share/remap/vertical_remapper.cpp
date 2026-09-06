@@ -191,7 +191,23 @@ registration_ends_impl ()
             tagdim_names.back() += std::to_string(src_layout.dims()[i]);
           }
         }
-        const auto mask_name = m_tgt_grid->name() + "_" + ekat::join(tagdim_names,"_") + "_mask";
+        // The layout-keyed mask is SHARED by every field with these tags. That
+        // is right for the extrapolation mask, which is a geometric property of
+        // the pressure profiles and identical for every field. It is wrong for a
+        // field that carries its OWN validity -- a masked expression like
+        // T_mid.where(qv>0.01) -- because two such fields of the same layout
+        // would overwrite each other's validity. That is finding 21 again.
+        //
+        // So a fill-aware source field gets its own mask, keyed by field name.
+        // Without it, the source field's mask is silently dropped here and
+        // replaced by the geometric one, which reports every in-range level as
+        // valid; a downstream HorizontalRemapper then renormalises against that
+        // mask and averages the fill sentinel in as though it were data
+        // (finding 25, the vertical+horizontal half).
+        const bool own_mask = src.has_valid_mask() or src.get_header().may_be_filled();
+        const auto mask_name = own_mask
+          ? m_tgt_grid->name() + "_" + src.name() + "_mask"
+          : m_tgt_grid->name() + "_" + ekat::join(tagdim_names,"_") + "_mask";
         auto& mask = m_masks[mask_name];
         if (not mask.is_allocated()) {
           // Create this src/tgt mask fields, and assign them to these src/tgt fields extra data
@@ -413,6 +429,11 @@ void VerticalRemapper::remap_fwd_impl ()
       } else {
         apply_vertical_interpolation(m_lin_interp_scalar.at(type.li_vtag),f_src,f_tgt,x_src,x_tgt);
       }
+      // Only fill-aware fields can carry a sentinel into the interpolant, so
+      // only they pay for the extra pass.
+      if (f_src.get_header().may_be_filled()) {
+        mask_fill_contaminated(f_src,f_tgt,x_src,x_tgt);
+      }
       extrapolate(f_src,f_tgt,x_src,x_tgt);
     } else {
       // There is nothing to do, this field does not need vertical interpolation,
@@ -574,6 +595,166 @@ apply_vertical_interpolation(const ekat::LinInterp<Real,Packsize>& lin_interp,
   }
   if (m_timers_enabled)
     stop_timer(name() + " run LI");
+}
+
+// Finding 25. ekat::LinInterp takes y_src at face value, so where a masked
+// source level brackets a target level the interpolant is
+// w*fill_value + (1-w)*y -- for a sentinel of 3.4e33 that is numerically
+// w*fill_value, a value that is neither data nor fill. It carries no flag, is
+// not equal to the sentinel, and (because masking is applied per step while
+// the accumulation in scorpio_output follows remapping) can even carry a full
+// average count, so nothing downstream can distinguish it from a datum.
+//
+// The rule applied here is the conservative one, and the same one the
+// horizontal remapper arrives at by renormalising on valid weight: a target
+// level is valid only if BOTH of its bracketing source levels are valid.
+// Anything else is fill.
+//
+// This cannot be recorded in m_masks. That mask field is keyed on the target
+// layout and deliberately SHARED by every field carrying the same tags, which
+// is right for the extrapolation mask -- a geometric property of the pressure
+// profiles, identical for every field -- and wrong for this one, which is a
+// property of each field's own values. Two differently-masked fields of the
+// same layout would overwrite each other, which is finding 21 again. So the
+// sentinel goes into the target field itself: per-field by construction, and
+// already what the fill-aware averaging looks for.
+void VerticalRemapper::
+mask_fill_contaminated (const Field& f_src,
+                        const Field& f_tgt,
+                        const Field& p_src,
+                        const Field& p_tgt) const
+{
+  if (m_timers_enabled)
+    start_timer(name() + " refill");
+
+  using TPF = ekat::TeamPolicyFactory<DefaultDevice::execution_space>;
+
+  using view2d = typename KokkosTypes<DefaultDevice>::view<const Real**>;
+  using view1d = typename KokkosTypes<DefaultDevice>::view<const Real*>;
+
+  constexpr auto fill_val = constants::fill_value<Real>;
+
+  auto src1d = p_src.rank()==1;
+  auto tgt1d = p_tgt.rank()==1;
+
+  view2d p_src2d_v, p_tgt2d_v;
+  view1d p_src1d_v, p_tgt1d_v;
+  if (src1d) {
+    p_src1d_v = p_src.get_view<const Real*>();
+  } else {
+    p_src2d_v = p_src.get_view<const Real**>();
+  }
+  if (tgt1d) {
+    p_tgt1d_v = p_tgt.get_view<const Real*>();
+  } else {
+    p_tgt2d_v = p_tgt.get_view<const Real**>();
+  }
+
+  const auto& f_tgt_l = f_tgt.get_header().get_identifier().get_layout();
+  const auto& f_src_l = f_src.get_header().get_identifier().get_layout();
+  const int ncols = m_src_grid->get_num_local_dofs();
+  const int nlevs_tgt = f_tgt_l.dims().back();
+  const int nlevs_src = f_src_l.dims().back();
+
+  switch(f_src.rank()) {
+    case 2:
+    {
+      auto f_src_v = f_src.get_view<const Real**>();
+      auto f_tgt_v = f_tgt.get_view<      Real**>();
+      // Writing the sentinel into the values is not enough: HorizontalRemapper
+      // renormalises on the int mask, so the mask has to agree or the sentinel
+      // is averaged in as data downstream.
+      const bool has_mask = f_tgt.has_valid_mask();
+      auto mask_v = has_mask ? f_tgt.get_valid_mask().get_view<int**>()
+                             : typename Field::view_dev_t<int**>{};
+
+      auto policy = TPF::get_default_team_policy(ncols,nlevs_tgt);
+      using MemberType = typename decltype(policy)::member_type;
+      auto lambda = KOKKOS_LAMBDA(const MemberType& team)
+      {
+        const int icol = team.league_rank();
+
+        auto x_src = p_src1d_v;
+        auto x_tgt = p_tgt1d_v;
+        if (not src1d)
+          x_src = ekat::subview(p_src2d_v,icol);
+        if (not tgt1d)
+          x_tgt = ekat::subview(p_tgt2d_v,icol);
+
+        auto refill = [&](const int ilev) {
+          const auto x = x_tgt[ilev];
+          // Outside the source range, extrapolate() decides. Leave it alone.
+          if (x<x_src[0] or x>x_src[nlevs_src-1])
+            return;
+          // Bracket by bisection; x_src increases monotonically with index.
+          int lo = 0, hi = nlevs_src-1;
+          while (hi-lo>1) {
+            const int mid = (lo+hi)/2;
+            if (x_src[mid]<=x) lo = mid; else hi = mid;
+          }
+          if (f_src_v(icol,lo)==fill_val or f_src_v(icol,hi)==fill_val) {
+            f_tgt_v(icol,ilev) = fill_val;
+            if (has_mask)
+              mask_v(icol,ilev) = 0;
+          }
+        };
+        Kokkos::parallel_for (Kokkos::TeamVectorRange(team,nlevs_tgt), refill);
+      };
+      Kokkos::parallel_for("VerticalRemapper::mask_fill_contaminated",policy,lambda);
+      break;
+    }
+    case 3:
+    {
+      auto f_src_v = f_src.get_view<const Real***>();
+      auto f_tgt_v = f_tgt.get_view<      Real***>();
+      const int ncomps = f_tgt_l.get_vector_dim();
+      const bool has_mask = f_tgt.has_valid_mask();
+      auto mask_v = has_mask ? f_tgt.get_valid_mask().get_view<int***>()
+                             : typename Field::view_dev_t<int***>{};
+
+      auto policy = TPF::get_default_team_policy(ncols*ncomps,nlevs_tgt);
+      using MemberType = typename decltype(policy)::member_type;
+      auto lambda = KOKKOS_LAMBDA(const MemberType& team)
+      {
+        const int icol = team.league_rank() / ncomps;
+        const int icmp = team.league_rank() % ncomps;
+
+        auto x_src = p_src1d_v;
+        auto x_tgt = p_tgt1d_v;
+        if (not src1d)
+          x_src = ekat::subview(p_src2d_v,icol);
+        if (not tgt1d)
+          x_tgt = ekat::subview(p_tgt2d_v,icol);
+
+        auto refill = [&](const int ilev) {
+          const auto x = x_tgt[ilev];
+          if (x<x_src[0] or x>x_src[nlevs_src-1])
+            return;
+          int lo = 0, hi = nlevs_src-1;
+          while (hi-lo>1) {
+            const int mid = (lo+hi)/2;
+            if (x_src[mid]<=x) lo = mid; else hi = mid;
+          }
+          if (f_src_v(icol,icmp,lo)==fill_val or f_src_v(icol,icmp,hi)==fill_val) {
+            f_tgt_v(icol,icmp,ilev) = fill_val;
+            if (has_mask)
+              mask_v(icol,icmp,ilev) = 0;
+          }
+        };
+        Kokkos::parallel_for (Kokkos::TeamVectorRange(team,nlevs_tgt), refill);
+      };
+      Kokkos::parallel_for("VerticalRemapper::mask_fill_contaminated",policy,lambda);
+      break;
+    }
+    default:
+      EKAT_ERROR_MSG (
+          "[VerticalRemapper::mask_fill_contaminated] Error! Unsupported field rank.\n"
+          " - src field name: " + f_src.name() + "\n"
+          " - src field rank: " + std::to_string(f_src.rank()) + "\n");
+  }
+
+  if (m_timers_enabled)
+    stop_timer(name() + " refill");
 }
 
 void VerticalRemapper::
