@@ -1228,10 +1228,39 @@ process_requested_fields()
     // Add the field to the diag group
     diag_field.get_header().get_tracking().add_group("diagnostic");
 
-    // A few diagnostic classes can SHARE one avg count between all the fields
-    // they produce, because those fields are invalid in exactly the same
-    // places: every field interpolated to 500hPa is missing wherever 500hPa is
-    // below ground, so one avg_count_500hPa serves them all.
+    // A few diagnostic classes were given a SHARED avg count between all the
+    // fields they produce, on the grounds that those fields are invalid in
+    // exactly the same places: every field interpolated to 500hPa is missing
+    // wherever 500hPa is below ground, so one avg_count_500hPa serves them all.
+    //
+    // THAT JUSTIFICATION IS FALSE, and the block below is now unreachable.
+    //
+    // It is false because FieldAtPressureLevel's output mask is not purely
+    // geometric. field_at_pressure_level.cpp marks a column valid only where
+    // the level is in range AND the bracketing SOURCE values are valid:
+    //
+    //     if (not masked or (fmask(icol,k1)!=0 and fmask(icol,k1-1)!=0))
+    //
+    // so T_mid.interp(p_mid=500) and T_mid.where(qv>0.01).interp(p_mid=500)
+    // have genuinely different masks at the same level. Sharing a denominator
+    // between them would divide one field by the other's count -- the same
+    // defect as the layout-keyed sharing that was fixed above.
+    //
+    // It is unreachable because the enrollment above already inserts a
+    // PER-FIELD suffix for anything with a valid mask, mask_data, or
+    // may_be_filled, and the emplace() below does not overwrite an existing
+    // key. Every output of these classes is fill-aware by construction
+    // (FieldAtPressureLevel calls create_valid_mask() and
+    // set_may_be_filled(true)), so the per-field suffix always wins.
+    //
+    // Verified at runtime: two same-level interpolations with different input
+    // masks come back with avg_count_p_unmasked and avg_count_p_masked, not a
+    // shared avg_count_500hPa.
+    //
+    // It is kept, rather than deleted, only so this reasoning is attached to
+    // the code it concerns. If the enrollment order above ever changes, or the
+    // emplace() becomes an assignment, this block becomes live again AND
+    // wrong. Delete it with the release rather than reviving it.
     std::string diag_avg_cnt_name = "";
     bool shares_a_count = false;
     auto& params = diag->get_params();
