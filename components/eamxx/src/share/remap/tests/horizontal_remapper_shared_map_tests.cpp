@@ -107,7 +107,13 @@ TEST_CASE("horiz_remap_shared_map_file")
   root_print (" |   Horiz remap: two remappers, one map     |\n",comm);
   root_print (" +-------------------------------------------+\n\n",comm);
 
-  scorpio::init_subsystem(comm);
+  // Catch2 re-runs the whole TEST_CASE body once per SECTION, so this is
+  // entered several times; and a SECTION that fails never reaches the
+  // finalize below. Guard both ends, or the first genuine failure is followed
+  // by a confusing "re-initialize pio subsystem" cascade that buries it.
+  if (not scorpio::is_subsystem_inited()) {
+    scorpio::init_subsystem(comm);
+  }
 
   const int nldofs_tgt = 3;
   const int ngdofs_tgt = nldofs_tgt*comm.size();
@@ -157,7 +163,9 @@ TEST_CASE("horiz_remap_shared_map_file")
     REQUIRE_THROWS (std::make_shared<HorizontalRemapper>(bogus,filename));
   }
 
-  scorpio::finalize_subsystem();
+  if (scorpio::is_subsystem_inited()) {
+    scorpio::finalize_subsystem();
+  }
 }
 
 } // namespace scream
