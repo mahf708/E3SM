@@ -187,7 +187,15 @@ struct Constants
       dict["RWV"]         = RWV;
       dict["r_earth"]     = r_earth;
       dict["stebol"]      = stebol;
-      dict["omega"]       = omega;
+      // NOT "omega". EAMxx's own dynamics publishes a field called `omega`
+      // -- the vertical pressure velocity, Pa/s -- and this dictionary is
+      // consulted BEFORE the field manager when an expression operand is
+      // resolved (see share/diagnostics/binary_op.cpp). Keyed as "omega",
+      // Earth's rotation rate silently shadowed that field, so `omega*qv`
+      // built a dimensionally valid diagnostic that was 7.292e-5 times the
+      // humidity rather than the vertical moisture flux. The key is spelled
+      // out; the shadowing itself is caught by the check in scorpio_output.cpp.
+      dict["omega_earth"] = omega;
     }
     return dict;
   }

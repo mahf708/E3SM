@@ -1377,6 +1377,23 @@ process_requested_fields()
             "   write\n"
             "     - <name> := " + name + "\n");
 
+        // A named physical constant is resolved BEFORE the field manager, so
+        // an operand that is both -- EAMxx's `omega` was, until the constant
+        // was renamed -- builds a diagnostic with sensible units and the wrong
+        // meaning. BinaryOp records which operands it took from the dictionary
+        // because it cannot see the field manager; here we can, so refuse.
+        for (const auto& c :
+             diag->get_params().get<std::vector<std::string>>("constant_operands",{})) {
+          EKAT_REQUIRE_MSG (not fm_model->has_field(c),
+              "Error! An operand names both a physical constant and a field.\n"
+              " - stream name: " + m_stream_name + "\n"
+              " - request: " + name + "\n"
+              " - ambiguous operand: " + c + "\n"
+              "The constant would be used, silently, and the field ignored.\n"
+              "Rename the constant in physics_constants.hpp, or write the\n"
+              "constant's value as a literal.\n");
+        }
+
         m_diag_repo[name] = diag;
         // Add its deps to the list of fields to process (if not already in fm_model)
         bool deps_met = true;
