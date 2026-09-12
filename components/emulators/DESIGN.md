@@ -16,16 +16,20 @@ what is built here and how it is tested. Their code is not translated.
  │ C API                common/src/emulator_c_api.cpp              │  opaque handles; every call guarded
  ├────────────────────────────────────────────────────────────────┤
  │ Emulator base        common/src/include/emulator.hpp            │  lifecycle, domain, coupler exchange
- │ Component            emulatoratm/src/atm.cpp (EmulatorAtm)      │  configuration, owns the model below
+ │ Components           emulatoratm/src/atm.cpp (EmulatorAtm)      │  configuration, owns the model below
+ │                      emulatorocn/src/ocn.cpp (EmulatorOcn)      │  (ocean and ice: no caps yet)
+ │                      emulatorice/src/ice.cpp (EmulatorIce)      │
  │ Model logic          emulatoratm/src/ace_atmosphere.cpp         │  independent of MCT
- │                      emulatorocn/src/samudra_ocean.cpp          │  (ocean: no cap yet)
+ │                      emulatorocn/src/samudra_ocean.cpp          │
+ │                      emulatorice/src/sea_ice_surface.cpp        │
  ├────────────────────────────────────────────────────────────────┤
  │ fields/    FieldList, FieldSet, CouplerBinding, MaskSet,         │
  │            ChannelLayout                                         │
  │ grid/      HorizontalGrid, Decomposition, Domain, read_scrip,    │
  │            GlobalGather, read_grid_fields                         │
  │ coupling/  LongStepClock, IntervalMean, BracketedState,          │
- │            RestartStore, NetworkStepper, Exchange                 │
+ │            RestartStore, NetworkStepper, Exchange, SharedDomain,  │
+ │            julian_day_noleap                                      │
  │ inference/ Tensor, InferenceBackend: stub, python, libtorch       │
  └────────────────────────────────────────────────────────────────┘
 ```
@@ -84,6 +88,12 @@ run, the commit says how many cases fail.
 | Coupler ocean fluxes are open-water weighted; unweighting kept FSDS/FLDS within 3% (−22%/−28% without) | `ocn::coupler_forcing_sample` | hand-computed unweighting, 1% floor, signs |
 | Ocean forcing is the mean over the 5-day window that just closed | `SamudraOcean` + `IntervalMean` | window close at step 240; restart mid-window exact over 200 steps |
 | The atmosphere emulator's own fluxes drive the ocean (SamudrACE); its SST feeds back | `coupling::Exchange` | real SamudrACE atmosphere + ocean, 10 coupled days, identical on 1 and 4 ranks |
+| The coupler needs ice the ocean already predicts; with no ice component the polar ocean is open water (EICE) | `EmulatorIce` reports `ocn.sea_ice_fraction` | real ocean + ice through MCT buffers: ice reports the ocean's previous-step fraction exactly, 48/48 steps, 1 and 4 ranks |
+| The ice grid must be the ocean's, and a mismatched decomposition must fail, not mis-index | `coupling::publish_domain` / `shared_domain`; collective check in `EmulatorIce::create_instance` | no ocean → error on every rank; too few ranks → "18 of the ocean's 36" |
+| `Si_t` blended by `ifrac` is weighted twice by the merge | `ice::prescribed_skin_temperature`, unblended | 1% and 95% ice cells report one skin; mutation fails 2 of 9 cases |
+| At init `x2i` is zero; the bulk scheme then makes NaN, which survives the merge and killed EAM's first step | `ice::bulk_fluxes_defined`; zero, not `spval`, where skipped | zero state → finite exports, `Si_tref = Si_t` |
+| The ocean emulator's step contains its ice's melt; handing it over again double-counts | `Fioi_melth/meltw/salt/swpen` zero; `Fioi_taux/y` = atmosphere-ice stress | melt zero, stress passed through; mutation fails 1 case |
+| dice's atmosphere-ice bulk formulae | `ice::atm_ice_fluxes` | EICE's own Fortran on five cells, to 1e-12 |
 
 ## Deliberate differences from the Fortran
 
@@ -104,7 +114,7 @@ use the Cray wrappers:
 
 ```bash
 export CC=cc CXX=CC FC=ftn
-./test                # bare: 23 tests
+./test                # bare build
 ./test --python       # plus the embedded-Python backend
 ```
 
@@ -137,11 +147,13 @@ cmake -S . -B build-full -DCMAKE_BUILD_TYPE=Release -DBUILD_EMULATOR_TESTS=ON \
   for now.
 - No netCDF/SCORPIO `RestartStore` and no rpointer handling; restarts are tested
   in memory.
-- The ocean has no MCT cap or CIME files yet. Its first prediction matches an
-  independent Python run of the real checkpoint. (`emulator_comps/eocn/VERIFICATION.md`
-  §1's table does not reproduce with the published files and is not used.)
-- Sea ice (EICE's role: ice fraction from the ocean's exchange, prescribed
-  `Si_t`, atmosphere–ice bulk fluxes) is next, then a coupled run against the
-  one-year reference in `SamudrACE-E3SMv3/ref1yr`.
+- The ocean and sea ice have components but no MCT caps or CIME files yet.
+  The ocean's first prediction matches an independent Python run of the real
+  checkpoint. (`emulator_comps/eocn/VERIFICATION.md` §1's table does not
+  reproduce with the published files and is not used.)
+- `EmulatorAtm` does not yet configure the exchange (`surface_from_ocean`,
+  `publish_ocean_forcing`) from `atm_in`; the in-process SamudrACE test sets
+  them on `AceAtmosphere` directly.
+- Then a coupled run against the one-year reference in `SamudrACE-E3SMv3/ref1yr`.
 - The C++ coupler API adapter waits for `emulators/coupler-infrastructure` to
   merge.
