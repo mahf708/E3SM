@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+
+<definitions_variables>
+
+  <entry id="COMP_ICE">
+     <type>char</type>
+     <valid_values>emulatorice</valid_values>
+     <default_value>emulatorice</default_value>
+     <group>case_comp</group>
+     <file>env_case.xml</file>
+     <desc>Name of sea ice component</desc>
+  </entry>
+
+  <description>
+    <desc compset="_EMULATORICE">EMULATORICE: the emulated ocean's sea ice, reported to the coupler</desc>
+  </description>
+
+</definitions_variables>

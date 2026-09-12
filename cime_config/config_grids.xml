@@ -44,6 +44,19 @@
       <grid name="iac"    compset="SIAC">null</grid>
     </model_grid_defaults>
 
+    <!-- Emulated components that share the 180x360 Gaussian grid: the
+         atmosphere, ocean and sea ice emulators.  Every map between them is
+         the identity, so no mapping files are needed. -->
+    <model_grid alias="gauss180x360_gauss180x360" compset="EMULATORATM.*_EMULATOROCN">
+      <grid name="atm">gauss180x360</grid>
+      <grid name="lnd">gauss180x360</grid>
+      <grid name="ocnice">gauss180x360</grid>
+      <grid name="rof">null</grid>
+      <grid name="glc">null</grid>
+      <grid name="wav">null</grid>
+      <mask>gauss180x360</mask>
+    </model_grid>
+
     <model_grid alias="g16_g16" compset="DATM.+DROF">
       <grid name="atm">gx1v6</grid>
       <grid name="lnd">gx1v6</grid>
@@ -3037,6 +3050,17 @@
   </grids>
 
   <domains>
+
+    <domain name="gauss180x360">
+      <nx>64800</nx>
+      <ny>1</ny>
+      <!-- The ocean mask is the Samudra initial condition's mask_2d, cell for
+           cell (44,892 ocean cells).  Development copies, not yet in
+           inputdata. -->
+      <file grid="atm|lnd" mask="gauss180x360">/pscratch/sd/m/mahf708/eocn-inputdata/share/domains/domain.lnd.gauss180x360_gauss180x360.20260822.nc</file>
+      <file grid="ice|ocn" mask="gauss180x360">/pscratch/sd/m/mahf708/eocn-inputdata/share/domains/domain.ocn.gauss180x360_gauss180x360.20260822.nc</file>
+      <desc>gauss180x360 is the 180x360 Gaussian grid of the ACE and Samudra emulators</desc>
+    </domain>
 
     <!-- ======================================================== -->
     <!-- Component grid domain specifications -->

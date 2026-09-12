@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+
+<compsets>
+
+  <help>
+  Compset format is explained in cime_config/allactive/config_compsets.xml
+  or in the CIME documentation.
+  </help>
+
+  <!-- SamudrACE: the ACE atmosphere, the Samudra ocean and its sea ice,
+       all emulated, on the 180x360 Gaussian grid. -->
+  <compset>
+    <alias>EMU2000-SAMUDRACE</alias>
+    <lname>2000_EMULATORATM_SLND_EMULATORICE_EMULATOROCN_SROF_SGLC_SWAV</lname>
+    <support_level>Experimental, under development</support_level>
+  </compset>
+
+</compsets>

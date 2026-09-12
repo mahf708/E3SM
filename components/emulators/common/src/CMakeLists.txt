@@ -48,10 +48,19 @@ set(EMULATOR_COMMON_F90_SOURCES
   emulator_handle.F90
 )
 
+# What every component's MCT cap does; it needs the driver's modules.
+if(NOT STANDALONE_MODE)
+  list(APPEND EMULATOR_COMMON_F90_SOURCES emulator_mct_cap.F90)
+endif()
+
 add_library(emulator_common
   ${EMULATOR_COMMON_CXX_SOURCES}
   ${EMULATOR_COMMON_F90_SOURCES}
 )
+
+if(NOT STANDALONE_MODE)
+  target_link_libraries(emulator_common PUBLIC csm_share MPI::MPI_Fortran)
+endif()
 
 target_compile_features(emulator_common PUBLIC cxx_std_20)
 

@@ -286,6 +286,25 @@ if(BUILD_EMULATOR_TESTS)
   enable_testing()
 endif()
 
+# In the integrated build each component's MCT cap is compiled only when the
+# case uses that component: MPAS-Ocean's cap, say, defines the same
+# ocn_comp_mct module.  csm_share and the driver's seq_* modules come through
+# emulator_common.
+if(NOT STANDALONE_MODE)
+  find_package(MPI REQUIRED COMPONENTS Fortran)
+  find_package(CsmShare REQUIRED)
+endif()
+function(emulator_add_mct_cap target comp_name source)
+  if(STANDALONE_MODE OR NOT COMP_NAMES MATCHES "${comp_name}")
+    return()
+  endif()
+  target_sources(${target} PRIVATE ${source})
+  set_target_properties(${target} PROPERTIES
+    Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/modules)
+  target_include_directories(${target} PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/modules)
+  target_link_libraries(${target} PUBLIC MPI::MPI_Fortran)
+endfunction()
+
 # Add subdirectories
 add_subdirectory(common)
 add_subdirectory(emulatoratm)

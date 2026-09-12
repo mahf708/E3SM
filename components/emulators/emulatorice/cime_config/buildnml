@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+
+"""Write ice_in for the emulated ocean's sea ice, and check its layout."""
+
+import os
+import sys
+
+_CIMEROOT = os.environ.get("CIMEROOT")
+if _CIMEROOT is None:
+    raise SystemExit("ERROR: CIMEROOT not defined.")
+sys.path.append(os.path.join(_CIMEROOT, "scripts", "Tools"))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "..", "..", "cime_config"))
+
+from standard_script_setup import *  # noqa: F401,F403,E402
+from CIME.buildnml import parse_input  # noqa: E402
+from CIME.case import Case  # noqa: E402
+from CIME.utils import expect  # noqa: E402
+from emulator_settings import write_input_file  # noqa: E402
+
+
+def buildnml(case, caseroot, compname):
+    if compname != "emulatorice":
+        raise AttributeError("expected emulatorice, got " + compname)
+    # The ice is the emulated ocean's: same process, same ranks.
+    expect(case.get_value("COMP_OCN") == "emulatorocn",
+           "emulatorice needs emulatorocn as the ocean component.")
+    for what in ("NTASKS", "ROOTPE", "NTHRDS"):
+        expect(case.get_value(what + "_ICE") == case.get_value(what + "_OCN"),
+               "emulatorice runs on the emulated ocean's ranks: set "
+               "{0}_ICE = {0}_OCN.".format(what))
+    write_input_file(case, caseroot, compname, "ice", {}, [])
+
+
+def _main_func():
+    caseroot = parse_input(sys.argv)
+    with Case(caseroot) as case:
+        buildnml(case, caseroot, "emulatorice")
+
+
+if __name__ == "__main__":
+    _main_func()

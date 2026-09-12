@@ -10,6 +10,7 @@ add_library(emulatorice
 target_include_directories(emulatorice PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(emulatorice PUBLIC emulator_common)
 target_compile_features(emulatorice PUBLIC cxx_std_20)
+emulator_add_mct_cap(emulatorice emulatorice src/ice_comp_mct.F90)
 
 if(BUILD_EMULATOR_TESTS)
   add_subdirectory(tests)
