@@ -289,4 +289,5 @@ endif()
 # Add subdirectories
 add_subdirectory(common)
 add_subdirectory(emulatoratm)
+add_subdirectory(emulatorocn)
 add_subdirectory(driver)
