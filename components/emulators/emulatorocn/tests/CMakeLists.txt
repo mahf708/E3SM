@@ -9,3 +9,9 @@ add_test(NAME samudra_pieces_tests COMMAND test_samudra_pieces)
 add_executable(test_samudra_real test_samudra_real.cpp)
 target_link_libraries(test_samudra_real PRIVATE emulatorocn Catch2)
 emulator_add_mpi_test(samudra_real_tests test_samudra_real)
+
+# SamudrACE coupled in one process through the exchange: the real
+# atmosphere and ocean checkpoints on a GPU.  Skips where they are missing.
+add_executable(test_samudrace_coupled_real test_samudrace_coupled_real.cpp)
+target_link_libraries(test_samudrace_coupled_real PRIVATE emulatorocn emulatoratm Catch2)
+emulator_add_mpi_test(samudrace_coupled_real_tests test_samudrace_coupled_real)

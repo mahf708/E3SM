@@ -58,6 +58,11 @@ SamudraOcean::SamudraOcean(
   if (m_gather.is_root()) {
     m_global_lat = grid.lat;
   }
+  if (m_config.forcing_source == ForcingSource::Atmosphere &&
+      m_config.exchange == nullptr) {
+    throw std::invalid_argument(
+        "SamudraOcean: forcing from the atmosphere needs an exchange.");
+  }
 }
 
 std::vector<std::string> SamudraOcean::initial_condition_names() const {
@@ -136,7 +141,15 @@ void SamudraOcean::run(coupling::ModelTime now,
   }
   const auto step = m_clock.on_coupler_step(now);
   if (step.first_call) {
-    coupler_forcing_sample(imports, m_config.forcing, m_sample);
+    if (m_config.forcing_source == ForcingSource::Atmosphere) {
+      for (const auto &name : samudra_forcing_names()) {
+        const auto from = m_config.exchange->get("atm." + name);
+        auto to = m_sample.get(name);
+        std::copy(from.begin(), from.end(), to.begin());
+      }
+    } else {
+      coupler_forcing_sample(imports, m_config.forcing, m_sample);
+    }
     m_window.add(m_sample);
     if (step.advance) {
       auto &in = m_stepper.inputs();
@@ -203,6 +216,11 @@ void SamudraOcean::compute_exports(double fraction, fields::FieldSet &exports) {
   }
   m_gather.scatter(dx, exports.get("So_dhdx"));
   m_gather.scatter(dy, exports.get("So_dhdy"));
+
+  if (m_config.exchange != nullptr) {
+    m_config.exchange->publish("ocn.sst", so_t);
+    m_config.exchange->publish("ocn.sea_ice_fraction", m_ice_fraction);
+  }
 }
 
 void SamudraOcean::save_to(coupling::RestartStore &store) const {

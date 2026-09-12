@@ -42,6 +42,13 @@ std::span<const double> maybe(const fields::FieldSet &f,
 
 } // namespace
 
+const std::vector<std::string> &ocean_forcing_channels() {
+  static const std::vector<std::string> names{
+      "TAUX", "TAUY", "surface_precipitation_rate", "frozen_precipitation_rate",
+      "FLUS", "FSUS", "FLDS", "FSDS", "LHFLX", "SHFLX"};
+  return names;
+}
+
 const std::vector<std::string> &ace_import_names() {
   static const std::vector<std::string> names{"Sf_lfrac", "Sf_ofrac",
                                               "Sf_ifrac", "Sx_t"};
@@ -74,6 +81,21 @@ AceAtmosphere::AceAtmosphere(
       m_solin_now(decomp.num_local(), 0.0) {
   for (const auto &name : m_config.layout.outputs) {
     m_blended.add(name);
+  }
+  if ((m_config.publish_ocean_forcing || m_config.surface_from_ocean) &&
+      m_config.exchange == nullptr) {
+    throw std::invalid_argument(
+        "AceAtmosphere: exchanging with an emulated ocean needs an exchange.");
+  }
+  if (m_config.publish_ocean_forcing) {
+    for (const auto &name : ocean_forcing_channels()) {
+      if (!has_output(m_config.layout, name)) {
+        throw std::invalid_argument(
+            "AceAtmosphere: layout '" + m_config.layout.name +
+            "' has no '" + name + "' output, so it cannot force an emulated "
+            "ocean. SamudrACE-E3SMv3 has all ten.");
+      }
+    }
   }
 }
 
@@ -165,10 +187,15 @@ void AceAtmosphere::run(coupling::ModelTime now,
     auto &in = m_stepper.inputs();
     SurfaceChannels surface{in.get("LANDFRAC"), in.get("OCNFRAC"),
                             in.get("ICEFRAC"), in.get("TS")};
-    compute_surface_inputs({imports.get("Sf_lfrac"), imports.get("Sf_ofrac"),
-                            imports.get("Sf_ifrac"), imports.get("Sx_t"),
-                            m_brackets.upper("TS")},
-                           surface);
+    SurfaceCouplerInputs from_coupler{
+        imports.get("Sf_lfrac"), imports.get("Sf_ofrac"),
+        imports.get("Sf_ifrac"), imports.get("Sx_t"), m_brackets.upper("TS")};
+    if (m_config.surface_from_ocean) {
+      from_coupler.ocean_ice_fraction =
+          m_config.exchange->get("ocn.sea_ice_fraction");
+      from_coupler.ocean_sst = m_config.exchange->get("ocn.sst");
+    }
+    compute_surface_inputs(from_coupler, surface);
     auto solin = in.get("SOLIN");
     m_sun.window_mean(now.ymd, now.tod, layout.model_dt, solin);
     std::copy(solin.begin(), solin.end(), m_solin_window.begin());
@@ -224,6 +251,25 @@ void AceAtmosphere::compute_exports(coupling::ModelTime now, double fraction,
                      exports.get("Faxa_swvdr"), exports.get("Faxa_swndf"),
                      exports.get("Faxa_swvdf"), exports.get("Faxa_swnet")};
   compute_surface_exports(in, m_config.surface, out);
+
+  if (m_config.publish_ocean_forcing) {
+    std::vector<double> buffer(m_decomp.num_local());
+    for (const auto &name : ocean_forcing_channels()) {
+      const auto held = b.get(name);
+      std::copy(held.begin(), held.end(), buffer.begin());
+      if (name == "surface_precipitation_rate" ||
+          name == "frozen_precipitation_rate") {
+        const double scale = name == "frozen_precipitation_rate" &&
+                                     m_config.surface.frozen_precip_in_m_per_s
+                                 ? constants::rhofw
+                                 : 1.0;
+        for (auto &v : buffer) {
+          v = std::max(v, 0.0) * scale;
+        }
+      }
+      m_config.exchange->publish("atm." + name, buffer);
+    }
+  }
 }
 
 void AceAtmosphere::save_to(coupling::RestartStore &store) const {

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "channel_layout.hpp"
+#include "exchange.hpp"
 #include "field_set.hpp"
 #include "global_gather.hpp"
 #include "grid_field_reader.hpp"
@@ -48,8 +49,18 @@ const std::vector<std::string> &samudra_export_names();
  */
 class SamudraOcean {
 public:
+  /// Where the ten forcing channels come from.
+  enum class ForcingSource {
+    Coupler,   ///< the fields the MCT coupler merged (coupler_forcing_sample)
+    Atmosphere ///< an emulated atmosphere's own flux channels, `atm.<name>`
+  };
+
   struct Config {
     fields::ChannelLayout layout;
+    ForcingSource forcing_source = ForcingSource::Coupler;
+    /// Needed for the Atmosphere source; when set, the ocean also publishes
+    /// `ocn.sst` (the exported So_t) and `ocn.sea_ice_fraction`.
+    coupling::Exchange *exchange = nullptr;
     CouplerForcingOptions forcing;
     int coupler_dt = 1800;
     double freezing_sst = 271.35; ///< K: So_t floor, and its land value

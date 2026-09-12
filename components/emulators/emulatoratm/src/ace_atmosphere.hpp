@@ -16,6 +16,7 @@
 
 #include "ace_surface.hpp"
 #include "channel_layout.hpp"
+#include "exchange.hpp"
 #include "field_set.hpp"
 #include "global_gather.hpp"
 #include "grid_field_reader.hpp"
@@ -29,6 +30,10 @@
 
 namespace emulator {
 namespace atm {
+
+/// The flux channels an emulated ocean is forced with, published as
+/// `atm.<name>` when Config::publish_ocean_forcing is set.
+const std::vector<std::string> &ocean_forcing_channels();
 
 /// The coupler fields the ACE atmosphere reads.
 const std::vector<std::string> &ace_import_names();
@@ -59,6 +64,19 @@ public:
     SurfaceOptions surface;
     Orbit orbit;
     int coupler_dt = 1800;
+    /// In-process exchange with an emulated ocean; null for none.
+    coupling::Exchange *exchange = nullptr;
+    /**
+     * Publish the ten flux channels an emulated ocean is forced with, as
+     * `atm.<channel>`, every coupler step: SamudrACE's coupling, which drives
+     * the ocean with the atmosphere's own fluxes rather than the coupler's
+     * bulk-formula ones.  Precipitation is clipped at zero, and frozen
+     * precipitation put in kg/m2/s.  Needs a layout that has all ten.
+     */
+    bool publish_ocean_forcing = false;
+    /// At each network step, take TS and the ice/open-water split from the
+    /// emulated ocean's `ocn.sst` and `ocn.sea_ice_fraction`.
+    bool surface_from_ocean = false;
   };
 
   /**
