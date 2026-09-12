@@ -18,13 +18,14 @@ what is built here and how it is tested. Their code is not translated.
  │ Emulator base        common/src/include/emulator.hpp            │  lifecycle, domain, coupler exchange
  │ Component            emulatoratm/src/atm.cpp (EmulatorAtm)      │  configuration, owns the model below
  │ Model logic          emulatoratm/src/ace_atmosphere.cpp         │  independent of MCT
+ │                      emulatorocn/src/samudra_ocean.cpp          │  (ocean: no cap yet)
  ├────────────────────────────────────────────────────────────────┤
  │ fields/    FieldList, FieldSet, CouplerBinding, MaskSet,         │
  │            ChannelLayout                                         │
  │ grid/      HorizontalGrid, Decomposition, Domain, read_scrip,    │
  │            GlobalGather, read_grid_fields                         │
  │ coupling/  LongStepClock, IntervalMean, BracketedState,          │
- │            RestartStore, NetworkStepper                           │
+ │            RestartStore, NetworkStepper, Exchange                 │
  │ inference/ Tensor, InferenceBackend: stub, python, libtorch       │
  └────────────────────────────────────────────────────────────────┘
 ```
@@ -80,6 +81,9 @@ run, the commit says how many cases fail.
 | A fill value of 9.97e36 passes a finiteness check | `grid::read_grid_fields` counts fill-like values | NaN and _FillValue counted separately |
 | One NaN in a global network spreads everywhere | `NetworkStepper` checks every output; verdict broadcast | NaN step raises on all 8 ranks, channel and cell named |
 | Feed the raw prediction back, not the blended export | `NetworkStepper` step 5 | prognostic inputs equal the prediction |
+| Coupler ocean fluxes are open-water weighted; unweighting kept FSDS/FLDS within 3% (−22%/−28% without) | `ocn::coupler_forcing_sample` | hand-computed unweighting, 1% floor, signs |
+| Ocean forcing is the mean over the 5-day window that just closed | `SamudraOcean` + `IntervalMean` | window close at step 240; restart mid-window exact over 200 steps |
+| The atmosphere emulator's own fluxes drive the ocean (SamudrACE); its SST feeds back | `coupling::Exchange` | real SamudrACE atmosphere + ocean, 10 coupled days, identical on 1 and 4 ranks |
 
 ## Deliberate differences from the Fortran
 
@@ -133,6 +137,11 @@ cmake -S . -B build-full -DCMAKE_BUILD_TYPE=Release -DBUILD_EMULATOR_TESTS=ON \
   for now.
 - No netCDF/SCORPIO `RestartStore` and no rpointer handling; restarts are tested
   in memory.
-- Ocean (Samudra) and sea ice are next, on the same primitives.
+- The ocean has no MCT cap or CIME files yet. Its first prediction matches an
+  independent Python run of the real checkpoint. (`emulator_comps/eocn/VERIFICATION.md`
+  §1's table does not reproduce with the published files and is not used.)
+- Sea ice (EICE's role: ice fraction from the ocean's exchange, prescribed
+  `Si_t`, atmosphere–ice bulk fluxes) is next, then a coupled run against the
+  one-year reference in `SamudrACE-E3SMv3/ref1yr`.
 - The C++ coupler API adapter waits for `emulators/coupler-infrastructure` to
   merge.
