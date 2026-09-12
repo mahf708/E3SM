@@ -14,6 +14,8 @@
 #include <string_view>
 #include <vector>
 
+#include "horizontal_grid.hpp"
+
 namespace emulator {
 namespace coupling {
 
@@ -53,6 +55,30 @@ private:
   };
   std::map<std::string, Entry, std::less<>> m_fields;
 };
+
+/**
+ * @brief A component's domain, as another component in the process takes it.
+ *
+ * The sea ice that goes with an emulated ocean has no grid of its own: it is
+ * the ocean's ice.  Taking the ocean's published domain, rather than reading
+ * the same files again, makes the coupler's ocean-ice domain check a
+ * tautology instead of a coincidence, and a component on other ranks finds
+ * nothing rather than a plausible, mis-indexed grid.
+ */
+struct SharedDomain {
+  grid::Domain domain;
+  int nx = 0;
+  int ny = 0;
+  std::size_t num_global = 0;
+};
+
+/// Publish `component`.domain.{global_ids,lat,lon,area,mask,frac,shape}.
+void publish_domain(Exchange &exchange, std::string_view component,
+                    const SharedDomain &shared);
+bool has_domain(const Exchange &exchange, std::string_view component);
+/// @throws std::out_of_range if `component` has published no domain here
+SharedDomain shared_domain(const Exchange &exchange,
+                           std::string_view component);
 
 } // namespace coupling
 } // namespace emulator

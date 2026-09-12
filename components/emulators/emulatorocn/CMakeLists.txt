@@ -6,6 +6,7 @@ add_library(emulatorocn
   src/samudra_channels.cpp
   src/ocean_forcing.cpp
   src/samudra_ocean.cpp
+  src/ocn.cpp
 )
 target_include_directories(emulatorocn PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(emulatorocn PUBLIC emulator_common)

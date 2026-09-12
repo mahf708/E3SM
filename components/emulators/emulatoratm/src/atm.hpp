@@ -10,6 +10,7 @@
 #ifndef EMULATORATM_HPP
 #define EMULATORATM_HPP
 
+#include "component_settings.hpp"
 #include "emulator.hpp"
 #include "emulator_c_api.hpp"
 #include "horizontal_grid.hpp"
@@ -97,7 +98,7 @@ private:
   std::string m_input_file;    ///< Path to atm_in config file
   std::string m_log_file;      ///< Path to log file
   int m_run_type = 0;          ///< Run type (startup/continue/branch)
-  std::map<std::string, std::string> m_settings; ///< atm_in, parsed
+  ComponentSettings m_settings; ///< atm_in, parsed
   grid::HorizontalGrid m_grid;
   grid::Decomposition m_decomp;
 

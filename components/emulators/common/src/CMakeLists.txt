@@ -4,6 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 set(EMULATOR_COMMON_CXX_SOURCES
   emulator.cpp
   emulator_c_api.cpp
+  component_settings.cpp
   fields/field_list.cpp
   fields/field_set.cpp
   fields/mask_set.cpp

@@ -7,6 +7,7 @@
  */
 
 #include "atm.hpp"
+#include "component_settings.hpp"
 #include "emulator_c_api.hpp"
 #include "scrip_reader.hpp"
 #include "ace_atmosphere.hpp"
@@ -41,30 +42,10 @@ void EmulatorAtm::create_instance(int comm, int comp_id,
   m_run_type = run_type;
   set_start_time({start_ymd, start_tod});
 
-  auto &config = m_settings;
-  if (!input_file.empty()) {
-    std::ifstream ifs(input_file);
-    std::string line;
-    while (std::getline(ifs, line)) {
-      if (line.empty() || line[0] == '#')
-        continue;
-      size_t pos = line.find(':');
-      if (pos != std::string::npos) {
-        std::string key = line.substr(0, pos);
-        std::string val = line.substr(pos + 1);
-        // trim whitespace
-        key.erase(0, key.find_first_not_of(" \t"));
-        key.erase(key.find_last_not_of(" \t") + 1);
-        val.erase(0, val.find_first_not_of(" \t"));
-        val.erase(val.find_last_not_of(" \t") + 1);
-        config[key] = val;
-      }
-    }
-  }
+  m_settings = ComponentSettings::read(input_file);
 
-  const auto grid_file = config.find("grid_file");
-  if (grid_file == config.end()) {
-    if (config.count("nx") || config.count("ny")) {
+  if (!m_settings.has("grid_file")) {
+    if (m_settings.has("nx") || m_settings.has("ny")) {
       throw std::invalid_argument(
           "emulatoratm: " + input_file +
           " sets nx/ny but no grid_file. Grid dimensions without "
@@ -74,7 +55,7 @@ void EmulatorAtm::create_instance(int comm, int comp_id,
     return; // a caller will provide the grid with set_grid_data()
   }
 
-  const auto g = grid::read_scrip(grid_file->second);
+  const auto g = grid::read_scrip(m_settings.get("grid_file", ""));
   int rank = 0;
   int size = 1;
   MPI_Comm c_comm = MPI_Comm_f2c(m_comm);
@@ -87,8 +68,7 @@ void EmulatorAtm::create_instance(int comm, int comp_id,
 
 std::string EmulatorAtm::setting(const std::string &key,
                                  const std::string &fallback) const {
-  const auto it = m_settings.find(key);
-  return it == m_settings.end() ? fallback : it->second;
+  return m_settings.get(key, fallback);
 }
 
 EmulatorAtm::CouplingFields EmulatorAtm::coupling_fields() const {
