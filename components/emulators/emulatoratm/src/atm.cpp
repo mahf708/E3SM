@@ -8,10 +8,18 @@
 
 #include "atm.hpp"
 #include "emulator_c_api.hpp"
+#include "scrip_reader.hpp"
+#include "ace_atmosphere.hpp"
+#include "ace_channels.hpp"
+#include "create_inference_backend.hpp"
+#include "grid_field_reader.hpp"
 #include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <initializer_list>
+#include <map>
+#include <utility>
 #include <sstream>
 #include <stdexcept>
 #include <mpi.h>
@@ -23,7 +31,7 @@ EmulatorAtm::EmulatorAtm()
 
 void EmulatorAtm::create_instance(int comm, int comp_id,
                                   const std::string &input_file,
-                                   const std::string &log_file,
+                                  const std::string &log_file,
                                   int run_type, int start_ymd,
                                   int start_tod) {
   m_comm = comm;
@@ -31,10 +39,9 @@ void EmulatorAtm::create_instance(int comm, int comp_id,
   m_input_file = input_file;
   m_log_file = log_file;
   m_run_type = run_type;
-  (void)start_ymd;
-  (void)start_tod;
+  set_start_time({start_ymd, start_tod});
 
-  // Simple configuration parsing
+  auto &config = m_settings;
   if (!input_file.empty()) {
     std::ifstream ifs(input_file);
     std::string line;
@@ -50,92 +57,64 @@ void EmulatorAtm::create_instance(int comm, int comp_id,
         key.erase(key.find_last_not_of(" \t") + 1);
         val.erase(0, val.find_first_not_of(" \t"));
         val.erase(val.find_last_not_of(" \t") + 1);
-
-        if (key == "nx") {
-          m_nx = std::stoi(val);
-        }
-        if (key == "ny") {
-          m_ny = std::stoi(val);
-        }
-        if (key == "grid") {
-          // grid name identified
-        }
+        config[key] = val;
       }
     }
   }
 
-  // Compute global column count from grid dimensions
-  if (m_nx > 0) {
-    m_num_global_cols = m_nx * std::max(1, m_ny);
-  }
-
-  // If we have a global size but no local size, create a default decomposition
-  if (m_num_global_cols > 0 && m_num_local_cols == 0) {
-    int rank, size;
-    MPI_Comm_rank(MPI_Comm_f2c(m_comm), &rank);
-    MPI_Comm_size(MPI_Comm_f2c(m_comm), &size);
-
-    int n_per_rank = m_num_global_cols / size;
-    int remainder = m_num_global_cols % size;
-
-    int start_idx = rank * n_per_rank + std::min(rank, remainder);
-    m_num_local_cols = n_per_rank + (rank < remainder ? 1 : 0);
-
-    m_col_gids.resize(m_num_local_cols);
-    for (int i = 0; i < m_num_local_cols; ++i) {
-      m_col_gids[i] = start_idx + i + 1; // 1-based GIDs for MCT
+  const auto grid_file = config.find("grid_file");
+  if (grid_file == config.end()) {
+    if (config.count("nx") || config.count("ny")) {
+      throw std::invalid_argument(
+          "emulatoratm: " + input_file +
+          " sets nx/ny but no grid_file. Grid dimensions without "
+          "coordinates put every column at latitude 0, which the coupler's "
+          "domain check rejects; name the SCRIP file with `grid_file:`.");
     }
-
-    m_lat.assign(m_num_local_cols, 0.0);
-    m_lon.assign(m_num_local_cols, 0.0);
-    m_area.assign(m_num_local_cols, 1.0);
+    return; // a caller will provide the grid with set_grid_data()
   }
+
+  const auto g = grid::read_scrip(grid_file->second);
+  int rank = 0;
+  int size = 1;
+  MPI_Comm c_comm = MPI_Comm_f2c(m_comm);
+  MPI_Comm_rank(c_comm, &rank);
+  MPI_Comm_size(c_comm, &size);
+  m_decomp = grid::Decomposition::contiguous_blocks(g.size(), size, rank);
+  m_grid = g;
+  set_domain(grid::Domain::full(g, m_decomp), g.nx, g.ny, g.size());
 }
 
-void EmulatorAtm::set_grid_data(const EmulatorGridDesc& grid) {
-  m_nx = grid.nx;
-  m_ny = grid.ny;
-  m_num_local_cols = grid.num_local_cols;
-  m_num_global_cols = grid.num_global_cols;
-
-  m_col_gids.assign(grid.col_gids, grid.col_gids + grid.num_local_cols);
-  m_lat.assign(grid.lat, grid.lat + grid.num_local_cols);
-  m_lon.assign(grid.lon, grid.lon + grid.num_local_cols);
-  m_area.assign(grid.area, grid.area + grid.num_local_cols);
+std::string EmulatorAtm::setting(const std::string &key,
+                                 const std::string &fallback) const {
+  const auto it = m_settings.find(key);
+  return it == m_settings.end() ? fallback : it->second;
 }
 
-void EmulatorAtm::init_coupling_indices(
-    const std::string &export_fields,
-    const std::string &import_fields) {
-  // TODO: Parse colon-separated MCT field lists and populate
-  // m_coupling_idx with index positions.
-  (void)export_fields;
-  (void)import_fields;
-}
-
-void EmulatorAtm::setup_coupling(const EmulatorCouplingDesc& cpl) {
-  m_import_data = cpl.import_data;
-  m_export_data = cpl.export_data;
-  m_num_imports = cpl.num_imports;
-  m_num_exports = cpl.num_exports;
-  (void)cpl.field_size;
-}
-
-void EmulatorAtm::get_local_col_gids(int *gids) const {
-  std::memcpy(gids, m_col_gids.data(),
-              m_col_gids.size() * sizeof(int));
-}
-
-void EmulatorAtm::get_cols_latlon(double *lat, double *lon) const {
-  std::memcpy(lat, m_lat.data(),
-              m_lat.size() * sizeof(double));
-  std::memcpy(lon, m_lon.data(),
-              m_lon.size() * sizeof(double));
-}
-
-void EmulatorAtm::get_cols_area(double *area) const {
-  std::memcpy(area, m_area.data(),
-              m_area.size() * sizeof(double));
+EmulatorAtm::CouplingFields EmulatorAtm::coupling_fields() const {
+  if (setting("emulator", "").empty()) {
+    return {};
+  }
+  using fields::Need;
+  CouplingFields f;
+  using Named = std::pair<const char *, const char *>;
+  for (auto [name, units] : std::initializer_list<Named>{
+           {"Sf_lfrac", "1"}, {"Sf_ofrac", "1"}, {"Sf_ifrac", "1"},
+           {"Sx_t", "K"}}) {
+    f.imports.push_back({name, Need::Required, units});
+  }
+  const std::map<std::string, std::string> units{
+      {"Sa_z", "m"},          {"Sa_u", "m/s"},        {"Sa_v", "m/s"},
+      {"Sa_tbot", "K"},       {"Sa_ptem", "K"},       {"Sa_shum", "kg/kg"},
+      {"Sa_pbot", "Pa"},      {"Sa_pslv", "Pa"},      {"Sa_dens", "kg/m3"},
+      {"Sa_topo", "m"},       {"Faxa_lwdn", "W/m2"},  {"Faxa_rainc", "kg/m2/s"},
+      {"Faxa_rainl", "kg/m2/s"}, {"Faxa_snowc", "kg/m2/s"},
+      {"Faxa_snowl", "kg/m2/s"}, {"Faxa_swndr", "W/m2"}, {"Faxa_swvdr", "W/m2"},
+      {"Faxa_swndf", "W/m2"}, {"Faxa_swvdf", "W/m2"}, {"Faxa_swnet", "W/m2"}};
+  for (const auto &name : atm::ace_export_names()) {
+    f.exports.push_back({name, Need::Required, units.at(name)});
+  }
+  return f;
 }
 
 // =========================================================================
@@ -143,65 +122,89 @@ void EmulatorAtm::get_cols_area(double *area) const {
 // =========================================================================
 
 void EmulatorAtm::init_impl() {
-  // TODO: Load YAML configuration from m_input_file
-  // TODO: Create inference backend
-  // TODO: Read initial conditions
-  // TODO: Set up diagnostic output manager
+  const std::string emulator_name = setting("emulator", "");
+  if (emulator_name.empty()) {
+    return; // no model configured: exchange nothing, run nothing
+  }
+  if (!has_domain() || m_grid.size() == 0) {
+    throw std::invalid_argument(
+        "emulatoratm: `emulator` is set but no `grid_file`; the network runs "
+        "on the whole grid and needs to read it.");
+  }
+  if (start_time().ymd < 0) {
+    throw std::invalid_argument("emulatoratm: no start time from the driver.");
+  }
 
-  // TODO: Allocate field storage
-  // TODO: Export initial values to coupler
+  MPI_Comm comm = MPI_Comm_f2c(m_comm);
+  int rank = 0;
+  MPI_Comm_rank(comm, &rank);
+
+  atm::AceAtmosphere::Config config;
+  config.layout = atm::ace_layout(emulator_name);
+  config.coupler_dt = std::stoi(setting("coupler_dt", "1800"));
+  const bool has_near = std::find(config.layout.outputs.begin(),
+                                  config.layout.outputs.end(),
+                                  "Tat2m") != config.layout.outputs.end();
+  const std::string layer =
+      setting("surface_layer", has_near ? "near_surface" : "lowest_level");
+  if (layer == "near_surface") {
+    config.surface.layer = atm::SurfaceLayer::NearSurface;
+  } else if (layer == "lowest_level") {
+    config.surface.layer = atm::SurfaceLayer::LowestLevel;
+  } else {
+    throw std::invalid_argument("emulatoratm: surface_layer '" + layer +
+                                "' is neither near_surface nor lowest_level.");
+  }
+  config.orbit = atm::Orbit::from_elements(
+      std::stod(setting("orbit_eccen", "0.016715")),
+      std::stod(setting("orbit_obliq", "23.4441")),
+      std::stod(setting("orbit_mvelp", "102.7")));
+
+  std::shared_ptr<inference::InferenceBackend> backend;
+  if (rank == 0) {
+    inference::InferenceConfig ic;
+    ic.backend = setting("backend", "libtorch");
+    ic.model_path = setting("model_path", "");
+    for (const char *key : {"device", "dtype", "jit_optimize", "seed"}) {
+      const auto v = setting(key, "");
+      if (!v.empty()) {
+        ic.set(key, v);
+      }
+    }
+    if (ic.get("device").empty()) {
+      ic.set("device", "cuda");
+    }
+    backend = inference::create_backend(ic, inference::InferenceContext{});
+  }
+
+  const auto initial = grid::read_grid_fields(setting("ic_file", ""),
+                                              config.layout.inputs, m_grid.ny,
+                                              m_grid.nx);
+  m_ace = std::make_shared<atm::AceAtmosphere>(std::move(config), comm, m_grid,
+                                               m_decomp, backend);
+  m_ace->initialize(start_time(), initial);
+  m_ace->initial_exports(start_time(), mutable_exports());
 }
 
 void EmulatorAtm::run_impl(int dt) {
-  (void)dt;
-
-  // 1. Import fields from coupler
-  import_coupling_fields();
-
-  // 2. Prepare AI model inputs
-  prepare_inputs();
-
-  // 3. TODO: Run AI inference
-  // run_inference(m_fields.net_inputs, m_fields.net_outputs);
-
-  // 4. Process AI outputs
-  process_outputs();
-
-  // 5. TODO: Diagnostic output
-
-  // 6. Export fields to coupler
-  export_coupling_fields();
+  if (!m_ace) {
+    return;
+  }
+  const auto now = current_time();
+  if (now.ymd < 0) {
+    throw std::logic_error(
+        "emulatoratm: run without a model time. The emulated atmosphere "
+        "needs the driver's time each step (emulator_run_at).");
+  }
+  if (dt != m_ace->clock().coupler_dt()) {
+    throw std::invalid_argument(
+        "emulatoratm: the driver's step is " + std::to_string(dt) +
+        " s but coupler_dt is " +
+        std::to_string(m_ace->clock().coupler_dt()) + " s.");
+  }
+  m_ace->run(now, imports(), mutable_exports());
 }
 
-void EmulatorAtm::final_impl() {
-  // TODO: Write final restart files
-  // TODO: Finalize output manager
-  // TODO: Finalize inference backend
-
-  // TODO: Deallocate field storage
-  std::cout << "emulatoratm c++ side ... bye!" << std::endl;
-}
-
-// =========================================================================
-// Coupling helpers
-// =========================================================================
-
-void EmulatorAtm::import_coupling_fields() {
-  // TODO: Transfer coupler import data → internal fields
-}
-
-void EmulatorAtm::export_coupling_fields() {
-  // TODO: Transfer internal fields → coupler export data
-}
-
-void EmulatorAtm::prepare_inputs() {
-  // TODO: Pack field data into m_fields.net_inputs tensor
-  // for inference. Handle spatial_mode vs pointwise layout.
-}
-
-void EmulatorAtm::process_outputs() {
-  // TODO: Unpack m_fields.net_outputs tensor into field
-  // vectors. Handle spatial_mode vs pointwise layout.
-}
+void EmulatorAtm::final_impl() { m_ace.reset(); }
 
 } // namespace emulator

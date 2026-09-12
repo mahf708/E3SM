@@ -5,7 +5,7 @@
  * A switch rather than a registry: there are two backends, and a registry
  * that has to be populated explicitly (a static library may drop an object
  * file whose symbols nothing references, silently un-registering a backend)
- * is more machinery than two names justify.
+ * is more machinery than three names justify.
  */
 
 #include "create_inference_backend.hpp"
@@ -17,6 +17,10 @@
 #include "python_inference_backend.hpp"
 #endif
 
+#ifdef EMULATOR_ENABLE_LIBTORCH
+#include "libtorch_inference_backend.hpp"
+#endif
+
 namespace emulator {
 namespace inference {
 
@@ -24,6 +28,9 @@ std::vector<std::string> available_backends() {
   std::vector<std::string> names{"stub"};
 #ifdef EMULATOR_ENABLE_PYTHON
   names.push_back("python");
+#endif
+#ifdef EMULATOR_ENABLE_LIBTORCH
+  names.push_back("libtorch");
 #endif
   return names;
 }
@@ -43,6 +50,16 @@ create_backend(const InferenceConfig &config, const InferenceContext &context) {
         false, "The 'python' inference backend was not built. Reconfigure "
                "with -DEMULATOR_ENABLE_PYTHON=ON (it needs the Python "
                "development headers, plus numpy at run time).");
+#endif
+  } else if (config.backend == "libtorch" || config.backend == "torch" ||
+             config.backend == "torchscript") {
+#ifdef EMULATOR_ENABLE_LIBTORCH
+    backend = std::make_shared<LibTorchBackend>(config, context);
+#else
+    EMULATOR_INFER_REQUIRE(
+        false, "The 'libtorch' inference backend was not built. Reconfigure "
+               "with -DEMULATOR_ENABLE_LIBTORCH=ON and point CMAKE_PREFIX_PATH "
+               "(or Torch_DIR) at a libtorch install.");
 #endif
   } else {
     std::string names;

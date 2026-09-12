@@ -1,6 +1,23 @@
 module emulator_handle_mod
   use, intrinsic :: iso_c_binding
-  use emulator_f2c_api
+   use emulator_f_api, only: emulator_coupling_desc, emulator_grid_desc, emulator_create_cfg
+
+   use emulator_f2c_api, only: &
+      emulator_set_grid_data, &
+      emulator_setup_coupling, &
+      emulator_init, &
+      emulator_run, &
+      emulator_finalize, &
+      emulator_print_info, &
+      emulator_init_coupling_indices, &
+      emulator_get_num_local_cols, &
+      emulator_get_num_global_cols, &
+      emulator_get_nx, &
+      emulator_get_ny, &
+      emulator_get_local_col_gids, &
+      emulator_get_cols_latlon, &
+      emulator_get_cols_area, &
+      emulator_get_cols_mask_frac
   implicit none
 
   type :: emulator_handle
@@ -10,6 +27,7 @@ module emulator_handle_mod
      procedure :: run
      !! setters
      procedure :: set_grid_data
+     procedure :: init_coupling_indices
      procedure :: setup_coupling
 
      !! getters
@@ -20,6 +38,7 @@ module emulator_handle_mod
      procedure :: get_local_col_gids
      procedure :: get_cols_latlon
      procedure :: get_cols_area
+     procedure :: get_cols_mask_frac
      !! diags
      procedure :: print_info
      !! Clean-up
@@ -102,6 +121,12 @@ contains
     real(c_double), intent(out) :: area(:)
     call emulator_get_cols_area(self%h, area)
   end subroutine get_cols_area
+
+  subroutine get_cols_mask_frac(self, mask, frac)
+    class(emulator_handle), intent(in) :: self
+    real(c_double), intent(out) :: mask(:), frac(:)
+    call emulator_get_cols_mask_frac(self%h, mask, frac)
+  end subroutine get_cols_mask_frac
 
   subroutine print_info(self)
     class(emulator_handle), intent(in) :: self

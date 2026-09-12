@@ -1,6 +1,7 @@
 module emulator_f2c_api
    use, intrinsic :: iso_c_binding
    use emulator_f_api, only: emulator_coupling_desc, emulator_grid_desc, emulator_create_cfg
+
    implicit none
 
    public
@@ -35,6 +36,13 @@ module emulator_f2c_api
          integer(c_int), value, intent(in) :: dt
       end subroutine emulator_run
 
+      ! One coupler step ending at (ymd, tod), from the driver's clock.
+      subroutine emulator_run_at(handle, dt, ymd, tod) bind(c)
+         import :: c_ptr, c_int
+         type(c_ptr), value, intent(in) :: handle
+         integer(c_int), value, intent(in) :: dt, ymd, tod
+      end subroutine emulator_run_at
+
       subroutine emulator_finalize(handle) bind(c)
          import :: c_ptr
          type(c_ptr), value, intent(in) :: handle
@@ -45,55 +53,64 @@ module emulator_f2c_api
          type(c_ptr), value, intent(in) :: handle
       end subroutine emulator_print_info
 
-      subroutine emulator_init_coupling_indices(handle,import_fields, export_fields) bind(c)
+      subroutine emulator_init_coupling_indices(handle, import_fields, export_fields) bind(c)
          import :: c_char, c_ptr
          type(c_ptr), value, intent(in) :: handle
          type(c_ptr), value :: import_fields ! char*
          type(c_ptr), value :: export_fields ! char*
       end subroutine emulator_init_coupling_indices
 
-    function emulator_get_num_local_cols(handle) result(n) bind(c)
-      import :: c_ptr, c_int
-      type(c_ptr),              value :: handle
-      integer(c_int)                 :: n
-    end function emulator_get_num_local_cols
+      function emulator_get_num_local_cols(handle) result(n) bind(c)
+         import :: c_ptr, c_int
+         type(c_ptr), value :: handle
+         integer(c_int)                 :: n
+      end function emulator_get_num_local_cols
 
-    function emulator_get_num_global_cols(handle) result(n) bind(c)
-      import :: c_ptr, c_int
-      type(c_ptr),              value :: handle
-      integer(c_int)                 :: n
-    end function emulator_get_num_global_cols
+      function emulator_get_num_global_cols(handle) result(n) bind(c)
+         import :: c_ptr, c_int
+         type(c_ptr), value :: handle
+         integer(c_int)                 :: n
+      end function emulator_get_num_global_cols
 
-    function emulator_get_nx(handle) result(nx) bind(c)
-      import :: c_ptr, c_int
-      type(c_ptr),              value :: handle
-      integer(c_int)                 :: nx
-    end function emulator_get_nx
+      function emulator_get_nx(handle) result(nx) bind(c)
+         import :: c_ptr, c_int
+         type(c_ptr), value :: handle
+         integer(c_int)                 :: nx
+      end function emulator_get_nx
 
-    function emulator_get_ny(handle) result(ny) bind(c)
-      import :: c_ptr, c_int
-      type(c_ptr),              value :: handle
-      integer(c_int)                 :: ny
-    end function emulator_get_ny
+      function emulator_get_ny(handle) result(ny) bind(c)
+         import :: c_ptr, c_int
+         type(c_ptr), value :: handle
+         integer(c_int)                 :: ny
+      end function emulator_get_ny
 
-    subroutine emulator_get_local_col_gids(handle, gids) bind(c)
-      import :: c_ptr, c_int
-      type(c_ptr),              value :: handle
-      integer(c_int), dimension(*), intent(out) :: gids
-    end subroutine emulator_get_local_col_gids
+      subroutine emulator_get_local_col_gids(handle, gids) bind(c)
+         import :: c_ptr, c_int
+         type(c_ptr), value :: handle
+         integer(c_int), dimension(*), intent(out) :: gids
+      end subroutine emulator_get_local_col_gids
 
-    subroutine emulator_get_cols_latlon(handle, lat, lon) bind(c)
-      import :: c_ptr, c_double
-      type(c_ptr),              value :: handle
-      real(c_double), dimension(*), intent(out) :: lat
-      real(c_double), dimension(*), intent(out) :: lon
-    end subroutine emulator_get_cols_latlon
+      subroutine emulator_get_cols_latlon(handle, lat, lon) bind(c)
+         import :: c_ptr, c_double
+         type(c_ptr), value :: handle
+         real(c_double), dimension(*), intent(out) :: lat
+         real(c_double), dimension(*), intent(out) :: lon
+      end subroutine emulator_get_cols_latlon
 
-    subroutine emulator_get_cols_area(handle, area) bind(c)
-      import :: c_ptr, c_double
-      type(c_ptr),              value :: handle
-      real(c_double), dimension(*), intent(out) :: area
-    end subroutine emulator_get_cols_area
+      subroutine emulator_get_cols_area(handle, area) bind(c)
+         import :: c_ptr, c_double
+         type(c_ptr), value :: handle
+         real(c_double), dimension(*), intent(out) :: area
+      end subroutine emulator_get_cols_area
+
+      ! Domain mask and frac: 1 for a component covering every cell, the
+      ! binary surface mask (frac equal to it) for ocean and sea ice.
+      subroutine emulator_get_cols_mask_frac(handle, mask, frac) bind(c)
+         import :: c_ptr, c_double
+         type(c_ptr), value :: handle
+         real(c_double), dimension(*), intent(out) :: mask
+         real(c_double), dimension(*), intent(out) :: frac
+      end subroutine emulator_get_cols_mask_frac
    end interface
 
 end module emulator_f2c_api

@@ -8,6 +8,7 @@
 
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <mpi.h>
 #include <string>
 
@@ -40,12 +41,19 @@ void *emulator_create(const char *kind, const EmulatorCreateConfig *cfg) {
   if (std::strcmp(kind, "atm") == 0) {
     auto &atm = reg.create<emulator::EmulatorAtm>("emulatoratm_" +
                                                   std::to_string(cfg->comp_id));
-    // Configure it
-    atm.create_instance(cfg->f_comm, cfg->comp_id,
-                        cfg->input_file ? cfg->input_file : "", 
-                        cfg->log_file ? cfg->log_file : "",
-                        cfg->run_type,
-                        cfg->start_ymd, cfg->start_tod);
+    // Configure it.  This reads atm_in and the grid file, so it can fail, and
+    // it is called from Fortran: report and abort rather than unwind.
+    try {
+      atm.create_instance(cfg->f_comm, cfg->comp_id,
+                          cfg->input_file ? cfg->input_file : "",
+                          cfg->log_file ? cfg->log_file : "",
+                          cfg->run_type,
+                          cfg->start_ymd, cfg->start_tod);
+    } catch (const std::exception &e) {
+      std::cerr << "ERROR in emulator_create for 'atm':\n  " << e.what()
+                << std::endl;
+      MPI_Abort(MPI_Comm_f2c(cfg->f_comm), 1);
+    }
 
     emulator::Emulator *base = &atm;
     if (s_log_open) {

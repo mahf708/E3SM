@@ -87,6 +87,8 @@ void emulator_init_coupling_indices(void* handle, const char* import_fields, con
 
 void  emulator_init(void* handle);
 void  emulator_run(void* handle, int dt);
+/// One coupler step ending at (ymd, tod): the driver's clock, not a count.
+void  emulator_run_at(void* handle, int dt, int ymd, int tod);
 void  emulator_finalize(void* handle);
 void  emulator_print_info(void* handle);
 

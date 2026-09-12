@@ -12,11 +12,17 @@
 
 #include "emulator.hpp"
 #include "emulator_c_api.hpp"
+#include "horizontal_grid.hpp"
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace emulator {
+
+namespace atm {
+class AceAtmosphere;
+}
 
 /**
  * @brief Atmosphere emulator component.
@@ -26,19 +32,19 @@ namespace emulator {
  * - AI model integration via configurable inference backends
  * - MCT interface for CIME integration
  *
- * Currently assumes a structured lat-lon grid. Grid dimensions (nx, ny)
- * are read from atm_in and used to compute the total global column count
- * as nx * ny. Lat/lon coordinates are stored and passed to MCT in degrees.
+ * The grid comes from the SCRIP file named by `grid_file` in atm_in, split
+ * into contiguous blocks over the component's ranks.  The atmosphere covers
+ * every cell, so its domain mask and frac are 1.
  *
  * ## Lifecycle
  * 1. Constructor creates EmulatorAtm with ATM_COMP type
- * 2. create_instance() sets MPI, comp_id, parses config for grid dims
- * 3. set_grid_data() sets spatial decomposition (optional override)
- * 4. init_coupling_indices() parses MCT field lists
- * 5. setup_coupling() sets buffer pointers
- * 6. initialize() loads model and reads initial conditions
- * 7. run() executes time steps (import -> inference -> export)
- * 8. finalize() cleans up resources
+ * 2. create_instance() sets MPI and comp_id, reads atm_in, and loads the
+ *    grid from `grid_file` (or a caller provides it with set_grid_data())
+ * 3. set_coupler_field_lists() and setup_coupling() (both in Emulator) bind
+ *    the coupler's attribute vectors to this component's fields
+ * 4. initialize() loads model and reads initial conditions
+ * 5. run() executes time steps (import -> inference -> export)
+ * 6. finalize() cleans up resources
  */
 class EmulatorAtm : public Emulator {
 public:
@@ -50,42 +56,33 @@ public:
   // =========================================================================
 
   /**
-   * @brief Set MPI communicator, component ID, and run settings.
+   * @brief Set MPI communicator, component ID and run settings, and read
+   *        atm_in.
+   *
+   * atm_in is `key: value` lines:
+   *
+   *  - `grid_file`   SCRIP file, read and split over the ranks.  `nx`/`ny`
+   *                  without one are refused: dimensions with no coordinates
+   *                  put every column at latitude 0.
+   *  - `emulator`    ACE layout name (ACE2-EAMv3, SamudrACE-E3SMv3).  Without
+   *                  it the component exchanges nothing and runs no model.
+   *  - `model_path`, `ic_file`   traced checkpoint and initial condition
+   *  - `device` (cuda), `dtype` (float32), `jit_optimize` (false), `seed`
+   *  - `coupler_dt`  seconds; the component refuses any other dt
+   *  - `surface_layer`  near_surface or lowest_level; defaults to
+   *                  near_surface when the layout has the 2 m / 10 m channels
+   *  - `orbit_eccen`, `orbit_obliq`, `orbit_mvelp`  orbital elements
+   *                  (degrees), until the cap passes the driver's own
    */
   void create_instance(int comm, int comp_id,
                        const std::string &input_file,
                        const std::string &log_file,
                        int run_type, int start_ymd, int start_tod);
 
-  /**
-   * @brief Set grid decomposition data from driver.
-   */
-  void set_grid_data(const EmulatorGridDesc& grid) override;
-
-  /**
-   * @brief Initialize coupling field indices from MCT field lists.
-   */
-  void init_coupling_indices(const std::string &export_fields,
-                             const std::string &import_fields) override;
-
-  /**
-   * @brief Set up coupling buffer pointers from MCT.
-   */
-  void setup_coupling(const EmulatorCouplingDesc& cpl) override;
-
-  // =========================================================================
-  // Accessors
-  // =========================================================================
-
-  int get_num_local_cols() const override { return m_num_local_cols; }
-  int get_num_global_cols() const override { return m_num_global_cols; }
-  int get_nx() const override { return m_nx; }
-  int get_ny() const override { return m_ny; }
-  void get_local_col_gids(int *gids) const override;
-  void get_cols_latlon(double *lat, double *lon) const override;
-  void get_cols_area(double *area) const override;
 
 protected:
+  CouplingFields coupling_fields() const override;
+
   // Virtual methods from Emulator base
   void init_impl() override;
   void run_impl(int dt) override;
@@ -94,40 +91,20 @@ protected:
 
 private:
   // =========================================================================
-  // Grid and decomposition
-  // =========================================================================
-  int m_nx = 0;                ///< Grid x-dimension
-  int m_ny = 0;                ///< Grid y-dimension
-  int m_num_local_cols = 0;    ///< Local columns on this rank
-  int m_num_global_cols = 0;   ///< Total global columns
-  std::vector<int> m_col_gids; ///< Global IDs for local columns
-  std::vector<double> m_lat;   ///< Latitude [degrees]
-  std::vector<double> m_lon;   ///< Longitude [degrees]
-  std::vector<double> m_area;  ///< Cell areas
-
-  // =========================================================================
-  // Coupling
-  // =========================================================================
-  double *m_import_data = nullptr; ///< MCT import buffer pointer
-  double *m_export_data = nullptr; ///< MCT export buffer pointer
-  int m_num_imports = 0;           ///< Number of import fields
-  int m_num_exports = 0;           ///< Number of export fields
-
-  // =========================================================================
   // Configuration
   // =========================================================================
   int m_comm = 0;              ///< MPI communicator
   std::string m_input_file;    ///< Path to atm_in config file
   std::string m_log_file;      ///< Path to log file
   int m_run_type = 0;          ///< Run type (startup/continue/branch)
+  std::map<std::string, std::string> m_settings; ///< atm_in, parsed
+  grid::HorizontalGrid m_grid;
+  grid::Decomposition m_decomp;
 
-  // =========================================================================
-  // Helper methods
-  // =========================================================================
-  void import_coupling_fields();
-  void export_coupling_fields();
-  void prepare_inputs();
-  void process_outputs();
+  /// The emulated atmosphere, once initialized; null without `emulator`.
+  std::shared_ptr<atm::AceAtmosphere> m_ace;
+
+  std::string setting(const std::string &key, const std::string &fallback) const;
 };
 
 } // namespace emulator

@@ -100,6 +100,10 @@ program test_emulator_factory
         end if
 
         call emulators(i)%set_grid_data(grid)
+        ! One field each way, matching num_imports and num_exports above:
+        ! the buffers are bound by these names.
+        call emulators(i)%init_coupling_indices( &
+             "Sa_z"//c_null_char, "Sx_t"//c_null_char)
         call emulators(i)%setup_coupling(cpl)
 
         !----------------------------------------
@@ -107,6 +111,21 @@ program test_emulator_factory
         !----------------------------------------
         call emulators(i)%initialize()
         call emulators(i)%print_info()
+
+        ! The domain round-trips through the C API: coordinates as given,
+        ! mask and frac 1 for a grid set by the caller.
+        block
+          real(c_double) :: got_lat(num_local_cols), got_lon(num_local_cols)
+          real(c_double) :: got_mask(num_local_cols), got_frac(num_local_cols)
+          call emulators(i)%get_cols_latlon(got_lat, got_lon)
+          call emulators(i)%get_cols_mask_frac(got_mask, got_frac)
+          if (any(got_lat /= lat) .or. any(got_mask /= 1.0_c_double) .or. &
+              any(got_frac /= 1.0_c_double)) then
+             print *, "ERROR: domain did not round-trip", got_lat, got_mask, got_frac
+             stop 1
+          end if
+          print *, "OK: domain round-trips (lat, mask, frac)"
+        end block
      end do
 
      dt = 3600_c_int

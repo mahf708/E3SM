@@ -4,7 +4,21 @@ cmake_minimum_required(VERSION 3.16)
 set(EMULATOR_COMMON_CXX_SOURCES
   emulator.cpp
   emulator_c_api.cpp
+  fields/field_list.cpp
+  fields/field_set.cpp
+  fields/mask_set.cpp
+  fields/channel_layout.cpp
+  fields/coupler_binding.cpp
+  grid/horizontal_grid.cpp
+  grid/scrip_reader.cpp
+  grid/global_gather.cpp
+  grid/grid_field_reader.cpp
+  coupling/restart_store.cpp
+  coupling/long_step_clock.cpp
+  coupling/interval_state.cpp
+  coupling/network_stepper.cpp
   inference/tensor.cpp
+  inference/fpe_guard.cpp
   inference/inference_config.cpp
   inference/inference_context.cpp
   inference/inference_backend.cpp
@@ -19,6 +33,12 @@ if(EMULATOR_ENABLE_PYTHON)
   )
 endif()
 
+if(EMULATOR_ENABLE_LIBTORCH)
+  list(APPEND EMULATOR_COMMON_CXX_SOURCES
+    inference/libtorch_inference_backend.cpp
+  )
+endif()
+
 set(EMULATOR_COMMON_F90_SOURCES
   emulator_f2c_api.F90
   emulator_f_api.F90
@@ -30,7 +50,7 @@ add_library(emulator_common
   ${EMULATOR_COMMON_F90_SOURCES}
 )
 
-target_compile_features(emulator_common PUBLIC cxx_std_17)
+target_compile_features(emulator_common PUBLIC cxx_std_20)
 
 # Place generated Fortran .mod files in a predictable directory so that
 # downstream Fortran targets (e.g. the driver test) can find them.
@@ -40,6 +60,9 @@ set_target_properties(emulator_common PROPERTIES
 target_include_directories(emulator_common PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/inference
+  ${CMAKE_CURRENT_SOURCE_DIR}/fields
+  ${CMAKE_CURRENT_SOURCE_DIR}/grid
+  ${CMAKE_CURRENT_SOURCE_DIR}/coupling
 )
 
 target_include_directories(emulator_common PUBLIC
@@ -59,4 +82,17 @@ if(EMULATOR_ENABLE_PYTHON)
   # PYTHONPATH.  Anything the user names in `inference.python_path` still wins.
   target_compile_definitions(emulator_common PRIVATE
     EMULATOR_PYTHON_PACKAGE_DIR="${EMULATOR_PYTHON_PACKAGE_DIR}")
+endif()
+
+if(EMULATOR_ENABLE_LIBTORCH)
+  target_compile_definitions(emulator_common PUBLIC EMULATOR_ENABLE_LIBTORCH)
+  # PUBLIC because TORCH_LIBRARIES carries the ABI flag libtorch was built
+  # with (-D_GLIBCXX_USE_CXX11_ABI) on its interface, and every translation
+  # unit that ends up in the same binary has to agree with it.
+  target_link_libraries(emulator_common PUBLIC "${TORCH_LIBRARIES}")
+endif()
+
+if(EMULATOR_ENABLE_NETCDF)
+  target_compile_definitions(emulator_common PUBLIC EMULATOR_HAVE_NETCDF)
+  target_link_libraries(emulator_common PUBLIC emulator_netcdf)
 endif()

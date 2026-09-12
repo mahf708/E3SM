@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.16)
 
 set(EMULATORATM_CXX_SOURCES
   src/atm.cpp
+  src/ace_channels.cpp
+  src/ace_surface.cpp
+  src/ace_surface_inputs.cpp
+  src/insolation.cpp
+  src/ace_atmosphere.cpp
 )
 
 # In the full E3SM build, atm_comp_mct.F90 calls emulator_create.
@@ -58,4 +63,8 @@ if(NOT STANDALONE_MODE)
 endif()
 
 # C++17 required
-target_compile_features(emulatoratm PUBLIC cxx_std_17)
+target_compile_features(emulatoratm PUBLIC cxx_std_20)
+
+if(BUILD_EMULATOR_TESTS)
+  add_subdirectory(tests)
+endif()

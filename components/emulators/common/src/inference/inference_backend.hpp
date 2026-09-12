@@ -6,6 +6,7 @@
 #ifndef E3SM_EMULATOR_INFERENCE_BACKEND_HPP
 #define E3SM_EMULATOR_INFERENCE_BACKEND_HPP
 
+#include <cstdint>
 #include <string>
 
 #include "inference_config.hpp"
@@ -67,6 +68,24 @@ public:
   bool is_initialized() const { return m_initialized; }
   const InferenceContext &context() const { return m_context; }
 
+  /**
+   * @brief Tell the backend which model step the next infer() computes.
+   *
+   * The step is the component's own counted step, the one it writes to its
+   * restart file -- not a count of infer() calls, which restarts at zero
+   * with the process.  A backend that draws random numbers derives its seed
+   * from (seed, step), so a restarted run draws the same noise the
+   * continuous run did at the same step.  Seeding once at initialize() is
+   * not restart-safe: the stream position is lost at the restart.  In the
+   * Fortran ACE atmosphere that alone was 1.07 K RMS in the bottom-level
+   * temperature at the first output after a 6+5 day restart, and 0.003 K
+   * once reseeded before every inference.
+   */
+  void set_step(std::int64_t step) { m_step = step; }
+
+  /// The step last passed to set_step(), or -1 if it never was.
+  std::int64_t step() const { return m_step; }
+
 protected:
   /// @brief Load the model.  Called once, from initialize().
   virtual void init_impl() = 0;
@@ -80,6 +99,7 @@ protected:
   InferenceConfig m_config;   ///< Backend configuration
   InferenceContext m_context; ///< Ranks and decomposition from the coupler
   bool m_initialized = false;
+  std::int64_t m_step = -1; ///< See set_step()
 };
 
 } // namespace inference

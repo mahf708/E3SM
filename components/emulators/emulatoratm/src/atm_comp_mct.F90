@@ -65,8 +65,10 @@ CONTAINS
       character(CL) :: run_type
       character(kind=c_char, len=256), target :: input_file_c
       character(kind=c_char, len=256), target :: log_file_c
-      character(kind=c_char, len=256), target :: import_fields_c
-      character(kind=c_char, len=256), target :: export_fields_c
+      ! The coupler's field lists run to thousands of characters; a fixed
+      ! len=256 buffer truncated them into short, plausible lists.
+      character(kind=c_char), allocatable, target :: import_fields_c(:)
+      character(kind=c_char), allocatable, target :: export_fields_c(:)
       character(len=256) :: log_file_f
       integer(c_int) :: run_type_c
       integer :: shrlogunit
@@ -150,8 +152,8 @@ CONTAINS
       call mct_aVect_zero(a2x)
 
       ! Build null-terminated field strings for C
-      export_fields_c = trim(seq_flds_a2x_fields)//C_NULL_CHAR
-      import_fields_c = trim(seq_flds_x2a_fields)//C_NULL_CHAR
+      call to_c_string(seq_flds_x2a_fields, import_fields_c)
+      call to_c_string(seq_flds_a2x_fields, export_fields_c)
 
       ! Initialize coupling indices in C++
       call emulator_init_coupling_indices(emulators, &
@@ -200,18 +202,20 @@ CONTAINS
       type(mct_aVect),  intent(inout) :: x2a, a2x
 
       type(seq_infodata_type), pointer :: infodata
-      integer  :: dt, shrlogunit
+      integer  :: dt, shrlogunit, ymd, tod
       real(R8) :: nextsw_cday
 
       call seq_cdata_setptrs(cdata, infodata=infodata)
       call seq_timemgr_EClockGetData(EClock, &
-         next_cday=nextsw_cday, dtime=dt)
+         next_cday=nextsw_cday, dtime=dt, curr_ymd=ymd, curr_tod=tod)
 
       ! Redirect shared-lib logging to atm log file
       call shr_file_getLogUnit(shrlogunit)
       call shr_file_setLogUnit(atm_log_unit)
 
-      call emulator_run(emulators, int(dt,c_int))
+      ! The driver's time, not a count: run can be called twice at one time.
+      call emulator_run_at(emulators, int(dt,c_int), int(ymd,c_int), &
+                           int(tod,c_int))
 
       call seq_infodata_PutData(infodata, nextsw_cday=nextsw_cday)
 
@@ -310,14 +314,30 @@ CONTAINS
       call mct_gGrid_importRAttr(dom_atm, "area",  data1, lsize)
       call mct_gGrid_importRAttr(dom_atm, "aream", data1, lsize)
 
-      data1(:) = 1.0_R8
+      ! Mask and frac from the component, not assumed: the same cap then
+      ! serves a component whose domain is a partial surface.
+      call emulator_get_cols_mask_frac(emu, data1, data2)
       call mct_gGrid_importRAttr(dom_atm, "mask", data1, lsize)
-      call mct_gGrid_importRAttr(dom_atm, "frac", data1, lsize)
+      call mct_gGrid_importRAttr(dom_atm, "frac", data2, lsize)
 
       deallocate(data1)
       deallocate(data2)
       if (associated(idata)) deallocate(idata)
 
    end subroutine atm_domain_mct
+
+   !==========================================================================
+   subroutine to_c_string(s, buf)
+      ! A NUL-terminated copy of trim(s), however long.
+      character(len=*), intent(in) :: s
+      character(kind=c_char), allocatable, intent(out) :: buf(:)
+      integer :: i, n
+      n = len_trim(s)
+      allocate(buf(n + 1))
+      do i = 1, n
+         buf(i) = s(i:i)
+      end do
+      buf(n + 1) = C_NULL_CHAR
+   end subroutine to_c_string
 
 end module atm_comp_mct

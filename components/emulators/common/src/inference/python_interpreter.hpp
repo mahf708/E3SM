@@ -21,6 +21,8 @@
 
 #include "inference_error.hpp"
 
+#include "fpe_guard.hpp"
+
 namespace emulator {
 namespace inference {
 
@@ -93,23 +95,7 @@ private:
   PyGILState_STATE m_state;
 };
 
-/**
- * @brief RAII disable of floating-point exception traps.
- *
- * Importing numpy raises benign FPEs; with trapping enabled -- as an E3SM
- * debug build does -- the process dies inside the import.  EAMxx's PySession
- * wraps its imports the same way.
- */
-class FpeGuard {
-public:
-  FpeGuard();
-  ~FpeGuard();
-  FpeGuard(const FpeGuard &) = delete;
-  FpeGuard &operator=(const FpeGuard &) = delete;
-
-private:
-  int m_saved_excepts = 0;
-};
+// FpeGuard moved to fpe_guard.hpp so the libtorch backend can use it too.
 
 /**
  * @brief Owning, move-only handle for a PyObject*.
