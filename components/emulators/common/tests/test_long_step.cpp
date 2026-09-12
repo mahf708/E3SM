@@ -2,6 +2,7 @@
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
 
+#include "exchange.hpp"
 #include "field_set.hpp"
 #include "interval_state.hpp"
 #include "long_step_clock.hpp"
@@ -433,6 +434,29 @@ TEST_CASE("A long-step component restarted mid-interval exports the same "
       REQUIRE(sst[p] == ref[p]);
     }
   }
+}
+
+TEST_CASE("The exchange hands fields between components and guards the size",
+          "[exchange]") {
+  Exchange ex;
+  REQUIRE_FALSE(ex.has("atm.FLDS"));
+  REQUIRE(ex.publishes("atm.FLDS") == 0);
+  REQUIRE_THROWS_WITH(ex.get("atm.FLDS"),
+                      Catch::Contains("Nothing has published 'atm.FLDS'"));
+
+  const std::vector<double> flds{300.0, 310.0};
+  ex.publish("atm.FLDS", flds);
+  REQUIRE(ex.get("atm.FLDS")[1] == 310.0);
+  REQUIRE(ex.publishes("atm.FLDS") == 1);
+
+  const std::vector<double> later{305.0, 315.0};
+  ex.publish("atm.FLDS", later);
+  REQUIRE(ex.get("atm.FLDS")[0] == 305.0); // a copy, updated in place
+  REQUIRE(ex.publishes("atm.FLDS") == 2);
+
+  const std::vector<double> other_grid{1.0, 2.0, 3.0};
+  REQUIRE_THROWS_WITH(ex.publish("atm.FLDS", other_grid),
+                      Catch::Contains("share the grid decomposition"));
 }
 
 } // namespace test

@@ -17,6 +17,7 @@ set(EMULATOR_COMMON_CXX_SOURCES
   coupling/long_step_clock.cpp
   coupling/interval_state.cpp
   coupling/network_stepper.cpp
+  coupling/exchange.cpp
   inference/tensor.cpp
   inference/fpe_guard.cpp
   inference/inference_config.cpp
