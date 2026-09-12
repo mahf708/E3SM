@@ -188,7 +188,7 @@ TEST_CASE("SamudrACE runs coupled in one process: the ocean forced by the "
       const double tbot = mean_where(atm_exports.get("Sa_tbot"), area);
       const double ice = mean_where(ocean.sea_ice_fraction(), ocean_area);
       if (rank == 0) {
-        std::printf("  day %2d: ocean SST %.2f K, ice %.3f; over ocean the "
+        std::printf("  day %2d: ocean SST %.6f K, ice %.4f; over ocean the "
                     "atmosphere's LHFLX %.1f, FSDS %.1f W/m2; Tat2m %.2f K "
                     "(%d ranks)\n",
                     step / 48, sst, ice, lh, fsds, tbot, size);

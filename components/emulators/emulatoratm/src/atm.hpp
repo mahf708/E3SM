@@ -13,6 +13,7 @@
 #include "component_settings.hpp"
 #include "emulator.hpp"
 #include "emulator_c_api.hpp"
+#include "exchange.hpp"
 #include "horizontal_grid.hpp"
 #include <map>
 #include <memory>
@@ -49,7 +50,8 @@ class AceAtmosphere;
  */
 class EmulatorAtm : public Emulator {
 public:
-  EmulatorAtm();
+  explicit EmulatorAtm(
+      coupling::Exchange &exchange = coupling::Exchange::process());
   ~EmulatorAtm() override = default;
 
   // =========================================================================
@@ -74,6 +76,10 @@ public:
    *                  near_surface when the layout has the 2 m / 10 m channels
    *  - `orbit_eccen`, `orbit_obliq`, `orbit_mvelp`  orbital elements
    *                  (degrees), until the cap passes the driver's own
+   *  - `publish_ocean_forcing` (false)  publish the ten flux channels an
+   *                  emulated ocean is forced with, to the exchange
+   *  - `surface_from_ocean` (false)  take TS and the ice split from the
+   *                  emulated ocean's exports in the exchange
    */
   void create_instance(int comm, int comp_id,
                        const std::string &input_file,
@@ -94,6 +100,7 @@ private:
   // =========================================================================
   // Configuration
   // =========================================================================
+  coupling::Exchange &m_exchange;
   int m_comm = 0;              ///< MPI communicator
   std::string m_input_file;    ///< Path to atm_in config file
   std::string m_log_file;      ///< Path to log file

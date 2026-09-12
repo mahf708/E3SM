@@ -7,6 +7,7 @@
 #define E3SM_EMULATOR_COMPONENT_SETTINGS_HPP
 
 #include <map>
+#include <stdexcept>
 #include <string>
 
 namespace emulator {
@@ -23,6 +24,9 @@ public:
   static ComponentSettings read(const std::string &path);
 
   std::string get(const std::string &key, const std::string &fallback) const;
+  /// `true` or `false`; anything else is refused rather than read as false.
+  /// @throws std::invalid_argument naming the key and the value
+  bool get_bool(const std::string &key, bool fallback) const;
   bool has(const std::string &key) const { return m_values.count(key) > 0; }
   void set(const std::string &key, const std::string &value) {
     m_values[key] = value;

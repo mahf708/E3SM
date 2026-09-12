@@ -41,4 +41,19 @@ std::string ComponentSettings::get(const std::string &key,
   return it == m_values.end() ? fallback : it->second;
 }
 
+bool ComponentSettings::get_bool(const std::string &key, bool fallback) const {
+  const auto it = m_values.find(key);
+  if (it == m_values.end()) {
+    return fallback;
+  }
+  if (it->second == "true") {
+    return true;
+  }
+  if (it->second == "false") {
+    return false;
+  }
+  throw std::invalid_argument("Setting '" + key + ": " + it->second +
+                              "' is neither true nor false.");
+}
+
 } // namespace emulator

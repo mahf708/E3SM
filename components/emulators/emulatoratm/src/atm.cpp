@@ -27,8 +27,9 @@
 
 namespace emulator {
 
-EmulatorAtm::EmulatorAtm()
-    : Emulator(EmulatorType::ATM_COMP, -1, "emulatoratm") {}
+EmulatorAtm::EmulatorAtm(coupling::Exchange &exchange)
+    : Emulator(EmulatorType::ATM_COMP, -1, "emulatoratm"),
+      m_exchange(exchange) {}
 
 void EmulatorAtm::create_instance(int comm, int comp_id,
                                   const std::string &input_file,
@@ -134,6 +135,12 @@ void EmulatorAtm::init_impl() {
   } else {
     throw std::invalid_argument("emulatoratm: surface_layer '" + layer +
                                 "' is neither near_surface nor lowest_level.");
+  }
+  config.publish_ocean_forcing =
+      m_settings.get_bool("publish_ocean_forcing", false);
+  config.surface_from_ocean = m_settings.get_bool("surface_from_ocean", false);
+  if (config.publish_ocean_forcing || config.surface_from_ocean) {
+    config.exchange = &m_exchange;
   }
   config.orbit = atm::Orbit::from_elements(
       std::stod(setting("orbit_eccen", "0.016715")),
