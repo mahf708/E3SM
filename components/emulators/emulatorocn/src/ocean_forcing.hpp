@@ -7,6 +7,7 @@
 #ifndef EMULATOROCN_OCEAN_FORCING_HPP
 #define EMULATOROCN_OCEAN_FORCING_HPP
 
+#include <span>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,20 @@ void coupler_forcing_sample(const fields::FieldSet &imports,
 
 /// Clip the precipitation channels of a window mean at zero.
 void clip_after_mean(fields::FieldSet &forcing);
+
+/**
+ * @brief Sea surface height slope on a structured, row-major global grid.
+ *
+ * EOCN's formula: centred differences, periodic in longitude, one-sided at
+ * the first and last rows; dx uses max(cos lat, 1e-3); zero where the ocean
+ * mask is 0.  `ssh` is the exported So_ssh, already zero on land, so coastal
+ * slopes see those zeros exactly as the Fortran's did.
+ *
+ * @param lat_deg one latitude per cell (row-major, like everything else)
+ */
+void ssh_gradients(std::span<const double> ssh, std::span<const double> lat_deg,
+                   std::span<const double> ocean_mask, int nx, int ny,
+                   std::span<double> dhdx, std::span<double> dhdy);
 
 } // namespace ocn
 } // namespace emulator

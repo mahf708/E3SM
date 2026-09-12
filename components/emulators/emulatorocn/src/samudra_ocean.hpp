@@ -101,6 +101,9 @@ private:
   coupling::IntervalMean m_window;
   fields::FieldSet m_sample;
   fields::FieldSet m_blended;
+  std::vector<double> m_global_lat;  ///< root only
+  std::vector<double> m_global_mask; ///< root only, filled on load
+  int m_nx = 0, m_ny = 0;
   std::vector<double> m_ocean_mask;
   std::vector<double> m_ice_mask;
   std::vector<double> m_ice_fraction;

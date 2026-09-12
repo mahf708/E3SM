@@ -30,8 +30,8 @@ const grid::GridField &find_field(const std::vector<grid::GridField> &ic,
 } // namespace
 
 const std::vector<std::string> &samudra_export_names() {
-  static const std::vector<std::string> names{"So_t", "So_s", "So_u", "So_v",
-                                              "So_ssh"};
+  static const std::vector<std::string> names{
+      "So_t", "So_s", "So_u", "So_v", "So_ssh", "So_dhdx", "So_dhdy"};
   return names;
 }
 
@@ -46,6 +46,7 @@ SamudraOcean::SamudraOcean(
       m_brackets(m_config.layout.outputs, decomp.num_local()),
       m_window(samudra_forcing_names(), decomp.num_local()),
       m_sample(decomp.num_local()), m_blended(decomp.num_local()),
+      m_nx(grid.nx), m_ny(grid.ny),
       m_ocean_mask(decomp.num_local(), 0.0), m_ice_mask(decomp.num_local(), 0.0),
       m_ice_fraction(decomp.num_local(), 0.0) {
   for (const auto &name : samudra_forcing_names()) {
@@ -53,6 +54,9 @@ SamudraOcean::SamudraOcean(
   }
   for (const auto &name : m_config.layout.outputs) {
     m_blended.add(name);
+  }
+  if (m_gather.is_root()) {
+    m_global_lat = grid.lat;
   }
 }
 
@@ -75,6 +79,9 @@ void SamudraOcean::load_static(const std::vector<grid::GridField> &ic) {
     std::copy(local.begin(), local.end(), dest.begin());
   }
   m_ocean_mask = m_decomp.local(find_field(ic, "mask_2d").values);
+  if (m_gather.is_root()) {
+    m_global_mask = find_field(ic, "mask_2d").values;
+  }
   m_ice_mask = m_decomp.local(find_field(ic, "mask_ocean_sea_ice_fraction").values);
   for (auto *mask : {&m_ocean_mask, &m_ice_mask}) {
     for (auto &v : *mask) {
@@ -183,6 +190,19 @@ void SamudraOcean::compute_exports(double fraction, fields::FieldSet &exports) {
     // ice in the tropics.
     m_ice_fraction[i] = m_ice_mask[i] == 1.0 ? std::clamp(sif[i], 0.0, 1.0) : 0.0;
   }
+
+  // The slope needs neighbouring rows, which can be on another rank: take
+  // it on the whole grid at the root, from the exported So_ssh.  Collective.
+  const bool root = m_gather.is_root();
+  const std::size_t n = m_gather.num_global();
+  std::vector<double> ssh_global(root ? n : 0), dx(root ? n : 0),
+      dy(root ? n : 0);
+  m_gather.gather(so_ssh, ssh_global);
+  if (root) {
+    ssh_gradients(ssh_global, m_global_lat, m_global_mask, m_nx, m_ny, dx, dy);
+  }
+  m_gather.scatter(dx, exports.get("So_dhdx"));
+  m_gather.scatter(dy, exports.get("So_dhdy"));
 }
 
 void SamudraOcean::save_to(coupling::RestartStore &store) const {

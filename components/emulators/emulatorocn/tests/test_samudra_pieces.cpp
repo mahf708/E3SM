@@ -5,6 +5,8 @@
 #include "ocean_forcing.hpp"
 #include "samudra_channels.hpp"
 
+#include <vector>
+
 namespace emulator {
 namespace ocn {
 namespace test {
@@ -107,6 +109,30 @@ TEST_CASE("Precipitation is clipped after the window mean, not before",
   REQUIRE(p[0] == 0.0);
   REQUIRE(p[1] == 3e-5);
   REQUIRE(s[0] == 0.0);
+}
+
+TEST_CASE("SSH slope: centred, periodic in longitude, one-sided at the poles, "
+          "zero on land", "[samudra][exports]") {
+  // 4 x 3 grid; ssh rises 1 m per column and 2 m per row.
+  const int nx = 4, ny = 3;
+  std::vector<double> lat, ssh, mask(12, 1.0), dhdx(12), dhdy(12);
+  for (int j = 0; j < ny; ++j) {
+    for (int i = 0; i < nx; ++i) {
+      lat.push_back(-30.0 + 30.0 * j);
+      ssh.push_back(1.0 * i + 2.0 * j);
+    }
+  }
+  mask[5] = 0.0;
+  ssh_gradients(ssh, lat, mask, nx, ny, dhdx, dhdy);
+
+  const double re = 6.37122e6, d2r = 3.14159265358979323846 / 180.0;
+  const double dx_eq = 90.0 * 2.0 * d2r * re; // row 1 is the equator
+  REQUIRE(dhdx[6] == Approx(2.0 / dx_eq));             // (3 - 1) / dx
+  REQUIRE(dhdx[4] == Approx((3.0 - 5.0) / dx_eq));     // i=0 wraps to i=3
+  REQUIRE(dhdy[6] == Approx(4.0 / (60.0 * d2r * re)));  // centred over two rows
+  REQUIRE(dhdy[2] == Approx(2.0 / (30.0 * d2r * re)));  // one-sided at row 0
+  REQUIRE(dhdx[5] == 0.0);                              // land
+  REQUIRE(dhdy[5] == 0.0);
 }
 
 } // namespace test
