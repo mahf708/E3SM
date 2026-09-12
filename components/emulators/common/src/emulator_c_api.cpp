@@ -88,10 +88,8 @@ void emulator_print_info(void *handle){
 void emulator_destroy(void* handle) {
   if (!handle) return;
   auto* emu = static_cast<emulator::Emulator*>(handle);
-  // In the standalone/driver path objects live in the EmulatorRegistry;
-  // remove_by_name drops the shared_ptr and runs the destructor.
-  // In the full E3SM path (atm_factory.cpp) objects are raw-new'd and
-  // not registered, so fall back to a direct delete.
+  // Components made by emulator_create_<kind> are not registered, so this
+  // deletes them; one a caller put in the EmulatorRegistry is dropped there.
   if (!emulator::EmulatorRegistry::instance().remove_by_name(emu->name())) {
     delete emu;
   }

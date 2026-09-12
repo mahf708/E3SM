@@ -74,6 +74,14 @@ struct EmulatorCouplingDesc {
 
 /// Opaque handle type in C/Fortran:
 /// actually points to an EmulatorComp in C++.
+///
+/// Each component library defines its own creator, which its cap calls, so
+/// the three link into one executable.  emulator_create(kind) dispatches over
+/// them; it lives in emulator_driver, for tools and tests, and returns null
+/// for an unknown kind.
+void* emulator_create_atm(const EmulatorCreateConfig* cfg);
+void* emulator_create_ocn(const EmulatorCreateConfig* cfg);
+void* emulator_create_ice(const EmulatorCreateConfig* cfg);
 void* emulator_create(const char* kind,
                       const EmulatorCreateConfig* cfg);
 

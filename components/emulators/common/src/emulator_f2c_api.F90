@@ -13,6 +13,25 @@ module emulator_f2c_api
          type(c_ptr) :: handle
       end function emulator_create
 
+      ! What the caps call: one creator per component library.
+      function emulator_create_atm(cfg) result(handle) bind(c)
+         import :: c_ptr, emulator_create_cfg
+         type(emulator_create_cfg), intent(in) :: cfg
+         type(c_ptr) :: handle
+      end function emulator_create_atm
+
+      function emulator_create_ocn(cfg) result(handle) bind(c)
+         import :: c_ptr, emulator_create_cfg
+         type(emulator_create_cfg), intent(in) :: cfg
+         type(c_ptr) :: handle
+      end function emulator_create_ocn
+
+      function emulator_create_ice(cfg) result(handle) bind(c)
+         import :: c_ptr, emulator_create_cfg
+         type(emulator_create_cfg), intent(in) :: cfg
+         type(c_ptr) :: handle
+      end function emulator_create_ice
+
       subroutine emulator_set_grid_data(handle, grid) bind(c)
          import :: c_ptr, emulator_grid_desc
          type(c_ptr), value, intent(in) :: handle

@@ -84,19 +84,25 @@ program test_emulator_factory
   block
      integer :: i
      character(len=3) :: names(3)
-     names = [character(len=3) :: "atm", "ocn", "atm"]
+     ! An unknown kind is null; atm and ocn are made (ice needs an ocean
+     ! domain in the exchange, which this test has no grid to publish).
+     names = [character(len=3) :: "atm", "lnd", "ocn"]
      do i = 1, 3
         cfg%comp_id = i
         emulators(i)%h = emulator_create(names(i)//c_null_char, cfg)
 
-        if (.not. c_associated(emulators(i)%h) .and. names(i) == "atm" ) then
-           print *, "ERROR: emulator_create returned NULL emulators(i)%h for 'atm'"
+        if (.not. c_associated(emulators(i)%h) .and. names(i) /= "lnd" ) then
+           print *, "ERROR: emulator_create returned NULL for " // names(i)
            stop 1
-         else if( .not. c_associated(emulators(i)%h) .and. names(i) .ne. "atm") then
-            print *, "OK: null handle for " // names(i)
-            cycle
+        else if (names(i) == "lnd") then
+           if (c_associated(emulators(i)%h)) then
+              print *, "ERROR: emulator_create made an unknown kind, lnd"
+              stop 1
+           end if
+           print *, "OK: null handle for " // names(i)
+           cycle
         else
-           print *, "OK: emulator_create returned non-null emulators(i)%h for 'atm'"
+           print *, "OK: emulator_create returned a handle for " // names(i)
         end if
 
         call emulators(i)%set_grid_data(grid)

@@ -7,16 +7,8 @@ set(EMULATORATM_CXX_SOURCES
   src/ace_surface_inputs.cpp
   src/insolation.cpp
   src/ace_atmosphere.cpp
+  src/atm_factory.cpp
 )
-
-# In the full E3SM build, atm_comp_mct.F90 calls emulator_create.
-# Provide it directly in this library to avoid a circular dependency on
-# emulator_driver. In STANDALONE_MODE the symbol comes from
-# emulator_driver/src/emulator_factory.cpp instead.
-# TODO: get rid of this hacky workaround?!
-if(NOT STANDALONE_MODE)
-  list(APPEND EMULATORATM_CXX_SOURCES src/atm_factory.cpp)
-endif()
 
 set(EMULATORATM_CXX_HEADERS
   src/atm.hpp

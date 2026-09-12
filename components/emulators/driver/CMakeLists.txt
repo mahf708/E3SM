@@ -6,19 +6,15 @@ set(EMULATOR_DRIVER_SOURCES
 
 add_library(emulator_driver ${EMULATOR_DRIVER_SOURCES})
 
-# This target needs to see the base emulator headers + component headers
-target_include_directories(emulator_driver PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/../common/src
-  ${CMAKE_CURRENT_SOURCE_DIR}/../emulatoratm/src
-)
-
-# Link to the common framework + components
+# Dispatches emulator_create(kind) to each component library's creator.
 target_link_libraries(emulator_driver PUBLIC
   emulator_common
   emulatoratm
+  emulatorocn
+  emulatorice
 )
 
-target_compile_features(emulator_driver PUBLIC cxx_std_17)
+target_compile_features(emulator_driver PUBLIC cxx_std_20)
 
 if(STANDALONE_MODE)
   add_subdirectory(tests)
