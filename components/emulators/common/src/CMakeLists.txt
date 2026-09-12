@@ -13,6 +13,7 @@ set(EMULATOR_COMMON_CXX_SOURCES
   grid/scrip_reader.cpp
   grid/global_gather.cpp
   grid/grid_field_reader.cpp
+  coupling/calendar.cpp
   coupling/restart_store.cpp
   coupling/long_step_clock.cpp
   coupling/interval_state.cpp

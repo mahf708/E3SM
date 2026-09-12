@@ -1,7 +1,7 @@
 /**
  * @file insolation.cpp
- * @brief Ports of shr_orb_decl, shr_orb_cosz and shr_cal's NO_LEAP julian
- *        day (share/util), and EATM's window-mean SOLIN
+ * @brief Ports of shr_orb_decl and shr_orb_cosz (share/util), and EATM's
+ *        window-mean SOLIN
  *        (ace_compute_solin on mahf708/eocn/add-samudra).
  */
 
@@ -19,24 +19,8 @@ namespace atm {
 namespace {
 
 constexpr double pi = std::numbers::pi;
-constexpr int days_before_month[12] = {0,   31,  59,  90,  120, 151,
-                                       181, 212, 243, 273, 304, 334};
-constexpr int days_in_month[12] = {31, 28, 31, 30, 31, 30,
-                                   31, 31, 30, 31, 30, 31};
 
 } // namespace
-
-double julian_day_noleap(int ymd, int tod) {
-  const int month = (ymd / 100) % 100;
-  const int day = ymd % 100;
-  if (month < 1 || month > 12 || day < 1 ||
-      day > days_in_month[month - 1] || tod < 0 || tod > 86400) {
-    throw std::invalid_argument("Date " + std::to_string(ymd) + " " +
-                                std::to_string(tod) +
-                                "s is not on the NO_LEAP calendar.");
-  }
-  return days_before_month[month - 1] + day + tod / 86400.0;
-}
 
 Orbit Orbit::from_elements(double eccen, double obliq_deg, double mvelp_deg) {
   constexpr double degrad = pi / 180.0;

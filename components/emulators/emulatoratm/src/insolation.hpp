@@ -9,6 +9,8 @@
 #include <span>
 #include <vector>
 
+#include "calendar.hpp"
+
 namespace emulator {
 namespace atm {
 
@@ -31,12 +33,7 @@ struct Orbit {
 /// Total solar irradiance, W/m2, as RRTMG and EATM use it.
 inline constexpr double solar_constant = 1368.22;
 
-/**
- * @brief Day of year with fraction, 1.0 at 00:00 on 1 January: shr_cal's
- *        julian day on the NO_LEAP calendar.
- * @throws std::invalid_argument on a date that calendar does not have
- */
-double julian_day_noleap(int ymd, int tod);
+using coupling::julian_day_noleap;
 
 /// shr_orb_decl: solar declination (rad) and the earth-sun distance factor.
 void solar_declination(double calday, const Orbit &orbit, double &delta,
