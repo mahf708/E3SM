@@ -20,7 +20,6 @@ from CIME.buildlib import (  # noqa: E402
     parse_input,
 )
 from CIME.case import Case  # noqa: E402
-from emulator_settings import snapshot_specs  # noqa: E402
 
 
 def buildlib(bldroot, libroot, case, compname=None):
@@ -29,7 +28,6 @@ def buildlib(bldroot, libroot, case, compname=None):
         compname = "emulatorocn"
 
     build_cime_component_lib(case, compname, libroot, bldroot)
-    snapshot_specs(case)
 
 
 def _main_func(args):

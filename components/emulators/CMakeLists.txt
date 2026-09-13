@@ -332,6 +332,22 @@ endfunction()
 
 # Add subdirectories
 add_subdirectory(common)
+
+# A built case reads the specs it was built with (spec_path in
+# cime_config/emulator_settings.py), so copy them on every build that touches
+# the emulators.  CIME runs buildlib_cmake only at the first CMake configure;
+# a copy made there went stale on an incremental rebuild.
+if(NOT STANDALONE_MODE AND DEFINED EXEROOT)
+  file(GLOB EMULATOR_SPECS CONFIGURE_DEPENDS
+       ${CMAKE_CURRENT_SOURCE_DIR}/specs/*.yaml)
+  set(EMULATOR_SPECS_BUILT ${EXEROOT}/emulators/specs)
+  add_custom_target(emulator_specs
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${EMULATOR_SPECS_BUILT}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${EMULATOR_SPECS}
+            ${EMULATOR_SPECS_BUILT}
+    COMMENT "Emulator specs -> ${EMULATOR_SPECS_BUILT}")
+  add_dependencies(emulator_common emulator_specs)
+endif()
 add_subdirectory(emulatoratm)
 add_subdirectory(emulatorocn)
 add_subdirectory(emulatorice)
