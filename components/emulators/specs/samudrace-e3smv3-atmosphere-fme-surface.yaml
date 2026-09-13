@@ -7,7 +7,9 @@
 #  - ICEFRAC = s (1 - L), OCNFRAC = max(1 - L - ICEFRAC, 0), each zero
 #    outside its mask;
 #  - TS = OCNFRAC SST + (1 - OCNFRAC) TS with the raw SST, blended into each
-#    step's output and again when the ocean's state changes.
+#    step's output and again when the ocean's state changes;
+#  - SOLIN as the training stream has it: the six-hour mean half an hour
+#    after the step (EAM's hourly radiation calls), at 1360.53 W/m2.
 #
 # The coupler's surface fields are not read at all.
 
@@ -28,6 +30,9 @@ operators:
   - operator: insolation
     channel: SOLIN
     orbit: {eccen: 0.016715, obliq: 23.4441, mvelp: 102.7}
+    # SamudrACE's forcing SOLIN: 2.0 W/m2 RMS with these, 52.6 without.
+    solar_constant: 1360.53
+    offset_seconds: 1800
   - operator: ace.surface_exports
     layer: near_surface
     from: {ps: state.PS, phis: inputs.PHIS,

@@ -66,8 +66,8 @@ double cos_solar_zenith(double jday, double lat, double lon, double delta) {
 }
 
 Insolation::Insolation(const Orbit &orbit, std::span<const double> lat_deg,
-                       std::span<const double> lon_deg)
-    : m_orbit(orbit) {
+                       std::span<const double> lon_deg, double s0)
+    : m_orbit(orbit), m_s0(s0) {
   if (lat_deg.size() != lon_deg.size()) {
     throw std::invalid_argument("Insolation: " +
                                 std::to_string(lat_deg.size()) +
@@ -88,7 +88,7 @@ void Insolation::accumulate(double jday, double weight,
   double delta = 0.0;
   double eccf = 0.0;
   solar_declination(jday, m_orbit, delta, eccf);
-  const double scale = weight * solar_constant * eccf;
+  const double scale = weight * m_s0 * eccf;
   for (std::size_t i = 0; i < out.size(); ++i) {
     out[i] += scale * std::max(0.0, cos_solar_zenith(jday, m_lat_rad[i],
                                                      m_lon_rad[i], delta));
@@ -104,7 +104,8 @@ void Insolation::instantaneous(int ymd, int tod, std::span<double> out) const {
 }
 
 void Insolation::window_mean(int ymd, int tod, int dt_seconds,
-                             std::span<double> out, int substeps) const {
+                             std::span<double> out, int substeps,
+                             int offset_seconds) const {
   if (out.size() != m_lat_rad.size()) {
     throw std::invalid_argument("Insolation: output of the wrong length.");
   }
@@ -113,7 +114,7 @@ void Insolation::window_mean(int ymd, int tod, int dt_seconds,
                                 "must be positive.");
   }
   std::fill(out.begin(), out.end(), 0.0);
-  const double jday = julian_day_noleap(ymd, tod);
+  const double jday = julian_day_noleap(ymd, tod) + offset_seconds / 86400.0;
   const double dt_days = dt_seconds / 86400.0;
   for (int m = 1; m <= substeps; ++m) {
     accumulate(jday + dt_days * (m - 0.5) / substeps, 1.0 / substeps, out);

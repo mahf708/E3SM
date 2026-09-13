@@ -211,8 +211,11 @@ physics::Orbit read_orbit(const config::Section &options) {
 InsolationOperator::InsolationOperator(const config::Section &options,
                                        const ModelInfo &info)
     : m_channel(options.string("channel")),
-      m_sun(read_orbit(options), info.geometry->lat, info.geometry->lon) {
-  options.only({"operator", "channel", "orbit"});
+      m_offset(static_cast<int>(options.integer_or("offset_seconds", 0))),
+      m_sun(read_orbit(options), info.geometry->lat, info.geometry->lon,
+            options.number_or("solar_constant", physics::solar_constant)) {
+  options.only({"operator", "channel", "orbit", "solar_constant",
+                "offset_seconds"});
   if (info.layout == nullptr) {
     throw std::invalid_argument(options.where() +
                                 ": insolation needs a network input to set.");
@@ -228,9 +231,14 @@ Declarations InsolationOperator::declarations() const {
 
 void InsolationOperator::window(const StepInfo &info, Fields &f) {
   auto solin = f.inputs->get(m_channel);
-  m_sun.window_mean(info.now.ymd, info.now.tod, info.model_dt, solin);
   auto held = f.aux->get("solin_window");
-  std::copy(solin.begin(), solin.end(), held.begin());
+  m_sun.window_mean(info.now.ymd, info.now.tod, info.model_dt, held);
+  if (m_offset == 0) {
+    std::copy(held.begin(), held.end(), solin.begin());
+  } else {
+    m_sun.window_mean(info.now.ymd, info.now.tod, info.model_dt, solin, 48,
+                      m_offset);
+  }
 }
 
 void InsolationOperator::initialize(const StepInfo &info, Fields &f) {

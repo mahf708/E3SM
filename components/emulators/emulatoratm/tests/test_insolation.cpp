@@ -4,8 +4,14 @@
 
 #include "physics/insolation.hpp"
 
+#include "emulator_test_support.hpp"
+#include "grid_field_reader.hpp"
+#include "scrip_reader.hpp"
+
 #include <cmath>
+#include <filesystem>
 #include <numbers>
+#include <tuple>
 #include <vector>
 
 namespace emulator {
@@ -142,6 +148,46 @@ TEST_CASE("Polar night has no sun in the window", "[insolation]") {
   sun.window_mean(20000621, 0, 21600, s); // near the June solstice
   REQUIRE(s[0] == 0.0);
   REQUIRE(s[1] > 400.0);
+}
+
+TEST_CASE("E3SMv3's SOLIN is the six-hour mean half an hour late, at "
+          "1360.53 W/m2", "[insolation][real]") {
+  const std::string dir =
+      "/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/forcing_data/";
+  if (!grid::have_scrip_reader() ||
+      !std::filesystem::exists(dir + "solin-0000.nc")) {
+    WARN("skipped: needs netCDF and SamudrACE's forcing SOLIN");
+    return;
+  }
+  const auto g = grid::read_scrip(emulator::test::kGaussianGrid);
+  std::vector<double> w(g.size());
+  for (std::size_t k = 0; k < w.size(); ++k) {
+    w[k] = std::cos(g.lat[k] * std::numbers::pi / 180.0);
+  }
+  auto rms = [&](const std::vector<double> &a, const std::vector<double> &b) {
+    double num = 0, den = 0;
+    for (std::size_t k = 0; k < a.size(); ++k) {
+      num += w[k] * (a[k] - b[k]) * (a[k] - b[k]);
+      den += w[k];
+    }
+    return std::sqrt(num / den);
+  };
+  const auto orbit = Orbit::from_elements(0.016715, 23.4441, 102.7);
+  const Insolation fitted(orbit, g.lat, g.lon, 1360.53);
+  const Insolation eatm(orbit, g.lat, g.lon);
+  // The stamps' steps start six hours earlier: 3 January 06:00 and
+  // 27 June 12:00 of year 425.
+  for (const auto &[file, ymd, tod] :
+       {std::tuple{"solin-0000.nc", 4250103, 21600},
+        std::tuple{"solin-0701.nc", 4250627, 43200}}) {
+    const auto ref = grid::read_grid_fields(dir + file, {"SOLIN"}, g.ny, g.nx);
+    std::vector<double> late(g.size()), plain(g.size());
+    fitted.window_mean(ymd, tod, 21600, late, 48, 1800);
+    eatm.window_mean(ymd, tod, 21600, plain);
+    INFO(file);
+    CHECK(rms(late, ref[0].values) < 2.2);
+    CHECK(rms(plain, ref[0].values) > 40.0);
+  }
 }
 
 } // namespace test

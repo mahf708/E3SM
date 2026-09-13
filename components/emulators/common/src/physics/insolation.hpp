@@ -56,25 +56,33 @@ double cos_solar_zenith(double jday, double lat_rad, double lon_rad,
  */
 class Insolation {
 public:
+  /// `s0`: total solar irradiance, W/m2.  E3SMv3's training stream implies
+  /// 1360.53 (fitted over a year of SamudrACE forcing, +/- 0.04).
   Insolation(const Orbit &orbit, std::span<const double> lat_deg,
-             std::span<const double> lon_deg);
+             std::span<const double> lon_deg, double s0 = solar_constant);
 
   /// S0 eccf max(0, cos z) at this moment.
   void instantaneous(int ymd, int tod, std::span<double> out) const;
 
   /**
-   * @brief Mean over (T, T + dt] by the midpoint rule on `substeps`.
+   * @brief Mean over (T + offset, T + offset + dt] by the midpoint rule on
+   *        `substeps`.
    *
    * 48 sub-steps for a 6 h window leave 0.03 W/m2 RMS against a 2400-point
-   * reference; the integrand is smooth except at sunrise and sunset.
+   * reference; the integrand is smooth except at sunrise and sunset.  EAM's
+   * 6-hourly SOLIN is a mean of hourly radiation calls, which puts its window
+   * half an hour after the stamp's six hours: offset 1800 s.
    */
   void window_mean(int ymd, int tod, int dt_seconds, std::span<double> out,
-                   int substeps = 48) const;
+                   int substeps = 48, int offset_seconds = 0) const;
+
+  double s0() const { return m_s0; }
 
 private:
   void accumulate(double jday, double weight, std::span<double> out) const;
 
   Orbit m_orbit;
+  double m_s0;
   std::vector<double> m_lat_rad;
   std::vector<double> m_lon_rad;
 };

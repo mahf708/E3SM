@@ -99,16 +99,23 @@ private:
  * @brief `insolation`: top-of-atmosphere insolation for the network and the
  *        other operators.
  *
- * The input channel gets the mean over the step being predicted
- * (physics::Insolation::window_mean), at initialization and before every
- * network step; `aux.solin_window` keeps that value for the rest of the
- * interval, and `aux.solin_now` gets the instantaneous value on every call.
+ * The input channel gets the mean over the step being predicted, moved
+ * `offset_seconds` later (physics::Insolation::window_mean), at
+ * initialization and before every network step.  `aux.solin_window` keeps
+ * the mean over the step itself, which is what the instantaneous values the
+ * coupler steps see average to, and `aux.solin_now` gets the instantaneous
+ * value on every call.
  *
  * ```yaml
  * - operator: insolation
  *   channel: SOLIN
  *   orbit: {eccen: 0.016715, obliq: 23.4441, mvelp: 102.7}   # degrees
+ *   solar_constant: 1360.53   # W/m2; default 1368.22 (RRTMG, EATM)
+ *   offset_seconds: 1800      # default 0
  * ```
+ *
+ * SamudrACE's forcing SOLIN is matched to 2.0 W/m2 RMS by 1360.53 and 1800;
+ * the defaults miss it by 52.6 W/m2 RMS and 1.9 W/m2 in the global mean.
  */
 class InsolationOperator : public Operator {
 public:
@@ -121,6 +128,7 @@ public:
 private:
   void window(const StepInfo &info, Fields &f);
   std::string m_channel;
+  int m_offset = 0;
   physics::Insolation m_sun;
 };
 
