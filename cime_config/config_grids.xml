@@ -47,6 +47,17 @@
     <!-- Emulated components that share the 180x360 Gaussian grid: the
          atmosphere, ocean and sea ice emulators.  Every map between them is
          the identity, so no mapping files are needed. -->
+    <!-- E3SM's atmosphere over the emulated ocean and sea ice -->
+    <model_grid alias="ne30pg2_gauss180x360" compset="_EMULATOROCN">
+      <grid name="atm">ne30np4.pg2</grid>
+      <grid name="lnd">ne30np4.pg2</grid>
+      <grid name="ocnice">gauss180x360</grid>
+      <grid name="rof">null</grid>
+      <grid name="glc">null</grid>
+      <grid name="wav">null</grid>
+      <mask>gauss180x360</mask>
+    </model_grid>
+
     <model_grid alias="gauss180x360_gauss180x360" compset="EMULATORATM.*_EMULATOROCN">
       <grid name="atm">gauss180x360</grid>
       <grid name="lnd">gauss180x360</grid>
@@ -3447,6 +3458,7 @@
     <domain name="ne30np4.pg2">
       <nx>21600</nx>
       <ny>1</ny>
+      <file grid="atm|lnd" mask="gauss180x360">/pscratch/sd/m/mahf708/eocn-inputdata/share/domains/domain.lnd.ne30pg2_gauss180x360.20260913.nc</file>
       <file grid="atm|lnd" mask="oEC60to30v3">$DIN_LOC_ROOT/share/domains/domain.lnd.ne30pg2_oEC60to30v3.200220.nc</file>
       <file grid="ice|ocn" mask="oEC60to30v3">$DIN_LOC_ROOT/share/domains/domain.ocn.ne30pg2_oEC60to30v3.200220.nc</file>
       <file grid="atm|lnd" mask="oARRM60to10">$DIN_LOC_ROOT/share/domains/domain.lnd.ne30pg2_ARRM60to10.200527.nc</file>
@@ -4214,6 +4226,19 @@
     <!-- ======================================================== -->
 
     <!-- iac/ehc mappings -->
+
+    <gridmap atm_grid="ne30np4.pg2" ocn_grid="gauss180x360">
+      <map name="ATM2OCN_FMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/ne30pg2/map_ne30pg2_to_gauss180x360_traave.20260913.nc</map>
+      <!-- Bilinear with nearest-neighbour extrapolation: ne30pg2 centres stop
+           at 88.94 degrees, and plain bilinear leaves the outermost Gaussian
+           rows unmapped (zbot = 0 in the atm/ocn flux kernel). -->
+      <map name="ATM2OCN_SMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/ne30pg2/map_ne30pg2_to_gauss180x360_trbilin.20260913.nc</map>
+      <map name="ATM2OCN_VMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/ne30pg2/map_ne30pg2_to_gauss180x360_trbilin.20260913.nc</map>
+      <!-- From the ocean-masked grid: an unmasked map averages land cells,
+           which the flux kernel never writes, into coastal columns. -->
+      <map name="OCN2ATM_FMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/gauss180x360/map_gauss180x360ocn_to_ne30pg2_traave.20260913.nc</map>
+      <map name="OCN2ATM_SMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/gauss180x360/map_gauss180x360ocn_to_ne30pg2_traave.20260913.nc</map>
+    </gridmap>
 
     <gridmap atm_grid="ne30np4.pg2" iac_grid="r0125">
       <map name="IAC2ATM_FMAPNAME">cpl/gridmaps/r0125/map_r0125_TO_ne30pg2_aave.241125.nc</map>

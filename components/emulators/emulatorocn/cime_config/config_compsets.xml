@@ -15,4 +15,12 @@
     <support_level>Experimental, under development</support_level>
   </compset>
 
+  <!-- The Samudra ocean and its sea ice under E3SM's own atmosphere and land:
+       the ocean forced by the coupler's merged fluxes. -->
+  <compset>
+    <alias>F2010-EMU-SAMUDRA</alias>
+    <lname>2010_EAM%CMIP6_ELM%SPBC_EMULATORICE_EMULATOROCN_SROF_SGLC_SWAV</lname>
+    <support_level>Experimental, under development</support_level>
+  </compset>
+
 </compsets>
