@@ -7,6 +7,7 @@
 #include "emulator_test_support.hpp"
 #include "grid_field_reader.hpp"
 #include "ocean_operators.hpp"
+#include "restart_file.hpp"
 #include "scrip_reader.hpp"
 #include "sea_ice_operators.hpp"
 
@@ -14,7 +15,11 @@
 #include <torch/cuda.h>
 #endif
 
+#include <unistd.h>
+
 #include <cmath>
+#include <cstdio>
+#include <memory>
 
 namespace emulator {
 namespace test {
@@ -59,48 +64,128 @@ bool available() {
 }
 
 /**
- * The three components for five days (one ocean step), in the driver's
- * order, with the atmosphere spec given.  The coupler's fractions for the
- * atmosphere are the initial condition's, made a partition.  Returns the
- * ocean's predicted SST, area-weighted over its mask.
+ * The three components in the driver's order, with the atmosphere spec
+ * given, on their own exchange (a process of their own).  The coupler's
+ * fractions for the atmosphere are the initial condition's, made a
+ * partition.  Given a restart prefix, each component restores from
+ * `<prefix>.<component>.nc` and starts at step `start`.
  */
-double run_trio(const std::string &atm_spec) {
-  int rank = 0, size = 1;
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  MPI_Comm_size(MPI_COMM_WORLD, &size);
-  const int fcomm = MPI_Comm_c2f(MPI_COMM_WORLD);
-  coupling::Exchange exchange;
+class Trio {
+public:
+  Trio(const std::string &atm_spec, int start = 0,
+       const std::string &restart_prefix = "")
+      : m_spec(atm_spec), m_step(start),
+        m_atm_in("atm_in",
+                 "spec: " + spec_path(atm_spec) + "\n"
+                 "coupler_dt: 1800\n"
+                 "grid: {file: " + kGaussianGrid + ", domain: full}\n"
+                 "initial_condition: " + kSamudraceAtmIc + "\n"
+                 "inference: {backend: libtorch, model_path: " +
+                     kSamudraceAtmModel + ", device: cuda, seed: 2026}\n"),
+        m_ocn_in("ocn_in",
+                 "spec: " + spec_path("samudra-e3smv3-ocean.yaml") + "\n"
+                 "coupler_dt: 1800\n"
+                 "grid: {file: " + kGaussianGrid +
+                     ", domain: ocean_mask, mask_variable: mask_2d, "
+                     "publish_as: ocn}\n"
+                 "initial_condition: " + kSamudraOcnIc + "\n"
+                 "inference: {backend: libtorch, model_path: " +
+                     kSamudraOcnModel + ", device: cuda}\n"),
+        m_ice_in("ice_in",
+                 "spec: " + spec_path("samudrace-e3smv3-sea-ice.yaml") + "\n"
+                 "coupler_dt: 1800\n"
+                 "grid: {domain: shared, shared_from: ocn}\n") {
+    const int fcomm = MPI_Comm_c2f(MPI_COMM_WORLD);
+    const int run_type = restart_prefix.empty() ? 0 : 1;
+    const auto t = after(start);
+    auto create = [&](std::unique_ptr<EmulatorComponent> &c, EmulatorType type,
+                      const char *name, int id, const TempFile &in) {
+      c = std::make_unique<EmulatorComponent>(type, name, m_exchange);
+      c->create_instance(fcomm, id, in.path, "", run_type, t.ymd, t.tod);
+      if (!restart_prefix.empty()) {
+        c->set_restart_file(restart_prefix + "." + name + ".nc");
+      }
+    };
 
-  const TempFile atm_in("atm_in",
-      "spec: " + spec_path(atm_spec) + "\n"
-      "coupler_dt: 1800\n"
-      "grid: {file: " + kGaussianGrid + ", domain: full}\n"
-      "initial_condition: " + kSamudraceAtmIc + "\n"
-      "inference: {backend: libtorch, model_path: " + kSamudraceAtmModel +
-      ", device: cuda, seed: 2026}\n");
-  const TempFile ocn_in("ocn_in",
-      "spec: " + spec_path("samudra-e3smv3-ocean.yaml") + "\n"
-      "coupler_dt: 1800\n"
-      "grid: {file: " + kGaussianGrid +
-      ", domain: ocean_mask, mask_variable: mask_2d, publish_as: ocn}\n"
-      "initial_condition: " + kSamudraOcnIc + "\n"
-      "inference: {backend: libtorch, model_path: " + kSamudraOcnModel +
-      ", device: cuda}\n");
-  const TempFile ice_in("ice_in",
-      "spec: " + spec_path("samudrace-e3smv3-sea-ice.yaml") + "\n"
-      "coupler_dt: 1800\n"
-      "grid: {domain: shared, shared_from: ocn}\n");
+    create(atm, EmulatorType::ATM_COMP, "emulatoratm", 1, m_atm_in);
+    n = static_cast<std::size_t>(atm->get_num_local_cols());
+    x2a = std::make_unique<AttrVect>(kX2a, n);
+    a2x = std::make_unique<AttrVect>(kA2x, n);
+    x2o = std::make_unique<AttrVect>(kX2o, n);
+    o2x = std::make_unique<AttrVect>(kO2x, n);
+    x2i = std::make_unique<AttrVect>(kX2i, n);
+    i2x = std::make_unique<AttrVect>(kI2x, n);
+    set_fractions();
+    atm->set_coupler_field_lists(kX2a, kA2x);
+    atm->setup_coupling(coupling(*x2a, *a2x, n));
+    atm->initialize();
 
-  EmulatorComponent atm(EmulatorType::ATM_COMP, "emulatoratm", exchange);
-  atm.create_instance(fcomm, 1, atm_in.path, "", 0, 20000101, 0);
-  const auto n = static_cast<std::size_t>(atm.get_num_local_cols());
-  AttrVect x2a(kX2a, n), a2x(kA2x, n), x2o(kX2o, n), o2x(kO2x, n),
-           x2i(kX2i, n), i2x(kI2x, n);
-  {
+    create(ocn, EmulatorType::OCN_COMP, "emulatorocn", 4, m_ocn_in);
+    ocn->set_coupler_field_lists(kX2o, kO2x);
+    ocn->setup_coupling(coupling(*x2o, *o2x, n));
+    ocn->initialize();
+
+    create(ice, EmulatorType::ICE_COMP, "emulatorice", 5, m_ice_in);
+    ice->set_coupler_field_lists(kX2i, kI2x);
+    ice->setup_coupling(coupling(*x2i, *i2x, n));
+    ice->initialize();
+  }
+
+  ~Trio() {
+    atm->finalize();
+    ocn->finalize();
+    ice->finalize();
+  }
+
+  /// Coupler steps up to and including `last`.
+  void run_to(int last) {
+    for (++m_step; m_step <= last; ++m_step) {
+      // The same grid for all three: the coupler's a2x -> x2i is a copy.
+      for (std::size_t p = 0; p < n; ++p) {
+        for (const auto &name : x2i->names) {
+          x2i->at(name, p) = a2x->at(name, p);
+        }
+      }
+      ice->run(1800, after(m_step));
+      ocn->run(1800, after(m_step));
+      atm->run(1800, after(m_step));
+    }
+    --m_step;
+  }
+
+  void write_restarts(const std::string &prefix) const {
+    atm->write_restart(prefix + ".emulatoratm.nc");
+    ocn->write_restart(prefix + ".emulatorocn.nc");
+    ice->write_restart(prefix + ".emulatorice.nc");
+  }
+
+  /// What the coupler sees and the ocean's state, in one vector.  The sea
+  /// ice's exports are made from the coupler's imports, which a restarted
+  /// component has not been given at initialization (CIME's coupler restores
+  /// its own copy), so `with_ice` is false there.
+  std::vector<double> snapshot(bool with_ice = true) const {
+    std::vector<double> v;
+    for (const auto *av : {a2x.get(), o2x.get()}) {
+      v.insert(v.end(), av->data.begin(), av->data.end());
+    }
+    if (with_ice) {
+      v.insert(v.end(), i2x->data.begin(), i2x->data.end());
+    }
+    const auto sst = ocn->model()->brackets().upper("sst");
+    v.insert(v.end(), sst.begin(), sst.end());
+    return v;
+  }
+
+  std::unique_ptr<EmulatorComponent> atm, ocn, ice;
+  std::unique_ptr<AttrVect> x2a, a2x, x2o, o2x, x2i, i2x;
+  std::size_t n = 0;
+
+private:
+  void set_fractions() {
     const auto ic = grid::read_grid_fields(
         kSamudraceAtmIc, {"LANDFRAC", "OCNFRAC", "ICEFRAC", "TS"}, 180, 360);
     std::vector<int> gids(n);
-    atm.get_local_col_gids(gids.data());
+    atm->get_local_col_gids(gids.data());
     for (std::size_t p = 0; p < n; ++p) {
       const auto c = static_cast<std::size_t>(gids[p] - 1);
       auto get = [&](int k) {
@@ -115,50 +200,40 @@ double run_trio(const std::string &atm_spec) {
         o /= sum;
         i /= sum;
       }
-      x2a.at("Sf_lfrac", p) = l;
-      x2a.at("Sf_ofrac", p) = o;
-      x2a.at("Sf_ifrac", p) = i;
-      x2a.at("Sx_t", p) = (l + o + i) * get(3);
+      x2a->at("Sf_lfrac", p) = l;
+      x2a->at("Sf_ofrac", p) = o;
+      x2a->at("Sf_ifrac", p) = i;
+      x2a->at("Sx_t", p) = (l + o + i) * get(3);
     }
   }
-  atm.set_coupler_field_lists(kX2a, kA2x);
-  atm.setup_coupling(coupling(x2a, a2x, n));
-  atm.initialize();
 
-  EmulatorComponent ocn(EmulatorType::OCN_COMP, "emulatorocn", exchange);
-  ocn.create_instance(fcomm, 4, ocn_in.path, "", 0, 20000101, 0);
-  ocn.set_coupler_field_lists(kX2o, kO2x);
-  ocn.setup_coupling(coupling(x2o, o2x, n));
-  ocn.initialize();
+  std::string m_spec;
+  int m_step;
+  coupling::Exchange m_exchange;
+  TempFile m_atm_in, m_ocn_in, m_ice_in;
+};
 
-  EmulatorComponent ice(EmulatorType::ICE_COMP, "emulatorice", exchange);
-  ice.create_instance(fcomm, 5, ice_in.path, "", 0, 20000101, 0);
-  ice.set_coupler_field_lists(kX2i, kI2x);
-  ice.setup_coupling(coupling(x2i, i2x, n));
-  ice.initialize();
+/// Five days (one ocean step); returns the ocean's predicted SST,
+/// area-weighted over its mask.
+double run_trio(const std::string &atm_spec) {
+  int rank = 0, size = 1;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  Trio trio(atm_spec);
+  trio.run_to(240);
+  const auto n = trio.n;
+  auto &i2x = *trio.i2x;
 
   std::vector<double> area(n), mask(n), frac(n);
-  ocn.get_cols_area(area.data());
-  ocn.get_cols_mask_frac(mask.data(), frac.data());
+  trio.ocn->get_cols_area(area.data());
+  trio.ocn->get_cols_mask_frac(mask.data(), frac.data());
   double ocean_area = 0.0;
   for (std::size_t p = 0; p < n; ++p) {
     ocean_area += area[p] * mask[p];
   }
   ocean_area = global_sum(ocean_area);
 
-  for (int step = 1; step <= 240; ++step) {
-    // The same grid for all three: the coupler's a2x -> x2i is a copy.
-    for (std::size_t p = 0; p < n; ++p) {
-      for (const auto &name : x2i.names) {
-        x2i.at(name, p) = a2x.at(name, p);
-      }
-    }
-    ice.run(1800, after(step));
-    ocn.run(1800, after(step));
-    atm.run(1800, after(step));
-  }
-
-  const auto *ocean = ocn.model();
+  const auto *ocean = trio.ocn->model();
   double sst = 0.0, ifrac = 0.0, sen_ice = 0.0, ice_area = 0.0, fluxes = 0.0;
   for (std::size_t p = 0; p < n; ++p) {
     sst += area[p] * mask[p] * ocean->brackets().upper("sst")[p];
@@ -182,9 +257,6 @@ double run_trio(const std::string &atm_spec) {
   REQUIRE(ifrac > 0.01);
   REQUIRE(ifrac < 0.2);
   REQUIRE(std::isfinite(sen_ice));
-  atm.finalize();
-  ocn.finalize();
-  ice.finalize();
   return sst;
 }
 
@@ -211,6 +283,63 @@ TEST_CASE("The atmosphere with fme's ocean-to-atmosphere exchange runs the "
   }
   const double sst = run_trio("samudrace-e3smv3-atmosphere-fme-surface.yaml");
   REQUIRE(std::abs(sst - 291.04) < 1.0);
+}
+
+TEST_CASE("The three components restarted from files mid-window continue "
+          "bit for bit", "[samudrace][real][restart]") {
+  if (!available() || !coupling::have_restart_files()) {
+    WARN("skipped: needs libtorch, netCDF, a GPU and the SamudrACE files");
+    return;
+  }
+  // Step 125 is 5 coupler steps into an atmosphere interval and halfway
+  // through the ocean's window; step 250 is past the ocean's first step, so
+  // the window mean carried across the restart reaches its prediction.  The
+  // fme exchange carries the most operator state (the blended TS and what
+  // it last saw of the ocean).
+  const std::string spec = "samudrace-e3smv3-atmosphere-fme-surface.yaml";
+  const int stop = 125, end = 250;
+  int pid = static_cast<int>(::getpid());
+  MPI_Bcast(&pid, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  const std::string prefix = "trio_restart_" + std::to_string(pid);
+
+  std::vector<double> continuous, at_stop, restarted, restarted_at_stop;
+  {
+    Trio trio(spec);
+    trio.run_to(stop);
+    at_stop = trio.snapshot(false);
+    trio.write_restarts(prefix);
+    trio.run_to(end);
+    continuous = trio.snapshot();
+  }
+  {
+    Trio trio(spec, stop, prefix);
+    // What the coupler receives from the restarted components' initial
+    // exports is what the continuous run exported at that step.
+    restarted_at_stop = trio.snapshot(false);
+    trio.run_to(end);
+    restarted = trio.snapshot();
+    REQUIRE(trio.ocn->model()->clock().completed_steps() == 1);
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
+  int rank = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  if (rank == 0) {
+    for (const char *c : {"emulatoratm", "emulatorocn", "emulatorice"}) {
+      std::remove((prefix + "." + c + ".nc").c_str());
+    }
+  }
+  std::size_t differ_at_stop = 0, differ = 0;
+  for (std::size_t k = 0; k < at_stop.size(); ++k) {
+    differ_at_stop += at_stop[k] != restarted_at_stop[k];
+  }
+  for (std::size_t k = 0; k < continuous.size(); ++k) {
+    differ += continuous[k] != restarted[k];
+  }
+  UNSCOPED_INFO("values differing at the restart " << differ_at_stop
+                << ", at the end " << differ << " of " << continuous.size());
+  REQUIRE(restarted.size() == continuous.size());
+  REQUIRE(differ_at_stop == 0);
+  REQUIRE(differ == 0);
 }
 
 } // namespace test

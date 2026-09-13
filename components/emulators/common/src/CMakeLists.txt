@@ -22,6 +22,7 @@ set(EMULATOR_COMMON_CXX_SOURCES
   model/emulated_model.cpp
   model/common_operators.cpp
   coupling/restart_store.cpp
+  coupling/restart_file.cpp
   coupling/long_step_clock.cpp
   coupling/interval_state.cpp
   coupling/network_stepper.cpp

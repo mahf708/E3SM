@@ -7,6 +7,7 @@
 
 #include "create_inference_backend.hpp"
 #include "grid_field_reader.hpp"
+#include "restart_file.hpp"
 #include "scrip_reader.hpp"
 
 #include <mpi.h>
@@ -39,7 +40,7 @@ void EmulatorComponent::create_instance(int comm, int comp_id,
                                         int run_type, int start_ymd,
                                         int start_tod) {
   (void)log_file;
-  (void)run_type;
+  m_run_type = run_type;
   m_comm = comm;
   m_id = comp_id;
   set_start_time({start_ymd, start_tod});
@@ -190,7 +191,19 @@ void EmulatorComponent::init_impl() {
         resolve(m_input->string("initial_condition"), m_base_dir), names,
         m_grid.ny, m_grid.nx);
   }
-  m_model->initialize(start_time(), initial);
+  if (m_restart_file.empty()) {
+    if (m_run_type != 0) {
+      throw std::invalid_argument(
+          m_name + ": a continue or branch run needs a restart file "
+          "(set_restart_file); starting from the initial condition would "
+          "silently begin a different run.");
+    }
+    m_model->initialize(start_time(), initial);
+  } else {
+    const auto &g = m_model->geometry();
+    auto store = coupling::read_restart_file(m_restart_file, *g.gather, comm);
+    m_model->restart(store, initial);
+  }
   if (is_coupled()) {
     m_model->initial_exports(start_time(), imports(), mutable_exports());
   }
@@ -212,6 +225,27 @@ void EmulatorComponent::run_impl(int dt) {
                                 std::to_string(m_coupler_dt) + " s.");
   }
   m_model->run(now, imports(), mutable_exports());
+}
+
+void EmulatorComponent::set_restart_file(const std::string &path) {
+  if (is_initialized()) {
+    throw std::logic_error(m_name + ": set_restart_file after initialize.");
+  }
+  m_restart_file = path;
+}
+
+void EmulatorComponent::write_restart(const std::string &path) const {
+  if (!m_model) {
+    return;
+  }
+  coupling::MemoryRestartStore store;
+  m_model->save_to(store);
+  const auto &g = m_model->geometry();
+  const auto &clock = m_model->clock();
+  write_restart_file(path, store, *g.gather, g.comm,
+                     {{"component", m_name},
+                      {"spec", m_spec->name},
+                      {"clock", clock.to_string()}});
 }
 
 void EmulatorComponent::final_impl() { m_model.reset(); }

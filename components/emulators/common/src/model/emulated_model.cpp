@@ -299,7 +299,14 @@ void EmulatedModel::initial_exports(coupling::ModelTime start,
   }
   StepInfo info{start, {}, has_network() ? m_spec.layout->model_dt : 0};
   if (has_network()) {
-    m_brackets.blend(m_spec.stepping == Stepping::Interpolate ? 0.0 : 1.0,
+    // Where the clock stands: the start of an interval after initialize(),
+    // but wherever the run stopped after restart(), so a restarted run
+    // exports (and publishes) what the continuous run did at that step.
+    info.clock = m_clock.last_step();
+    info.clock.first_call = false;
+    m_brackets.blend(m_spec.stepping == Stepping::Interpolate
+                         ? info.clock.fraction
+                         : 1.0,
                      m_state);
   }
   auto f = fields_for(&imports, &exports);

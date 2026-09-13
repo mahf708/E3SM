@@ -69,6 +69,17 @@ public:
   coupling::ModelTime start_time() const { return m_start_time; }
   void finalize();
 
+  /**
+   * @brief Restarts, from and to a file.
+   *
+   * set_restart_file(path), before initialize(), makes initialize() restore
+   * the state written there instead of starting from the initial condition.
+   * write_restart(path) writes the state after the last run() (collective).
+   * A component with no restart state ignores both.
+   */
+  virtual void set_restart_file(const std::string &path) { (void)path; }
+  virtual void write_restart(const std::string &path) const { (void)path; }
+
   // Accessors
   EmulatorType type() const { return m_type; }
   int id() const { return m_id; }

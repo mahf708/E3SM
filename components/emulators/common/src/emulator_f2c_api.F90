@@ -67,6 +67,20 @@ module emulator_f2c_api
          type(c_ptr), value, intent(in) :: handle
       end subroutine emulator_finalize
 
+      ! Before emulator_init: restore from this file (NUL-terminated).
+      subroutine emulator_set_restart_file(handle, path) bind(c)
+         import :: c_ptr, c_char
+         type(c_ptr), value, intent(in) :: handle
+         character(kind=c_char), intent(in) :: path(*)
+      end subroutine emulator_set_restart_file
+
+      ! After a step: write the restart file (NUL-terminated).  Collective.
+      subroutine emulator_write_restart(handle, path) bind(c)
+         import :: c_ptr, c_char
+         type(c_ptr), value, intent(in) :: handle
+         character(kind=c_char), intent(in) :: path(*)
+      end subroutine emulator_write_restart
+
       subroutine emulator_print_info(handle) bind(c)
          import :: c_ptr
          type(c_ptr), value, intent(in) :: handle

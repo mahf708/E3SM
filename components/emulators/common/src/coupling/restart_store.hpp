@@ -54,6 +54,12 @@ public:
   /// Drop an entry, to test a restart written before it existed.
   void erase(std::string_view name);
   std::vector<std::string> names() const;
+  const std::map<std::string, std::vector<double>, std::less<>> &arrays() const {
+    return m_arrays;
+  }
+  const std::map<std::string, std::int64_t, std::less<>> &ints() const {
+    return m_ints;
+  }
 
 private:
   std::map<std::string, std::vector<double>, std::less<>> m_arrays;

@@ -290,7 +290,7 @@ TEST_CASE("A restart mid-interval continues exactly", "[model]") {
       seen.push_back(v);
     }
   };
-  coupling::Exchange ex1, ex2;
+  coupling::Exchange ex1, ex2, ex3;
   auto net1 = std::make_shared<ToyNetwork>();
   auto net2 = std::make_shared<ToyNetwork>();
   net1->initialize();
@@ -299,7 +299,11 @@ TEST_CASE("A restart mid-interval continues exactly", "[model]") {
                       w.rank == 0 ? net1 : nullptr, &ex1);
   whole.initialize({20000101, 0}, toy_ic());
   std::vector<std::vector<double>> continuous, first, second;
-  run(1, 13, whole, continuous);
+  run(1, 6, whole, continuous);
+  // What the continuous run published at the step the restart is taken.
+  const auto published = ex1.get("toy.X");
+  const std::vector<double> at_restart(published.begin(), published.end());
+  run(7, 13, whole, continuous);
 
   EmulatedModel a(spec, 1800, Geometry::from_grid(MPI_COMM_WORLD, g, decomp),
                   w.rank == 0 ? net2 : nullptr, &ex2);
@@ -307,9 +311,20 @@ TEST_CASE("A restart mid-interval continues exactly", "[model]") {
   run(1, 6, a, first);
   coupling::MemoryRestartStore store;
   a.save_to(store);
+  // A new process: its own exchange, which the restart's initial exports
+  // must fill with what the continuous run held there, mid-interval (6 of
+  // 4 coupler steps per network step: halfway).
   EmulatedModel b(spec, 1800, Geometry::from_grid(MPI_COMM_WORLD, g, decomp),
-                  w.rank == 0 ? net2 : nullptr, &ex2);
+                  w.rank == 0 ? net2 : nullptr, &ex3);
   b.restart(store, toy_ic());
+  REQUIRE(b.clock().last_step().fraction == 0.5);
+  {
+    fields::FieldSet imports(n), exports(n);
+    b.initial_exports({20000101, 6 * 1800}, imports, exports);
+  }
+  const auto republished = ex3.get("toy.X");
+  REQUIRE(std::vector<double>(republished.begin(), republished.end()) ==
+          at_restart);
   run(7, 13, b, second);
   first.insert(first.end(), second.begin(), second.end());
   REQUIRE(first == continuous);

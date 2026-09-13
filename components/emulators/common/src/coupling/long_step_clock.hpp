@@ -73,6 +73,8 @@ public:
   /// Coupler steps counted into the current interval.
   int elapsed_steps() const { return m_elapsed_steps; }
   std::int64_t completed_steps() const { return m_completed_steps; }
+  /// What the last on_coupler_step returned (restored by load_from).
+  const Step &last_step() const { return m_last_step; }
 
   /// Every piece of state: elapsed steps, completed steps, the last model
   /// time (so the idempotence survives the restart too) and the cadence,

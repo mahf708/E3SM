@@ -80,6 +80,17 @@ void emulator_finalize(void* handle) {
   guarded("emulator_finalize", emu, [&] { emu->finalize(); });
 }
 
+void emulator_set_restart_file(void* handle, const char* path) {
+  auto* emu = static_cast<emulator::Emulator*>(handle);
+  guarded("emulator_set_restart_file", emu,
+          [&] { emu->set_restart_file(path); });
+}
+
+void emulator_write_restart(void* handle, const char* path) {
+  auto* emu = static_cast<emulator::Emulator*>(handle);
+  guarded("emulator_write_restart", emu, [&] { emu->write_restart(path); });
+}
+
 void emulator_print_info(void *handle){
   auto* emu = static_cast<emulator::Emulator*>(handle);
   emu->print_info(std::cout);

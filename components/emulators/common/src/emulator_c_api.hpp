@@ -99,6 +99,10 @@ void  emulator_run(void* handle, int dt);
 void  emulator_run_at(void* handle, int dt, int ymd, int tod);
 void  emulator_finalize(void* handle);
 void  emulator_print_info(void* handle);
+/// Before emulator_init: restore from this restart file (null terminated).
+void  emulator_set_restart_file(void* handle, const char* path);
+/// After a step: write the component's restart file.  Collective.
+void  emulator_write_restart(void* handle, const char* path);
 
 /**
  * @brief Destroy an emulator instance created by emulator_create.

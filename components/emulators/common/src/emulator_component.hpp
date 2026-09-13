@@ -55,6 +55,16 @@ public:
                        int start_ymd, int start_tod);
 
   bool configured() const { return m_spec != nullptr; }
+
+  /**
+   * Restore from `path` at initialize() rather than start from the initial
+   * condition, which still supplies the statics and boundary inputs.  The
+   * file holds the model's restart state (EmulatedModel::save_to) on the
+   * whole grid, so any number of ranks can read it.
+   */
+  void set_restart_file(const std::string &path) override;
+  /// The model's state after the last run(), to `path`.  Collective.
+  void write_restart(const std::string &path) const override;
   /// The model, once initialized; null before, or when unconfigured.
   const model::EmulatedModel *model() const { return m_model.get(); }
 
@@ -69,6 +79,8 @@ private:
 
   coupling::Exchange &m_exchange;
   int m_comm = 0;
+  int m_run_type = 0;
+  std::string m_restart_file;
   std::unique_ptr<config::Section> m_input;
   std::unique_ptr<model::ModelSpec> m_spec;
   std::string m_base_dir;

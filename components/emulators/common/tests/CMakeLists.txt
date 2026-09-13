@@ -67,6 +67,11 @@ if(EMULATOR_ENABLE_NETCDF)
   add_test(NAME scrip_reader_tests COMMAND test_scrip_reader)
 endif()
 
+# Restart files: written on some ranks, read back on others
+add_executable(test_restart_file test_restart_file.cpp)
+target_link_libraries(test_restart_file PRIVATE emulator_common Catch2)
+emulator_add_mpi_test(restart_file_tests test_restart_file)
+
 # Test for the long-step primitives: clock, interval mean, brackets, restart
 add_executable(test_long_step test_long_step.cpp)
 target_link_libraries(test_long_step PRIVATE emulator_common Catch2)
