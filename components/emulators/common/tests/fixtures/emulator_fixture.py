@@ -23,6 +23,8 @@ class FixtureEmulator:
             f.write(f"scale={config.get('scale', '')}\n")
             f.write(f"rank={self.context.get('rank')}\n")
             f.write(f"world_size={self.context.get('world_size')}\n")
+            f.write(f"fortran_comm={self.context.get('fortran_comm')}\n")
+            f.write(f"gathered={self.context.get('gathered')}\n")
             f.write(f"nx={self.context.get('nx')} ny={self.context.get('ny')}\n")
             gids = np.asarray(self.context.get("col_gids", [])).tolist()
             f.write(f"gids={gids}\n")

@@ -24,6 +24,11 @@ class Context:
     rank: int = 0
     world_size: int = 1
     node_name: str = ""
+    #: The component communicator's Fortran handle, or -1.
+    fortran_comm: int = -1
+    #: True when ``infer`` sees the whole grid gathered on this rank (a global
+    #: network stepped by the component), so the grid describes every column.
+    gathered: bool = False
 
     nx: int = 0
     ny: int = 0
@@ -39,6 +44,8 @@ class Context:
             rank=int(data.get("rank", 0)),
             world_size=int(data.get("world_size", 1)),
             node_name=str(data.get("node_name", "")),
+            fortran_comm=int(data.get("fortran_comm", -1)),
+            gathered=bool(data.get("gathered", False)),
             nx=int(data.get("nx", 0)),
             ny=int(data.get("ny", 0)),
             num_global_cols=int(data.get("num_global_cols", 0)),
@@ -46,6 +53,18 @@ class Context:
             lat=np.asarray(data.get("lat", []), dtype=np.float64),
             lon=np.asarray(data.get("lon", []), dtype=np.float64),
         )
+
+    def mpi_comm(self):
+        """The component communicator as an mpi4py communicator.
+
+        Raises ImportError without mpi4py, and ValueError when the context
+        came from no communicator.
+        """
+        if self.fortran_comm < 0:
+            raise ValueError("this context carries no communicator")
+        from mpi4py import MPI
+
+        return MPI.Comm.f2py(self.fortran_comm)
 
     @property
     def num_local_cols(self) -> int:

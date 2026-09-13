@@ -34,6 +34,16 @@ struct InferenceContext {
   int rank = 0;          ///< Rank within the component communicator
   int size = 1;          ///< Size of the component communicator
   std::string node_name; ///< Hostname, for logging
+  /// The component communicator's Fortran handle, or -1: a Python model can
+  /// build its own communicator from it (mpi4py's MPI.Comm.f2py).
+  int fortran_comm = -1;
+  /**
+   * True when infer() sees the whole grid, gathered on this rank, as the
+   * component's NetworkStepper runs a global network: the grid fields then
+   * describe every column, not this rank's share, and infer() is called on
+   * this rank alone.
+   */
+  bool gathered = false;
 
   // --- horizontal decomposition, from the coupler ------------------------
   int nx = 0;                ///< Global longitude points (0 if unstructured)

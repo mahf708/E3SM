@@ -163,7 +163,18 @@ void EmulatorComponent::init_impl() {
         ic.set(key, inf.string(key));
       }
     }
-    backend = inference::create_backend(ic, inference::InferenceContext{});
+    // The component's ranks and communicator, and the whole grid: the
+    // network runs on this rank alone, on every column gathered here.
+    auto context = inference::make_context(m_comm);
+    context.gathered = true;
+    const auto &g = m_grid;
+    std::vector<int> all(g.size());
+    for (std::size_t k = 0; k < all.size(); ++k) {
+      all[k] = static_cast<int>(k + 1);
+    }
+    context.set_grid(g.nx, g.ny, static_cast<int>(g.size()), all.data(),
+                     g.lat.data(), g.lon.data(), static_cast<int>(g.size()));
+    backend = inference::create_backend(ic, context);
   }
 
   auto geometry = m_have_grid

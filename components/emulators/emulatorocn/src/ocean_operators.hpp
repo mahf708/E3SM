@@ -66,7 +66,9 @@ private:
  *   mask: statics.mask_2d
  *   to: {dhdx: exports.So_dhdx, dhdy: exports.So_dhdy}
  * ```
- * Collective: every rank calls it on every exports call.
+ * Collective.  The slope is recomputed only when the SSH changed on some
+ * rank since the last call; a held state (window_close stepping) is gathered
+ * once per ocean step rather than once per coupler step.
  */
 class SshGradients : public model::Operator {
 public:
@@ -79,6 +81,9 @@ private:
   model::FieldRef m_ssh, m_mask, m_dhdx, m_dhdy;
   std::vector<double> m_global_mask; ///< root only, gathered once
   bool m_have_mask = false;
+  std::vector<double> m_ssh_local;                ///< the SSH it was taken from
+  std::vector<double> m_dhdx_local, m_dhdy_local; ///< the last slope
+  bool m_have_slope = false;
 };
 
 /**

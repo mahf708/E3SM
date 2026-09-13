@@ -78,6 +78,8 @@ TEST_CASE("The factory receives the config and the context", "[python]") {
 
   InferenceContext context;
   context.set_grid(8, 6, 48, gids, lat, lon, 3);
+  context.fortran_comm = 7;
+  context.gathered = true;
 
   auto backend =
       create_backend(fixture_config("emulator_fixture_context.txt"), context);
@@ -88,6 +90,8 @@ TEST_CASE("The factory receives the config and the context", "[python]") {
           std::string::npos);
   REQUIRE(report.find("nx=8 ny=6") != std::string::npos);
   REQUIRE(report.find("gids=[1, 5, 9]") != std::string::npos);
+  REQUIRE(report.find("fortran_comm=7") != std::string::npos);
+  REQUIRE(report.find("gathered=True") != std::string::npos);
 
   backend->finalize();
   std::remove("emulator_fixture_context.txt");

@@ -211,6 +211,9 @@ struct PythonBackend::Impl {
     PyRef ctx(PyDict_New());
     dict_set_int(ctx.get(), "rank", context.rank);
     dict_set_int(ctx.get(), "world_size", context.size);
+    dict_set_int(ctx.get(), "fortran_comm", context.fortran_comm);
+    PyDict_SetItemString(ctx.get(), "gathered",
+                         context.gathered ? Py_True : Py_False);
     dict_set_string(ctx.get(), "node_name", context.node_name);
     dict_set_int(ctx.get(), "nx", context.nx);
     dict_set_int(ctx.get(), "ny", context.ny);

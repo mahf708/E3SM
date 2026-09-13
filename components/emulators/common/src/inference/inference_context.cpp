@@ -73,6 +73,7 @@ InferenceContext make_context(int fcomm) {
 
   MPI_Comm_rank(comm, &context.rank);
   MPI_Comm_size(comm, &context.size);
+  context.fortran_comm = fcomm;
   context.node_name = hostname();
 
   return context;

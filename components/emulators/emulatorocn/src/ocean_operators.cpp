@@ -5,6 +5,8 @@
 
 #include "ocean_operators.hpp"
 
+#include <mpi.h>
+
 #include <algorithm>
 #include <stdexcept>
 
@@ -127,6 +129,23 @@ model::Declarations SshGradients::declarations() const {
 }
 
 void SshGradients::exports(const model::StepInfo &, model::Fields &f) {
+  // Recompute only when the SSH has changed on some rank: one collective
+  // flag instead of a gather and scatter of the whole grid every call.
+  const auto ssh_local = m_ssh.read(f);
+  int changed = m_have_slope && std::equal(ssh_local.begin(), ssh_local.end(),
+                                           m_ssh_local.begin(),
+                                           m_ssh_local.end())
+                    ? 0
+                    : 1;
+  int any_changed = 0;
+  MPI_Allreduce(&changed, &any_changed, 1, MPI_INT, MPI_MAX, m_geometry->comm);
+  if (any_changed == 0) {
+    auto dhdx = m_dhdx.write(f);
+    std::copy(m_dhdx_local.begin(), m_dhdx_local.end(), dhdx.begin());
+    auto dhdy = m_dhdy.write(f);
+    std::copy(m_dhdy_local.begin(), m_dhdy_local.end(), dhdy.begin());
+    return;
+  }
   const auto &gather = *m_geometry->gather;
   const bool root = gather.is_root();
   const std::size_t n = gather.num_global();
@@ -142,8 +161,13 @@ void SshGradients::exports(const model::StepInfo &, model::Fields &f) {
     const auto &g = *m_geometry->grid;
     ssh_gradients(ssh_global, g.lat, m_global_mask, g.nx, g.ny, dx, dy);
   }
-  gather.scatter(dx, m_dhdx.write(f));
-  gather.scatter(dy, m_dhdy.write(f));
+  auto dhdx = m_dhdx.write(f), dhdy = m_dhdy.write(f);
+  gather.scatter(dx, dhdx);
+  gather.scatter(dy, dhdy);
+  m_ssh_local.assign(ssh_local.begin(), ssh_local.end());
+  m_dhdx_local.assign(dhdx.begin(), dhdx.end());
+  m_dhdy_local.assign(dhdy.begin(), dhdy.end());
+  m_have_slope = true;
 }
 
 // ---------------------------------------------------------------------------
