@@ -280,6 +280,9 @@ void EmulatedModel::initialize(coupling::ModelTime start,
       }
       m_brackets.set_both(lower);
       m_brackets.advance(m_stepper->prediction());
+      for (auto &op : m_operators) {
+        op->after_step(info, f);
+      }
     } else {
       m_brackets.set_both(lower);
     }

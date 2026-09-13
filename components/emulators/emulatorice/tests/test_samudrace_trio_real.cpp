@@ -40,14 +40,7 @@ coupling::ModelTime after(int n) {
   return {20000101 + s / 86400, s % 86400};
 }
 
-} // namespace
-
-TEST_CASE("SamudrACE's atmosphere, ocean and sea ice run as three generic "
-          "components configured by their specs and input files",
-          "[samudrace][real]") {
-  int rank = 0, size = 1;
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  MPI_Comm_size(MPI_COMM_WORLD, &size);
+bool available() {
   int ok = 1;
 #ifndef EMULATOR_ENABLE_LIBTORCH
   ok = 0;
@@ -57,18 +50,29 @@ TEST_CASE("SamudrACE's atmosphere, ocean and sea ice run as three generic "
        std::filesystem::exists(kSamudraOcnModel) && torch::cuda::is_available();
 #endif
   MPI_Bcast(&ok, 1, MPI_INT, 0, MPI_COMM_WORLD);
-  if (!ok) {
-    WARN("skipped: needs libtorch, netCDF, a GPU and the SamudrACE files");
-    return;
+  if (ok) {
+    atm::register_atm_operators();
+    ocn::register_ocn_operators();
+    ice::register_ice_operators();
   }
-  atm::register_atm_operators();
-  ocn::register_ocn_operators();
-  ice::register_ice_operators();
+  return ok != 0;
+}
+
+/**
+ * The three components for five days (one ocean step), in the driver's
+ * order, with the atmosphere spec given.  The coupler's fractions for the
+ * atmosphere are the initial condition's, made a partition.  Returns the
+ * ocean's predicted SST, area-weighted over its mask.
+ */
+double run_trio(const std::string &atm_spec) {
+  int rank = 0, size = 1;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
   const int fcomm = MPI_Comm_c2f(MPI_COMM_WORLD);
   coupling::Exchange exchange;
 
   const TempFile atm_in("atm_in",
-      "spec: " + spec_path("samudrace-e3smv3-atmosphere.yaml") + "\n"
+      "spec: " + spec_path(atm_spec) + "\n"
       "coupler_dt: 1800\n"
       "grid: {file: " + kGaussianGrid + ", domain: full}\n"
       "initial_condition: " + kSamudraceAtmIc + "\n"
@@ -87,13 +91,11 @@ TEST_CASE("SamudrACE's atmosphere, ocean and sea ice run as three generic "
       "coupler_dt: 1800\n"
       "grid: {domain: shared, shared_from: ocn}\n");
 
-  // The driver's order: atm, then ocn, then ice.
   EmulatorComponent atm(EmulatorType::ATM_COMP, "emulatoratm", exchange);
   atm.create_instance(fcomm, 1, atm_in.path, "", 0, 20000101, 0);
   const auto n = static_cast<std::size_t>(atm.get_num_local_cols());
   AttrVect x2a(kX2a, n), a2x(kA2x, n), x2o(kX2o, n), o2x(kO2x, n),
            x2i(kX2i, n), i2x(kI2x, n);
-  // The coupler's fractions: the initial condition's, made a partition.
   {
     const auto ic = grid::read_grid_fields(
         kSamudraceAtmIc, {"LANDFRAC", "OCNFRAC", "ICEFRAC", "TS"}, 180, 360);
@@ -144,7 +146,7 @@ TEST_CASE("SamudrACE's atmosphere, ocean and sea ice run as three generic "
   }
   ocean_area = global_sum(ocean_area);
 
-  for (int step = 1; step <= 240; ++step) { // five days: one ocean step
+  for (int step = 1; step <= 240; ++step) {
     // The same grid for all three: the coupler's a2x -> x2i is a copy.
     for (std::size_t p = 0; p < n; ++p) {
       for (const auto &name : x2i.names) {
@@ -170,22 +172,45 @@ TEST_CASE("SamudrACE's atmosphere, ocean and sea ice run as three generic "
   ifrac = global_sum(ifrac) / ocean_area;
   fluxes = global_sum(fluxes);
   if (rank == 0) {
-    std::printf("  day 5 through three components: ocean SST %.6f K "
-                "(predicted, area-weighted); ice fraction %.4f; sensible "
-                "heat into the ice %.1f W/m2 (ice-weighted); %d ranks\n",
-                sst, ifrac, sen_ice, size);
+    std::printf("  %s, day 5: ocean SST %.6f K (predicted, area-weighted); "
+                "ice fraction %.4f; sensible heat into the ice %.1f W/m2 "
+                "(ice-weighted); %d ranks\n",
+                atm_spec.c_str(), sst, ifrac, sen_ice, size);
   }
   REQUIRE(ocean->clock().completed_steps() == 1);
   REQUIRE(fluxes == 44892.0); // the bulk scheme reached every ocean cell
-  // The model-level SamudrACE test's day 5 (test_samudrace_coupled_real),
-  // and this test's before the components became generic.
-  REQUIRE(sst == Approx(291.104738).margin(5e-7));
   REQUIRE(ifrac > 0.01);
   REQUIRE(ifrac < 0.2);
   REQUIRE(std::isfinite(sen_ice));
   atm.finalize();
   ocn.finalize();
   ice.finalize();
+  return sst;
+}
+
+} // namespace
+
+TEST_CASE("SamudrACE's atmosphere, ocean and sea ice run as three generic "
+          "components configured by their specs and input files",
+          "[samudrace][real]") {
+  if (!available()) {
+    WARN("skipped: needs libtorch, netCDF, a GPU and the SamudrACE files");
+    return;
+  }
+  // The model-level SamudrACE test's day 5 (test_samudrace_coupled_real),
+  // and this test's before the components became generic.
+  REQUIRE(run_trio("samudrace-e3smv3-atmosphere.yaml") ==
+          Approx(291.104738).margin(5e-7));
+}
+
+TEST_CASE("The atmosphere with fme's ocean-to-atmosphere exchange runs the "
+          "three components", "[samudrace][real]") {
+  if (!available()) {
+    WARN("skipped: needs libtorch, netCDF, a GPU and the SamudrACE files");
+    return;
+  }
+  const double sst = run_trio("samudrace-e3smv3-atmosphere-fme-surface.yaml");
+  REQUIRE(std::abs(sst - 291.04) < 1.0);
 }
 
 } // namespace test

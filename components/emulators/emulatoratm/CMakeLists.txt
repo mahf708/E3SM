@@ -5,6 +5,7 @@ add_library(emulatoratm
   src/ace_surface.cpp
   src/ace_surface_inputs.cpp
   src/ace_operators.cpp
+  src/samudrace_surface.cpp
   src/atm_factory.cpp
 )
 target_include_directories(emulatoratm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

@@ -64,7 +64,9 @@ operators:
     to: {dhdx: exports.So_dhdx, dhdy: exports.So_dhdy}
   # For the emulated atmosphere and the sea ice.
   - operator: exchange.publish
-    fields: {ocn.sst: exports.So_t, ocn.sea_ice_fraction: aux.sea_ice_fraction}
+    fields: {ocn.sst: exports.So_t, ocn.sea_ice_fraction: aux.sea_ice_fraction,
+             ocn.sst_raw: state.sst,
+             ocn.ice_mask: statics.mask_ocean_sea_ice_fraction}
 
 coupler:
   exports:

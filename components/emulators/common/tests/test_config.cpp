@@ -66,3 +66,49 @@ network:
 
 } // namespace test
 } // namespace emulator
+
+#include "emulator_test_support.hpp"
+
+#include <filesystem>
+#include <fstream>
+
+namespace emulator {
+namespace test {
+
+TEST_CASE("A spec that extends another merges maps and replaces lists",
+          "[config]") {
+  const auto dir = std::filesystem::temp_directory_path() /
+                   ("spec_extends_" + std::to_string(::getpid()));
+  std::filesystem::create_directories(dir);
+  std::ofstream(dir / "base.yaml") << R"(
+name: base
+network: {name: n, timestep: 60, inputs: [a, b], coupled_inputs: [a, b]}
+operators: [{operator: x}, {operator: y}]
+coupler: {imports: [{name: I, units: "1"}], exports: [{name: E, units: K}]}
+)";
+  std::ofstream(dir / "variant.yaml") << R"(
+extends: base.yaml
+name: variant
+network: {coupled_inputs: [b], boundary_inputs: [a]}
+operators: [{operator: z}]
+coupler: {imports: []}
+)";
+  const auto s = config::Section::load_spec((dir / "variant.yaml").string());
+  REQUIRE(s.string("name") == "variant");
+  REQUIRE_FALSE(s.has("extends"));
+  const auto net = s.section("network");
+  REQUIRE(net.names("inputs") == std::vector<std::string>{"a", "b"}); // kept
+  REQUIRE(net.names("coupled_inputs") == std::vector<std::string>{"b"});
+  REQUIRE(net.names("boundary_inputs") == std::vector<std::string>{"a"});
+  REQUIRE(net.integer("timestep") == 60);
+  REQUIRE(s.list("operators").size() == 1); // a list replaces
+  REQUIRE(s.section("coupler").list("imports").empty());
+  REQUIRE(s.section("coupler").list("exports").size() == 1);
+  std::error_code ignored;
+  std::filesystem::remove(dir / "base.yaml", ignored);
+  std::filesystem::remove(dir / "variant.yaml", ignored);
+  std::filesystem::remove(dir, ignored);
+}
+
+} // namespace test
+} // namespace emulator

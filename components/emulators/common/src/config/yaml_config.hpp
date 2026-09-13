@@ -33,8 +33,9 @@ public:
   static Section load_file(const std::string &path);
   /**
    * @brief Load a spec, following `extends: <file>`: the named file, relative
-   *        to this one, is loaded first and this file's top-level keys
-   *        replace its.  A variant spec then states only what differs.
+   *        to this one, is loaded first and this file is merged onto it.
+   *        Maps merge key by key, recursively; a list or scalar replaces the
+   *        base's.  A variant spec then states only what differs.
    */
   static Section load_spec(const std::string &path);
   /// Parse a string, for tests.  `name` stands in for the file name.

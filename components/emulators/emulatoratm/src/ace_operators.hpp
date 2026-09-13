@@ -81,7 +81,8 @@ private:
   std::map<std::string, model::FieldRef> m_to;
 };
 
-/// Registers ace.surface_inputs and ace.surface_exports.  Idempotent.
+/// Registers ace.surface_inputs, ace.surface_exports and
+/// samudrace.ocean_to_atmosphere.  Idempotent.
 void register_atm_operators();
 
 } // namespace atm

@@ -44,7 +44,8 @@ struct ModelInfo {
  *  - after_step():  after it stepped
  *  - exports():     every call, and for the initial exports
  * and initialize() once, after the initial condition is loaded and before
- * any network step.  Physics belongs in plain functions with their own
+ * any network step.  An interpolating model takes its first step at
+ * initialization, and calls after_step() after it.  Physics belongs in plain functions with their own
  * tests; an operator connects one to fields named in the spec.
  */
 class Operator {

@@ -5,6 +5,8 @@
 
 #include "ace_operators.hpp"
 
+#include "samudrace_surface.hpp"
+
 #include <stdexcept>
 
 namespace emulator {
@@ -162,6 +164,7 @@ void SurfaceExportsOperator::exports(const model::StepInfo &,
 }
 
 void register_atm_operators() {
+  register_samudrace_operators();
   auto &r = model::OperatorRegistry::instance();
   r.add("ace.surface_inputs",
         [](const config::Section &o, const model::ModelInfo &i) {

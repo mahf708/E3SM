@@ -1,0 +1,63 @@
+# The SamudrACE atmosphere with fme's own ocean-to-atmosphere exchange
+# (CoupledStepper with the checkpoint's OceanConfig and
+# ocean_fraction_prediction), instead of fractions merged by the coupler:
+#
+#  - LANDFRAC is static, the initial condition's (equal to fme's forcing
+#    file's), not what a stub land model leaves uncovered;
+#  - ICEFRAC = s (1 - L), OCNFRAC = max(1 - L - ICEFRAC, 0), each zero
+#    outside its mask;
+#  - TS = OCNFRAC SST + (1 - OCNFRAC) TS with the raw SST, blended into each
+#    step's output and again when the ocean's state changes.
+#
+# The coupler's surface fields are not read at all.
+
+extends: samudrace-e3smv3-atmosphere.yaml
+name: samudrace-atmosphere-fme-surface
+
+network:
+  coupled_inputs: [OCNFRAC, ICEFRAC, TS]
+  boundary_inputs: [PHIS, LANDFRAC]
+
+operators:
+  - operator: samudrace.ocean_to_atmosphere
+    land_fraction: inputs.LANDFRAC
+    ocean: {sst: exchange.ocn.sst_raw, ice_fraction: exchange.ocn.sea_ice_fraction,
+            ocean_mask: exchange.ocn.domain.mask, ice_mask: exchange.ocn.ice_mask}
+    predicted_ts: upper.TS
+    to: {ocnfrac: inputs.OCNFRAC, icefrac: inputs.ICEFRAC, ts: inputs.TS}
+  - operator: insolation
+    channel: SOLIN
+    orbit: {eccen: 0.016715, obliq: 23.4441, mvelp: 102.7}
+  - operator: ace.surface_exports
+    layer: near_surface
+    from: {ps: state.PS, phis: inputs.PHIS,
+           t_lowest: state.T_7, q_lowest: state.STW_7,
+           u_lowest: state.U_7, v_lowest: state.V_7,
+           t_2m: state.Tat2m, q_2m: state.Qat2m,
+           u_10m: state.Uat10m, v_10m: state.Vat10m,
+           flds: state.FLDS, fsds: state.FSDS, fsus: state.FSUS,
+           precip: state.surface_precipitation_rate,
+           frozen_precip: state.frozen_precipitation_rate,
+           solin_now: aux.solin_now, solin_window: aux.solin_window}
+    to: {z: exports.Sa_z, u: exports.Sa_u, v: exports.Sa_v,
+         tbot: exports.Sa_tbot, ptem: exports.Sa_ptem, shum: exports.Sa_shum,
+         pbot: exports.Sa_pbot, pslv: exports.Sa_pslv, dens: exports.Sa_dens,
+         topo: exports.Sa_topo, lwdn: exports.Faxa_lwdn,
+         rainc: exports.Faxa_rainc, rainl: exports.Faxa_rainl,
+         snowc: exports.Faxa_snowc, snowl: exports.Faxa_snowl,
+         swndr: exports.Faxa_swndr, swvdr: exports.Faxa_swvdr,
+         swndf: exports.Faxa_swndf, swvdf: exports.Faxa_swvdf,
+         swnet: exports.Faxa_swnet}
+  # SamudrACE: the ocean is forced with the atmosphere's own fluxes.
+  - operator: exchange.publish
+    fields: {atm.TAUX: state.TAUX, atm.TAUY: state.TAUY,
+             atm.surface_precipitation_rate: state.surface_precipitation_rate,
+             atm.frozen_precipitation_rate: state.frozen_precipitation_rate,
+             atm.FLUS: state.FLUS, atm.FSUS: state.FSUS,
+             atm.FLDS: state.FLDS, atm.FSDS: state.FSDS,
+             atm.LHFLX: state.LHFLX, atm.SHFLX: state.SHFLX}
+    clip_min_zero: [atm.surface_precipitation_rate,
+                    atm.frozen_precipitation_rate]
+
+coupler:
+  imports: []

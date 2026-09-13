@@ -62,6 +62,34 @@ Section Section::load_file(const std::string &path) {
   }
 }
 
+namespace {
+
+/// `overlay` onto `base`: maps merge key by key, recursively; anything else
+/// (a list, a scalar) replaces what was there.
+YAML::Node merged(const YAML::Node &base, const YAML::Node &overlay) {
+  if (!base.IsMap() || !overlay.IsMap()) {
+    return YAML::Clone(overlay);
+  }
+  // A fresh map, reading base and overlay only through const lookups: base
+  // keys in their order, then keys only the overlay has.
+  YAML::Node out(YAML::NodeType::Map);
+  for (const auto &kv : base) {
+    const auto key = kv.first.as<std::string>();
+    const YAML::Node over = overlay[key];
+    out[key] = over.IsDefined() ? merged(kv.second, over) : YAML::Clone(kv.second);
+  }
+  for (const auto &kv : overlay) {
+    const auto key = kv.first.as<std::string>();
+    const YAML::Node there = base[key];
+    if (!there.IsDefined()) {
+      out[key] = YAML::Clone(kv.second);
+    }
+  }
+  return out;
+}
+
+} // namespace
+
 Section Section::load_spec(const std::string &path) {
   auto self = load_file(path);
   if (!self.has("extends")) {
@@ -74,14 +102,9 @@ Section Section::load_spec(const std::string &path) {
           ? base_name
           : path.substr(0, slash + 1) + base_name;
   const auto base = load_spec(base_path);
-  YAML::Node merged = YAML::Clone(base.node());
-  for (const auto &kv : self.node()) {
-    const auto key = kv.first.as<std::string>();
-    if (key != "extends") {
-      merged[key] = YAML::Clone(kv.second);
-    }
-  }
-  return {merged, self.where()};
+  YAML::Node overlay = YAML::Clone(self.node());
+  overlay.remove("extends");
+  return {merged(base.node(), overlay), self.where()};
 }
 
 Section Section::load_string(const std::string &text, const std::string &name) {

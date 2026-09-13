@@ -35,3 +35,8 @@ add_executable(test_emulator_atm_real test_emulator_atm_real.cpp)
 target_link_libraries(test_emulator_atm_real PRIVATE emulatoratm Catch2)
 emulator_add_mpi_test(emulator_atm_real_tests test_emulator_atm_real)
 
+
+# SamudrACE's ocean-to-atmosphere exchange: fme's values and timing.
+add_executable(test_samudrace_surface test_samudrace_surface.cpp)
+target_link_libraries(test_samudrace_surface PRIVATE emulatoratm Catch2)
+emulator_add_mpi_test(samudrace_surface_tests test_samudrace_surface)
