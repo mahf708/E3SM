@@ -20,6 +20,7 @@ set(EMULATOR_COMMON_CXX_SOURCES
   physics/insolation.cpp
   model/model_fields.cpp
   model/emulated_model.cpp
+  model/history.cpp
   model/common_operators.cpp
   coupling/restart_store.cpp
   coupling/restart_file.cpp

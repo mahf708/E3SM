@@ -29,6 +29,7 @@ KNOWN = {
     "grid": {"file", "domain", "mask_variable", "publish_as", "shared_from"},
     "inference": {"backend", "model_path", "device", "dtype", "seed",
                   "jit_optimize", "num_threads"},
+    "history": {"prefix", "interval", "fields"},
 }
 
 
@@ -83,6 +84,10 @@ def write_input_file(case, caseroot, compname, class_name, settings):
                 merged[parts[0]] = value
             else:
                 merged.setdefault(parts[0], {})[parts[1]] = value
+        if "history" in merged:
+            # Named as the component's config_archive.xml expects.
+            merged["history"].setdefault("prefix", "{}.{}{}.h".format(
+                case.get_value("CASE"), compname, inst_string))
         filename = "{}_in{}".format(class_name, inst_string)
         path = os.path.join(confdir, filename)
         with open(path, "w", encoding="utf-8") as f:

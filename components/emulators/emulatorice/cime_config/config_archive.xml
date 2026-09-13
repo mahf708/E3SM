@@ -1,5 +1,6 @@
 <components version="2.0">
   <comp_archive_spec compname="emulatorice" compclass="ice">
+    <hist_file_extension>h\.\d{4}-\d{2}-\d{2}-\d{5}\.nc$</hist_file_extension>
     <rest_file_extension>r</rest_file_extension>
     <rest_history_varname>unset</rest_history_varname>
     <rpointer>

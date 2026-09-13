@@ -4,10 +4,17 @@
 
 #include "common_operators.hpp"
 #include "emulated_model.hpp"
+#include "grid_field_reader.hpp"
+#include "history.hpp"
+#include "restart_file.hpp"
 
 #include <mpi.h>
 
+#include <unistd.h>
+
 #include <cmath>
+#include <cstdio>
+#include <string>
 #include <memory>
 #include <vector>
 
@@ -328,6 +335,122 @@ TEST_CASE("A restart mid-interval continues exactly", "[model]") {
   run(7, 13, b, second);
   first.insert(first.end(), second.begin(), second.end());
   REQUIRE(first == continuous);
+}
+
+TEST_CASE("History writes each interval's mean on the grid, through repeated "
+          "calls and a restart", "[model][history]") {
+  if (!coupling::have_restart_files()) {
+    WARN("skipped: this build has no netCDF");
+    return;
+  }
+  register_test_operators();
+  World w;
+  const auto g = toy_grid();
+  const auto decomp =
+      grid::Decomposition::contiguous_blocks(g.size(), w.size, w.rank);
+  const auto n = decomp.num_local();
+  const auto spec =
+      ModelSpec::read(config::Section::load_string(kInterpolate, "toy.yaml"));
+  int pid = static_cast<int>(::getpid());
+  MPI_Bcast(&pid, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  const std::string tag = "history_test_" + std::to_string(pid);
+  auto options = [&](const std::string &prefix, const std::string &fields) {
+    return config::Section::load_string(
+        "interval: 2h\nprefix: " + prefix + "\nfields: " + fields + "\n",
+        "history");
+  };
+  auto net = std::make_shared<ToyNetwork>();
+  net->initialize();
+  auto make = [&](coupling::Exchange &ex) {
+    return std::make_unique<EmulatedModel>(
+        spec, 1800, Geometry::from_grid(MPI_COMM_WORLD, g, decomp),
+        w.rank == 0 ? net : nullptr, &ex);
+  };
+  fields::FieldSet imports(n), exports(n);
+
+  {
+    const auto geometry = Geometry::from_grid(MPI_COMM_WORLD, g, decomp);
+    // 2 h is not a whole number of 1700 s steps; "fortnightly" is no interval.
+    REQUIRE_THROWS(History(options(tag, "[state.X]"), geometry, kNx, kNy, 1700,
+                           "toy"));
+    REQUIRE_THROWS(History(config::Section::load_string(
+                               "interval: fortnightly\nfields: [state.X]\n",
+                               "history"),
+                           geometry, kNx, kNy, 1800, "toy"));
+  }
+
+  // Continuous: two 2-hour intervals of 4 steps, every call repeated.
+  const std::string a = tag + "_a", b = tag + "_b";
+  std::vector<double> mean_x(n, 0.0);
+  {
+    coupling::Exchange ex;
+    auto m = make(ex);
+    m->initialize({20000101, 0}, toy_ic());
+    History h(options(a, "[state.X, upper.X]"), m->geometry(), kNx, kNy, 1800,
+              "toy");
+    for (int s = 1; s <= 8; ++s) {
+      m->run(after(s, 1800), imports, exports);
+      h.after_step(after(s, 1800), m->view(imports, exports));
+      h.after_step(after(s, 1800), m->view(imports, exports));
+      for (std::size_t i = 0; s > 4 && i < n; ++i) {
+        mean_x[i] += m->state().get("X")[i];
+      }
+    }
+    REQUIRE(h.written() == std::vector<std::string>{
+                               a + ".2000-01-01-07200.nc",
+                               a + ".2000-01-01-14400.nc"});
+    REQUIRE(h.samples() == 0);
+  }
+  // Restarted at step 6, halfway through the second interval.
+  {
+    coupling::Exchange ex1, ex2;
+    auto m1 = make(ex1);
+    m1->initialize({20000101, 0}, toy_ic());
+    History h1(options(b, "[state.X, upper.X]"), m1->geometry(), kNx, kNy,
+               1800, "toy");
+    for (int s = 1; s <= 6; ++s) {
+      m1->run(after(s, 1800), imports, exports);
+      h1.after_step(after(s, 1800), m1->view(imports, exports));
+    }
+    coupling::MemoryRestartStore store;
+    m1->save_to(store);
+    h1.save_to(store);
+    auto m2 = make(ex2);
+    m2->restart(store, toy_ic());
+    History h2(options(b, "[state.X, upper.X]"), m2->geometry(), kNx, kNy,
+               1800, "toy");
+    REQUIRE(h2.load_from(store));
+    REQUIRE(h2.samples() == 2);
+    for (int s = 7; s <= 8; ++s) {
+      m2->run(after(s, 1800), imports, exports);
+      h2.after_step(after(s, 1800), m2->view(imports, exports));
+    }
+    REQUIRE(h2.written().size() == 1);
+    // A history whose fields the restart does not hold starts afresh.
+    History other(options(b, "[upper.X]"), m2->geometry(), kNx, kNy, 1800,
+                  "toy");
+    coupling::MemoryRestartStore empty;
+    REQUIRE_FALSE(other.load_from(empty));
+  }
+
+  const auto file_a = grid::read_grid_fields(a + ".2000-01-01-14400.nc",
+                                             {"state_X", "upper_X"}, kNy, kNx);
+  const auto file_b = grid::read_grid_fields(b + ".2000-01-01-14400.nc",
+                                             {"state_X", "upper_X"}, kNy, kNx);
+  REQUIRE(file_a[0].values == file_b[0].values);
+  REQUIRE(file_a[1].values == file_b[1].values);
+  for (std::size_t i = 0; i < n; ++i) {
+    REQUIRE(file_a[0].values[decomp.offset() + i] ==
+            Approx(mean_x[i] / 4.0).epsilon(1e-14));
+  }
+
+  MPI_Barrier(MPI_COMM_WORLD);
+  if (w.rank == 0) {
+    for (const auto &p : {a, b}) {
+      std::remove((p + ".2000-01-01-07200.nc").c_str());
+      std::remove((p + ".2000-01-01-14400.nc").c_str());
+    }
+  }
 }
 
 } // namespace test

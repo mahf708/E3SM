@@ -13,6 +13,7 @@
 #include "emulated_model.hpp"
 #include "emulator.hpp"
 #include "exchange.hpp"
+#include "history.hpp"
 #include "horizontal_grid.hpp"
 #include "yaml_config.hpp"
 
@@ -38,6 +39,9 @@ namespace emulator {
  *   model_path: samudra_ocn_traced_masked_cuda.pt
  *   device: cuda
  *   seed: 2026
+ * history:                  # optional: time means of fields (model::History)
+ *   interval: monthly
+ *   fields: [state.sst, exports.So_t]
  * ```
  *
  * With no input file (an empty path) the component is unconfigured: it has
@@ -67,6 +71,8 @@ public:
   void write_restart(const std::string &path) const override;
   /// The model, once initialized; null before, or when unconfigured.
   const model::EmulatedModel *model() const { return m_model.get(); }
+  /// Its history output, if the input file asks for one.
+  const model::History *history() const { return m_history.get(); }
 
 protected:
   CouplingFields coupling_fields() const override;
@@ -89,6 +95,7 @@ private:
   bool m_have_grid = false;
   grid::Decomposition m_decomp;
   std::unique_ptr<model::EmulatedModel> m_model;
+  std::unique_ptr<model::History> m_history;
 };
 
 } // namespace emulator

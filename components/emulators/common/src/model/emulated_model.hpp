@@ -126,6 +126,10 @@ public:
   const fields::FieldSet &statics() const { return m_statics; }
   const fields::FieldSet &state() const { return m_state; }
   const Geometry &geometry() const { return m_geometry; }
+  /// The model's fields as operators see them, for reading (history).
+  Fields view(const fields::FieldSet &imports, fields::FieldSet &exports) {
+    return fields_for(&imports, &exports);
+  }
 
 private:
   Fields fields_for(const fields::FieldSet *imports, fields::FieldSet *exports);

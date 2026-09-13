@@ -54,7 +54,8 @@ void EmulatorComponent::create_instance(int comm, int comp_id,
   m_input = std::make_unique<config::Section>(
       config::Section::load_file(input_file));
   const auto &in = *m_input;
-  in.only({"spec", "coupler_dt", "grid", "initial_condition", "inference"});
+  in.only({"spec", "coupler_dt", "grid", "initial_condition", "inference",
+           "history"});
   const auto parent = std::filesystem::path(input_file).parent_path().string();
   m_base_dir = parent;
   m_spec = std::make_unique<model::ModelSpec>(model::ModelSpec::read(
@@ -191,6 +192,11 @@ void EmulatorComponent::init_impl() {
         resolve(m_input->string("initial_condition"), m_base_dir), names,
         m_grid.ny, m_grid.nx);
   }
+  if (m_input->has("history")) {
+    m_history = std::make_unique<model::History>(
+        m_input->section("history"), m_model->geometry(), get_nx(), get_ny(),
+        m_coupler_dt, m_name);
+  }
   if (m_restart_file.empty()) {
     if (m_run_type != 0) {
       throw std::invalid_argument(
@@ -203,6 +209,9 @@ void EmulatorComponent::init_impl() {
     const auto &g = m_model->geometry();
     auto store = coupling::read_restart_file(m_restart_file, *g.gather, comm);
     m_model->restart(store, initial);
+    if (m_history) {
+      m_history->load_from(store);
+    }
   }
   if (is_coupled()) {
     m_model->initial_exports(start_time(), imports(), mutable_exports());
@@ -225,6 +234,9 @@ void EmulatorComponent::run_impl(int dt) {
                                 std::to_string(m_coupler_dt) + " s.");
   }
   m_model->run(now, imports(), mutable_exports());
+  if (m_history) {
+    m_history->after_step(now, m_model->view(imports(), mutable_exports()));
+  }
 }
 
 void EmulatorComponent::set_restart_file(const std::string &path) {
@@ -240,6 +252,9 @@ void EmulatorComponent::write_restart(const std::string &path) const {
   }
   coupling::MemoryRestartStore store;
   m_model->save_to(store);
+  if (m_history) {
+    m_history->save_to(store);
+  }
   const auto &g = m_model->geometry();
   const auto &clock = m_model->clock();
   write_restart_file(path, store, *g.gather, g.comm,
