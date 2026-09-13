@@ -5,10 +5,12 @@ set(EMULATOR_COMMON_CXX_SOURCES
   emulator.cpp
   emulator_c_api.cpp
   component_settings.cpp
+  config/yaml_config.cpp
   fields/field_list.cpp
   fields/field_set.cpp
   fields/mask_set.cpp
   fields/channel_layout.cpp
+  fields/channel_layout_yaml.cpp
   fields/coupler_binding.cpp
   grid/horizontal_grid.cpp
   grid/scrip_reader.cpp
@@ -75,7 +77,11 @@ target_include_directories(emulator_common PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/fields
   ${CMAKE_CURRENT_SOURCE_DIR}/grid
   ${CMAKE_CURRENT_SOURCE_DIR}/coupling
+  ${CMAKE_CURRENT_SOURCE_DIR}/config
 )
+target_link_libraries(emulator_common PUBLIC yaml-cpp::yaml-cpp)
+target_compile_definitions(emulator_common PUBLIC
+  EMULATOR_SPEC_DIR="${EMULATOR_SPEC_DIR}")
 
 target_include_directories(emulator_common PUBLIC
   ${CMAKE_CURRENT_BINARY_DIR}

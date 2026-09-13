@@ -29,6 +29,11 @@ add_executable(test_inference_context test_inference_context.cpp)
 target_link_libraries(test_inference_context PRIVATE emulator_common Catch2)
 add_test(NAME inference_context_tests COMMAND test_inference_context)
 
+# Specs and input files: YAML with errors that name the key
+add_executable(test_config test_config.cpp)
+target_link_libraries(test_config PRIVATE emulator_common Catch2)
+add_test(NAME config_tests COMMAND test_config)
+
 # Test for the component field layer: FieldList, FieldSet, CouplerBinding
 add_executable(test_fields test_fields.cpp)
 target_link_libraries(test_fields PRIVATE emulator_common Catch2)

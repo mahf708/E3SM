@@ -138,3 +138,22 @@ TEST_CASE("SSH slope: centred, periodic in longitude, one-sided at the poles, "
 } // namespace test
 } // namespace ocn
 } // namespace emulator
+
+#include "channel_layout_yaml.hpp"
+
+TEST_CASE("The Samudra spec file is the channel table", "[samudra][spec]") {
+  using namespace emulator;
+  const auto a = fields::read_channel_layout(
+      config::Section::load_file(std::string(EMULATOR_SPEC_DIR) +
+                                 "/samudra-e3smv3-ocean.yaml")
+          .section("network"));
+  const auto b = ocn::samudra_e3smv3();
+  REQUIRE(a.name == b.name);
+  REQUIRE(a.model_dt == b.model_dt);
+  REQUIRE(a.inputs == b.inputs);
+  REQUIRE(a.outputs == b.outputs);
+  REQUIRE(a.coupled_inputs == b.coupled_inputs);
+  REQUIRE(a.boundary_inputs == b.boundary_inputs);
+  REQUIRE(a.forcing_inputs == b.forcing_inputs);
+  REQUIRE(a.interval_mean_outputs == b.interval_mean_outputs);
+}

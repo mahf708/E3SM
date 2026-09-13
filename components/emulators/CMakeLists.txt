@@ -15,6 +15,28 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(STANDALONE_MODE ON CACHE BOOL "Standalone build (CXX only, no Fortran)" FORCE)
 endif()
 
+# yaml-cpp, for emulator specs and component input files, at the commit E3SM
+# pins for ekat (externals/ekat/cmake/tpls/EkatBuildYamlCpp.cmake).  In a case
+# that also builds EAMxx, ekat has already made the target.  Offline, point
+# FETCHCONTENT_SOURCE_DIR_YAML-CPP at a checkout of that commit.
+if(NOT TARGET yaml-cpp::yaml-cpp AND NOT TARGET yaml-cpp)
+  include(FetchContent)
+  set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+  set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+  set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(yaml-cpp
+    GIT_REPOSITORY https://github.com/e3sm-project/yaml-cpp.git
+    GIT_TAG        95088a0a2b6f2dec0b3e6e59020cdcc0d4f3c658)
+  FetchContent_MakeAvailable(yaml-cpp)
+endif()
+if(NOT TARGET yaml-cpp::yaml-cpp)
+  add_library(yaml-cpp::yaml-cpp ALIAS yaml-cpp)
+endif()
+
+# The specs that ship with the emulators (specs/*.yaml).
+set(EMULATOR_SPEC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/specs")
+
 # MPI is what turns InferenceContext from a serial stub into a real
 # description of the component's ranks.  Without it everything still builds
 # and the unit tests still run; the context just reports rank 0 of 1.

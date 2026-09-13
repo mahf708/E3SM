@@ -1,0 +1,21 @@
+# The atmosphere half of SamudrACE-E3SMv3, 1 degree Gaussian grid.
+# Channel order is the traced checkpoint's tensor order
+# (SamudrACE-E3SMv3/eatm/samudrace_atm_traced_cuda.pt and its _metadata.yaml).
+
+network:
+  name: SamudrACE-E3SMv3
+  timestep: 21600
+  inputs: [LANDFRAC, OCNFRAC, ICEFRAC, PHIS, SOLIN, PS, TS,
+           "T_{0..7}", "STW_{0..7}", "U_{0..7}", "V_{0..7}",
+           Qat2m, Uat10m, Vat10m, Tat2m]
+  outputs: [PS, TS, "T_{0..7}", "STW_{0..7}", "U_{0..7}", "V_{0..7}",
+            LHFLX, SHFLX, surface_precipitation_rate,
+            frozen_precipitation_rate, FLUS, FLUT, FLDS, FSDS, FSUS, FSUTOA,
+            DTENDTTW, TAUX, TAUY,
+            Qat2m, Uat10m, Vat10m, Tat2m]
+  interval_mean_outputs: [LHFLX, SHFLX, surface_precipitation_rate,
+                          frozen_precipitation_rate, FLUS, FLUT, FLDS, FSDS,
+                          FSUS, FSUTOA, DTENDTTW, TAUX, TAUY]
+  coupled_inputs: [LANDFRAC, OCNFRAC, ICEFRAC, TS]
+  boundary_inputs: [PHIS]
+  forcing_inputs: [SOLIN]

@@ -1,0 +1,25 @@
+# ACE2-EAMv3: the ACE2 atmosphere trained on EAMv3, 1 degree Gaussian grid.
+# Channel order is the traced checkpoint's tensor order
+# (ACE2-E3SMv3/ace_traced_cuda.pt).
+
+network:
+  name: ACE2-EAMv3
+  timestep: 21600
+  inputs: [LANDFRAC, OCNFRAC, ICEFRAC, PHIS, SOLIN, PS, TS,
+           "T_{0..7}", "specific_total_water_{0..7}", "U_{0..7}", "V_{0..7}"]
+  outputs: [PS, TS, "T_{0..7}", "specific_total_water_{0..7}",
+            "U_{0..7}", "V_{0..7}",
+            LHFLX, SHFLX, surface_precipitation_rate,
+            surface_upward_longwave_flux, FLUT, FLDS, FSDS,
+            surface_upward_shortwave_flux, top_of_atmos_upward_shortwave_flux,
+            tendency_of_total_water_path_due_to_advection]
+  interval_mean_outputs: [LHFLX, SHFLX, surface_precipitation_rate,
+                          surface_upward_longwave_flux, FLUT, FLDS, FSDS,
+                          surface_upward_shortwave_flux,
+                          top_of_atmos_upward_shortwave_flux,
+                          tendency_of_total_water_path_due_to_advection]
+  # The component owns the surface fractions and TS even though the network
+  # predicts TS; PHIS is fixed from the initial condition; SOLIN is computed.
+  coupled_inputs: [LANDFRAC, OCNFRAC, ICEFRAC, TS]
+  boundary_inputs: [PHIS]
+  forcing_inputs: [SOLIN]

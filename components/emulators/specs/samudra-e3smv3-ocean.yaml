@@ -1,0 +1,32 @@
+# The ocean half of SamudrACE-E3SMv3: Samudra, 5-day step, 19 levels, on the
+# atmosphere's 1 degree Gaussian grid.  Channel order is the masked traced
+# checkpoint's (SamudrACE-E3SMv3/eocn/samudra_ocn_traced_masked_cuda.pt):
+# the ten forcing channels appear twice, as the window's forcing and again as
+# ":next", both filled with the same window mean.
+
+network:
+  name: SamudrACE-E3SMv3-ocean
+  timestep: 432000
+  inputs: [LANDFRAC, sea_surface_fraction,
+           TAUX, TAUY, surface_precipitation_rate, frozen_precipitation_rate,
+           FLUS, FSUS, FLDS, FSDS, LHFLX, SHFLX,
+           sst, ssh,
+           "salinityCoarsened_{0..18}", "temperatureCoarsened_{0..18}",
+           "velocityZonalCoarsened_{0..18}",
+           "velocityMeridionalCoarsened_{0..18}",
+           ocean_sea_ice_fraction, iceVolumeTotal,
+           "TAUX:next", "TAUY:next", "surface_precipitation_rate:next",
+           "frozen_precipitation_rate:next", "FLUS:next", "FSUS:next",
+           "FLDS:next", "FSDS:next", "LHFLX:next", "SHFLX:next"]
+  outputs: [sst, ssh,
+            "salinityCoarsened_{0..18}", "temperatureCoarsened_{0..18}",
+            "velocityZonalCoarsened_{0..18}",
+            "velocityMeridionalCoarsened_{0..18}",
+            ocean_sea_ice_fraction, iceVolumeTotal]
+  boundary_inputs: [LANDFRAC, sea_surface_fraction]
+  forcing_inputs: [TAUX, TAUY, surface_precipitation_rate,
+                   frozen_precipitation_rate, FLUS, FSUS, FLDS, FSDS, LHFLX,
+                   SHFLX,
+                   "TAUX:next", "TAUY:next", "surface_precipitation_rate:next",
+                   "frozen_precipitation_rate:next", "FLUS:next", "FSUS:next",
+                   "FLDS:next", "FSDS:next", "LHFLX:next", "SHFLX:next"]

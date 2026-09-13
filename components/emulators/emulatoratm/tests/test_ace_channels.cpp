@@ -96,3 +96,35 @@ TEST_CASE("A layout with an input nothing sets is refused", "[channels]") {
 } // namespace test
 } // namespace atm
 } // namespace emulator
+
+#include "channel_layout_yaml.hpp"
+
+namespace emulator {
+namespace test {
+
+namespace {
+void require_same(const fields::ChannelLayout &a, const fields::ChannelLayout &b) {
+  REQUIRE(a.name == b.name);
+  REQUIRE(a.model_dt == b.model_dt);
+  REQUIRE(a.inputs == b.inputs);
+  REQUIRE(a.outputs == b.outputs);
+  REQUIRE(a.coupled_inputs == b.coupled_inputs);
+  REQUIRE(a.boundary_inputs == b.boundary_inputs);
+  REQUIRE(a.forcing_inputs == b.forcing_inputs);
+  REQUIRE(a.interval_mean_outputs == b.interval_mean_outputs);
+}
+fields::ChannelLayout spec(const char *file) {
+  return fields::read_channel_layout(
+      config::Section::load_file(std::string(EMULATOR_SPEC_DIR) + "/" + file)
+          .section("network"));
+}
+} // namespace
+
+TEST_CASE("The ACE spec files are the channel tables", "[ace][spec]") {
+  require_same(spec("ace2-eamv3.yaml"), atm::ace2_eamv3());
+  require_same(spec("samudrace-e3smv3-atmosphere.yaml"),
+               atm::samudrace_e3smv3());
+}
+
+} // namespace test
+} // namespace emulator
