@@ -16,11 +16,13 @@ module emulator_mct_cap
    use mct_mod
    use seq_cdata_mod,    only: seq_cdata, seq_cdata_setptrs
    use seq_infodata_mod, only: seq_infodata_type, seq_infodata_getdata
-   use seq_timemgr_mod,  only: seq_timemgr_EClockGetData
+   use seq_timemgr_mod,  only: seq_timemgr_EClockGetData, &
+                               seq_timemgr_RestartAlarmIsOn
    use seq_comm_mct,     only: seq_comm_suffix
    use shr_kind_mod,     only: IN=>SHR_KIND_IN, R8=>SHR_KIND_R8, &
                                CL=>SHR_KIND_CL
-   use shr_file_mod,     only: shr_file_getunit, shr_file_setIO, &
+   use shr_file_mod,     only: shr_file_getunit, shr_file_freeunit, &
+                               shr_file_setIO, &
                                shr_file_getLogUnit, shr_file_setLogUnit
    use shr_sys_mod,      only: shr_sys_flush, shr_sys_abort
    use iso_c_binding
@@ -55,6 +57,8 @@ module emulator_mct_cap
       integer           :: mpicom = -1
       integer           :: my_task = 0
       integer           :: logunit = 6
+      character(len=CL) :: case_name = ''
+      character(len=16) :: inst_suffix = ''
    end type emulator_cap
 
 contains
@@ -82,6 +86,7 @@ contains
       character(len=16) :: inst_suffix
       character(kind=c_char, len=256), target :: input_file_c, log_file_c
       character(len=256) :: log_file_f
+      character(len=CL) :: restart_file
       ! The coupler's field lists run to thousands of characters; a fixed
       ! len=256 buffer truncated them into short, plausible lists.
       character(kind=c_char), allocatable, target :: import_c(:), export_c(:)
@@ -92,8 +97,10 @@ contains
       cap%kind = kind
       call seq_cdata_setptrs(cdata, id=cap%comp_id, mpicom=cap%mpicom, &
          gsMap=gsMap, dom=dom, infodata=infodata)
-      call seq_infodata_getData(infodata, start_type=run_type)
+      call seq_infodata_getData(infodata, start_type=run_type, &
+         case_name=cap%case_name)
       inst_suffix = seq_comm_suffix(cap%comp_id)
+      cap%inst_suffix = inst_suffix
       call MPI_Comm_rank(cap%mpicom, cap%my_task, ierr)
 
       if (cap%my_task == master_task) then
@@ -161,6 +168,19 @@ contains
       cpl%field_size  = lsize
       call emulator_setup_coupling(cap%handle, cpl)
 
+      ! A continued or branched run restores from the file its rpointer
+      ! names, which the component reads on its whole grid at init.
+      if (run_type_c /= 0) then
+         call read_rpointer(cap, restart_file)
+         if (cap%my_task == master_task) then
+            write(cap%logunit,*) '(emulator'//kind//') restarting from ', &
+               trim(restart_file)
+            call shr_sys_flush(cap%logunit)
+         endif
+         call emulator_set_restart_file(cap%handle, &
+            trim(restart_file)//C_NULL_CHAR)
+      endif
+
       call emulator_init(cap%handle)
 
       if (cap%my_task == master_task) then
@@ -188,8 +208,64 @@ contains
       ! The driver's time, not a count: run can be called twice at one time.
       call emulator_run_at(cap%handle, int(dt,c_int), int(ymd,c_int), &
                            int(tod,c_int))
+      if (seq_timemgr_RestartAlarmIsOn(EClock)) then
+         call write_restart(cap, EClock)
+      endif
       call shr_file_setLogUnit(shrlogunit)
    end subroutine emulator_cap_run
+
+   !==========================================================================
+   subroutine write_restart(cap, EClock)
+      ! $CASE.emulator<kind>$NINST.r.YYYY-MM-DD-SSSSS.nc, as the component's
+      ! config_archive.xml expects, and its name in rpointer.<kind>$NINST.
+      type(emulator_cap), intent(in)    :: cap
+      type(ESMF_Clock),   intent(inout) :: EClock
+
+      integer :: yr, mon, day, tod, unit
+      character(len=CL) :: fname
+
+      call seq_timemgr_EClockGetData(EClock, curr_yr=yr, curr_mon=mon, &
+         curr_day=day, curr_tod=tod)
+      write(fname, '(a,".emulator",a,a,".r.",i4.4,"-",i2.2,"-",i2.2,"-",i5.5,".nc")') &
+         trim(cap%case_name), cap%kind, trim(cap%inst_suffix), yr, mon, day, tod
+      call emulator_write_restart(cap%handle, trim(fname)//C_NULL_CHAR)
+      if (cap%my_task == master_task) then
+         unit = shr_file_getunit()
+         open(unit, file='rpointer.'//cap%kind//trim(cap%inst_suffix), &
+              form='formatted', status='replace')
+         write(unit, '(a)') trim(fname)
+         close(unit)
+         call shr_file_freeUnit(unit)
+         write(cap%logunit,*) '(emulator'//cap%kind//') wrote ', trim(fname)
+         call shr_sys_flush(cap%logunit)
+      endif
+   end subroutine write_restart
+
+   !==========================================================================
+   subroutine read_rpointer(cap, restart_file)
+      type(emulator_cap), intent(in)  :: cap
+      character(len=*),   intent(out) :: restart_file
+
+      integer :: unit, ios
+      character(len=CL) :: rpointer
+
+      rpointer = 'rpointer.'//cap%kind//trim(cap%inst_suffix)
+      unit = shr_file_getunit()
+      open(unit, file=trim(rpointer), form='formatted', status='old', &
+           action='read', iostat=ios)
+      if (ios /= 0) then
+         call shr_sys_abort('(emulator_cap) cannot open '//trim(rpointer)// &
+            ' for a continue or branch run')
+      endif
+      read(unit, '(a)', iostat=ios) restart_file
+      close(unit)
+      call shr_file_freeUnit(unit)
+      if (ios /= 0 .or. len_trim(restart_file) == 0) then
+         call shr_sys_abort('(emulator_cap) '//trim(rpointer)// &
+            ' names no restart file')
+      endif
+      restart_file = adjustl(restart_file)
+   end subroutine read_rpointer
 
    !==========================================================================
    subroutine emulator_cap_final(cap)
