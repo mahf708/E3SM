@@ -230,25 +230,57 @@ cp $SRCROOT/cime_config/machines/cmake_macros/gnu.cmake cmake_macros/  # see bel
   not copy into the case.
 - The coupler history's `o2x` fields are one coupler step old: a held ocean
   state predicted for day 5k is in the history file for day 5(k+1).
-- 360 days on 4 ranks: 2.7 s per model day. SST RMSE against fme's `ref1yr`
-  from the identical initial condition: 0.26 K at day 5, 1.94 at day 125,
-  2.01 at day 355 (EOCN's Fortran trio recorded 1.82 and 2.01).
+- The defaults are fme's ocean-to-atmosphere exchange
+  (`samudrace-e3smv3-atmosphere-fme-surface.yaml`) and the trace with fme's
+  total energy budget correction. 360 days on 4 ranks, 2.7 s per model day.
+  SST RMSE against fme's `ref1yr` from the identical initial condition, seed
+  mean of two:
+
+  | surface | trace | day 5 | day 125 | day 355 |
+  |---|---|---|---|---|
+  | coupler (`samudrace-e3smv3-atmosphere.yaml`) | uncorrected | 0.27 | 1.97 | 2.05 |
+  | coupler | energy-corrected | 0.26 | 1.38 | 1.72 |
+  | fme | uncorrected | 0.25 | 1.93 | 2.09 |
+  | fme (default) | energy-corrected | 0.24 | 1.28 | 1.38 |
+
+  Seed spread is at most 0.07 K. fme's exchange helps only with the energy
+  correction in.
+
+### Restarts and history
+
+On the driver's restart alarm each cap writes
+`$CASE.emulator<kind>.r.YYYY-MM-DD-SSSSS.nc` and `rpointer.<kind>`. A continue
+or branch run reads the file its rpointer names; one without a restart file is
+refused. The file holds `EmulatedModel::save_to` (clock, brackets, aux,
+operator state) gathered onto the whole grid, so any number of ranks can read
+it. After a restart, the initial exports blend at the clock's position in the
+interval, so what the atmosphere publishes matches the continuous run. Ten days
+with a restart at day 5 give a day-10 coupler history identical in all 332
+variables.
+
+History is the input file's `history` section, set from `user_nl`:
+
+```
+history.interval: monthly            # or 5d, 6h
+history.fields: [state.TS, inputs.TS, state.PS, state.surface_precipitation_rate]
+```
+
+Each interval's mean over every coupler step goes to
+`$CASE.emulator<kind>.h.YYYY-MM-DD-SSSSS.nc` on (lat, lon), stamped with the
+interval's end. Cells outside the domain are filled. A name used by two sets
+is qualified (`state_TS`, `inputs_TS`), and partial means are restart state.
 
 ## Not done yet
 
-- No history output of the emulators' own fields, and no netCDF/SCORPIO
-  `RestartStore` or rpointer handling: restarts are tested in memory, and cases
-  run with `REST_OPTION=never`.
+- Restart and history files are serial netCDF written on the root, not
+  SCORPIO.
 - The caps do not pass the driver's orbital parameters; the spec's
   `insolation` operator has them.
-- The coupling differs from fme's in measured ways (tracker, audit 1): the
-  binary LANDFRAC a stub land gives the atmosphere, OCNFRAC/ICEFRAC not zeroed
-  outside their masks, TS blended at the input, and the SST floor. Each is to
-  be a spec or operator change, scored against `ref1yr` with two seeds.
-- The traced SamudrACE atmosphere skipped fme's total energy budget
-  correction; `samudrace_atm_traced_cuda_energy.pt` has it, not yet measured.
-- Inference runs on the root rank only, and backends are given a serial
-  `InferenceContext`.
+- The coupler-surface spec keeps the coupling that differs from fme's (tracker,
+  audit 1). The E3SM coupler's own merged fields and fluxes describe a coupling
+  the emulators do not use.
+- Inference runs on the root rank only, on the gathered grid; the backends get
+  the component's communicator but do not use it.
 - Model files, initial conditions and domain files are development paths on
   /pscratch, not in inputdata.
 - The ACE2 atmosphere alone (without the emulated ocean) has no compset yet.
