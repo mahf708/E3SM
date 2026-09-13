@@ -32,7 +32,7 @@
 
   <entry id="EMULATOROCN_MODEL_FILE">
     <type>char</type>
-    <default_value>/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/eocn/samudra_ocn_traced_masked_cuda.pt</default_value>
+    <default_value>/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/eocn/samudra_ocn_traced_masked_cuda_v2.pt</default_value>
     <group>run_component_emulatorocn</group>
     <file>env_run.xml</file>
     <desc>Traced TorchScript ocean (ocn_in model_path)</desc>

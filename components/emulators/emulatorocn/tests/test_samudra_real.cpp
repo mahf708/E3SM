@@ -31,7 +31,7 @@ namespace {
 const std::string kGrid = "/pscratch/sd/m/mahf708/eocn-inputdata/share/meshes/"
                           "gaussian_180x360_latlon_grnwst.scrip.20260913.nc";
 const std::string kModel = "/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/eocn/"
-                           "samudra_ocn_traced_masked_cuda.pt";
+                           "samudra_ocn_traced_masked_cuda_v2.pt";
 const std::string kIc = "/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/eocn/"
                         "samudra_ocn_ic_0_icemask.nc";
 
@@ -155,19 +155,18 @@ TEST_CASE("Samudra's first step, at the first window's close, reproduces an "
       REQUIRE(ocean.clock().completed_steps() == 1);
       // An independent reference: the same traced model and initial
       // condition, assembled and run from Python (tests/samudra_reference.py,
-      // torch 2.10, netCDF4) on an A100, 2026-09-12.
-      // emulator_comps/eocn/VERIFICATION.md section 1 records a different
-      // table for "the published initial condition" (sst 269.13-309.14, mean
-      // 286.76); it does not reproduce with samudra_ocn_traced_masked_cuda.pt
-      // and either published IC file, so it is not used here.
+      // torch 2.10, netCDF4) on an A100, 2026-09-13.  The v2 trace masks
+      // sea_surface_fraction as fme does (its land cells take the training
+      // mean); v1 passed the file's raw value there, which warmed day-5 SST
+      // by 0.24 K at 30-60 N (v1: sst 270.24 / 305.32 / 286.65).
       const std::map<std::string, Stats> recorded{
-          {"sst", {270.24, 305.32, 286.65}},
-          {"ssh", {-1.23, 0.86, -0.05}},
-          {"salinityCoarsened_0", {0.00, 49.28, 33.39}},
-          {"temperatureCoarsened_0", {-2.87, 32.10, 13.47}},
-          {"velocityZonalCoarsened_0", {-1.08, 1.09, 0.00}},
-          {"ocean_sea_ice_fraction", {0.00, 1.00, 0.28}},
-          {"iceVolumeTotal", {0.00, 50.31, 0.60}}};
+          {"sst", {270.19, 305.42, 286.57}},
+          {"ssh", {-1.22, 0.88, -0.05}},
+          {"salinityCoarsened_0", {0.00, 49.29, 33.36}},
+          {"temperatureCoarsened_0", {-2.92, 32.16, 13.40}},
+          {"velocityZonalCoarsened_0", {-1.07, 1.08, 0.00}},
+          {"ocean_sea_ice_fraction", {0.00, 1.00, 0.27}},
+          {"iceVolumeTotal", {0.00, 50.39, 0.58}}};
       for (const auto &[name, want] : recorded) {
         const auto got =
             over_mask(ocean.brackets().upper(name), ocean.statics().get("mask_2d"));

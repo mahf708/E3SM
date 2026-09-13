@@ -31,7 +31,7 @@ namespace {
 const std::string kGrid = "/pscratch/sd/m/mahf708/eocn-inputdata/share/meshes/"
                           "gaussian_180x360_latlon_grnwst.scrip.20260913.nc";
 const std::string kRoot = "/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/";
-const std::string kModel = kRoot + "eocn/samudra_ocn_traced_masked_cuda.pt";
+const std::string kModel = kRoot + "eocn/samudra_ocn_traced_masked_cuda_v2.pt";
 const std::string kIc = kRoot + "eocn/samudra_ocn_ic_0_icemask.nc";
 
 const std::string kX2o = "Foxx_taux:Foxx_tauy:Faxa_rain:Faxa_snow:Foxx_lwup:"

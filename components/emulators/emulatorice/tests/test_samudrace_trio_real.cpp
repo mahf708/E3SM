@@ -271,9 +271,10 @@ TEST_CASE("SamudrACE's atmosphere, ocean and sea ice run as three generic "
   }
   // The model-level SamudrACE test's day 5 (test_samudrace_coupled_real).
   // 291.104738 on the Greenwich-centred grid, whose insolation was half a
-  // degree west of the data's.
+  // degree west of the data's; 291.104761 with the v1 ocean trace, which left
+  // sea_surface_fraction unmasked on land (+0.08 K).
   REQUIRE(run_trio("samudrace-e3smv3-atmosphere.yaml") ==
-          Approx(291.104761).epsilon(0).margin(5e-7));
+          Approx(291.022110).epsilon(0).margin(5e-7));
 }
 
 TEST_CASE("The atmosphere with fme's ocean-to-atmosphere exchange runs the "
@@ -283,7 +284,7 @@ TEST_CASE("The atmosphere with fme's ocean-to-atmosphere exchange runs the "
     return;
   }
   const double sst = run_trio("samudrace-e3smv3-atmosphere-fme-surface.yaml");
-  REQUIRE(std::abs(sst - 291.04) < 1.0);
+  REQUIRE(std::abs(sst - 291.02) < 1.0);
 }
 
 TEST_CASE("The three components restarted from files mid-window continue "

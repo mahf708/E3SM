@@ -32,7 +32,7 @@ inline const std::string kSamudraceAtmModel =
     kSamudrace + "eatm/samudrace_atm_traced_cuda.pt";
 inline const std::string kSamudraceAtmIc = kSamudrace + "eatm/samudrace_atm_ic_0.nc";
 inline const std::string kSamudraOcnModel =
-    kSamudrace + "eocn/samudra_ocn_traced_masked_cuda.pt";
+    kSamudrace + "eocn/samudra_ocn_traced_masked_cuda_v2.pt";
 inline const std::string kSamudraOcnIc =
     kSamudrace + "eocn/samudra_ocn_ic_0_icemask.nc";
 inline const std::string kAce2Model =

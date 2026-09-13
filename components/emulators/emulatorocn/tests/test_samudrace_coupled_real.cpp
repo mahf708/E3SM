@@ -32,7 +32,7 @@ const std::string kGrid = "/pscratch/sd/m/mahf708/eocn-inputdata/share/meshes/"
 const std::string kRoot = "/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/";
 const std::string kAtmModel = kRoot + "eatm/samudrace_atm_traced_cuda.pt";
 const std::string kAtmIc = kRoot + "eatm/samudrace_atm_ic_0.nc";
-const std::string kOcnModel = kRoot + "eocn/samudra_ocn_traced_masked_cuda.pt";
+const std::string kOcnModel = kRoot + "eocn/samudra_ocn_traced_masked_cuda_v2.pt";
 const std::string kOcnIc = kRoot + "eocn/samudra_ocn_ic_0_icemask.nc";
 
 coupling::ModelTime after(int n) {
