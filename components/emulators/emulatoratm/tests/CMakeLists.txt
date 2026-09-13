@@ -38,3 +38,8 @@ emulator_add_mpi_test(ace_atmosphere_real_tests test_ace_atmosphere_real)
 add_executable(test_emulator_atm_real test_emulator_atm_real.cpp)
 target_link_libraries(test_emulator_atm_real PRIVATE emulatoratm Catch2)
 emulator_add_mpi_test(emulator_atm_real_tests test_emulator_atm_real)
+
+# The ACE2 spec against AceAtmosphere, bit for bit, on the real checkpoint.
+add_executable(test_ace_spec_equivalence_real test_ace_spec_equivalence_real.cpp)
+target_link_libraries(test_ace_spec_equivalence_real PRIVATE emulatoratm Catch2)
+emulator_add_mpi_test(ace_spec_equivalence_real_tests test_ace_spec_equivalence_real)
