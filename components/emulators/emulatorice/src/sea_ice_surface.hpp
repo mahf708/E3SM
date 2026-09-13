@@ -102,6 +102,50 @@ AtmIceFluxes atm_ice_fluxes(const AtmosphereAtIce &atm, double ts);
  */
 double prescribed_skin_temperature(double lat_deg, int ymd, int tod);
 
+/**
+ * @brief How the ice reports its surface temperature.
+ *
+ * Prescribed is dice's seasonal skin (prescribed_skin_temperature): enough
+ * for an emulated atmosphere, which never reads it.  A model atmosphere
+ * does, and a skin held at 254 K under 262 K air pulls 150-200 W/m2 of
+ * sensible heat out of its lowest level.  EnergyBalance solves for the skin
+ * at which the surface balances: absorbed shortwave, downwelling longwave,
+ * the bulk fluxes at that skin, and conduction from the ocean at freezing
+ * through `snow_depth` of snow on ice `thickness_north`/`_south` thick
+ * (2 m and 1 m, as CAM's prescribed ice), capped at melting.  No state: the
+ * pack has no heat capacity, so the skin follows the atmosphere each step.
+ */
+struct SkinOptions {
+  enum class Mode { Prescribed, EnergyBalance };
+  Mode mode = Mode::Prescribed;
+  double thickness_north = 2.0;           ///< m
+  double thickness_south = 1.0;           ///< m
+  double snow_depth = nominal_snow_depth; ///< m
+};
+
+/// Thermal conductivities, W/m/K (CICE's defaults).
+namespace conductivity {
+inline constexpr double ice = 2.03;
+inline constexpr double snow = 0.31;
+} // namespace conductivity
+
+/// The melting point of the ice surface, K.
+inline constexpr double tmelt = 273.15;
+
+/**
+ * @brief The skin temperature at which the surface balances:
+ *
+ *   sw_absorbed + lwdn + lwup(T) + sen(T) + lat(T) + C (T_freeze - T) = 0,
+ *
+ * with the fluxes of atm_ice_fluxes (positive downward) and C the snow and
+ * ice conductance, or tmelt if the surface would be warmer.  Newton's method
+ * safeguarded by bisection on [150 K, tmelt], to 1e-4 K.  Needs
+ * bulk_fluxes_defined(atm).
+ */
+double balanced_skin_temperature(const AtmosphereAtIce &atm,
+                                 double sw_absorbed, double lwdn,
+                                 double lat_deg, const SkinOptions &options);
+
 /// The x2i fields the sea ice reads.
 const std::vector<std::string> &sea_ice_import_names();
 /// The i2x fields the sea ice sets.  Si_snowh is not always in the coupler's
@@ -128,8 +172,9 @@ struct SeaIceCounts {
  *  - Si_ifrac: the ocean's fraction, clamped to [0, 1].  Si_ifrac is a share
  *    of the ice domain's frac, and the ocean's fraction a share of the
  *    non-land area: the same quantity, so a copy, not a conversion.
- *  - Si_t: prescribed_skin_temperature inside the domain, the freezing point
- *    of sea water outside it.
+ *  - Si_t: inside the domain, the skin `skin` says (prescribed, or the
+ *    balanced skin where there is ice and an atmosphere); the freezing point
+ *    of sea water outside it.  EnergyBalance also reads Faxa_lwdn.
  *  - albedos, and Faii_swnet from them and x2i's four shortwave bands.
  *  - Faii_* and Si_tref/Si_qref: the bulk fluxes where they are defined;
  *    elsewhere zero, with Si_tref = Si_t (dice writes spval, and 1e30 times a
@@ -146,7 +191,8 @@ struct SeaIceCounts {
 SeaIceCounts compute_sea_ice_exports(coupling::ModelTime now,
                                      const SeaIceCells &cells,
                                      const fields::FieldSet &imports,
-                                     fields::FieldSet &exports);
+                                     fields::FieldSet &exports,
+                                     const SkinOptions &skin = {});
 
 } // namespace ice
 } // namespace emulator

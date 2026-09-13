@@ -13,7 +13,11 @@
 
   <entry id="EMULATORICE_SPEC">
     <type>char</type>
-    <default_value>samudrace-e3smv3-sea-ice.yaml</default_value>
+    <default_value>samudra-e3smv3-sea-ice-energy-balance.yaml</default_value>
+    <values>
+      <!-- an emulated atmosphere never reads the ice skin -->
+      <value compset="EMULATORATM.*_EMULATORICE">samudrace-e3smv3-sea-ice.yaml</value>
+    </values>
     <group>run_component_emulatorice</group>
     <file>env_run.xml</file>
     <desc>Spec in components/emulators/specs describing the sea ice</desc>

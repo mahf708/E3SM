@@ -258,5 +258,59 @@ TEST_CASE("A non-finite export stops the run and names the field", "[ice]") {
       Catch::Contains("Faii_") && Catch::Contains("non-finite"));
 }
 
+TEST_CASE("The balanced skin closes the surface energy budget", "[ice]") {
+  const ice::SkinOptions o{ice::SkinOptions::Mode::EnergyBalance};
+  // Arctic winter night: 265 K air, 200 W/m2 down, no sun.
+  const double ts = ice::balanced_skin_temperature(kArctic, 0.0, 200.0, 80.0, o);
+  const auto f = ice::atm_ice_fluxes(kArctic, ts);
+  const double conductance = 1.0 / (2.0 / 2.03 + 0.2 / 0.31);
+  const double residual = 200.0 + f.lwup + f.sen + f.lat +
+                          conductance * (ice::constants::tkfrzsw - ts);
+  REQUIRE(std::abs(residual) < 1e-2);
+  // Colder than the air it radiates to space under, warmer than the
+  // prescribed 253 K of mid-January: a few W/m2 of sensible heat, not 150.
+  REQUIRE(ts < kArctic.tbot);
+  REQUIRE(ts > 240.0);
+  REQUIRE(std::abs(f.sen) < 60.0);
+}
+
+TEST_CASE("The balanced skin warms with the longwave and stops at melting",
+          "[ice]") {
+  const ice::SkinOptions o{ice::SkinOptions::Mode::EnergyBalance};
+  const double cold = ice::balanced_skin_temperature(kArctic, 0.0, 150.0, 80.0, o);
+  const double warm = ice::balanced_skin_temperature(kArctic, 0.0, 250.0, 80.0, o);
+  REQUIRE(warm > cold);
+  // Thinner southern ice conducts more of the ocean's heat to the skin.
+  REQUIRE(ice::balanced_skin_temperature(kArctic, 0.0, 150.0, -70.0, o) > cold);
+  // Summer: warm air and sun melt the surface.
+  const AtmosphereAtIce summer{10.0, 4.0, 1.0, 276.0, 4.0e-3, 1.27, 275.5};
+  REQUIRE(ice::balanced_skin_temperature(summer, 150.0, 300.0, 80.0, o) ==
+          ice::tmelt);
+}
+
+TEST_CASE("The energy-balance skin is used only where there is ice",
+          "[ice]") {
+  const std::vector<double> lat{75.0, 75.0}, mask{1.0, 1.0}, frac{0.0, 0.8};
+  auto imports = imports_for({kArctic, kArctic});
+  imports.add("Faxa_lwdn");
+  imports.get("Faxa_lwdn")[0] = imports.get("Faxa_lwdn")[1] = 200.0;
+  auto exports = all_exports(2);
+  ice::SkinOptions o;
+  o.mode = ice::SkinOptions::Mode::EnergyBalance;
+  ice::compute_sea_ice_exports({20000115, 0}, {lat, mask, frac}, imports,
+                               exports, o);
+  const auto t = exports.get("Si_t");
+  REQUIRE(t[0] == Approx(253.036).margin(0.001)); // no ice: prescribed
+  REQUIRE(t[1] == ice::balanced_skin_temperature(kArctic, 0.0, 200.0, 75.0, o));
+  REQUIRE(exports.get("Faii_lwup")[1] ==
+          Approx(-ice::constants::stebol * std::pow(t[1], 4)));
+  // Without the longwave it cannot balance, and says so.
+  const auto no_lwdn = imports_for({kArctic, kArctic});
+  REQUIRE_THROWS_WITH(ice::compute_sea_ice_exports({20000115, 0},
+                                                   {lat, mask, frac}, no_lwdn,
+                                                   exports, o),
+                      Catch::Contains("Faxa_lwdn"));
+}
+
 } // namespace test
 } // namespace emulator

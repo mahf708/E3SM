@@ -1,0 +1,30 @@
+# The Samudra ocean's sea ice under a model atmosphere.  The ocean emulator
+# still predicts the fraction; the surface over it balances its energy
+# instead of following dice's prescribed season, because a model atmosphere
+# reads the skin temperature and the prescribed one (254 K under 262 K air
+# in January) drew 150-200 W/m2 of sensible heat from EAM's lowest level.
+
+extends: samudrace-e3smv3-sea-ice.yaml
+name: samudra-sea-ice-energy-balance
+
+operators:
+  - operator: sea_ice.surface
+    ice_fraction: exchange.ocn.sea_ice_fraction
+    skin: energy_balance
+    ice_thickness: {north: 2.0, south: 1.0}
+    snow_depth: 0.2
+
+coupler:
+  imports:
+    - {name: Sa_z, units: m}
+    - {name: Sa_u, units: m/s}
+    - {name: Sa_v, units: m/s}
+    - {name: Sa_ptem, units: K}
+    - {name: Sa_shum, units: kg/kg}
+    - {name: Sa_dens, units: kg/m3}
+    - {name: Sa_tbot, units: K}
+    - {name: Faxa_swvdr, units: W/m2}
+    - {name: Faxa_swndr, units: W/m2}
+    - {name: Faxa_swvdf, units: W/m2}
+    - {name: Faxa_swndf, units: W/m2}
+    - {name: Faxa_lwdn, units: W/m2}

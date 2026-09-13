@@ -178,6 +178,64 @@ TEST_CASE("The sea ice reports the ocean's domain and ice through the "
   ice.finalize();
 }
 
+TEST_CASE("Under a model atmosphere the ice skin balances its energy",
+          "[ice]") {
+  int rank = 0, size = 1;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  const auto shared = six_by_three(rank, size);
+  const std::size_t n = shared.domain.size();
+  coupling::Exchange ex;
+  coupling::publish_domain(ex, "ocn", shared);
+  ex.publish("ocn.sea_ice_fraction", std::vector<double>(n, 0.5));
+
+  ice::register_ice_operators();
+  const TempFile ice_in(
+      "ice_in", "spec: " + spec_path("samudra-e3smv3-sea-ice-energy-balance.yaml") +
+                    "\ncoupler_dt: 1800\ngrid: {domain: shared, shared_from: ocn}\n");
+  EmulatorComponent ice(EmulatorType::ICE_COMP, "emulatorice", ex);
+  ice.create_instance(fcomm(), 5, ice_in.path, "", 0, 20000115, 0);
+  AttrVect x2i(kX2i, n), i2x(kI2x, n, -999.0);
+  std::fill(x2i.data.begin(), x2i.data.end(), 0.0);
+  ice.set_coupler_field_lists(kX2i, kI2x);
+  ice.setup_coupling(coupling(x2i, i2x, n));
+  ice.initialize(); // x2i all zero: no atmosphere, so the prescribed skin
+  for (std::size_t p = 0; p < n; ++p) {
+    REQUIRE(std::isfinite(i2x.at("Si_t", p)));
+  }
+
+  const ice::AtmosphereAtIce arctic{10.0, 5.0, 2.0, 265.3, 1.5e-3, 1.33, 265.0};
+  for (std::size_t p = 0; p < n; ++p) {
+    x2i.at("Sa_z", p) = arctic.z;
+    x2i.at("Sa_u", p) = arctic.u;
+    x2i.at("Sa_v", p) = arctic.v;
+    x2i.at("Sa_ptem", p) = arctic.ptem;
+    x2i.at("Sa_tbot", p) = arctic.tbot;
+    x2i.at("Sa_shum", p) = arctic.shum;
+    x2i.at("Sa_dens", p) = arctic.dens;
+    x2i.at("Faxa_lwdn", p) = 200.0;
+  }
+  ice.run(1800, {20000115, 1800});
+  ice::SkinOptions skin;
+  skin.mode = ice::SkinOptions::Mode::EnergyBalance;
+  for (std::size_t p = 0; p < n; ++p) {
+    const int c = shared.domain.global_ids[p] - 1;
+    INFO("cell " << c);
+    if (c == 6 || c == 7) {
+      REQUIRE(i2x.at("Si_t", p) == Approx(271.35));
+      continue;
+    }
+    const double want = ice::balanced_skin_temperature(
+        arctic, 0.0, 200.0, shared.domain.lat[p], skin);
+    REQUIRE(i2x.at("Si_t", p) == want);
+    // Not dice's January skin, and far less heat drawn from the air.
+    REQUIRE(std::abs(i2x.at("Si_t", p) -
+                     ice::prescribed_skin_temperature(shared.domain.lat[p],
+                                                      20000115, 1800)) > 1.0);
+  }
+  ice.finalize();
+}
+
 } // namespace test
 } // namespace emulator
 

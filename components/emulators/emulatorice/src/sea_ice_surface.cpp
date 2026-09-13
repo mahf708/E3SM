@@ -114,6 +114,49 @@ double prescribed_skin_temperature(double lat_deg, int ymd, int tod) {
   return lat_deg > 0.0 ? 260.0 + 10.0 * c : 260.0 - 10.0 * c;
 }
 
+double balanced_skin_temperature(const AtmosphereAtIce &atm,
+                                 double sw_absorbed, double lwdn,
+                                 double lat_deg, const SkinOptions &o) {
+  const double thickness = lat_deg > 0.0 ? o.thickness_north : o.thickness_south;
+  const double conductance =
+      1.0 / (thickness / conductivity::ice + o.snow_depth / conductivity::snow);
+  const auto residual = [&](double ts) {
+    const auto f = atm_ice_fluxes(atm, ts);
+    return sw_absorbed + lwdn + f.lwup + f.sen + f.lat +
+           conductance * (constants::tkfrzsw - ts);
+  };
+  // The residual falls as the skin warms: every term loses heat faster.
+  double hi = tmelt;
+  double r_hi = residual(hi);
+  if (r_hi >= 0.0) {
+    return tmelt; // melting: the excess goes into melt, which the ocean has
+  }
+  double lo = 150.0;
+  double r_lo = residual(lo);
+  if (r_lo <= 0.0) {
+    return lo;
+  }
+  double ts = std::clamp(atm.tbot, lo + 1.0, hi - 1.0);
+  for (int iteration = 0; iteration < 60; ++iteration) {
+    const double r = residual(ts);
+    if (r > 0.0) {
+      lo = ts;
+    } else {
+      hi = ts;
+    }
+    const double slope = (residual(ts + 1e-3) - r) / 1e-3;
+    double next = slope < 0.0 ? ts - r / slope : 0.5 * (lo + hi);
+    if (!(next > lo && next < hi)) {
+      next = 0.5 * (lo + hi);
+    }
+    if (std::abs(next - ts) < 1e-4 || hi - lo < 1e-4) {
+      return next;
+    }
+    ts = next;
+  }
+  return ts;
+}
+
 const std::vector<std::string> &sea_ice_import_names() {
   static const std::vector<std::string> names{
       "Sa_z",       "Sa_u",       "Sa_v",       "Sa_ptem",
@@ -135,7 +178,8 @@ const std::vector<std::string> &sea_ice_export_names() {
 SeaIceCounts compute_sea_ice_exports(coupling::ModelTime now,
                                      const SeaIceCells &cells,
                                      const fields::FieldSet &imports,
-                                     fields::FieldSet &exports) {
+                                     fields::FieldSet &exports,
+                                     const SkinOptions &skin) {
   const std::size_t n = cells.lat.size();
   if (cells.domain_mask.size() != n || cells.ice_fraction.size() != n ||
       imports.npoints() != n || exports.npoints() != n) {
@@ -170,32 +214,41 @@ SeaIceCounts compute_sea_ice_exports(coupling::ModelTime now,
              swndr = imports.get("Faxa_swndr"),
              swvdf = imports.get("Faxa_swvdf"),
              swndf = imports.get("Faxa_swndf");
+  const bool balance = skin.mode == SkinOptions::Mode::EnergyBalance;
+  if (balance && !imports.contains("Faxa_lwdn")) {
+    throw std::invalid_argument(
+        "compute_sea_ice_exports: the energy-balance skin needs Faxa_lwdn.");
+  }
+  const auto lwdn = balance ? imports.get("Faxa_lwdn") : std::span<const double>{};
 
   SeaIceCounts counts;
   for (std::size_t i = 0; i < n; ++i) {
     const bool in_domain = cells.domain_mask[i] == 1.0;
     const double fraction =
         in_domain ? std::clamp(cells.ice_fraction[i], 0.0, 1.0) : 0.0;
-    const double ts = in_domain
-                          ? prescribed_skin_temperature(cells.lat[i], now.ymd,
-                                                        now.tod)
-                          : constants::tkfrzsw;
+    double ts = in_domain
+                    ? prescribed_skin_temperature(cells.lat[i], now.ymd, now.tod)
+                    : constants::tkfrzsw;
     AtmIceFluxes f;
     f.tref = ts;
     double sw = 0.0;
     if (in_domain) {
       ++counts.domain;
       counts.with_ice += fraction > 0.0;
+      sw = (1.0 - albedo::vsdr) * swvdr[i] + (1.0 - albedo::nidr) * swndr[i] +
+           (1.0 - albedo::vsdf) * swvdf[i] + (1.0 - albedo::nidf) * swndf[i];
       const AtmosphereAtIce atm{z[i],    u[i],    v[i],   ptem[i],
                                 shum[i], dens[i], tbot[i]};
       if (bulk_fluxes_defined(atm)) {
+        if (balance && fraction > 0.0) {
+          ts = balanced_skin_temperature(atm, sw, lwdn[i], cells.lat[i], skin);
+        }
         f = atm_ice_fluxes(atm, ts);
         ++counts.fluxes;
       } else {
+        f.tref = ts;
         ++counts.no_atmosphere;
       }
-      sw = (1.0 - albedo::vsdr) * swvdr[i] + (1.0 - albedo::nidr) * swndr[i] +
-           (1.0 - albedo::vsdf) * swvdf[i] + (1.0 - albedo::nidf) * swndf[i];
     }
     put(ifrac, i, fraction);
     put(t, i, ts);

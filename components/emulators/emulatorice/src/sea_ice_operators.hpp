@@ -20,6 +20,9 @@ namespace ice {
  * ```yaml
  * - operator: sea_ice.surface
  *   ice_fraction: exchange.ocn.sea_ice_fraction
+ *   skin: prescribed            # or energy_balance (reads Faxa_lwdn)
+ *   ice_thickness: {north: 2.0, south: 1.0}   # m, energy_balance only
+ *   snow_depth: 0.2                           # m, energy_balance only
  * ```
  * Reads the sea_ice_import_names() imports; the domain mask and latitudes
  * are the component's.
@@ -33,6 +36,7 @@ public:
 private:
   const model::Geometry *m_geometry;
   model::FieldRef m_fraction;
+  SkinOptions m_skin;
 };
 
 /// Registers sea_ice.surface.  Idempotent.
