@@ -28,8 +28,8 @@ namespace test {
 
 namespace {
 
-const std::string kGrid = "/global/cfs/cdirs/e3sm/inputdata/share/meshes/"
-                          "gaussian_180x360_latlon.scrip.20260127.nc";
+const std::string kGrid = "/pscratch/sd/m/mahf708/eocn-inputdata/share/meshes/"
+                          "gaussian_180x360_latlon_grnwst.scrip.20260913.nc";
 const std::string kModel = "/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/eocn/"
                            "samudra_ocn_traced_masked_cuda.pt";
 const std::string kIc = "/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/eocn/"

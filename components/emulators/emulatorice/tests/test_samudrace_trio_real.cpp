@@ -269,10 +269,11 @@ TEST_CASE("SamudrACE's atmosphere, ocean and sea ice run as three generic "
     WARN("skipped: needs libtorch, netCDF, a GPU and the SamudrACE files");
     return;
   }
-  // The model-level SamudrACE test's day 5 (test_samudrace_coupled_real),
-  // and this test's before the components became generic.
+  // The model-level SamudrACE test's day 5 (test_samudrace_coupled_real).
+  // 291.104738 on the Greenwich-centred grid, whose insolation was half a
+  // degree west of the data's.
   REQUIRE(run_trio("samudrace-e3smv3-atmosphere.yaml") ==
-          Approx(291.104738).margin(5e-7));
+          Approx(291.104761).epsilon(0).margin(5e-7));
 }
 
 TEST_CASE("The atmosphere with fme's ocean-to-atmosphere exchange runs the "

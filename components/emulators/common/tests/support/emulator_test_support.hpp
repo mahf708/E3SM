@@ -25,8 +25,8 @@ namespace emulator {
 namespace test {
 
 inline const std::string kGaussianGrid =
-    "/global/cfs/cdirs/e3sm/inputdata/share/meshes/"
-    "gaussian_180x360_latlon.scrip.20260127.nc";
+    "/pscratch/sd/m/mahf708/eocn-inputdata/share/meshes/"
+    "gaussian_180x360_latlon_grnwst.scrip.20260913.nc";
 inline const std::string kSamudrace = "/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/";
 inline const std::string kSamudraceAtmModel =
     kSamudrace + "eatm/samudrace_atm_traced_cuda.pt";

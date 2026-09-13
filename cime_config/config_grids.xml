@@ -3057,8 +3057,8 @@
       <!-- The ocean mask is the Samudra initial condition's mask_2d, cell for
            cell (44,892 ocean cells).  Development copies, not yet in
            inputdata. -->
-      <file grid="atm|lnd" mask="gauss180x360">/pscratch/sd/m/mahf708/eocn-inputdata/share/domains/domain.lnd.gauss180x360_gauss180x360.20260822.nc</file>
-      <file grid="ice|ocn" mask="gauss180x360">/pscratch/sd/m/mahf708/eocn-inputdata/share/domains/domain.ocn.gauss180x360_gauss180x360.20260822.nc</file>
+      <file grid="atm|lnd" mask="gauss180x360">/pscratch/sd/m/mahf708/eocn-inputdata/share/domains/domain.lnd.gauss180x360_gauss180x360.20260913.nc</file>
+      <file grid="ice|ocn" mask="gauss180x360">/pscratch/sd/m/mahf708/eocn-inputdata/share/domains/domain.ocn.gauss180x360_gauss180x360.20260913.nc</file>
       <desc>gauss180x360 is the 180x360 Gaussian grid of the ACE and Samudra emulators</desc>
     </domain>
 
