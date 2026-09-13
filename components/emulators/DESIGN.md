@@ -5,6 +5,43 @@ emulators in `components/emulator_comps` (EATM, EOCN, EICE on
 `mahf708/eocn/add-samudra`) are the knowledge base: what they measured decides
 what is built here and how it is tested. Their code is not translated.
 
+## An emulator is a spec
+
+Everything that is a fact about a checkpoint or a coupling is YAML in
+`specs/`, written by hand and reviewed like a namelist. Everything that is
+numerics is shared, tested C++. A new emulator is a spec, plus operators only
+if it needs physics nobody has written yet.
+
+```yaml
+name: samudra-ocean
+network:                        # the checkpoint's tensor contract
+  name: SamudrACE-E3SMv3-ocean
+  timestep: 432000
+  inputs: [LANDFRAC, sea_surface_fraction, TAUX, ..., "salinityCoarsened_{0..18}", ...]
+  outputs: [sst, ssh, ...]
+  boundary_inputs: [LANDFRAC, sea_surface_fraction]
+  forcing_inputs: [TAUX, ...]
+stepping: window_close          # or interpolate (ACE)
+initial_condition: {strip_suffixes: [":next"]}
+operators:                      # applied in order; fields named by reference
+  - operator: exchange.window_mean
+    prefix: atm.
+    channels: [TAUX, TAUY, ...]
+  - operator: ocean.surface_exports
+    from: {sst: state.sst, ...}
+    to: {sst: exports.So_t, ...}
+coupler:
+  exports: [{name: So_t, units: K}, ...]
+```
+
+`extends: <file>` makes a variant that states only what differs
+(`samudra-e3smv3-ocean-coupler-forced.yaml`).
+
+A component's input file (`atm_in`, `ocn_in`, `ice_in`, YAML) names its spec
+and gives the case's paths: `coupler_dt`, the grid and domain (`full`,
+`ocean_mask`, or `shared` from another component), the initial condition, and
+the inference backend.
+
 ## Layers
 
 ```
@@ -15,28 +52,49 @@ what is built here and how it is tested. Their code is not translated.
  │                      common/src/emulator_mct_cap.F90            │  gsMap, domain, buffers, time: once
  ├────────────────────────────────────────────────────────────────┤
  │ C API                common/src/emulator_c_api.cpp              │  opaque handles; every call guarded
+ │                      emulator_create_{atm,ocn,ice}              │  each registers its library's operators
  ├────────────────────────────────────────────────────────────────┤
- │ Emulator base        common/src/include/emulator.hpp            │  lifecycle, domain, coupler exchange
- │ Components           emulatoratm/src/atm.cpp (EmulatorAtm)      │  configuration, owns the model below
- │                      emulatorocn/src/ocn.cpp (EmulatorOcn)      │
- │                      emulatorice/src/ice.cpp (EmulatorIce)      │
- │ Model logic          emulatoratm/src/ace_atmosphere.cpp         │  independent of MCT
- │                      emulatorocn/src/samudra_ocean.cpp          │
- │                      emulatorice/src/sea_ice_surface.cpp        │
+ │ Emulator base        common/src/emulator.hpp                    │  lifecycle, domain, coupler exchange
+ │ EmulatorComponent    common/src/emulator_component.cpp          │  input file, grid and domain, backend
+ │ EmulatedModel        common/src/model/emulated_model.cpp        │  spec: stepping, IC, operators
  ├────────────────────────────────────────────────────────────────┤
+ │ Operators            model/common_operators.cpp                 │  exchange.publish, exchange.window_mean,
+ │                                                                 │  insolation
+ │                      emulatoratm/src/ace_operators.cpp          │  ace.surface_inputs, ace.surface_exports
+ │                      emulatorocn/src/ocean_operators.cpp        │  ocean.surface_exports, ocean.ssh_gradients,
+ │                                                                 │  ocean.coupler_window_mean
+ │                      emulatorice/src/sea_ice_operators.cpp      │  sea_ice.surface
+ │ Physics              ace_surface*, ocean_forcing, sea_ice_surface, physics/insolation
+ ├────────────────────────────────────────────────────────────────┤
+ │ config/    Section (YAML with errors that name the key), extends │
  │ fields/    FieldList, FieldSet, CouplerBinding, MaskSet,         │
- │            ChannelLayout                                         │
+ │            ChannelLayout (+ read_channel_layout)                  │
  │ grid/      HorizontalGrid, Decomposition, Domain, read_scrip,    │
  │            GlobalGather, read_grid_fields                         │
  │ coupling/  LongStepClock, IntervalMean, BracketedState,          │
- │            RestartStore, NetworkStepper, Exchange, SharedDomain,  │
- │            julian_day_noleap                                      │
+ │            RestartStore, NetworkStepper, Exchange, SharedDomain   │
  │ inference/ Tensor, InferenceBackend: stub, python, libtorch       │
  └────────────────────────────────────────────────────────────────┘
 ```
 
-Dependencies point down only. Nothing under `common/` knows about a
-checkpoint, and no component knows how a backend runs a network.
+Dependencies point down only. Nothing under `common/` knows a checkpoint; an
+operator knows physics but not which fields it is applied to until the spec
+says.
+
+**Operators.** Hooks, called in spec order: `initialize` (after the initial
+condition loads), `sample` (first call at a model time), `before_step` and
+`after_step` (around a network step), `exports` (every call). Fields are
+references: `imports.`, `exports.`, `inputs.`, `state.` (blended or held
+outputs), `prediction.`, `upper.`, `aux.` (shared between operators, and
+restart state), `statics.` (read once from the initial condition),
+`exchange.`. A spec whose coupled or forcing input no operator sets is refused
+before the network is built.
+
+**Moving to specs changed no result.** The spec-driven model matched
+`AceAtmosphere` and `SamudraOcean` bit for bit in lockstep, through window
+closes, repeated driver calls and restarts, before they were removed; the real
+tests print what they printed before; a CIME case built from the specs
+reproduces the earlier 30-day coupler history in all 332 variables.
 
 ## Rules the code holds itself to
 
@@ -84,22 +142,22 @@ run, the commit says how many cases fail.
 | ML kernels raise benign FPEs | `FpeGuard`, compiled unconditionally | traps restored, flags cleared, guards nest |
 | A mask belongs to a channel (ice on the ocean mask froze tropics; 6.96 → 2.28 K) | `MaskSet`, `FieldSpec::mask` | ice channel reaches the coupler only inside its mask |
 | Ocean mask and frac must be binary for `seq_domain_mct` | `grid::Domain::masked` | a continuous fraction is refused |
-| The skeleton reported latitude 0 everywhere | `EmulatorAtm` reads `grid_file` | 4 ranks match the Gaussian SCRIP file cell for cell |
+| The skeleton reported latitude 0 everywhere | `EmulatorComponent` reads `grid.file` | 4 ranks match the Gaussian SCRIP file cell for cell |
 | Calendar arithmetic can't express a 5-day step; the driver repeats run | `LongStepClock` | 240 steps → one advance; repeats neither count nor advance |
 | Flux channels are interval means; one sample is not | `IntervalMean::add(FieldSet)` | a missing channel is an error and leaves the sums untouched |
 | Mean channels must be held, not interpolated (−42 W/m²) | `BracketedState::Temporal` | a mean channel is held at the upper bracket |
-| SOLIN is a window mean (330 W/m² RMS from instantaneous, same global mean; 14 W/m²) | `atm::Insolation::window_mean` | same global mean, RMS > 200; 48 sub-steps within 0.1 W/m² |
+| SOLIN is a window mean (330 W/m² RMS from instantaneous, same global mean; 14 W/m²) | `physics::Insolation::window_mean`, operator `insolation` | same global mean, RMS > 200; 48 sub-steps within 0.1 W/m² |
 | Stub land: `Sf_lfrac` 0, `Sx_t` 0 K over land (150 W/m²) | `atm::compute_surface_inputs` | stub-land cell gets LANDFRAC 0.3 and a real TS |
 | Near-surface state, humidity cap, frozen-precip units, diurnal shortwave | `atm::compute_surface_exports` | hand-computed cases per formula |
 | A fill value of 9.97e36 passes a finiteness check | `grid::read_grid_fields` counts fill-like values | NaN and _FillValue counted separately |
 | One NaN in a global network spreads everywhere | `NetworkStepper` checks every output; verdict broadcast | NaN step raises on all 8 ranks, channel and cell named |
 | Feed the raw prediction back, not the blended export | `NetworkStepper` step 5 | prognostic inputs equal the prediction |
 | Coupler ocean fluxes are open-water weighted; unweighting kept FSDS/FLDS within 3% (−22%/−28% without) | `ocn::coupler_forcing_sample` | hand-computed unweighting, 1% floor, signs |
-| Ocean forcing is the mean over the 5-day window that just closed | `SamudraOcean` + `IntervalMean` | window close at step 240; restart mid-window exact over 200 steps |
-| SamudrACE's timing (found here, from fme's `CoupledStepper`): the ocean steps at a window's close on that window's mean and holds its state; EOCN stepped at init and interpolated, the forcing a window late (day-5 SST RMSE vs `ref1yr` 0.375 → 0.263 K) | `SamudraOcean::run`, `compute_exports` | exports hold the IC through window 1; the step-240 prediction matches the Python run |
+| Ocean forcing is the mean over the 5-day window that just closed | `exchange.window_mean` / `ocean.coupler_window_mean` | window close at step 240; restart mid-window exact over 200 steps |
+| SamudrACE's timing (found here, from fme's `CoupledStepper`): the ocean steps at a window's close on that window's mean and holds its state; EOCN stepped at init and interpolated, the forcing a window late (day-5 SST RMSE vs `ref1yr` 0.375 → 0.263 K) | `stepping: window_close` | exports hold the IC through window 1; the step-240 prediction matches the Python run |
 | The atmosphere emulator's own fluxes drive the ocean (SamudrACE); its SST feeds back | `coupling::Exchange` | real SamudrACE atmosphere + ocean, 10 coupled days, identical on 1 and 4 ranks |
-| The coupler needs ice the ocean already predicts; with no ice component the polar ocean is open water (EICE) | `EmulatorIce` reports `ocn.sea_ice_fraction` | real ocean + ice through MCT buffers: ice reports the ocean's previous-step fraction exactly, 48/48 steps, 1 and 4 ranks |
-| The ice grid must be the ocean's, and a mismatched decomposition must fail, not mis-index | `coupling::publish_domain` / `shared_domain`; collective check in `EmulatorIce::create_instance` | no ocean → error on every rank; too few ranks → "18 of the ocean's 36" |
+| The coupler needs ice the ocean already predicts; with no ice component the polar ocean is open water (EICE) | `sea_ice.surface` reports `exchange.ocn.sea_ice_fraction` | real ocean + ice through MCT buffers: ice reports the ocean's previous-step fraction exactly, 48/48 steps, 1 and 4 ranks |
+| The ice grid must be the ocean's, and a mismatched decomposition must fail, not mis-index | `grid.domain: shared`; collective check in `EmulatorComponent` | no ocean → error on every rank; too few ranks → "18 of ocn's 36" |
 | `Si_t` blended by `ifrac` is weighted twice by the merge | `ice::prescribed_skin_temperature`, unblended | 1% and 95% ice cells report one skin; mutation fails 2 of 9 cases |
 | At init `x2i` is zero; the bulk scheme then makes NaN, which survives the merge and killed EAM's first step | `ice::bulk_fluxes_defined`; zero, not `spval`, where skipped | zero state → finite exports, `Si_tref = Si_t` |
 | The ocean emulator's step contains its ice's melt; handing it over again double-counts | `Fioi_melth/meltw/salt/swpen` zero; `Fioi_taux/y` = atmosphere-ice stress | melt zero, stress passed through; mutation fails 1 case |
@@ -153,10 +211,10 @@ cmake -S . -B build-full -DCMAKE_BUILD_TYPE=Release -DBUILD_EMULATOR_TESTS=ON \
 ## In a CIME case
 
 Compset `EMU2000-SAMUDRACE` on `gauss180x360_gauss180x360` (identity maps).
-Each component's `buildnml` writes its `key: value` input file from case
-variables (`EMULATOR{ATM,OCN}_{GRID,MODEL,IC}_FILE`, `_EMULATOR`, `_DEVICE`),
-merges `user_nl_<component>` lines of the same form, and refuses keys the
-component does not read. LibTorch is built in when `Torch_ROOT` is set (pm-gpu
+Each component's `buildnml` writes its YAML input file from case variables
+(`EMULATOR{ATM,OCN,ICE}_SPEC`, `EMULATOR{ATM,OCN}_{GRID,MODEL,IC}_FILE`,
+`_DEVICE`), merges `user_nl_<component>` lines with dotted keys
+(`inference.seed: 2027`), and refuses keys the component does not read. LibTorch is built in when `Torch_ROOT` is set (pm-gpu
 `gnugpu` sets it). On pm-gpu:
 
 ```bash
@@ -181,7 +239,16 @@ cp $SRCROOT/cime_config/machines/cmake_macros/gnu.cmake cmake_macros/  # see bel
 - No history output of the emulators' own fields, and no netCDF/SCORPIO
   `RestartStore` or rpointer handling: restarts are tested in memory, and cases
   run with `REST_OPTION=never`.
-- The caps do not pass the driver's orbital parameters; `atm_in` does.
+- The caps do not pass the driver's orbital parameters; the spec's
+  `insolation` operator has them.
+- The coupling differs from fme's in measured ways (tracker, audit 1): the
+  binary LANDFRAC a stub land gives the atmosphere, OCNFRAC/ICEFRAC not zeroed
+  outside their masks, TS blended at the input, and the SST floor. Each is to
+  be a spec or operator change, scored against `ref1yr` with two seeds.
+- The traced SamudrACE atmosphere skipped fme's total energy budget
+  correction; `samudrace_atm_traced_cuda_energy.pt` has it, not yet measured.
+- Inference runs on the root rank only, and backends are given a serial
+  `InferenceContext`.
 - Model files, initial conditions and domain files are development paths on
   /pscratch, not in inputdata.
 - The ACE2 atmosphere alone (without the emulated ocean) has no compset yet.
