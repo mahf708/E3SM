@@ -62,6 +62,28 @@ Section Section::load_file(const std::string &path) {
   }
 }
 
+Section Section::load_spec(const std::string &path) {
+  auto self = load_file(path);
+  if (!self.has("extends")) {
+    return self;
+  }
+  const auto base_name = self.string("extends");
+  const auto slash = path.find_last_of('/');
+  const auto base_path =
+      base_name.front() == '/' || slash == std::string::npos
+          ? base_name
+          : path.substr(0, slash + 1) + base_name;
+  const auto base = load_spec(base_path);
+  YAML::Node merged = YAML::Clone(base.node());
+  for (const auto &kv : self.node()) {
+    const auto key = kv.first.as<std::string>();
+    if (key != "extends") {
+      merged[key] = YAML::Clone(kv.second);
+    }
+  }
+  return {merged, self.where()};
+}
+
 Section Section::load_string(const std::string &text, const std::string &name) {
   try {
     return {YAML::Load(text), name + ": "};

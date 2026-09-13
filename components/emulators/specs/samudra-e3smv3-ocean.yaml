@@ -4,6 +4,8 @@
 # the ten forcing channels appear twice, as the window's forcing and again as
 # ":next", both filled with the same window mean.
 
+name: samudra-ocean
+
 network:
   name: SamudrACE-E3SMv3-ocean
   timestep: 432000
@@ -30,3 +32,46 @@ network:
                    "TAUX:next", "TAUY:next", "surface_precipitation_rate:next",
                    "frozen_precipitation_rate:next", "FLUS:next", "FSUS:next",
                    "FLDS:next", "FSDS:next", "LHFLX:next", "SHFLX:next"]
+
+stepping: window_close
+initial_condition:
+  strip_suffixes: [":next"]   # the forcing's next copy starts as the forcing
+
+operators:
+  # SamudrACE: forced with the emulated atmosphere's own fluxes, averaged over
+  # the 5-day window and used when it closes.
+  - operator: exchange.window_mean
+    prefix: atm.
+    channels: [TAUX, TAUY, surface_precipitation_rate, frozen_precipitation_rate,
+               FLUS, FSUS, FLDS, FSDS, LHFLX, SHFLX]
+    also_into_suffix: ":next"
+    clip_min_zero: [surface_precipitation_rate, frozen_precipitation_rate]
+  - operator: ocean.surface_exports
+    freezing_sst: 271.35        # sea water, shr_const_tkfrzsw
+    land_salinity: 34.7
+    ocean_mask: statics.mask_2d
+    ice_mask: statics.mask_ocean_sea_ice_fraction
+    from: {sst: state.sst, salinity: state.salinityCoarsened_0,
+           u: state.velocityZonalCoarsened_0,
+           v: state.velocityMeridionalCoarsened_0, ssh: state.ssh,
+           ice_fraction: state.ocean_sea_ice_fraction}
+    to: {sst: exports.So_t, salinity: exports.So_s, u: exports.So_u,
+         v: exports.So_v, ssh: exports.So_ssh,
+         ice_fraction: aux.sea_ice_fraction}
+  - operator: ocean.ssh_gradients
+    ssh: exports.So_ssh
+    mask: statics.mask_2d
+    to: {dhdx: exports.So_dhdx, dhdy: exports.So_dhdy}
+  # For the emulated atmosphere and the sea ice.
+  - operator: exchange.publish
+    fields: {ocn.sst: exports.So_t, ocn.sea_ice_fraction: aux.sea_ice_fraction}
+
+coupler:
+  exports:
+    - {name: So_t, units: K}
+    - {name: So_s, units: g/kg}
+    - {name: So_u, units: m/s}
+    - {name: So_v, units: m/s}
+    - {name: So_ssh, units: m}
+    - {name: So_dhdx, units: m/m}
+    - {name: So_dhdy, units: m/m}

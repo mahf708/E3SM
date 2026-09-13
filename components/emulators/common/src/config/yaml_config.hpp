@@ -31,6 +31,12 @@ public:
 
   /// Load a whole file.  @throws std::runtime_error naming the file
   static Section load_file(const std::string &path);
+  /**
+   * @brief Load a spec, following `extends: <file>`: the named file, relative
+   *        to this one, is loaded first and this file's top-level keys
+   *        replace its.  A variant spec then states only what differs.
+   */
+  static Section load_spec(const std::string &path);
   /// Parse a string, for tests.  `name` stands in for the file name.
   static Section load_string(const std::string &text, const std::string &name);
 

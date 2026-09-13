@@ -5,6 +5,7 @@ add_library(emulatorocn
   src/samudra_channels.cpp
   src/ocean_forcing.cpp
   src/samudra_ocean.cpp
+  src/ocean_operators.cpp
   src/ocn.cpp
   src/ocn_factory.cpp
 )

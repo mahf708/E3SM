@@ -1,0 +1,56 @@
+# Samudra under a model atmosphere: forced with the coupler's merged fluxes
+# instead of an emulated atmosphere's own.  Everything else is the SamudrACE
+# ocean's.
+
+extends: samudra-e3smv3-ocean.yaml
+name: samudra-ocean-coupler-forced
+
+operators:
+  - operator: ocean.coupler_window_mean
+    channels: [TAUX, TAUY, surface_precipitation_rate, frozen_precipitation_rate,
+               FLUS, FSUS, FLDS, FSDS, LHFLX, SHFLX]
+    also_into_suffix: ":next"
+    clip_min_zero: [surface_precipitation_rate, frozen_precipitation_rate]
+    unweight_by_ice_fraction: true
+    unweight_stress: false
+    ocean_albedo: 0.06
+  - operator: ocean.surface_exports
+    freezing_sst: 271.35        # sea water, shr_const_tkfrzsw
+    land_salinity: 34.7
+    ocean_mask: statics.mask_2d
+    ice_mask: statics.mask_ocean_sea_ice_fraction
+    from: {sst: state.sst, salinity: state.salinityCoarsened_0,
+           u: state.velocityZonalCoarsened_0,
+           v: state.velocityMeridionalCoarsened_0, ssh: state.ssh,
+           ice_fraction: state.ocean_sea_ice_fraction}
+    to: {sst: exports.So_t, salinity: exports.So_s, u: exports.So_u,
+         v: exports.So_v, ssh: exports.So_ssh,
+         ice_fraction: aux.sea_ice_fraction}
+  - operator: ocean.ssh_gradients
+    ssh: exports.So_ssh
+    mask: statics.mask_2d
+    to: {dhdx: exports.So_dhdx, dhdy: exports.So_dhdy}
+  # For the emulated atmosphere and the sea ice.
+  - operator: exchange.publish
+    fields: {ocn.sst: exports.So_t, ocn.sea_ice_fraction: aux.sea_ice_fraction}
+
+coupler:
+  imports:
+    - {name: Foxx_taux, units: N/m2}
+    - {name: Foxx_tauy, units: N/m2}
+    - {name: Faxa_rain, units: kg/m2/s}
+    - {name: Faxa_snow, units: kg/m2/s}
+    - {name: Foxx_lwup, units: W/m2}
+    - {name: Faxa_lwdn, units: W/m2}
+    - {name: Foxx_swnet, units: W/m2}
+    - {name: Foxx_lat, units: W/m2}
+    - {name: Foxx_sen, units: W/m2}
+    - {name: Si_ifrac, units: "1"}
+  exports:
+    - {name: So_t, units: K}
+    - {name: So_s, units: g/kg}
+    - {name: So_u, units: m/s}
+    - {name: So_v, units: m/s}
+    - {name: So_ssh, units: m}
+    - {name: So_dhdx, units: m/m}
+    - {name: So_dhdy, units: m/m}
