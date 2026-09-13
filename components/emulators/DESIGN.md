@@ -11,13 +11,14 @@ what is built here and how it is tested. Their code is not translated.
  MCT driver
    │  x2c / c2x attribute vectors, EClock, infodata
  ┌─┴──────────────────────────────────────────────────────────────┐
- │ Fortran cap          emulatoratm/src/atm_comp_mct.F90           │  thin: gsMap, domain, buffers, time
+ │ Fortran caps         {atm,ocn,ice}_comp_mct.F90                 │  entry points, field lists, infodata
+ │                      common/src/emulator_mct_cap.F90            │  gsMap, domain, buffers, time: once
  ├────────────────────────────────────────────────────────────────┤
  │ C API                common/src/emulator_c_api.cpp              │  opaque handles; every call guarded
  ├────────────────────────────────────────────────────────────────┤
  │ Emulator base        common/src/include/emulator.hpp            │  lifecycle, domain, coupler exchange
  │ Components           emulatoratm/src/atm.cpp (EmulatorAtm)      │  configuration, owns the model below
- │                      emulatorocn/src/ocn.cpp (EmulatorOcn)      │  (ocean and ice: no caps yet)
+ │                      emulatorocn/src/ocn.cpp (EmulatorOcn)      │
  │                      emulatorice/src/ice.cpp (EmulatorIce)      │
  │ Model logic          emulatoratm/src/ace_atmosphere.cpp         │  independent of MCT
  │                      emulatorocn/src/samudra_ocean.cpp          │
@@ -58,6 +59,14 @@ what the C++ coupler API on `emulators/coupler-infrastructure` carries in its
 (`RegistryAdapter`, commit 7804eaf455 on `mahf708/emulators/coupled-emulators`)
 and can come here when that API merges; no component storage changes.
 
+**Each component library creates its own component.** `emulator_create_atm`,
+`_ocn` and `_ice` live in their libraries and each cap passes its own creator
+to `emulator_mct_cap`. One `emulator_create` in three libraries would not link,
+or would bind the ocean's cap to the atmosphere's factory; a shared module
+naming all three fails to link from `emulator_common`, which comes after the
+component libraries. `emulator_create(kind)` in `emulator_driver` dispatches
+for tools and tests.
+
 **Time is the driver's.** `emulator_run_at(handle, dt, ymd, tod)` passes the
 clock through. `LongStepClock` takes one call per coupler step, and a second call
 at the same model time changes nothing: it neither advances nor counts. Its
@@ -87,6 +96,7 @@ run, the commit says how many cases fail.
 | Feed the raw prediction back, not the blended export | `NetworkStepper` step 5 | prognostic inputs equal the prediction |
 | Coupler ocean fluxes are open-water weighted; unweighting kept FSDS/FLDS within 3% (−22%/−28% without) | `ocn::coupler_forcing_sample` | hand-computed unweighting, 1% floor, signs |
 | Ocean forcing is the mean over the 5-day window that just closed | `SamudraOcean` + `IntervalMean` | window close at step 240; restart mid-window exact over 200 steps |
+| SamudrACE's timing (found here, from fme's `CoupledStepper`): the ocean steps at a window's close on that window's mean and holds its state; EOCN stepped at init and interpolated, the forcing a window late (day-5 SST RMSE vs `ref1yr` 0.375 → 0.263 K) | `SamudraOcean::run`, `compute_exports` | exports hold the IC through window 1; the step-240 prediction matches the Python run |
 | The atmosphere emulator's own fluxes drive the ocean (SamudrACE); its SST feeds back | `coupling::Exchange` | real SamudrACE atmosphere + ocean, 10 coupled days, identical on 1 and 4 ranks |
 | The coupler needs ice the ocean already predicts; with no ice component the polar ocean is open water (EICE) | `EmulatorIce` reports `ocn.sea_ice_fraction` | real ocean + ice through MCT buffers: ice reports the ocean's previous-step fraction exactly, 48/48 steps, 1 and 4 ranks |
 | The ice grid must be the ocean's, and a mismatched decomposition must fail, not mis-index | `coupling::publish_domain` / `shared_domain`; collective check in `EmulatorIce::create_instance` | no ocean → error on every rank; too few ranks → "18 of the ocean's 36" |
@@ -140,20 +150,40 @@ cmake -S . -B build-full -DCMAKE_BUILD_TYPE=Release -DBUILD_EMULATOR_TESTS=ON \
   inside `if (rank == 0)` hangs the job, with the root in `Allreduce` and the
   others in `Gatherv`.
 
+## In a CIME case
+
+Compset `EMU2000-SAMUDRACE` on `gauss180x360_gauss180x360` (identity maps).
+Each component's `buildnml` writes its `key: value` input file from case
+variables (`EMULATOR{ATM,OCN}_{GRID,MODEL,IC}_FILE`, `_EMULATOR`, `_DEVICE`),
+merges `user_nl_<component>` lines of the same form, and refuses keys the
+component does not read. LibTorch is built in when `Torch_ROOT` is set (pm-gpu
+`gnugpu` sets it). On pm-gpu:
+
+```bash
+./create_newcase --case emu-trio --compset EMU2000-SAMUDRACE \
+  --res gauss180x360_gauss180x360 --mach pm-gpu --compiler gnugpu
+./xmlchange COMP_INTERFACE=mct,NTASKS=4,ATM_NCPL=48,OCN_NCPL=48,ICE_NCPL=48
+./xmlchange RUN_STARTDATE=0425-01-03,START_TOD=43200   # ref1yr's start
+./case.setup
+cp $SRCROOT/cime_config/machines/cmake_macros/gnu.cmake cmake_macros/  # see below
+```
+
+- Master's `gnugpu.cmake` includes `gnu.cmake` (PR #8652), which this CIME does
+  not copy into the case.
+- The coupler history's `o2x` fields are one coupler step old: a held ocean
+  state predicted for day 5k is in the history file for day 5(k+1).
+- 360 days on 4 ranks: 2.7 s per model day. SST RMSE against fme's `ref1yr`
+  from the identical initial condition: 0.26 K at day 5, 1.94 at day 125,
+  2.01 at day 355 (EOCN's Fortran trio recorded 1.82 and 2.01).
+
 ## Not done yet
 
-- The atmosphere cap is edited but not compiled; the first CIME case is its test.
-  The cap should pass the driver's orbital parameters; they come from `atm_in`
-  for now.
-- No netCDF/SCORPIO `RestartStore` and no rpointer handling; restarts are tested
-  in memory.
-- The ocean and sea ice have components but no MCT caps or CIME files yet.
-  The ocean's first prediction matches an independent Python run of the real
-  checkpoint. (`emulator_comps/eocn/VERIFICATION.md` §1's table does not
-  reproduce with the published files and is not used.)
-- `EmulatorAtm` does not yet configure the exchange (`surface_from_ocean`,
-  `publish_ocean_forcing`) from `atm_in`; the in-process SamudrACE test sets
-  them on `AceAtmosphere` directly.
-- Then a coupled run against the one-year reference in `SamudrACE-E3SMv3/ref1yr`.
+- No history output of the emulators' own fields, and no netCDF/SCORPIO
+  `RestartStore` or rpointer handling: restarts are tested in memory, and cases
+  run with `REST_OPTION=never`.
+- The caps do not pass the driver's orbital parameters; `atm_in` does.
+- Model files, initial conditions and domain files are development paths on
+  /pscratch, not in inputdata.
+- The ACE2 atmosphere alone (without the emulated ocean) has no compset yet.
 - The C++ coupler API adapter waits for `emulators/coupler-infrastructure` to
   merge.
