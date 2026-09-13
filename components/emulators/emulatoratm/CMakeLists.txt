@@ -6,7 +6,6 @@ add_library(emulatoratm
   src/ace_channels.cpp
   src/ace_surface.cpp
   src/ace_surface_inputs.cpp
-  src/insolation.cpp
   src/ace_atmosphere.cpp
   src/atm_factory.cpp
 )

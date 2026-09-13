@@ -5,7 +5,7 @@
  *        (ace_compute_solin on mahf708/eocn/add-samudra).
  */
 
-#include "insolation.hpp"
+#include "physics/insolation.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -14,7 +14,7 @@
 #include <string>
 
 namespace emulator {
-namespace atm {
+namespace physics {
 
 namespace {
 
@@ -120,5 +120,5 @@ void Insolation::window_mean(int ymd, int tod, int dt_seconds,
   }
 }
 
-} // namespace atm
+} // namespace physics
 } // namespace emulator

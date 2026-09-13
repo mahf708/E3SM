@@ -17,6 +17,10 @@ set(EMULATOR_COMMON_CXX_SOURCES
   grid/global_gather.cpp
   grid/grid_field_reader.cpp
   coupling/calendar.cpp
+  physics/insolation.cpp
+  model/model_fields.cpp
+  model/emulated_model.cpp
+  model/common_operators.cpp
   coupling/restart_store.cpp
   coupling/long_step_clock.cpp
   coupling/interval_state.cpp
@@ -78,6 +82,7 @@ target_include_directories(emulator_common PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/grid
   ${CMAKE_CURRENT_SOURCE_DIR}/coupling
   ${CMAKE_CURRENT_SOURCE_DIR}/config
+  ${CMAKE_CURRENT_SOURCE_DIR}/model
 )
 target_link_libraries(emulator_common PUBLIC yaml-cpp::yaml-cpp)
 target_compile_definitions(emulator_common PUBLIC

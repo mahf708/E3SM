@@ -34,6 +34,11 @@ add_executable(test_config test_config.cpp)
 target_link_libraries(test_config PRIVATE emulator_common Catch2)
 add_test(NAME config_tests COMMAND test_config)
 
+# The spec-driven model and the common operators, with a toy network
+add_executable(test_emulated_model test_emulated_model.cpp)
+target_link_libraries(test_emulated_model PRIVATE emulator_common Catch2)
+emulator_add_mpi_test(emulated_model_tests test_emulated_model)
+
 # Test for the component field layer: FieldList, FieldSet, CouplerBinding
 add_executable(test_fields test_fields.cpp)
 target_link_libraries(test_fields PRIVATE emulator_common Catch2)
