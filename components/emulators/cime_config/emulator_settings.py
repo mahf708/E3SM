@@ -33,9 +33,35 @@ KNOWN = {
 }
 
 
-def spec_path(case, name):
+def source_specs(case):
     return os.path.join(case.get_value("SRCROOT"), "components", "emulators",
-                        "specs", name)
+                        "specs")
+
+
+def built_specs(case):
+    return os.path.join(case.get_value("EXEROOT"), "emulators", "specs")
+
+
+def snapshot_specs(case):
+    """Copy the specs into EXEROOT at case.build.
+
+    A spec names operators and keys the executable must understand, so a
+    built case reads the specs it was built with: a spec edited in the source
+    tree afterwards (a new operator key, say) would otherwise stop a
+    continue run of an older executable at initialization.
+    """
+    src, dst = source_specs(case), built_specs(case)
+    os.makedirs(dst, exist_ok=True)
+    for name in os.listdir(src):
+        if name.endswith(".yaml"):
+            safe_copy(os.path.join(src, name), os.path.join(dst, name))
+
+
+def spec_path(case, name):
+    """The built snapshot's spec once the case is built, the source's before."""
+    built = os.path.join(built_specs(case), name)
+    return built if os.path.isfile(built) else os.path.join(source_specs(case),
+                                                            name)
 
 
 def read_user_settings(caseroot, compname, inst_string):
