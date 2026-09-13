@@ -23,4 +23,12 @@
     <support_level>Experimental, under development</support_level>
   </compset>
 
+  <!-- The same under 1850 forcing: SamudrACE-E3SMv3 was trained on E3SMv3's
+       preindustrial control, so this is the atmosphere its ocean knows. -->
+  <compset>
+    <alias>F1850-EMU-SAMUDRA</alias>
+    <lname>1850_EAM%CMIP6_ELM%SPBC_EMULATORICE_EMULATOROCN_SROF_SGLC_SWAV</lname>
+    <support_level>Experimental, under development</support_level>
+  </compset>
+
 </compsets>
