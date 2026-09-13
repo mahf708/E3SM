@@ -7,6 +7,7 @@
 #define E3SM_EMULATOR_COMPONENT_FACTORY_HPP
 
 #include "emulator.hpp"
+#include "emulator_component.hpp"
 #include "emulator_c_api.hpp"
 
 #include <mpi.h>
@@ -28,9 +29,10 @@ namespace emulator {
  * fail; the caller is Fortran, so an error is reported and the job aborted
  * rather than unwound.
  */
-template <typename Component>
-void *create_component(const char *kind, const EmulatorCreateConfig *cfg) {
-  auto component = std::make_unique<Component>();
+template <typename Make>
+void *create_component(const char *kind, const EmulatorCreateConfig *cfg,
+                       Make make) {
+  auto component = make();
   try {
     component->create_instance(cfg->f_comm, cfg->comp_id,
                                cfg->input_file ? cfg->input_file : "",

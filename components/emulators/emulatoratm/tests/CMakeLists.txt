@@ -1,9 +1,5 @@
 # EmulatorAtm tests
 
-add_executable(test_emulator_atm test_emulator_atm.cpp)
-target_link_libraries(test_emulator_atm PRIVATE emulatoratm Catch2)
-
-emulator_add_mpi_test(emulator_atm_tests test_emulator_atm)
 
 add_executable(test_ace_channels test_ace_channels.cpp)
 target_link_libraries(test_ace_channels PRIVATE emulatoratm Catch2)
@@ -27,19 +23,15 @@ add_executable(test_ace_real_model test_ace_real_model.cpp)
 target_link_libraries(test_ace_real_model PRIVATE emulatoratm Catch2)
 emulator_add_mpi_test(ace_real_model_tests test_ace_real_model)
 
-# AceAtmosphere with the real checkpoint: a coupled day, and a mid-interval
+# The ACE2 spec with the real checkpoint: a coupled day, and a mid-interval
 # restart that must match it bit for bit.  Skips where the files, netCDF,
 # libtorch or a GPU are missing.
 add_executable(test_ace_atmosphere_real test_ace_atmosphere_real.cpp)
 target_link_libraries(test_ace_atmosphere_real PRIVATE emulatoratm Catch2)
 emulator_add_mpi_test(ace_atmosphere_real_tests test_ace_atmosphere_real)
 
-# EmulatorAtm with the real checkpoint, through MCT-laid-out buffers.
+# The ACE2 spec as a component with the real checkpoint, through MCT-laid-out buffers.
 add_executable(test_emulator_atm_real test_emulator_atm_real.cpp)
 target_link_libraries(test_emulator_atm_real PRIVATE emulatoratm Catch2)
 emulator_add_mpi_test(emulator_atm_real_tests test_emulator_atm_real)
 
-# The ACE2 spec against AceAtmosphere, bit for bit, on the real checkpoint.
-add_executable(test_ace_spec_equivalence_real test_ace_spec_equivalence_real.cpp)
-target_link_libraries(test_ace_spec_equivalence_real PRIVATE emulatoratm Catch2)
-emulator_add_mpi_test(ace_spec_equivalence_real_tests test_ace_spec_equivalence_real)

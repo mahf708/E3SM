@@ -11,6 +11,14 @@
      <desc>Name of sea ice component</desc>
   </entry>
 
+  <entry id="EMULATORICE_SPEC">
+    <type>char</type>
+    <default_value>samudrace-e3smv3-sea-ice.yaml</default_value>
+    <group>run_component_emulatorice</group>
+    <file>env_run.xml</file>
+    <desc>Spec in components/emulators/specs describing the sea ice</desc>
+  </entry>
+
   <description>
     <desc compset="_EMULATORICE">EMULATORICE: the emulated ocean's sea ice, reported to the coupler</desc>
   </description>

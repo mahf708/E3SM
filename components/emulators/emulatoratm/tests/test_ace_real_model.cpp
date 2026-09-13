@@ -2,7 +2,8 @@
 #define CATCH_CONFIG_RUNNER
 #include <catch2/catch.hpp>
 
-#include "ace_channels.hpp"
+#include "emulated_model.hpp"
+#include "emulator_test_support.hpp"
 #include "create_inference_backend.hpp"
 #include "global_gather.hpp"
 #include "grid_field_reader.hpp"
@@ -86,7 +87,9 @@ TEST_CASE("The traced ACE2-EAMv3 checkpoint steps a day from its initial "
     return;
   }
 
-  const auto layout = ace2_eamv3();
+  const auto spec = model::ModelSpec::read(config::Section::load_spec(
+      emulator::test::spec_path("ace2-eamv3.yaml")));
+  const auto layout = *spec.layout;
   const auto g = grid::read_scrip(kGrid);
   const auto decomp = grid::Decomposition::contiguous_blocks(g.size(), size,
                                                              rank);

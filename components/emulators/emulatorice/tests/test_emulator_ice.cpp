@@ -2,7 +2,9 @@
 #define CATCH_CONFIG_RUNNER
 #include <catch2/catch.hpp>
 
-#include "ice.hpp"
+#include "emulator_component.hpp"
+#include "emulator_test_support.hpp"
+#include "sea_ice_operators.hpp"
 
 #include <mpi.h>
 
@@ -26,27 +28,10 @@ const std::string kI2x =
     "Faii_sen:Faii_lwup:Faii_evap:Faii_swnet:Fioi_swpen:Fioi_melth:"
     "Fioi_meltw:Fioi_salt:Fioi_bcphi";
 
-struct AttrVect {
-  std::vector<std::string> names;
-  std::vector<double> data;
-  AttrVect(const std::string &list, std::size_t np) {
-    std::size_t start = 0;
-    while (true) {
-      const auto colon = list.find(':', start);
-      names.push_back(list.substr(start, colon - start));
-      if (colon == std::string::npos) {
-        break;
-      }
-      start = colon + 1;
-    }
-    data.assign(names.size() * np, -999.0);
-  }
-  double &at(const std::string &n, std::size_t p) {
-    const auto row = static_cast<std::size_t>(
-        std::find(names.begin(), names.end(), n) - names.begin());
-    return data[p * names.size() + row];
-  }
-};
+std::string ice_in_text() {
+  return "spec: " + spec_path("samudrace-e3smv3-sea-ice.yaml") +
+         "\ncoupler_dt: 1800\ngrid: {domain: shared, shared_from: ocn}\n";
+}
 
 int fcomm() { return MPI_Comm_c2f(MPI_COMM_WORLD); }
 
@@ -75,13 +60,14 @@ coupling::SharedDomain six_by_three(int rank, int size) {
 
 } // namespace
 
-TEST_CASE("The sea ice refuses to run without the emulated ocean",
+TEST_CASE("The sea ice refuses to run without the emulated ocean's domain",
           "[ice]") {
   coupling::Exchange empty;
-  EmulatorIce ice(empty);
+  const TempFile ice_in("ice_in", ice_in_text());
+  EmulatorComponent ice(EmulatorType::ICE_COMP, "emulatorice", empty);
   REQUIRE_THROWS_WITH(
-      ice.create_instance(fcomm(), 5, "", "", 0, 20000101, 0),
-      Catch::Contains("emulatorocn") && Catch::Contains("NTASKS_ICE"));
+      ice.create_instance(fcomm(), 5, ice_in.path, "", 0, 20000101, 0),
+      Catch::Contains("no domain from 'ocn'") && Catch::Contains("NTASKS"));
   REQUIRE_FALSE(ice.has_domain());
 }
 
@@ -93,10 +79,11 @@ TEST_CASE("The sea ice refuses a domain its ranks do not cover", "[ice]") {
   shared.num_global = 36; // as if the ocean ran on twice as many ranks
   coupling::Exchange ex;
   coupling::publish_domain(ex, "ocn", shared);
-  EmulatorIce ice(ex);
+  const TempFile ice_in("ice_in", ice_in_text());
+  EmulatorComponent ice(EmulatorType::ICE_COMP, "emulatorice", ex);
   REQUIRE_THROWS_WITH(
-      ice.create_instance(fcomm(), 5, "", "", 0, 20000101, 0),
-      Catch::Contains("18 of the ocean's 36"));
+      ice.create_instance(fcomm(), 5, ice_in.path, "", 0, 20000101, 0),
+      Catch::Contains("18 of ocn's 36"));
 }
 
 TEST_CASE("The sea ice reports the ocean's domain and ice through the "
@@ -116,8 +103,10 @@ TEST_CASE("The sea ice reports the ocean's domain and ice through the "
   }
   ex.publish("ocn.sea_ice_fraction", fraction);
 
-  EmulatorIce ice(ex);
-  ice.create_instance(fcomm(), 5, "", "", 0, 20000901, 0);
+  ice::register_ice_operators();
+  const TempFile ice_in("ice_in", ice_in_text());
+  EmulatorComponent ice(EmulatorType::ICE_COMP, "emulatorice", ex);
+  ice.create_instance(fcomm(), 5, ice_in.path, "", 0, 20000901, 0);
   REQUIRE(ice.get_num_global_cols() == 18);
   REQUIRE(ice.get_nx() == 6);
   REQUIRE(ice.get_ny() == 3);
@@ -128,12 +117,10 @@ TEST_CASE("The sea ice reports the ocean's domain and ice through the "
   REQUIRE(mask == shared.domain.mask);
   REQUIRE(frac == shared.domain.frac);
 
-  AttrVect x2i(kX2i, n), i2x(kI2x, n);
+  AttrVect x2i(kX2i, n), i2x(kI2x, n, -999.0);
   std::fill(x2i.data.begin(), x2i.data.end(), 0.0); // as at the driver's init
   ice.set_coupler_field_lists(kX2i, kI2x);
-  ice.setup_coupling(EmulatorCouplingDesc{
-      x2i.data.data(), i2x.data.data(), static_cast<int>(x2i.names.size()),
-      static_cast<int>(i2x.names.size()), static_cast<int>(n)});
+  ice.setup_coupling(coupling(x2i, i2x, n));
   REQUIRE(ice.export_binding()->unbound() ==
           std::vector<std::string>{"Si_u10", "Fioi_bcphi"});
 
@@ -187,7 +174,6 @@ TEST_CASE("The sea ice reports the ocean's domain and ice through the "
     REQUIRE(i2x.at("Faii_swnet", p) ==
             Approx(50.0 * (1.0 - ice::albedo::vsdr)));
   }
-  REQUIRE(ice.last_counts().fluxes == domain_cells);
   REQUIRE_THROWS_WITH(ice.run(1800), Catch::Contains("emulator_run_at"));
   ice.finalize();
 }
@@ -195,17 +181,4 @@ TEST_CASE("The sea ice reports the ocean's domain and ice through the "
 } // namespace test
 } // namespace emulator
 
-int main(int argc, char *argv[]) {
-  MPI_Init(&argc, &argv);
-  int rank = 0;
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  Catch::Session session;
-  if (rank != 0) {
-    session.configData().outputFilename = "%debug";
-  }
-  int status = session.run(argc, argv);
-  int worst = 0;
-  MPI_Allreduce(&status, &worst, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-  MPI_Finalize();
-  return worst;
-}
+EMULATOR_TEST_MPI_MAIN

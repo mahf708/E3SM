@@ -2,40 +2,24 @@
 #define CATCH_CONFIG_RUNNER
 #include <catch2/catch.hpp>
 
-#include "atm.hpp"
+#include "ace_operators.hpp"
+#include "emulator_component.hpp"
+#include "emulator_test_support.hpp"
 #include "grid_field_reader.hpp"
-#include "ice.hpp"
-#include "ocn.hpp"
-#include "samudra_ocean.hpp"
+#include "ocean_operators.hpp"
 #include "scrip_reader.hpp"
+#include "sea_ice_operators.hpp"
 
-#include <mpi.h>
 #ifdef EMULATOR_ENABLE_LIBTORCH
 #include <torch/cuda.h>
 #endif
 
-#include <algorithm>
 #include <cmath>
-#include <cstdio>
-#include <filesystem>
-#include <fstream>
-#include <string>
-#include <vector>
-
-#include <unistd.h>
 
 namespace emulator {
 namespace test {
 
 namespace {
-
-const std::string kGrid = "/global/cfs/cdirs/e3sm/inputdata/share/meshes/"
-                          "gaussian_180x360_latlon.scrip.20260127.nc";
-const std::string kRoot = "/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/";
-const std::string kAtmModel = kRoot + "eatm/samudrace_atm_traced_cuda.pt";
-const std::string kAtmIc = kRoot + "eatm/samudrace_atm_ic_0.nc";
-const std::string kOcnModel = kRoot + "eocn/samudra_ocn_traced_masked_cuda.pt";
-const std::string kOcnIc = kRoot + "eocn/samudra_ocn_ic_0_icemask.nc";
 
 const std::string kX2a = "Sf_lfrac:Sf_ifrac:Sf_ofrac:Sx_t:So_t:Sx_avsdr";
 const std::string kA2x =
@@ -51,50 +35,6 @@ const std::string kI2x =
     "Faii_taux:Fioi_taux:Faii_tauy:Fioi_tauy:Faii_lat:Faii_sen:Faii_lwup:"
     "Faii_evap:Faii_swnet:Fioi_swpen:Fioi_melth:Fioi_meltw:Fioi_salt";
 
-struct AttrVect {
-  std::vector<std::string> names;
-  std::vector<double> data;
-  AttrVect(const std::string &list, std::size_t np) {
-    std::size_t start = 0;
-    while (true) {
-      const auto colon = list.find(':', start);
-      names.push_back(list.substr(start, colon - start));
-      if (colon == std::string::npos) {
-        break;
-      }
-      start = colon + 1;
-    }
-    data.assign(names.size() * np, 0.0);
-  }
-  double &at(const std::string &n, std::size_t p) {
-    const auto row = static_cast<std::size_t>(
-        std::find(names.begin(), names.end(), n) - names.begin());
-    return data[p * names.size() + row];
-  }
-};
-
-EmulatorCouplingDesc desc(AttrVect &in, AttrVect &out, std::size_t n) {
-  return {in.data.data(), out.data.data(), static_cast<int>(in.names.size()),
-          static_cast<int>(out.names.size()), static_cast<int>(n)};
-}
-
-std::string write_input(const std::string &stem, const std::string &text) {
-  int rank = 0;
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  const auto path = (std::filesystem::temp_directory_path() /
-                     (stem + "_" + std::to_string(::getpid()) + "_" +
-                      std::to_string(rank)))
-                        .string();
-  std::ofstream(path) << text;
-  return path;
-}
-
-double global_sum(double local) {
-  double total = 0.0;
-  MPI_Allreduce(&local, &total, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-  return total;
-}
-
 coupling::ModelTime after(int n) {
   const int s = n * 1800;
   return {20000101 + s / 86400, s % 86400};
@@ -102,8 +42,9 @@ coupling::ModelTime after(int n) {
 
 } // namespace
 
-TEST_CASE("SamudrACE's atmosphere, ocean and sea ice run as three components "
-          "configured from their input files", "[samudrace][real]") {
+TEST_CASE("SamudrACE's atmosphere, ocean and sea ice run as three generic "
+          "components configured by their specs and input files",
+          "[samudrace][real]") {
   int rank = 0, size = 1;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -111,37 +52,51 @@ TEST_CASE("SamudrACE's atmosphere, ocean and sea ice run as three components "
 #ifndef EMULATOR_ENABLE_LIBTORCH
   ok = 0;
 #else
-  ok = grid::have_scrip_reader() && std::filesystem::exists(kAtmModel) &&
-       std::filesystem::exists(kOcnModel) && torch::cuda::is_available();
+  ok = grid::have_scrip_reader() &&
+       std::filesystem::exists(kSamudraceAtmModel) &&
+       std::filesystem::exists(kSamudraOcnModel) && torch::cuda::is_available();
 #endif
   MPI_Bcast(&ok, 1, MPI_INT, 0, MPI_COMM_WORLD);
   if (!ok) {
     WARN("skipped: needs libtorch, netCDF, a GPU and the SamudrACE files");
     return;
   }
+  atm::register_atm_operators();
+  ocn::register_ocn_operators();
+  ice::register_ice_operators();
   const int fcomm = MPI_Comm_c2f(MPI_COMM_WORLD);
   coupling::Exchange exchange;
 
+  const TempFile atm_in("atm_in",
+      "spec: " + spec_path("samudrace-e3smv3-atmosphere.yaml") + "\n"
+      "coupler_dt: 1800\n"
+      "grid: {file: " + kGaussianGrid + ", domain: full}\n"
+      "initial_condition: " + kSamudraceAtmIc + "\n"
+      "inference: {backend: libtorch, model_path: " + kSamudraceAtmModel +
+      ", device: cuda, seed: 2026}\n");
+  const TempFile ocn_in("ocn_in",
+      "spec: " + spec_path("samudra-e3smv3-ocean.yaml") + "\n"
+      "coupler_dt: 1800\n"
+      "grid: {file: " + kGaussianGrid +
+      ", domain: ocean_mask, mask_variable: mask_2d, publish_as: ocn}\n"
+      "initial_condition: " + kSamudraOcnIc + "\n"
+      "inference: {backend: libtorch, model_path: " + kSamudraOcnModel +
+      ", device: cuda}\n");
+  const TempFile ice_in("ice_in",
+      "spec: " + spec_path("samudrace-e3smv3-sea-ice.yaml") + "\n"
+      "coupler_dt: 1800\n"
+      "grid: {domain: shared, shared_from: ocn}\n");
+
   // The driver's order: atm, then ocn, then ice.
-  const auto atm_in = write_input(
-      "atm_in", "grid_file: " + kGrid + "\nemulator: SamudrACE-E3SMv3\n" +
-                    "model_path: " + kAtmModel + "\nic_file: " + kAtmIc +
-                    "\nseed: 2026\nsurface_layer: near_surface\n" +
-                    "publish_ocean_forcing: true\nsurface_from_ocean: true\n");
-  const auto ocn_in = write_input(
-      "ocn_in", "grid_file: " + kGrid + "\nic_file: " + kOcnIc +
-                    "\nemulator: Samudra-E3SMv3\nmodel_path: " + kOcnModel +
-                    "\nforcing: atmosphere\n");
-  EmulatorAtm atm(exchange);
-  atm.create_instance(fcomm, 1, atm_in, "", 0, 20000101, 0);
+  EmulatorComponent atm(EmulatorType::ATM_COMP, "emulatoratm", exchange);
+  atm.create_instance(fcomm, 1, atm_in.path, "", 0, 20000101, 0);
   const auto n = static_cast<std::size_t>(atm.get_num_local_cols());
   AttrVect x2a(kX2a, n), a2x(kA2x, n), x2o(kX2o, n), o2x(kO2x, n),
            x2i(kX2i, n), i2x(kI2x, n);
-  // The coupler's fractions, as the model-level SamudrACE test sets them:
-  // the initial condition's, made a partition.
+  // The coupler's fractions: the initial condition's, made a partition.
   {
     const auto ic = grid::read_grid_fields(
-        kAtmIc, {"LANDFRAC", "OCNFRAC", "ICEFRAC", "TS"}, 180, 360);
+        kSamudraceAtmIc, {"LANDFRAC", "OCNFRAC", "ICEFRAC", "TS"}, 180, 360);
     std::vector<int> gids(n);
     atm.get_local_col_gids(gids.data());
     for (std::size_t p = 0; p < n; ++p) {
@@ -165,22 +120,20 @@ TEST_CASE("SamudrACE's atmosphere, ocean and sea ice run as three components "
     }
   }
   atm.set_coupler_field_lists(kX2a, kA2x);
-  atm.setup_coupling(desc(x2a, a2x, n));
+  atm.setup_coupling(coupling(x2a, a2x, n));
   atm.initialize();
 
-  EmulatorOcn ocn(exchange);
-  ocn.create_instance(fcomm, 4, ocn_in, "", 0, 20000101, 0);
+  EmulatorComponent ocn(EmulatorType::OCN_COMP, "emulatorocn", exchange);
+  ocn.create_instance(fcomm, 4, ocn_in.path, "", 0, 20000101, 0);
   ocn.set_coupler_field_lists(kX2o, kO2x);
-  ocn.setup_coupling(desc(x2o, o2x, n));
+  ocn.setup_coupling(coupling(x2o, o2x, n));
   ocn.initialize();
 
-  EmulatorIce ice(exchange);
-  ice.create_instance(fcomm, 5, "", "", 0, 20000101, 0);
+  EmulatorComponent ice(EmulatorType::ICE_COMP, "emulatorice", exchange);
+  ice.create_instance(fcomm, 5, ice_in.path, "", 0, 20000101, 0);
   ice.set_coupler_field_lists(kX2i, kI2x);
-  ice.setup_coupling(desc(x2i, i2x, n));
+  ice.setup_coupling(coupling(x2i, i2x, n));
   ice.initialize();
-  std::remove(atm_in.c_str());
-  std::remove(ocn_in.c_str());
 
   std::vector<double> area(n), mask(n), frac(n);
   ocn.get_cols_area(area.data());
@@ -204,18 +157,18 @@ TEST_CASE("SamudrACE's atmosphere, ocean and sea ice run as three components "
   }
 
   const auto *ocean = ocn.model();
-  double sst = 0.0, ifrac = 0.0, sen_ice = 0.0, ice_area = 0.0;
+  double sst = 0.0, ifrac = 0.0, sen_ice = 0.0, ice_area = 0.0, fluxes = 0.0;
   for (std::size_t p = 0; p < n; ++p) {
     sst += area[p] * mask[p] * ocean->brackets().upper("sst")[p];
     ifrac += area[p] * i2x.at("Si_ifrac", p);
     sen_ice += area[p] * i2x.at("Si_ifrac", p) * i2x.at("Faii_sen", p);
     ice_area += area[p] * i2x.at("Si_ifrac", p);
+    fluxes += i2x.at("Faii_lwup", p) < 0.0 ? 1.0 : 0.0;
   }
   sst = global_sum(sst) / ocean_area;
   sen_ice = global_sum(sen_ice) / global_sum(ice_area);
   ifrac = global_sum(ifrac) / ocean_area;
-  const double fluxes =
-      global_sum(static_cast<double>(ice.last_counts().fluxes));
+  fluxes = global_sum(fluxes);
   if (rank == 0) {
     std::printf("  day 5 through three components: ocean SST %.6f K "
                 "(predicted, area-weighted); ice fraction %.4f; sensible "
@@ -223,8 +176,10 @@ TEST_CASE("SamudrACE's atmosphere, ocean and sea ice run as three components "
                 sst, ifrac, sen_ice, size);
   }
   REQUIRE(ocean->clock().completed_steps() == 1);
-  REQUIRE(fluxes == 44892.0); // the atmosphere reached every ocean cell
-  REQUIRE(std::abs(sst - 291.04) < 1.0);
+  REQUIRE(fluxes == 44892.0); // the bulk scheme reached every ocean cell
+  // The model-level SamudrACE test's day 5 (test_samudrace_coupled_real),
+  // and this test's before the components became generic.
+  REQUIRE(sst == Approx(291.104738).margin(5e-7));
   REQUIRE(ifrac > 0.01);
   REQUIRE(ifrac < 0.2);
   REQUIRE(std::isfinite(sen_ice));
@@ -236,17 +191,4 @@ TEST_CASE("SamudrACE's atmosphere, ocean and sea ice run as three components "
 } // namespace test
 } // namespace emulator
 
-int main(int argc, char *argv[]) {
-  MPI_Init(&argc, &argv);
-  int rank = 0;
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  Catch::Session session;
-  if (rank != 0) {
-    session.configData().outputFilename = "%debug";
-  }
-  int status = session.run(argc, argv);
-  int worst = 0;
-  MPI_Allreduce(&status, &worst, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-  MPI_Finalize();
-  return worst;
-}
+EMULATOR_TEST_MPI_MAIN

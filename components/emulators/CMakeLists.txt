@@ -303,6 +303,9 @@ if(BUILD_EMULATOR_TESTS)
   # One target for the tests to link, whichever way the header was found.
   add_library(Catch2 INTERFACE)
   target_include_directories(Catch2 INTERFACE ${CATCH2_INCLUDE_DIR})
+  # Helpers every test shares: stand-in coupler buffers, input files, MPI.
+  target_include_directories(Catch2 INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/common/tests/support)
 
   # Enable testing at the top level
   enable_testing()

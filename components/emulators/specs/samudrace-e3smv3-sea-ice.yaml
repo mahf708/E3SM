@@ -1,0 +1,47 @@
+# The sea ice of the SamudrACE ocean.  Not a sea ice model: the ocean
+# emulator predicts the ice fraction, and this reports it to the coupler
+# with dice's surface over it.  No network, no initial condition, no state;
+# the component takes the ocean's domain.
+
+name: samudrace-sea-ice
+
+operators:
+  - operator: sea_ice.surface
+    ice_fraction: exchange.ocn.sea_ice_fraction
+
+coupler:
+  imports:
+    - {name: Sa_z, units: m}
+    - {name: Sa_u, units: m/s}
+    - {name: Sa_v, units: m/s}
+    - {name: Sa_ptem, units: K}
+    - {name: Sa_shum, units: kg/kg}
+    - {name: Sa_dens, units: kg/m3}
+    - {name: Sa_tbot, units: K}
+    - {name: Faxa_swvdr, units: W/m2}
+    - {name: Faxa_swndr, units: W/m2}
+    - {name: Faxa_swvdf, units: W/m2}
+    - {name: Faxa_swndf, units: W/m2}
+  exports:
+    - {name: Si_ifrac, units: "1"}
+    - {name: Si_t, units: K}
+    - {name: Si_tref, units: K}
+    - {name: Si_qref, units: kg/kg}
+    - {name: Si_snowh, units: m, need: optional}
+    - {name: Si_avsdr, units: "1"}
+    - {name: Si_anidr, units: "1"}
+    - {name: Si_avsdf, units: "1"}
+    - {name: Si_anidf, units: "1"}
+    - {name: Faii_swnet, units: W/m2}
+    - {name: Faii_sen, units: W/m2}
+    - {name: Faii_lat, units: W/m2}
+    - {name: Faii_lwup, units: W/m2}
+    - {name: Faii_evap, units: kg/m2/s}
+    - {name: Faii_taux, units: N/m2}
+    - {name: Faii_tauy, units: N/m2}
+    - {name: Fioi_melth, units: W/m2}
+    - {name: Fioi_meltw, units: kg/m2/s}
+    - {name: Fioi_salt, units: kg/m2/s}
+    - {name: Fioi_swpen, units: W/m2}
+    - {name: Fioi_taux, units: N/m2}
+    - {name: Fioi_tauy, units: N/m2}

@@ -39,6 +39,11 @@ add_executable(test_emulated_model test_emulated_model.cpp)
 target_link_libraries(test_emulated_model PRIVATE emulator_common Catch2)
 emulator_add_mpi_test(emulated_model_tests test_emulated_model)
 
+# The generic component: input files, domains
+add_executable(test_emulator_component test_emulator_component.cpp)
+target_link_libraries(test_emulator_component PRIVATE emulator_common Catch2)
+emulator_add_mpi_test(emulator_component_tests test_emulator_component)
+
 # Test for the component field layer: FieldList, FieldSet, CouplerBinding
 add_executable(test_fields test_fields.cpp)
 target_link_libraries(test_fields PRIVATE emulator_common Catch2)

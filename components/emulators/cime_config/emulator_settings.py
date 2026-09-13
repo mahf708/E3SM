@@ -1,19 +1,44 @@
-"""Write an emulated component's `key: value` input file for CIME.
+"""Write an emulated component's YAML input file for CIME.
 
-Each emulated component reads `<class>_in` (atm_in, ocn_in, ice_in): one
-`key: value` per line.  buildnml computes the defaults from the case, and
-`user_nl_<component>` lines in the same form override them.  A key the
-component does not read is an error here, at case.setup, rather than a
-setting silently ignored at run time.
+Each emulated component reads `<class>_in` (atm_in, ocn_in, ice_in), a YAML
+file naming its spec (components/emulators/specs) and the case's paths:
+
+    spec: .../specs/samudra-e3smv3-ocean.yaml
+    coupler_dt: 1800
+    grid: {file: ..., domain: ocean_mask, mask_variable: mask_2d, publish_as: ocn}
+    initial_condition: ...
+    inference: {backend: libtorch, model_path: ..., device: cuda}
+
+buildnml computes these from the case, and `user_nl_<component>` lines of
+the form `dotted.key: value` override them (`inference.seed: 2027`).  A key
+the component does not read is an error here, at case.setup, rather than a
+run that stops at initialization.
 """
 
 import os
 
+import yaml
+
 from CIME.utils import expect, safe_copy
+
+# What EmulatorComponent reads (emulator_component.hpp).
+KNOWN = {
+    "spec": None,
+    "coupler_dt": None,
+    "initial_condition": None,
+    "grid": {"file", "domain", "mask_variable", "publish_as", "shared_from"},
+    "inference": {"backend", "model_path", "device", "dtype", "seed",
+                  "jit_optimize", "num_threads"},
+}
+
+
+def spec_path(case, name):
+    return os.path.join(case.get_value("SRCROOT"), "components", "emulators",
+                        "specs", name)
 
 
 def read_user_settings(caseroot, compname, inst_string):
-    """`key: value` lines from user_nl_<compname><inst_string>."""
+    """`dotted.key: value` lines from user_nl_<compname><inst_string>."""
     path = os.path.join(caseroot, "user_nl_{}{}".format(compname, inst_string))
     settings = {}
     if not os.path.isfile(path):
@@ -27,11 +52,21 @@ def read_user_settings(caseroot, compname, inst_string):
                    "{} line {}: expected `key: value`, got {!r}".format(
                        path, number, line.rstrip()))
             key, value = (part.strip() for part in text.split(":", 1))
-            settings[key] = value
+            parts = key.split(".")
+            known = parts[0] in KNOWN and (
+                (KNOWN[parts[0]] is None and len(parts) == 1) or
+                (KNOWN[parts[0]] is not None and len(parts) == 2 and
+                 parts[1] in KNOWN[parts[0]]))
+            expect(known,
+                   "{} line {}: '{}' is not a setting the component reads; "
+                   "known: {}".format(path, number, key, ", ".join(
+                       k if v is None else "{}.{{{}}}".format(k, ",".join(sorted(v)))
+                       for k, v in KNOWN.items())))
+            settings[key] = yaml.safe_load(value)
     return settings
 
 
-def write_input_file(case, caseroot, compname, class_name, defaults, known):
+def write_input_file(case, caseroot, compname, class_name, settings):
     """Write <class>_in for every instance into Buildconf and RUNDIR."""
     rundir = case.get_value("RUNDIR")
     ninst = case.get_value("NINST_{}".format(class_name.upper())) or 1
@@ -39,21 +74,20 @@ def write_input_file(case, caseroot, compname, class_name, defaults, known):
     os.makedirs(confdir, exist_ok=True)
     for inst in range(1, ninst + 1):
         inst_string = "_{:04d}".format(inst) if ninst > 1 else ""
-        settings = dict(defaults)
-        user = read_user_settings(caseroot, compname, inst_string)
-        unknown = sorted(set(user) - set(known))
-        expect(not unknown,
-               "user_nl_{}{}: {} does not read {}; it reads {}".format(
-                   compname, inst_string, compname, ", ".join(unknown),
-                   ", ".join(sorted(known))))
-        settings.update(user)
+        merged = {k: (dict(v) if isinstance(v, dict) else v)
+                  for k, v in settings.items()}
+        for key, value in read_user_settings(caseroot, compname,
+                                             inst_string).items():
+            parts = key.split(".")
+            if len(parts) == 1:
+                merged[parts[0]] = value
+            else:
+                merged.setdefault(parts[0], {})[parts[1]] = value
         filename = "{}_in{}".format(class_name, inst_string)
         path = os.path.join(confdir, filename)
         with open(path, "w", encoding="utf-8") as f:
-            f.write("# {} settings, written by buildnml; change them in "
+            f.write("# {} input file, written by buildnml; change it in "
                     "user_nl_{}{}\n".format(compname, compname, inst_string))
-            for key in sorted(settings):
-                if settings[key] != "":
-                    f.write("{}: {}\n".format(key, settings[key]))
+            yaml.safe_dump(merged, f, sort_keys=False, default_flow_style=False)
         if os.path.isdir(rundir):
             safe_copy(path, os.path.join(rundir, filename))

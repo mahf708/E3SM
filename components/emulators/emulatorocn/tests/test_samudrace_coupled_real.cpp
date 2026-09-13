@@ -2,12 +2,12 @@
 #define CATCH_CONFIG_RUNNER
 #include <catch2/catch.hpp>
 
-#include "ace_atmosphere.hpp"
-#include "ace_channels.hpp"
+#include "ace_operators.hpp"
+#include "emulated_model.hpp"
+#include "emulator_test_support.hpp"
 #include "create_inference_backend.hpp"
 #include "exchange.hpp"
-#include "samudra_channels.hpp"
-#include "samudra_ocean.hpp"
+#include "ocean_operators.hpp"
 #include "scrip_reader.hpp"
 
 #include <mpi.h>
@@ -93,27 +93,25 @@ TEST_CASE("SamudrACE runs coupled in one process: the ocean forced by the "
   const auto area = decomp.local(g.area);
   coupling::Exchange exchange;
 
-  ocn::SamudraOcean::Config oc;
-  oc.layout = ocn::samudra_e3smv3();
-  oc.forcing_source = ocn::SamudraOcean::ForcingSource::Atmosphere;
-  oc.exchange = &exchange;
-  ocn::SamudraOcean ocean(oc, MPI_COMM_WORLD, g, decomp,
-                          backend_on_root(rank, kOcnModel, ""));
+  atm::register_atm_operators();
+  ocn::register_ocn_operators();
+  const auto spec = [](const char *file) {
+    return model::ModelSpec::read(
+        config::Section::load_spec(emulator::test::spec_path(file)));
+  };
+  const auto ocn_spec = spec("samudra-e3smv3-ocean.yaml");
+  const auto atm_spec = spec("samudrace-e3smv3-atmosphere.yaml");
+  model::EmulatedModel ocean(
+      ocn_spec, 1800, model::Geometry::from_grid(MPI_COMM_WORLD, g, decomp),
+      backend_on_root(rank, kOcnModel, ""), &exchange);
   const auto ocn_ic = grid::read_grid_fields(
       kOcnIc, ocean.initial_condition_names(), g.ny, g.nx);
-
-  atm::AceAtmosphere::Config ac;
-  ac.layout = atm::samudrace_e3smv3();
-  ac.surface.layer = atm::SurfaceLayer::NearSurface;
-  ac.orbit = atm::Orbit::from_elements(0.016715, 23.4441, 102.7);
-  ac.exchange = &exchange;
-  ac.publish_ocean_forcing = true;
-  ac.surface_from_ocean = true;
   // Stochastic: reseeded from (seed, step) at every network step.
-  atm::AceAtmosphere atmosphere(ac, MPI_COMM_WORLD, g, decomp,
-                                backend_on_root(rank, kAtmModel, "2026"));
-  const auto atm_ic =
-      grid::read_grid_fields(kAtmIc, ac.layout.inputs, g.ny, g.nx);
+  model::EmulatedModel atmosphere(
+      atm_spec, 1800, model::Geometry::from_grid(MPI_COMM_WORLD, g, decomp),
+      backend_on_root(rank, kAtmModel, "2026"), &exchange);
+  const auto atm_ic = grid::read_grid_fields(
+      kAtmIc, atmosphere.initial_condition_names(), g.ny, g.nx);
 
   // The coupler's fractions for the atmosphere: the IC's, made a partition.
   fields::FieldSet atm_imports(n);
@@ -151,23 +149,23 @@ TEST_CASE("SamudrACE runs coupled in one process: the ocean forced by the "
   }
   fields::FieldSet ocn_imports(n); // the atmosphere source reads the exchange
   fields::FieldSet atm_exports(n), ocn_exports(n);
-  for (const auto &name : atm::ace_export_names()) {
-    atm_exports.add(name);
+  for (const auto &e : atm_spec.exports) {
+    atm_exports.add(e.name);
   }
-  for (const auto &name : ocn::samudra_export_names()) {
-    ocn_exports.add(name);
+  for (const auto &e : ocn_spec.exports) {
+    ocn_exports.add(e.name);
   }
 
   // The ocean starts first, so its SST and ice are there for the
   // atmosphere; the atmosphere's first fluxes are then there for the ocean.
   ocean.initialize(after(0), ocn_ic);
-  ocean.initial_exports(ocn_exports);
+  ocean.initial_exports(after(0), ocn_imports, ocn_exports);
   atmosphere.initialize(after(0), atm_ic);
-  atmosphere.initial_exports(after(0), atm_exports);
+  atmosphere.initial_exports(after(0), atm_imports, atm_exports);
   REQUIRE(exchange.publishes("ocn.sst") == 1);
   REQUIRE(exchange.publishes("atm.LHFLX") == 1);
 
-  const auto ocean_mask = ocean.ocean_mask();
+  const auto ocean_mask = ocean.statics().get("mask_2d");
   std::vector<double> ocean_area(n);
   for (std::size_t k = 0; k < n; ++k) {
     ocean_area[k] = area[k] * ocean_mask[k];
@@ -186,7 +184,7 @@ TEST_CASE("SamudrACE runs coupled in one process: the ocean forced by the "
       const double lh = mean_where(exchange.get("atm.LHFLX"), ocean_area);
       const double fsds = mean_where(exchange.get("atm.FSDS"), ocean_area);
       const double tbot = mean_where(atm_exports.get("Sa_tbot"), area);
-      const double ice = mean_where(ocean.sea_ice_fraction(), ocean_area);
+      const double ice = mean_where(ocean.aux().get("sea_ice_fraction"), ocean_area);
       if (rank == 0) {
         std::printf("  day %2d: ocean SST %.6f K, ice %.4f; over ocean the "
                     "atmosphere's LHFLX %.1f, FSDS %.1f W/m2; Tat2m %.2f K "

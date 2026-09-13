@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 # dressed as a sea ice component for the coupler.
 add_library(emulatorice
   src/sea_ice_surface.cpp
-  src/ice.cpp
+  src/sea_ice_operators.cpp
   src/ice_factory.cpp
 )
 target_include_directories(emulatorice PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

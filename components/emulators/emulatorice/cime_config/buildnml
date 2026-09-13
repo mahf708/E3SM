@@ -16,7 +16,7 @@ from standard_script_setup import *  # noqa: F401,F403,E402
 from CIME.buildnml import parse_input  # noqa: E402
 from CIME.case import Case  # noqa: E402
 from CIME.utils import expect  # noqa: E402
-from emulator_settings import write_input_file  # noqa: E402
+from emulator_settings import spec_path, write_input_file  # noqa: E402
 
 
 def buildnml(case, caseroot, compname):
@@ -29,7 +29,12 @@ def buildnml(case, caseroot, compname):
         expect(case.get_value(what + "_ICE") == case.get_value(what + "_OCN"),
                "emulatorice runs on the emulated ocean's ranks: set "
                "{0}_ICE = {0}_OCN.".format(what))
-    write_input_file(case, caseroot, compname, "ice", {}, [])
+    settings = {
+        "spec": spec_path(case, case.get_value("EMULATORICE_SPEC")),
+        "coupler_dt": 86400 // case.get_value("ICE_NCPL"),
+        "grid": {"domain": "shared", "shared_from": "ocn"},
+    }
+    write_input_file(case, caseroot, compname, "ice", settings)
 
 
 def _main_func():

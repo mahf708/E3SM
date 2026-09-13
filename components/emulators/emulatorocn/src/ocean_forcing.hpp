@@ -43,7 +43,8 @@ struct CouplerForcingOptions {
  * (FLUS, LHFLX, SHFLX), stress on the atmosphere.
  *
  * @param imports the coupler_forcing_imports() fields
- * @param forcing receives the ten samudra_forcing_names() fields
+ * @param forcing receives TAUX, TAUY, surface_precipitation_rate,
+ *        frozen_precipitation_rate, FLUS, FSUS, FLDS, FSDS, LHFLX, SHFLX
  */
 void coupler_forcing_sample(const fields::FieldSet &imports,
                             const CouplerForcingOptions &options,

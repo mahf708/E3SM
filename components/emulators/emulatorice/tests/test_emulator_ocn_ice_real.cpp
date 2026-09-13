@@ -2,9 +2,10 @@
 #define CATCH_CONFIG_RUNNER
 #include <catch2/catch.hpp>
 
-#include "ice.hpp"
-#include "ocn.hpp"
-#include "samudra_ocean.hpp"
+#include "emulator_component.hpp"
+#include "emulator_test_support.hpp"
+#include "ocean_operators.hpp"
+#include "sea_ice_operators.hpp"
 #include "scrip_reader.hpp"
 
 #include <mpi.h>
@@ -46,38 +47,6 @@ const std::string kI2x =
     "Faii_lwup:Faii_evap:Faii_swnet:Fioi_swpen:Fioi_melth:Fioi_meltw:"
     "Fioi_salt";
 
-struct AttrVect {
-  std::vector<std::string> names;
-  std::vector<double> data;
-  AttrVect(const std::string &list, std::size_t np) {
-    std::size_t start = 0;
-    while (true) {
-      const auto colon = list.find(':', start);
-      names.push_back(list.substr(start, colon - start));
-      if (colon == std::string::npos) {
-        break;
-      }
-      start = colon + 1;
-    }
-    data.assign(names.size() * np, 0.0);
-  }
-  double &at(const std::string &n, std::size_t p) {
-    const auto row = static_cast<std::size_t>(
-        std::find(names.begin(), names.end(), n) - names.begin());
-    return data[p * names.size() + row];
-  }
-  EmulatorCouplingDesc as_import_for(AttrVect &exports, std::size_t np) {
-    return {data.data(), exports.data.data(), static_cast<int>(names.size()),
-            static_cast<int>(exports.names.size()), static_cast<int>(np)};
-  }
-};
-
-double global_sum(double local) {
-  double total = 0.0;
-  MPI_Allreduce(&local, &total, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-  return total;
-}
-
 coupling::ModelTime after(int n) {
   const int s = n * 1800;
   return {20000101 + s / 86400, s % 86400};
@@ -107,15 +76,23 @@ TEST_CASE("The emulated ocean and its sea ice run through the coupler's "
       (std::filesystem::temp_directory_path() /
        ("ocn_in_" + std::to_string(::getpid()) + "_" + std::to_string(rank)))
           .string();
-  std::ofstream(ocn_in) << "grid_file: " << kGrid << "\n"
-                        << "ic_file: " << kIc << "\n"
-                        << "emulator: Samudra-E3SMv3\n"
-                        << "model_path: " << kModel << "\n"
-                        << "coupler_dt: 1800\n";
+  std::ofstream(ocn_in)
+      << "spec: " << spec_path("samudra-e3smv3-ocean-coupler-forced.yaml")
+      << "\ncoupler_dt: 1800\n"
+      << "grid: {file: " << kGrid
+      << ", domain: ocean_mask, mask_variable: mask_2d, publish_as: ocn}\n"
+      << "initial_condition: " << kIc << "\n"
+      << "inference: {backend: libtorch, model_path: " << kModel
+      << ", device: cuda}\n";
+  const TempFile ice_in(
+      "ice_in", "spec: " + spec_path("samudrace-e3smv3-sea-ice.yaml") +
+                    "\ncoupler_dt: 1800\ngrid: {domain: shared, shared_from: ocn}\n");
+  ocn::register_ocn_operators();
+  ice::register_ice_operators();
   coupling::Exchange exchange;
 
   // The driver's order: the ocean is created and initialized, then the ice.
-  EmulatorOcn ocn(exchange);
+  EmulatorComponent ocn(EmulatorType::OCN_COMP, "emulatorocn", exchange);
   ocn.create_instance(MPI_Comm_c2f(MPI_COMM_WORLD), 4, ocn_in, "", 0,
                       20000101, 0);
   std::remove(ocn_in.c_str());
@@ -133,22 +110,22 @@ TEST_CASE("The emulated ocean and its sea ice run through the coupler's "
 
   AttrVect x2o(kX2o, n), o2x(kO2x, n), x2i(kX2i, n), i2x(kI2x, n);
   ocn.set_coupler_field_lists(kX2o, kO2x);
-  ocn.setup_coupling(x2o.as_import_for(o2x, n));
+  ocn.setup_coupling(coupling(x2o, o2x, n));
   ocn.initialize();
 
-  EmulatorIce ice(exchange);
-  ice.create_instance(MPI_Comm_c2f(MPI_COMM_WORLD), 5, "", "", 0, 20000101, 0);
+  EmulatorComponent ice(EmulatorType::ICE_COMP, "emulatorice", exchange);
+  ice.create_instance(MPI_Comm_c2f(MPI_COMM_WORLD), 5, ice_in.path, "", 0, 20000101, 0);
   REQUIRE(ice.get_num_local_cols() == static_cast<int>(n));
   std::vector<double> ice_mask(n), ice_frac(n);
   ice.get_cols_mask_frac(ice_mask.data(), ice_frac.data());
   REQUIRE(ice_mask == mask);
   ice.set_coupler_field_lists(kX2i, kI2x);
-  ice.setup_coupling(x2i.as_import_for(i2x, n));
+  ice.setup_coupling(coupling(x2i, i2x, n));
   ice.initialize();
 
   const auto report = [&](const char *when) {
     double sst = 0.0, ice_area = 0.0, ice_cells = 0.0, off_mask = 0.0;
-    const auto own = ocn.model()->ice_mask();
+    const auto own = ocn.model()->statics().get("mask_ocean_sea_ice_fraction");
     for (std::size_t p = 0; p < n; ++p) {
       sst += mask[p] * area[p] * o2x.at("So_t", p);
       ice_area += area[p] * i2x.at("Si_ifrac", p);
@@ -192,8 +169,8 @@ TEST_CASE("The emulated ocean and its sea ice run through the coupler's "
     x2i.at("Sa_shum", p) = 1.5e-3;
     x2i.at("Sa_dens", p) = 1.33;
   }
-  std::vector<double> previous(ocn.model()->sea_ice_fraction().begin(),
-                               ocn.model()->sea_ice_fraction().end());
+  std::vector<double> previous(ocn.model()->aux().get("sea_ice_fraction").begin(),
+                               ocn.model()->aux().get("sea_ice_fraction").end());
   for (int step = 1; step <= 48; ++step) {
     // The driver runs ice before ocn: the ice reports the fraction the
     // ocean exported one step earlier, exactly.
@@ -202,11 +179,15 @@ TEST_CASE("The emulated ocean and its sea ice run through the coupler's "
       REQUIRE(i2x.at("Si_ifrac", p) == previous[p]);
     }
     ocn.run(1800, after(step));
-    const auto now = ocn.model()->sea_ice_fraction();
+    const auto now = ocn.model()->aux().get("sea_ice_fraction");
     previous.assign(now.begin(), now.end());
   }
   report("one day");
-  REQUIRE(global_sum(static_cast<double>(ice.last_counts().fluxes)) == 44892.0);
+  double fluxes = 0.0;
+  for (std::size_t p = 0; p < n; ++p) {
+    fluxes += i2x.at("Faii_lwup", p) < 0.0 ? 1.0 : 0.0;
+  }
+  REQUIRE(global_sum(fluxes) == 44892.0);
   ocn.finalize();
   ice.finalize();
 }
@@ -214,17 +195,4 @@ TEST_CASE("The emulated ocean and its sea ice run through the coupler's "
 } // namespace test
 } // namespace emulator
 
-int main(int argc, char *argv[]) {
-  MPI_Init(&argc, &argv);
-  int rank = 0;
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  Catch::Session session;
-  if (rank != 0) {
-    session.configData().outputFilename = "%debug";
-  }
-  int status = session.run(argc, argv);
-  int worst = 0;
-  MPI_Allreduce(&status, &worst, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-  MPI_Finalize();
-  return worst;
-}
+EMULATOR_TEST_MPI_MAIN

@@ -2,14 +2,14 @@
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
 
-#include "insolation.hpp"
+#include "physics/insolation.hpp"
 
 #include <cmath>
 #include <numbers>
 #include <vector>
 
 namespace emulator {
-namespace atm {
+namespace physics {
 namespace test {
 
 namespace {
@@ -145,5 +145,5 @@ TEST_CASE("Polar night has no sun in the window", "[insolation]") {
 }
 
 } // namespace test
-} // namespace atm
+} // namespace physics
 } // namespace emulator

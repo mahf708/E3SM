@@ -2,11 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 
 # The emulated atmosphere: ACE on the framework, and its MCT cap.
 add_library(emulatoratm
-  src/atm.cpp
-  src/ace_channels.cpp
   src/ace_surface.cpp
   src/ace_surface_inputs.cpp
-  src/ace_atmosphere.cpp
   src/ace_operators.cpp
   src/atm_factory.cpp
 )

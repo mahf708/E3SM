@@ -15,35 +15,23 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 from standard_script_setup import *  # noqa: F401,F403,E402
 from CIME.buildnml import parse_input  # noqa: E402
 from CIME.case import Case  # noqa: E402
-from emulator_settings import write_input_file  # noqa: E402
-
-# What EmulatorAtm::create_instance and init_impl read (atm.hpp).
-KNOWN = [
-    "grid_file", "emulator", "model_path", "ic_file", "backend", "device",
-    "dtype", "jit_optimize", "seed", "coupler_dt", "surface_layer",
-    "orbit_eccen", "orbit_obliq", "orbit_mvelp", "publish_ocean_forcing",
-    "surface_from_ocean",
-]
+from emulator_settings import spec_path, write_input_file  # noqa: E402
 
 
 def buildnml(case, caseroot, compname):
     if compname != "emulatoratm":
         raise AttributeError("expected emulatoratm, got " + compname)
-    ncpl = case.get_value("ATM_NCPL")
-    with_ocean = case.get_value("COMP_OCN") == "emulatorocn"
-    defaults = {
-        "grid_file": case.get_value("EMULATORATM_GRID_FILE"),
-        "emulator": case.get_value("EMULATORATM_EMULATOR"),
-        "model_path": case.get_value("EMULATORATM_MODEL_FILE"),
-        "ic_file": case.get_value("EMULATORATM_IC_FILE"),
-        "device": case.get_value("EMULATORATM_DEVICE"),
-        "coupler_dt": str(86400 // ncpl),
-        # SamudrACE: the atmosphere forces the emulated ocean with its own
-        # fluxes and reads the ocean's SST and ice.
-        "publish_ocean_forcing": "true" if with_ocean else "false",
-        "surface_from_ocean": "true" if with_ocean else "false",
+    settings = {
+        "spec": spec_path(case, case.get_value("EMULATORATM_SPEC")),
+        "coupler_dt": 86400 // case.get_value("ATM_NCPL"),
+        "grid": {"file": case.get_value("EMULATORATM_GRID_FILE"),
+                 "domain": "full"},
+        "initial_condition": case.get_value("EMULATORATM_IC_FILE"),
+        "inference": {"backend": "libtorch",
+                      "model_path": case.get_value("EMULATORATM_MODEL_FILE"),
+                      "device": case.get_value("EMULATORATM_DEVICE")},
     }
-    write_input_file(case, caseroot, compname, "atm", defaults, KNOWN)
+    write_input_file(case, caseroot, compname, "atm", settings)
 
 
 def _main_func():

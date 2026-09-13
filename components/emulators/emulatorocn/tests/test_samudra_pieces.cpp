@@ -3,7 +3,8 @@
 #include <catch2/catch.hpp>
 
 #include "ocean_forcing.hpp"
-#include "samudra_channels.hpp"
+#include "channel_layout_yaml.hpp"
+#include "emulator_test_support.hpp"
 
 #include <vector>
 
@@ -11,9 +12,25 @@ namespace emulator {
 namespace ocn {
 namespace test {
 
+namespace {
+fields::ChannelLayout samudra_e3smv3() {
+  return fields::read_channel_layout(
+      config::Section::load_spec(
+          emulator::test::spec_path("samudra-e3smv3-ocean.yaml"))
+          .section("network"));
+}
+/// The channels coupler_forcing_sample writes.
+const std::vector<std::string> &samudra_forcing_names() {
+  static const std::vector<std::string> names{
+      "TAUX", "TAUY", "surface_precipitation_rate", "frozen_precipitation_rate",
+      "FLUS", "FSUS", "FLDS", "FSDS", "LHFLX", "SHFLX"};
+  return names;
+}
+} // namespace
+
 using fields::InputSource;
 
-TEST_CASE("Samudra has the checkpoint's 102 inputs and 80 outputs",
+TEST_CASE("The Samudra spec has the checkpoint's 102 inputs and 80 outputs",
           "[samudra][channels]") {
   const auto l = samudra_e3smv3();
   REQUIRE(l.model_dt == 432000);
@@ -139,21 +156,3 @@ TEST_CASE("SSH slope: centred, periodic in longitude, one-sided at the poles, "
 } // namespace ocn
 } // namespace emulator
 
-#include "channel_layout_yaml.hpp"
-
-TEST_CASE("The Samudra spec file is the channel table", "[samudra][spec]") {
-  using namespace emulator;
-  const auto a = fields::read_channel_layout(
-      config::Section::load_file(std::string(EMULATOR_SPEC_DIR) +
-                                 "/samudra-e3smv3-ocean.yaml")
-          .section("network"));
-  const auto b = ocn::samudra_e3smv3();
-  REQUIRE(a.name == b.name);
-  REQUIRE(a.model_dt == b.model_dt);
-  REQUIRE(a.inputs == b.inputs);
-  REQUIRE(a.outputs == b.outputs);
-  REQUIRE(a.coupled_inputs == b.coupled_inputs);
-  REQUIRE(a.boundary_inputs == b.boundary_inputs);
-  REQUIRE(a.forcing_inputs == b.forcing_inputs);
-  REQUIRE(a.interval_mean_outputs == b.interval_mean_outputs);
-}

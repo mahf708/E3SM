@@ -3,8 +3,9 @@
 #include <catch2/catch.hpp>
 
 #include "create_inference_backend.hpp"
-#include "samudra_channels.hpp"
-#include "samudra_ocean.hpp"
+#include "emulated_model.hpp"
+#include "emulator_test_support.hpp"
+#include "ocean_operators.hpp"
 #include "scrip_reader.hpp"
 
 #include <mpi.h>
@@ -99,18 +100,21 @@ TEST_CASE("Samudra's first step, at the first window's close, reproduces an "
   // then the first window's mean is exactly the forcing an independent
   // Python run of the checkpoint gives the network.
   coupling::Exchange exchange;
-  SamudraOcean::Config config;
-  config.layout = samudra_e3smv3();
-  config.forcing_source = SamudraOcean::ForcingSource::Atmosphere;
-  config.exchange = &exchange;
-
+  register_ocn_operators();
+  const auto spec = model::ModelSpec::read(config::Section::load_spec(
+      emulator::test::spec_path("samudra-e3smv3-ocean.yaml")));
   auto make = [&] {
-    return SamudraOcean(config, MPI_COMM_WORLD, g, decomp, backend);
+    return std::make_unique<model::EmulatedModel>(
+        spec, 1800, model::Geometry::from_grid(MPI_COMM_WORLD, g, decomp),
+        backend, &exchange);
   };
-  SamudraOcean ocean = make();
+  auto ocean_ptr = make();
+  auto &ocean = *ocean_ptr;
   const auto ic = grid::read_grid_fields(kIc, ocean.initial_condition_names(),
                                          g.ny, g.nx);
-  for (const auto &name : samudra_forcing_names()) {
+  for (const std::string name : {"TAUX", "TAUY", "surface_precipitation_rate",
+                           "frozen_precipitation_rate", "FLUS", "FSUS", "FLDS",
+                           "FSDS", "LHFLX", "SHFLX"}) {
     for (const auto &f : ic) {
       if (f.name == name) {
         exchange.publish("atm." + name, decomp.local(f.values));
@@ -122,8 +126,8 @@ TEST_CASE("Samudra's first step, at the first window's close, reproduces an "
   fields::FieldSet imports(decomp.num_local()); // the exchange is the source
   auto make_exports = [&] {
     fields::FieldSet e(decomp.num_local());
-    for (const auto &n : samudra_export_names()) {
-      e.add(n);
+    for (const auto &x : spec.exports) {
+      e.add(x.name);
     }
     return e;
   };
@@ -131,7 +135,7 @@ TEST_CASE("Samudra's first step, at the first window's close, reproduces an "
   // Through the first window the exports hold the initial condition: no
   // network step before the window closes.
   auto exports = make_exports();
-  ocean.initial_exports(exports);
+  ocean.initial_exports(after(0), imports, exports);
   const std::vector<double> held(exports.get("So_t").begin(),
                                  exports.get("So_t").end());
   const int total = 300, restart_at = 100, window = 240;
@@ -140,7 +144,7 @@ TEST_CASE("Samudra's first step, at the first window's close, reproduces an "
   for (int n = 1; n <= total; ++n) {
     ocean.run(after(n), imports, exports);
     reference[n].assign(exports.get("So_t").begin(), exports.get("So_t").end());
-    const auto ice = ocean.sea_ice_fraction();
+    const auto ice = ocean.aux().get("sea_ice_fraction");
     reference[n].insert(reference[n].end(), ice.begin(), ice.end());
     if (n < window) {
       std::vector<double> t(exports.get("So_t").begin(),
@@ -166,7 +170,7 @@ TEST_CASE("Samudra's first step, at the first window's close, reproduces an "
           {"iceVolumeTotal", {0.00, 50.31, 0.60}}};
       for (const auto &[name, want] : recorded) {
         const auto got =
-            over_mask(ocean.brackets().upper(name), ocean.ocean_mask());
+            over_mask(ocean.brackets().upper(name), ocean.statics().get("mask_2d"));
         if (rank == 0) {
           std::printf("  %-26s min %8.2f (%8.2f)  max %8.2f (%8.2f)  mean "
                       "%7.2f (%7.2f)\n",
@@ -191,21 +195,22 @@ TEST_CASE("Samudra's first step, at the first window's close, reproduces an "
   int outside = 0;
   double coldest = 1e9;
   for (std::size_t i = 0; i < decomp.num_local(); ++i) {
-    outside += (ocean.ice_mask()[i] == 0.0 && ocean.sea_ice_fraction()[i] != 0.0);
+    outside += (ocean.statics().get("mask_ocean_sea_ice_fraction")[i] == 0.0 && ocean.aux().get("sea_ice_fraction")[i] != 0.0);
     coldest = std::min(coldest, exports.get("So_t")[i]);
   }
   int all_outside = 0;
   MPI_Allreduce(&outside, &all_outside, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   REQUIRE(all_outside == 0);
   REQUIRE(coldest >= 271.35);
-  const auto sst1 = over_mask(ocean.brackets().upper("sst"), ocean.ocean_mask());
+  const auto sst1 = over_mask(ocean.brackets().upper("sst"), ocean.statics().get("mask_2d"));
   REQUIRE(sst1.min > 265.0);
   REQUIRE(sst1.max < 315.0);
 
   // Restart at step 100, in the middle of the first window.
   coupling::MemoryRestartStore store;
   {
-    SamudraOcean first = make();
+    auto first_ptr = make();
+    auto &first = *first_ptr;
     first.initialize(after(0), ic);
     auto e = make_exports();
     for (int n = 1; n <= restart_at; ++n) {
@@ -213,13 +218,14 @@ TEST_CASE("Samudra's first step, at the first window's close, reproduces an "
     }
     first.save_to(store);
   }
-  SamudraOcean second = make();
+  auto second_ptr = make();
+  auto &second = *second_ptr;
   second.restart(store, ic);
   int differ = 0;
   for (int n = restart_at + 1; n <= total; ++n) {
     second.run(after(n), imports, exports);
     std::vector<double> now(exports.get("So_t").begin(), exports.get("So_t").end());
-    const auto ice = second.sea_ice_fraction();
+    const auto ice = second.aux().get("sea_ice_fraction");
     now.insert(now.end(), ice.begin(), ice.end());
     differ += now == reference[n] ? 0 : 1;
   }

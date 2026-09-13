@@ -16,34 +16,26 @@ from standard_script_setup import *  # noqa: F401,F403,E402
 from CIME.buildnml import parse_input  # noqa: E402
 from CIME.case import Case  # noqa: E402
 from CIME.utils import expect  # noqa: E402
-from emulator_settings import write_input_file  # noqa: E402
-
-# What EmulatorOcn::create_instance and init_impl read (ocn.hpp).
-KNOWN = [
-    "grid_file", "ic_file", "emulator", "model_path", "backend", "device",
-    "dtype", "jit_optimize", "seed", "coupler_dt", "forcing",
-]
-
+from emulator_settings import spec_path, write_input_file  # noqa: E402
 
 def buildnml(case, caseroot, compname):
     if compname != "emulatorocn":
         raise AttributeError("expected emulatorocn, got " + compname)
-    ncpl = case.get_value("OCN_NCPL")
-    expect(ncpl == case.get_value("ATM_NCPL"),
-           "emulatorocn accumulates its 5-day forcing every coupler step; "
+    expect(case.get_value("OCN_NCPL") == case.get_value("ATM_NCPL"),
+           "emulatorocn accumulates its window's forcing every coupler step; "
            "set OCN_NCPL = ATM_NCPL.")
-    with_atm = case.get_value("COMP_ATM") == "emulatoratm"
-    defaults = {
-        "grid_file": case.get_value("EMULATOROCN_GRID_FILE"),
-        "ic_file": case.get_value("EMULATOROCN_IC_FILE"),
-        "emulator": case.get_value("EMULATOROCN_EMULATOR"),
-        "model_path": case.get_value("EMULATOROCN_MODEL_FILE"),
-        "device": case.get_value("EMULATOROCN_DEVICE"),
-        "coupler_dt": str(86400 // ncpl),
-        # With the emulated atmosphere, SamudrACE's coupling: its own fluxes.
-        "forcing": "atmosphere" if with_atm else "coupler",
+    settings = {
+        "spec": spec_path(case, case.get_value("EMULATOROCN_SPEC")),
+        "coupler_dt": 86400 // case.get_value("OCN_NCPL"),
+        "grid": {"file": case.get_value("EMULATOROCN_GRID_FILE"),
+                 "domain": "ocean_mask", "mask_variable": "mask_2d",
+                 "publish_as": "ocn"},
+        "initial_condition": case.get_value("EMULATOROCN_IC_FILE"),
+        "inference": {"backend": "libtorch",
+                      "model_path": case.get_value("EMULATOROCN_MODEL_FILE"),
+                      "device": case.get_value("EMULATOROCN_DEVICE")},
     }
-    write_input_file(case, caseroot, compname, "ocn", defaults, KNOWN)
+    write_input_file(case, caseroot, compname, "ocn", settings)
 
 
 def _main_func():

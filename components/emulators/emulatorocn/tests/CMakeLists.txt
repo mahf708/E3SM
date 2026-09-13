@@ -16,7 +16,3 @@ add_executable(test_samudrace_coupled_real test_samudrace_coupled_real.cpp)
 target_link_libraries(test_samudrace_coupled_real PRIVATE emulatorocn emulatoratm Catch2)
 emulator_add_mpi_test(samudrace_coupled_real_tests test_samudrace_coupled_real)
 
-# The ocean specs against SamudraOcean, bit for bit, on the real checkpoint.
-add_executable(test_ocean_spec_equivalence_real test_ocean_spec_equivalence_real.cpp)
-target_link_libraries(test_ocean_spec_equivalence_real PRIVATE emulatorocn Catch2)
-emulator_add_mpi_test(ocean_spec_equivalence_real_tests test_ocean_spec_equivalence_real)

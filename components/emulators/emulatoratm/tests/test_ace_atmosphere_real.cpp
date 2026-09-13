@@ -2,8 +2,9 @@
 #define CATCH_CONFIG_RUNNER
 #include <catch2/catch.hpp>
 
-#include "ace_atmosphere.hpp"
-#include "ace_channels.hpp"
+#include "ace_operators.hpp"
+#include "emulated_model.hpp"
+#include "emulator_test_support.hpp"
 #include "create_inference_backend.hpp"
 #include "scrip_reader.hpp"
 
@@ -91,7 +92,14 @@ TEST_CASE("The ACE atmosphere runs a coupled day and restarts mid-interval "
   const auto decomp =
       grid::Decomposition::contiguous_blocks(g.size(), size, rank);
   const auto area = decomp.local(g.area);
-  const auto layout = ace2_eamv3();
+  register_atm_operators();
+  const auto spec = model::ModelSpec::read(config::Section::load_spec(
+      emulator::test::spec_path("ace2-eamv3.yaml")));
+  const auto &layout = *spec.layout;
+  std::vector<std::string> export_names;
+  for (const auto &e : spec.exports) {
+    export_names.push_back(e.name);
+  }
   std::vector<std::string> ic_names = layout.inputs;
   const auto ic = grid::read_grid_fields(kIc, ic_names, g.ny, g.nx);
   const auto fsds_ic = grid::read_grid_fields(kIc, {"FSDS"}, g.ny, g.nx);
@@ -104,11 +112,6 @@ TEST_CASE("The ACE atmosphere runs a coupled day and restarts mid-interval "
     config.set("device", "cuda");
     backend = inference::create_backend(config, inference::InferenceContext{});
   }
-
-  AceAtmosphere::Config config;
-  config.layout = layout;
-  config.surface.layer = SurfaceLayer::LowestLevel; // ACE2 has no 2 m / 10 m
-  config.orbit = Orbit::from_elements(0.016715, 23.4441, 102.7);
 
   // The coupler's side: the initial condition's own surface, held fixed.
   fields::FieldSet imports(decomp.num_local());
@@ -156,7 +159,7 @@ TEST_CASE("The ACE atmosphere runs a coupled day and restarts mid-interval "
   }
   auto make_exports = [&] {
     fields::FieldSet e(decomp.num_local());
-    for (const auto &n : ace_export_names()) {
+    for (const auto &n : export_names) {
       e.add(n);
     }
     return e;
@@ -169,7 +172,7 @@ TEST_CASE("The ACE atmosphere runs a coupled day and restarts mid-interval "
 
   // --- the continuous run ---
   {
-    AceAtmosphere atm(config, MPI_COMM_WORLD, g, decomp, backend);
+    model::EmulatedModel atm(spec, 1800, model::Geometry::from_grid(MPI_COMM_WORLD, g, decomp), backend, nullptr);
     atm.initialize(after(0), ic);
     auto exports = make_exports();
     for (int n = 1; n <= total; ++n) {
@@ -177,7 +180,7 @@ TEST_CASE("The ACE atmosphere runs a coupled day and restarts mid-interval "
       if (n % 5 == 0) {
         atm.run(after(n), imports, exports); // the driver's repeat
       }
-      for (const auto &name : ace_export_names()) {
+      for (const auto &name : export_names) {
         const auto v = exports.get(name);
         reference[n][name].assign(v.begin(), v.end());
       }
@@ -223,7 +226,7 @@ TEST_CASE("The ACE atmosphere runs a coupled day and restarts mid-interval "
   // --- the same day, restarted mid-interval into a new component ---
   coupling::MemoryRestartStore store;
   {
-    AceAtmosphere first(config, MPI_COMM_WORLD, g, decomp, backend);
+    model::EmulatedModel first(spec, 1800, model::Geometry::from_grid(MPI_COMM_WORLD, g, decomp), backend, nullptr);
     first.initialize(after(0), ic);
     auto exports = make_exports();
     int before_restart = 0;
@@ -234,7 +237,7 @@ TEST_CASE("The ACE atmosphere runs a coupled day and restarts mid-interval "
         first.run(after(n), imports, exports);
       }
       bool same = true;
-      for (const auto &name : ace_export_names()) {
+      for (const auto &name : export_names) {
         const auto v = exports.get(name);
         const auto &ref = reference[n][name];
         for (std::size_t k = 0; k < v.size(); ++k) {
@@ -253,7 +256,7 @@ TEST_CASE("The ACE atmosphere runs a coupled day and restarts mid-interval "
     }
     first.save_to(store);
   }
-  AceAtmosphere second(config, MPI_COMM_WORLD, g, decomp, backend);
+  model::EmulatedModel second(spec, 1800, model::Geometry::from_grid(MPI_COMM_WORLD, g, decomp), backend, nullptr);
   second.restart(store, ic);
   auto exports = make_exports();
   second.run(after(restart_at), imports, exports); // the restarted repeat
@@ -267,7 +270,7 @@ TEST_CASE("The ACE atmosphere runs a coupled day and restarts mid-interval "
       second.run(after(n), imports, exports);
     }
     bool same = true;
-    for (const auto &name : ace_export_names()) {
+    for (const auto &name : export_names) {
       const auto v = exports.get(name);
       const auto &ref = reference[n][name];
       for (std::size_t k = 0; k < v.size(); ++k) {

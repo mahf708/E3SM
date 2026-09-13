@@ -2,7 +2,9 @@
 #define CATCH_CONFIG_RUNNER
 #include <catch2/catch.hpp>
 
-#include "atm.hpp"
+#include "ace_operators.hpp"
+#include "emulator_component.hpp"
+#include "emulator_test_support.hpp"
 #include "grid_field_reader.hpp"
 #include "scrip_reader.hpp"
 
@@ -42,34 +44,9 @@ const std::string kA2x =
     "Sa_co2prog:Faxa_rainc:Faxa_rainl:Faxa_snowc:Faxa_snowl:Faxa_lwdn:"
     "Faxa_swndr:Faxa_swvdr:Faxa_swndf:Faxa_swvdf:Faxa_swnet:Faxa_bcphidry";
 
-struct AttrVect {
-  std::vector<std::string> names;
-  std::size_t npoints;
-  std::vector<double> data;
-  AttrVect(const std::string &list, std::size_t np) : npoints(np) {
-    std::size_t start = 0;
-    while (true) {
-      const auto colon = list.find(':', start);
-      names.push_back(list.substr(start, colon - start));
-      if (colon == std::string::npos) {
-        break;
-      }
-      start = colon + 1;
-    }
-    data.assign(names.size() * np, -999.0);
-  }
-  std::size_t row(const std::string &n) const {
-    return static_cast<std::size_t>(
-        std::find(names.begin(), names.end(), n) - names.begin());
-  }
-  double &at(const std::string &n, std::size_t p) {
-    return data[p * names.size() + row(n)];
-  }
-};
-
 } // namespace
 
-TEST_CASE("EmulatorAtm runs the real ACE2 atmosphere through MCT-laid-out "
+TEST_CASE("The ACE2 spec runs as a component through MCT-laid-out "
           "buffers", "[atm][real]") {
   int rank = 0, size = 1;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -92,19 +69,21 @@ TEST_CASE("EmulatorAtm runs the real ACE2 atmosphere through MCT-laid-out "
        ("atm_in_real_" + std::to_string(::getpid()) + "_" +
         std::to_string(rank)))
           .string();
-  std::ofstream(atm_in) << "grid_file: " << kGrid << "\n"
-                        << "emulator: ACE2-EAMv3\n"
-                        << "model_path: " << kModel << "\n"
-                        << "ic_file: " << kIc << "\n"
-                        << "coupler_dt: 1800\n";
+  std::ofstream(atm_in) << "spec: " << spec_path("ace2-eamv3.yaml") << "\n"
+                        << "coupler_dt: 1800\n"
+                        << "grid: {file: " << kGrid << ", domain: full}\n"
+                        << "initial_condition: " << kIc << "\n"
+                        << "inference: {backend: libtorch, model_path: "
+                        << kModel << ", device: cuda}\n";
 
-  EmulatorAtm atm;
+  atm::register_atm_operators();
+  EmulatorComponent atm(EmulatorType::ATM_COMP, "emulatoratm");
   atm.create_instance(MPI_Comm_c2f(MPI_COMM_WORLD), 1, atm_in, "", 0,
                       19710101, 0);
   std::remove(atm_in.c_str());
   const auto n = static_cast<std::size_t>(atm.get_num_local_cols());
 
-  AttrVect x2a(kX2a, n), a2x(kA2x, n);
+  AttrVect x2a(kX2a, n, -999.0), a2x(kA2x, n, -999.0);
   // The stand-in surface: the initial condition's fractions made a
   // partition, and a merged surface temperature to match.
   {
@@ -133,10 +112,7 @@ TEST_CASE("EmulatorAtm runs the real ACE2 atmosphere through MCT-laid-out "
   }
 
   atm.set_coupler_field_lists(kX2a, kA2x);
-  EmulatorCouplingDesc cpl{x2a.data.data(), a2x.data.data(),
-                   static_cast<int>(x2a.names.size()),
-                   static_cast<int>(a2x.names.size()), static_cast<int>(n)};
-  atm.setup_coupling(cpl);
+  atm.setup_coupling(coupling(x2a, a2x, n));
   REQUIRE(atm.export_binding()->unbound() ==
           std::vector<std::string>{"Sa_co2prog", "Faxa_bcphidry"});
 
@@ -179,17 +155,4 @@ TEST_CASE("EmulatorAtm runs the real ACE2 atmosphere through MCT-laid-out "
 } // namespace test
 } // namespace emulator
 
-int main(int argc, char *argv[]) {
-  MPI_Init(&argc, &argv);
-  int rank = 0;
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  Catch::Session session;
-  if (rank != 0) {
-    session.configData().outputFilename = "%debug";
-  }
-  int status = session.run(argc, argv);
-  int worst = 0;
-  MPI_Allreduce(&status, &worst, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-  MPI_Finalize();
-  return worst;
-}
+EMULATOR_TEST_MPI_MAIN

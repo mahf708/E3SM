@@ -4,12 +4,16 @@
  */
 
 #include "component_factory.hpp"
-#include "ocn.hpp"
+#include "ocean_operators.hpp"
 
 extern "C" {
 
 void *emulator_create_ocn(const EmulatorCreateConfig *cfg) {
-  return emulator::create_component<emulator::EmulatorOcn>("ocn", cfg);
+  emulator::ocn::register_ocn_operators();
+  return emulator::create_component("ocn", cfg, [] {
+    return std::make_unique<emulator::EmulatorComponent>(
+        emulator::EmulatorType::OCN_COMP, "emulatorocn");
+  });
 }
 
 } // extern "C"

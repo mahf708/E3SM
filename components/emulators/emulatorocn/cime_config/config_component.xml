@@ -19,12 +19,15 @@
     <desc>SCRIP grid the ocean emulator runs on (ocn_in grid_file)</desc>
   </entry>
 
-  <entry id="EMULATOROCN_EMULATOR">
+  <entry id="EMULATOROCN_SPEC">
     <type>char</type>
-    <default_value>Samudra-E3SMv3</default_value>
+    <default_value>samudra-e3smv3-ocean-coupler-forced.yaml</default_value>
+    <values>
+      <value compset="EMULATORATM.*_EMULATOROCN">samudra-e3smv3-ocean.yaml</value>
+    </values>
     <group>run_component_emulatorocn</group>
     <file>env_run.xml</file>
-    <desc>Ocean emulator layout (ocn_in emulator)</desc>
+    <desc>Spec in components/emulators/specs describing the ocean emulator: SamudrACE's (forced by the emulated atmosphere) or coupler-forced</desc>
   </entry>
 
   <entry id="EMULATOROCN_MODEL_FILE">

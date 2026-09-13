@@ -52,7 +52,8 @@ program test_emulator_factory
   !----------------------------------------
   ! create config
   !----------------------------------------
-  input_file_c = 'test'//c_null_char
+  ! No input file: an unconfigured component.
+  input_file_c = c_null_char
   log_file_c   = 'test_log'//c_null_char
   cfg = create_config(f_comm=fcomm,comp_id=1_c_int,run_type=0_c_int,&
             start_ymd=20000101_c_int, start_tod=0_c_int,&

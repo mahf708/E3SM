@@ -2,11 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 
 # The emulated ocean: Samudra on the framework, and its MCT cap.
 add_library(emulatorocn
-  src/samudra_channels.cpp
   src/ocean_forcing.cpp
-  src/samudra_ocean.cpp
   src/ocean_operators.cpp
-  src/ocn.cpp
   src/ocn_factory.cpp
 )
 target_include_directories(emulatorocn PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

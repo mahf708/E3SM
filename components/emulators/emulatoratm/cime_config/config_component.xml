@@ -32,15 +32,15 @@
     <desc>SCRIP grid the atmosphere emulator runs on (atm_in grid_file)</desc>
   </entry>
 
-  <entry id="EMULATORATM_EMULATOR">
+  <entry id="EMULATORATM_SPEC">
     <type>char</type>
-    <default_value>ACE2-EAMv3</default_value>
+    <default_value>ace2-eamv3.yaml</default_value>
     <values>
-      <value compset="_EMULATOROCN">SamudrACE-E3SMv3</value>
+      <value compset="_EMULATOROCN">samudrace-e3smv3-atmosphere.yaml</value>
     </values>
     <group>run_component_emulatoratm</group>
     <file>env_run.xml</file>
-    <desc>ACE channel layout (atm_in emulator): ACE2-EAMv3 or SamudrACE-E3SMv3</desc>
+    <desc>Spec in components/emulators/specs describing the atmosphere emulator</desc>
   </entry>
 
   <entry id="EMULATORATM_MODEL_FILE">

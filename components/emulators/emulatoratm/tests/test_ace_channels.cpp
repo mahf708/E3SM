@@ -2,7 +2,8 @@
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch.hpp>
 
-#include "ace_channels.hpp"
+#include "channel_layout_yaml.hpp"
+#include "emulator_test_support.hpp"
 
 #include <algorithm>
 
@@ -10,10 +11,24 @@ namespace emulator {
 namespace atm {
 namespace test {
 
+namespace {
+fields::ChannelLayout ace2_eamv3() {
+  return fields::read_channel_layout(
+      config::Section::load_spec(emulator::test::spec_path("ace2-eamv3.yaml"))
+          .section("network"));
+}
+fields::ChannelLayout samudrace_e3smv3() {
+  return fields::read_channel_layout(
+      config::Section::load_spec(
+          emulator::test::spec_path("samudrace-e3smv3-atmosphere.yaml"))
+          .section("network"));
+}
+} // namespace
+
 using fields::InputSource;
 using Temporal = coupling::BracketedState::Temporal;
 
-TEST_CASE("ACE2-EAMv3 has the checkpoint's 39 inputs and 44 outputs",
+TEST_CASE("The ACE2-EAMv3 spec has the checkpoint's 39 inputs and 44 outputs",
           "[ace][channels]") {
   const auto l = ace2_eamv3();
   REQUIRE(l.model_dt == 21600);
@@ -26,7 +41,7 @@ TEST_CASE("ACE2-EAMv3 has the checkpoint's 39 inputs and 44 outputs",
   REQUIRE(l.outputs.back() == "tendency_of_total_water_path_due_to_advection");
 }
 
-TEST_CASE("SamudrACE-E3SMv3 has the checkpoint's 43 inputs and 51 outputs",
+TEST_CASE("The SamudrACE-E3SMv3 atmosphere spec has the checkpoint's 43 inputs and 51 outputs",
           "[ace][channels]") {
   const auto l = samudrace_e3smv3();
   REQUIRE(l.inputs.size() == 43);
@@ -41,9 +56,8 @@ TEST_CASE("SamudrACE-E3SMv3 has the checkpoint's 43 inputs and 51 outputs",
 }
 
 TEST_CASE("Every ACE input has its source", "[ace][channels]") {
-  for (const auto &name : ace_layout_names()) {
-    const auto l = ace_layout(name);
-    INFO(name);
+  for (const auto &l : {ace2_eamv3(), samudrace_e3smv3()}) {
+    INFO(l.name);
     // Predicted by the network, but owned by the component: TS is blended
     // with the coupler's surface temperature.
     REQUIRE(l.source("TS") == InputSource::Coupled);
@@ -90,41 +104,12 @@ TEST_CASE("A layout with an input nothing sets is refused", "[channels]") {
   typo.interval_mean_outputs.push_back("FSNS");
   REQUIRE_THROWS_WITH(typo.validate(), Catch::Contains("'FSNS'"));
 
-  REQUIRE_THROWS_WITH(ace_layout("ACE3"), Catch::Contains("ACE2-EAMv3"));
+  REQUIRE_THROWS_WITH(
+      config::Section::load_spec(emulator::test::spec_path("ACE3.yaml")),
+      Catch::Contains("ACE3.yaml"));
 }
 
 } // namespace test
 } // namespace atm
 } // namespace emulator
 
-#include "channel_layout_yaml.hpp"
-
-namespace emulator {
-namespace test {
-
-namespace {
-void require_same(const fields::ChannelLayout &a, const fields::ChannelLayout &b) {
-  REQUIRE(a.name == b.name);
-  REQUIRE(a.model_dt == b.model_dt);
-  REQUIRE(a.inputs == b.inputs);
-  REQUIRE(a.outputs == b.outputs);
-  REQUIRE(a.coupled_inputs == b.coupled_inputs);
-  REQUIRE(a.boundary_inputs == b.boundary_inputs);
-  REQUIRE(a.forcing_inputs == b.forcing_inputs);
-  REQUIRE(a.interval_mean_outputs == b.interval_mean_outputs);
-}
-fields::ChannelLayout spec(const char *file) {
-  return fields::read_channel_layout(
-      config::Section::load_file(std::string(EMULATOR_SPEC_DIR) + "/" + file)
-          .section("network"));
-}
-} // namespace
-
-TEST_CASE("The ACE spec files are the channel tables", "[ace][spec]") {
-  require_same(spec("ace2-eamv3.yaml"), atm::ace2_eamv3());
-  require_same(spec("samudrace-e3smv3-atmosphere.yaml"),
-               atm::samudrace_e3smv3());
-}
-
-} // namespace test
-} // namespace emulator
