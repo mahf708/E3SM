@@ -65,8 +65,8 @@ Stats over_mask(std::span<const double> f, std::span<const double> mask) {
 
 } // namespace
 
-TEST_CASE("Samudra's first step reproduces an independent Python run, and a "
-          "mid-window restart is exact", "[samudra][real]") {
+TEST_CASE("Samudra's first step, at the first window's close, reproduces an "
+          "independent Python run, and a mid-window restart is exact", "[samudra][real]") {
   int rank = 0, size = 1;
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -94,8 +94,15 @@ TEST_CASE("Samudra's first step reproduces an independent Python run, and a "
     config.set("device", "cuda");
     backend = inference::create_backend(config, inference::InferenceContext{});
   }
+  // The forcing arrives through the exchange, as it does from the emulated
+  // atmosphere, and is the initial condition's own forcing at every step:
+  // then the first window's mean is exactly the forcing an independent
+  // Python run of the checkpoint gives the network.
+  coupling::Exchange exchange;
   SamudraOcean::Config config;
   config.layout = samudra_e3smv3();
+  config.forcing_source = SamudraOcean::ForcingSource::Atmosphere;
+  config.exchange = &exchange;
 
   auto make = [&] {
     return SamudraOcean(config, MPI_COMM_WORLD, g, decomp, backend);
@@ -103,70 +110,16 @@ TEST_CASE("Samudra's first step reproduces an independent Python run, and a "
   SamudraOcean ocean = make();
   const auto ic = grid::read_grid_fields(kIc, ocean.initial_condition_names(),
                                          g.ny, g.nx);
-  ocean.initialize(after(0), ic);
-
-  // An independent reference: the same traced model and initial condition,
-  // assembled and run from Python (tests/samudra_reference.py, torch 2.10,
-  // netCDF4) on an A100, 2026-09-12.  emulator_comps/eocn/VERIFICATION.md
-  // section 1 records a different table for "the published initial
-  // condition" (sst 269.13-309.14, mean 286.76); it does not reproduce with
-  // samudra_ocn_traced_masked_cuda.pt and either published IC file, so it
-  // came from an earlier trace or input and is not used here.
-  const std::map<std::string, Stats> recorded{
-      {"sst", {270.24, 305.32, 286.65}},
-      {"ssh", {-1.23, 0.86, -0.05}},
-      {"salinityCoarsened_0", {0.00, 49.28, 33.39}},
-      {"temperatureCoarsened_0", {-2.87, 32.10, 13.47}},
-      {"velocityZonalCoarsened_0", {-1.08, 1.09, 0.00}},
-      {"ocean_sea_ice_fraction", {0.00, 1.00, 0.28}},
-      {"iceVolumeTotal", {0.00, 50.31, 0.60}}};
-  for (const auto &[name, want] : recorded) {
-    const auto got = over_mask(ocean.brackets().upper(name), ocean.ocean_mask());
-    if (rank == 0) {
-      std::printf("  %-26s min %8.2f (%8.2f)  max %8.2f (%8.2f)  mean %7.2f "
-                  "(%7.2f)\n",
-                  name.c_str(), got.min, want.min, got.max, want.max, got.mean,
-                  want.mean);
-    }
-    INFO(name);
-    // The reference is printed to two decimals.
-    CHECK(got.min == Approx(want.min).margin(0.006));
-    CHECK(got.max == Approx(want.max).margin(0.006));
-    CHECK(got.mean == Approx(want.mean).margin(0.006));
-  }
-
-  // A stand-in coupler that hands back the initial condition's forcing, so
-  // the window mean is the forcing the model started from.
-  fields::FieldSet imports(decomp.num_local());
-  for (const auto &n : coupler_forcing_imports()) {
-    imports.add(n);
-  }
-  auto local = [&](const char *name) {
+  for (const auto &name : samudra_forcing_names()) {
     for (const auto &f : ic) {
       if (f.name == name) {
-        return decomp.local(f.values);
+        exchange.publish("atm." + name, decomp.local(f.values));
       }
     }
-    throw std::runtime_error(name);
-  };
-  {
-    const auto taux = local("TAUX"), tauy = local("TAUY");
-    const auto prec = local("surface_precipitation_rate");
-    const auto frz = local("frozen_precipitation_rate");
-    const auto flus = local("FLUS"), flds = local("FLDS"), fsds = local("FSDS");
-    const auto lh = local("LHFLX"), sh = local("SHFLX");
-    for (std::size_t i = 0; i < decomp.num_local(); ++i) {
-      imports.get("Foxx_taux")[i] = -taux[i];
-      imports.get("Foxx_tauy")[i] = -tauy[i];
-      imports.get("Faxa_snow")[i] = frz[i];
-      imports.get("Faxa_rain")[i] = prec[i] - frz[i];
-      imports.get("Foxx_lwup")[i] = -flus[i];
-      imports.get("Faxa_lwdn")[i] = flds[i];
-      imports.get("Foxx_swnet")[i] = fsds[i] * 0.94;
-      imports.get("Foxx_lat")[i] = -lh[i];
-      imports.get("Foxx_sen")[i] = -sh[i];
-    }
+    REQUIRE(exchange.has("atm." + name));
   }
+  ocean.initialize(after(0), ic);
+  fields::FieldSet imports(decomp.num_local()); // the exchange is the source
   auto make_exports = [&] {
     fields::FieldSet e(decomp.num_local());
     for (const auto &n : samudra_export_names()) {
@@ -175,15 +128,62 @@ TEST_CASE("Samudra's first step reproduces an independent Python run, and a "
     return e;
   };
 
-  const int total = 300, restart_at = 100; // a window closes at step 240
-  std::vector<std::vector<double>> reference(total + 1);
+  // Through the first window the exports hold the initial condition: no
+  // network step before the window closes.
   auto exports = make_exports();
+  ocean.initial_exports(exports);
+  const std::vector<double> held(exports.get("So_t").begin(),
+                                 exports.get("So_t").end());
+  const int total = 300, restart_at = 100, window = 240;
+  std::vector<std::vector<double>> reference(total + 1);
+  int moved = 0;
   for (int n = 1; n <= total; ++n) {
     ocean.run(after(n), imports, exports);
     reference[n].assign(exports.get("So_t").begin(), exports.get("So_t").end());
     const auto ice = ocean.sea_ice_fraction();
     reference[n].insert(reference[n].end(), ice.begin(), ice.end());
+    if (n < window) {
+      std::vector<double> t(exports.get("So_t").begin(),
+                            exports.get("So_t").end());
+      moved += t == held ? 0 : 1;
+    }
+    if (n == window) {
+      REQUIRE(ocean.clock().completed_steps() == 1);
+      // An independent reference: the same traced model and initial
+      // condition, assembled and run from Python (tests/samudra_reference.py,
+      // torch 2.10, netCDF4) on an A100, 2026-09-12.
+      // emulator_comps/eocn/VERIFICATION.md section 1 records a different
+      // table for "the published initial condition" (sst 269.13-309.14, mean
+      // 286.76); it does not reproduce with samudra_ocn_traced_masked_cuda.pt
+      // and either published IC file, so it is not used here.
+      const std::map<std::string, Stats> recorded{
+          {"sst", {270.24, 305.32, 286.65}},
+          {"ssh", {-1.23, 0.86, -0.05}},
+          {"salinityCoarsened_0", {0.00, 49.28, 33.39}},
+          {"temperatureCoarsened_0", {-2.87, 32.10, 13.47}},
+          {"velocityZonalCoarsened_0", {-1.08, 1.09, 0.00}},
+          {"ocean_sea_ice_fraction", {0.00, 1.00, 0.28}},
+          {"iceVolumeTotal", {0.00, 50.31, 0.60}}};
+      for (const auto &[name, want] : recorded) {
+        const auto got =
+            over_mask(ocean.brackets().upper(name), ocean.ocean_mask());
+        if (rank == 0) {
+          std::printf("  %-26s min %8.2f (%8.2f)  max %8.2f (%8.2f)  mean "
+                      "%7.2f (%7.2f)\n",
+                      name.c_str(), got.min, want.min, got.max, want.max,
+                      got.mean, want.mean);
+        }
+        INFO(name);
+        // The reference is printed to two decimals.
+        CHECK(got.min == Approx(want.min).margin(0.006));
+        CHECK(got.max == Approx(want.max).margin(0.006));
+        CHECK(got.mean == Approx(want.mean).margin(0.006));
+      }
+    }
   }
+  int all_moved = 0;
+  MPI_Allreduce(&moved, &all_moved, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+  REQUIRE(all_moved == 0);
   REQUIRE(ocean.clock().completed_steps() == 1);
 
   // The ice fraction never leaves its own mask, and So_t never drops below
@@ -198,13 +198,9 @@ TEST_CASE("Samudra's first step reproduces an independent Python run, and a "
   MPI_Allreduce(&outside, &all_outside, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   REQUIRE(all_outside == 0);
   REQUIRE(coldest >= 271.35);
-  const auto sst2 = over_mask(ocean.brackets().upper("sst"), ocean.ocean_mask());
-  if (rank == 0) {
-    std::printf("  after the second step (day 10): sst min %.2f max %.2f mean "
-                "%.2f K\n", sst2.min, sst2.max, sst2.mean);
-  }
-  REQUIRE(sst2.min > 265.0);
-  REQUIRE(sst2.max < 315.0);
+  const auto sst1 = over_mask(ocean.brackets().upper("sst"), ocean.ocean_mask());
+  REQUIRE(sst1.min > 265.0);
+  REQUIRE(sst1.max < 315.0);
 
   // Restart at step 100, in the middle of the first window.
   coupling::MemoryRestartStore store;

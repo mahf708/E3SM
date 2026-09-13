@@ -127,9 +127,7 @@ void SamudraOcean::initialize(coupling::ModelTime start,
     auto dest = state.add(name);
     std::copy(from.begin(), from.end(), dest.begin());
   }
-  m_stepper.step(0);
   m_brackets.set_both(state);
-  m_brackets.advance(m_stepper.prediction());
   m_started = true;
 }
 
@@ -173,15 +171,16 @@ void SamudraOcean::run(coupling::ModelTime now,
       m_window.reset();
     }
   }
-  compute_exports(step.fraction, exports);
+  compute_exports(exports);
 }
 
 void SamudraOcean::initial_exports(fields::FieldSet &exports) {
-  compute_exports(0.0, exports);
+  compute_exports(exports);
 }
 
-void SamudraOcean::compute_exports(double fraction, fields::FieldSet &exports) {
-  m_brackets.blend(fraction, m_blended);
+void SamudraOcean::compute_exports(fields::FieldSet &exports) {
+  // The latest state, held through the window.
+  m_brackets.blend(1.0, m_blended);
   const auto sst = m_blended.get("sst");
   const auto sal = m_blended.get("salinityCoarsened_0");
   const auto u = m_blended.get("velocityZonalCoarsened_0");

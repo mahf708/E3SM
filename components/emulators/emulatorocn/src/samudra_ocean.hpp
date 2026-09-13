@@ -34,15 +34,26 @@ const std::vector<std::string> &samudra_export_names();
 /**
  * @brief One Samudra ocean on one rank of its communicator.
  *
+ * The timing is SamudrACE's (fme's CoupledStepper): over a 5-day window the
+ * atmosphere sees the ocean's state at the start of the window; when the
+ * window closes the ocean steps once, from that state, forced by the mean
+ * over that same window, and its prediction is the state for the next one.
+ *
  * Per coupler step run():
- *  - samples the coupler forcing (coupler_forcing_sample) into a 5-day
- *    window mean, the current step included;
+ *  - samples the forcing into the window mean.  The driver runs ocn before
+ *    atm (CESM1_MOD_TIGHT), so the samples are the atmosphere's exports at
+ *    steps 0..239 of the window: twelve of each of its twenty 6-hour means;
  *  - on the step that closes a window: the window mean becomes the forcing
- *    channels, the network steps with the counted index, the brackets
- *    advance, and the window restarts.  The forcing is the mean over the
- *    window that just closed, as in EOCN;
- *  - every step: exports from the blended state, bounded by the ocean mask
- *    and, for the sea-ice fraction, by its own mask.
+ *    channels, the network steps with the counted index, the state advances
+ *    to the prediction, and the window restarts;
+ *  - every step: exports from the latest state, held, not interpolated,
+ *    bounded by the ocean mask and, for the sea-ice fraction, by its own.
+ *
+ * EOCN, and this class before 2026-09-12, stepped once at initialization on
+ * the initial condition's own forcing and then interpolated the exports
+ * towards a prediction made from the previous window's forcing: the forcing
+ * a window late.  Against fme's own coupled run from the same initial
+ * condition that gave an SST RMSE of 0.375 K at day 5, above persistence.
  *
  * Masked land values of the inputs need no treatment here: the traced graph
  * fills them with each channel's training mean before normalizing.
@@ -74,7 +85,8 @@ public:
   /**
    * @brief Start from the initial condition: the input channels (without the
    *        `:next` copies) plus `mask_2d` and `mask_ocean_sea_ice_fraction`,
-   *        whole-grid.  Takes the first network step.
+   *        whole-grid.  No network step: the first is at the first window's
+   *        close, on that window's forcing.
    */
   void initialize(coupling::ModelTime start,
                   const std::vector<grid::GridField> &initial_condition);
@@ -101,7 +113,7 @@ public:
 
 private:
   void load_static(const std::vector<grid::GridField> &ic);
-  void compute_exports(double fraction, fields::FieldSet &exports);
+  void compute_exports(fields::FieldSet &exports);
 
   Config m_config;
   grid::Decomposition m_decomp;
