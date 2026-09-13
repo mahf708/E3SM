@@ -36,7 +36,10 @@
     <type>char</type>
     <default_value>ace2-eamv3.yaml</default_value>
     <values>
-      <value compset="_EMULATOROCN">samudrace-e3smv3-atmosphere.yaml</value>
+      <!-- fme's ocean-to-atmosphere exchange: with the energy-corrected trace,
+           SST RMSE against fme's ref1yr at day 355 is 1.38 K, against 2.05 K
+           for the coupler-surface spec and the uncorrected trace (2 seeds). -->
+      <value compset="_EMULATOROCN">samudrace-e3smv3-atmosphere-fme-surface.yaml</value>
     </values>
     <group>run_component_emulatoratm</group>
     <file>env_run.xml</file>
@@ -47,7 +50,8 @@
     <type>char</type>
     <default_value>/global/cfs/cdirs/e3sm/anolan/ACE2-E3SMv3/ace_traced_cuda.pt</default_value>
     <values>
-      <value compset="_EMULATOROCN">/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/eatm/samudrace_atm_traced_cuda.pt</value>
+      <!-- traced with fme's total energy budget correction (trace.py) -->
+      <value compset="_EMULATOROCN">/pscratch/sd/m/mahf708/SamudrACE-E3SMv3/eatm/samudrace_atm_traced_cuda_energy.pt</value>
     </values>
     <group>run_component_emulatoratm</group>
     <file>env_run.xml</file>
