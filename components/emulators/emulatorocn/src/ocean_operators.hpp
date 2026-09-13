@@ -88,14 +88,24 @@ private:
 
 /**
  * @brief `ocean.coupler_window_mean`: forcing averaged from the coupler's
- *        merged fluxes (coupler_forcing_sample), for an emulated ocean under
- *        a model atmosphere.
+ *        merged fluxes, for an emulated ocean under a model atmosphere.
+ *
+ * With `ice_surface_from`, the cell mean over open water and the sea ice
+ * (cell_mean_forcing_sample), reading the ice component's
+ * ice_surface_names() from the exchange under that prefix:
  *
  * ```yaml
  * - operator: ocean.coupler_window_mean
  *   channels: [TAUX, TAUY, surface_precipitation_rate, ...]
  *   also_into_suffix: ":next"
  *   clip_min_zero: [surface_precipitation_rate, frozen_precipitation_rate]
+ *   ice_surface_from: ice.
+ * ```
+ *
+ * Without it, the open-water fluxes over the whole cell
+ * (coupler_forcing_sample), which needs no sea ice in the process:
+ *
+ * ```yaml
  *   unweight_by_ice_fraction: true
  *   unweight_stress: false
  *   ocean_albedo: 0.06
@@ -111,6 +121,8 @@ protected:
 
 private:
   CouplerForcingOptions m_options;
+  std::string m_ice_prefix; ///< empty: coupler_forcing_sample
+  fields::FieldSet m_ice;
 };
 
 /// Registers the ocean operators.  Idempotent.

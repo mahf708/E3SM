@@ -21,7 +21,7 @@ namespace {
 // Slices of the coupler's lists, with fields the ice does not use.
 const std::string kX2i = "So_t:So_s:Sa_z:Sa_u:Sa_v:Sa_ptem:Sa_tbot:Sa_shum:"
                          "Sa_dens:Faxa_swndr:Faxa_swvdr:Faxa_swndf:"
-                         "Faxa_swvdf:Faxa_lwdn:Faxa_rain";
+                         "Faxa_swvdf:Faxa_lwdn:Faxa_rain:Faxa_snow";
 const std::string kI2x =
     "Si_avsdr:Si_anidr:Si_avsdf:Si_anidf:Si_tref:Si_qref:Si_t:Si_snowh:"
     "Si_u10:Si_ifrac:Faii_taux:Fioi_taux:Faii_tauy:Fioi_tauy:Faii_lat:"
@@ -233,6 +233,14 @@ TEST_CASE("Under a model atmosphere the ice skin balances its energy",
                      ice::prescribed_skin_temperature(shared.domain.lat[p],
                                                       20000115, 1800)) > 1.0);
   }
+  // What a coupler-forced ocean completes its cell means with.
+  for (const char *name : {"Faii_lwup", "Faii_lat", "Si_ifrac"}) {
+    const auto published = ex.get(std::string("ice.") + name);
+    for (std::size_t p = 0; p < n; ++p) {
+      REQUIRE(published[p] == i2x.at(name, p));
+    }
+  }
+  REQUIRE(ex.get("ice.Faxa_lwdn")[0] == 200.0);
   ice.finalize();
 }
 

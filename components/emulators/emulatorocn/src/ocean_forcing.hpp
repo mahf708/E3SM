@@ -50,6 +50,38 @@ void coupler_forcing_sample(const fields::FieldSet &imports,
                             const CouplerForcingOptions &options,
                             fields::FieldSet &forcing);
 
+/**
+ * The sea ice component's fields that cell_mean_forcing_sample reads: its
+ * own surface fluxes (coupler signs, per unit ice area) and the atmosphere's
+ * downward fields as the coupler sent them to the ice, unweighted.
+ */
+const std::vector<std::string> &ice_surface_names();
+
+/**
+ * @brief One coupler step's forcing as the cell mean over open water and
+ *        sea ice, which is what EAM wrote and Samudra was trained on.
+ *
+ * The coupler weights the ocean's fluxes by the open-water fraction, so
+ * adding the ice fraction times the ice surface's own flux completes the
+ * cell: LHFLX = -(Foxx_lat + f Faii_lat), and likewise SHFLX and FLUS.
+ * Foxx_swnet and Foxx_taux already hold f Fioi_swpen and f Fioi_taux, which
+ * are swapped for the ice's atmosphere-side Faii_swnet and Faii_taux.  The
+ * downward fields (FSDS, FLDS, precipitation) come from the ice's imports,
+ * which the coupler does not weight.
+ *
+ * Dividing by the open-water fraction instead (coupler_forcing_sample)
+ * extends the open-water flux over the ice; under full ice it hands over
+ * zeros.  In a January hybrid month the Arctic under more than 90% ice got
+ * FLUS 64 and FLDS 42 W/m2 that way, against E3SMv3's 195 and 151; the cell
+ * mean gives 200 and EAM's own 176.
+ *
+ * @param imports the coupler_forcing_imports() fields
+ * @param ice the ice_surface_names() fields
+ */
+void cell_mean_forcing_sample(const fields::FieldSet &imports,
+                              const fields::FieldSet &ice,
+                              fields::FieldSet &forcing);
+
 /// Clip the precipitation channels of a window mean at zero.
 void clip_after_mean(fields::FieldSet &forcing);
 

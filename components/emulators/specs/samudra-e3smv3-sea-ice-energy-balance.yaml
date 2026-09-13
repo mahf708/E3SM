@@ -13,6 +13,20 @@ operators:
     skin: energy_balance
     ice_thickness: {north: 2.0, south: 1.0}
     snow_depth: 0.2
+  # For a coupler-forced ocean's cell means: the ice surface's own fluxes and
+  # the atmosphere's downward fields, which the coupler weights by the
+  # open-water fraction before the ocean sees them.
+  - operator: exchange.publish
+    fields: {ice.Si_ifrac: exports.Si_ifrac, ice.Faii_lwup: exports.Faii_lwup,
+             ice.Faii_lat: exports.Faii_lat, ice.Faii_sen: exports.Faii_sen,
+             ice.Faii_swnet: exports.Faii_swnet,
+             ice.Faii_taux: exports.Faii_taux, ice.Faii_tauy: exports.Faii_tauy,
+             ice.Fioi_swpen: exports.Fioi_swpen,
+             ice.Fioi_taux: exports.Fioi_taux, ice.Fioi_tauy: exports.Fioi_tauy,
+             ice.Faxa_lwdn: imports.Faxa_lwdn, ice.Faxa_rain: imports.Faxa_rain,
+             ice.Faxa_snow: imports.Faxa_snow,
+             ice.Faxa_swvdr: imports.Faxa_swvdr, ice.Faxa_swndr: imports.Faxa_swndr,
+             ice.Faxa_swvdf: imports.Faxa_swvdf, ice.Faxa_swndf: imports.Faxa_swndf}
 
 coupler:
   imports:
@@ -28,3 +42,5 @@ coupler:
     - {name: Faxa_swvdf, units: W/m2}
     - {name: Faxa_swndf, units: W/m2}
     - {name: Faxa_lwdn, units: W/m2}
+    - {name: Faxa_rain, units: kg/m2/s}
+    - {name: Faxa_snow, units: kg/m2/s}

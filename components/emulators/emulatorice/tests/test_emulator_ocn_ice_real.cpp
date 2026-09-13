@@ -40,7 +40,8 @@ const std::string kX2o = "Foxx_taux:Foxx_tauy:Faxa_rain:Faxa_snow:Foxx_lwup:"
 const std::string kO2x = "So_t:So_s:So_u:So_v:So_dhdx:So_dhdy:So_ssh:Fioo_q:"
                          "So_bldepth";
 const std::string kX2i = "Sa_z:Sa_u:Sa_v:Sa_ptem:Sa_tbot:Sa_shum:Sa_dens:"
-                         "Faxa_swndr:Faxa_swvdr:Faxa_swndf:Faxa_swvdf:So_t";
+                         "Faxa_swndr:Faxa_swvdr:Faxa_swndf:Faxa_swvdf:"
+                         "Faxa_lwdn:Faxa_rain:Faxa_snow:So_t";
 const std::string kI2x =
     "Si_avsdr:Si_anidr:Si_avsdf:Si_anidf:Si_tref:Si_qref:Si_t:Si_snowh:"
     "Si_ifrac:Faii_taux:Fioi_taux:Faii_tauy:Fioi_tauy:Faii_lat:Faii_sen:"
@@ -85,7 +86,7 @@ TEST_CASE("The emulated ocean and its sea ice run through the coupler's "
       << "inference: {backend: libtorch, model_path: " << kModel
       << ", device: cuda}\n";
   const TempFile ice_in(
-      "ice_in", "spec: " + spec_path("samudrace-e3smv3-sea-ice.yaml") +
+      "ice_in", "spec: " + spec_path("samudra-e3smv3-sea-ice-energy-balance.yaml") +
                     "\ncoupler_dt: 1800\ngrid: {domain: shared, shared_from: ocn}\n");
   ocn::register_ocn_operators();
   ice::register_ice_operators();
@@ -168,6 +169,8 @@ TEST_CASE("The emulated ocean and its sea ice run through the coupler's "
     x2i.at("Sa_tbot", p) = 265.0;
     x2i.at("Sa_shum", p) = 1.5e-3;
     x2i.at("Sa_dens", p) = 1.33;
+    x2i.at("Faxa_lwdn", p) = 340.0;
+    x2i.at("Faxa_rain", p) = 3.0e-5;
   }
   std::vector<double> previous(ocn.model()->aux().get("sea_ice_fraction").begin(),
                                ocn.model()->aux().get("sea_ice_fraction").end());

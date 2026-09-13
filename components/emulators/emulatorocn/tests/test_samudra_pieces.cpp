@@ -113,6 +113,78 @@ TEST_CASE("Coupler forcing is unweighted by the ice fraction, with the "
   }
 }
 
+TEST_CASE("Cell-mean forcing completes the open-water fluxes with the ice "
+          "surface's own", "[samudra][forcing]") {
+  Coupler c;
+  fields::FieldSet ice(1);
+  for (const auto &n : ice_surface_names()) {
+    ice.add(n);
+  }
+  const auto set_ice = [&](const char *n, double v) { ice.get(n)[0] = v; };
+  // A cell 3/4 ice-covered.  The coupler's ocean fluxes carry the open
+  // quarter only, plus the ice's ocean-side stress and penetrating shortwave.
+  const double f = 0.75;
+  set_ice("Si_ifrac", f);
+  c.set("Foxx_lwup", -0.25 * 310.0);
+  c.set("Foxx_lat", -0.25 * 40.0);
+  c.set("Foxx_sen", -0.25 * 20.0);
+  c.set("Foxx_swnet", 0.25 * 94.0 + f * 2.0);
+  c.set("Foxx_taux", 0.25 * 0.1 + f * 0.05);
+  c.set("Foxx_tauy", 0.25 * -0.2 + f * 0.01);
+  set_ice("Fioi_swpen", 2.0);
+  set_ice("Fioi_taux", 0.05);
+  set_ice("Fioi_tauy", 0.01);
+  set_ice("Faii_lwup", -250.0);
+  set_ice("Faii_lat", -4.0);
+  set_ice("Faii_sen", 8.0);
+  set_ice("Faii_swnet", 30.0);
+  set_ice("Faii_taux", 0.08);
+  set_ice("Faii_tauy", -0.04);
+  set_ice("Faxa_lwdn", 230.0);
+  set_ice("Faxa_rain", 1e-6);
+  set_ice("Faxa_snow", 3e-6);
+  set_ice("Faxa_swvdr", 40.0);
+  set_ice("Faxa_swndr", 30.0);
+  set_ice("Faxa_swvdf", 20.0);
+  set_ice("Faxa_swndf", 10.0);
+  // The coupler's open-fraction-weighted downward fields must not be read.
+  c.set("Faxa_lwdn", 0.25 * 230.0);
+  c.set("Faxa_rain", 0.25 * 1e-6);
+  c.set("Si_ifrac", 0.0);
+  cell_mean_forcing_sample(c.in, ice, c.out);
+
+  REQUIRE(c.get("FLUS") == Approx(0.25 * 310.0 + f * 250.0));
+  REQUIRE(c.get("LHFLX") == Approx(0.25 * 40.0 + f * 4.0));
+  REQUIRE(c.get("SHFLX") == Approx(0.25 * 20.0 - f * 8.0)); // into the ice
+  REQUIRE(c.get("FLDS") == 230.0);
+  REQUIRE(c.get("FSDS") == 100.0);
+  REQUIRE(c.get("FSUS") == Approx(100.0 - (0.25 * 94.0 + f * 30.0)));
+  REQUIRE(c.get("TAUX") == Approx(-(0.25 * 0.1 + f * 0.08)));
+  REQUIRE(c.get("TAUY") == Approx(-(0.25 * -0.2 + f * -0.04)));
+  REQUIRE(c.get("surface_precipitation_rate") == Approx(4e-6));
+  REQUIRE(c.get("frozen_precipitation_rate") == Approx(3e-6));
+
+  SECTION("under full ice the forcing is the ice surface's, not zero") {
+    set_ice("Si_ifrac", 1.0);
+    for (const char *n : {"Foxx_lwup", "Foxx_lat", "Foxx_sen"}) {
+      c.set(n, 0.0);
+    }
+    c.set("Foxx_swnet", 2.0);
+    cell_mean_forcing_sample(c.in, ice, c.out);
+    REQUIRE(c.get("FLUS") == 250.0);
+    REQUIRE(c.get("LHFLX") == 4.0);
+    REQUIRE(c.get("FSUS") == Approx(70.0));
+  }
+  SECTION("over open water it is the coupler's") {
+    set_ice("Si_ifrac", 0.0);
+    c.set("Foxx_swnet", 94.0);
+    c.set("Foxx_lwup", -310.0);
+    cell_mean_forcing_sample(c.in, ice, c.out);
+    REQUIRE(c.get("FLUS") == 310.0);
+    REQUIRE(c.get("FSUS") == Approx(6.0));
+  }
+}
+
 TEST_CASE("Precipitation is clipped after the window mean, not before",
           "[samudra][forcing]") {
   fields::FieldSet mean(2);

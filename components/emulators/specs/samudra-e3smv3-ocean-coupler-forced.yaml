@@ -1,6 +1,8 @@
 # Samudra under a model atmosphere: forced with the coupler's merged fluxes
-# instead of an emulated atmosphere's own.  Everything else is the SamudrACE
-# ocean's.
+# instead of an emulated atmosphere's own, completed over sea ice with the ice
+# component's own surface into the cell means EAM wrote for training.  Needs
+# a sea ice that publishes that surface (samudra-e3smv3-sea-ice-energy-balance
+# .yaml).  Everything else is the SamudrACE ocean's.
 
 extends: samudra-e3smv3-ocean.yaml
 name: samudra-ocean-coupler-forced
@@ -11,9 +13,7 @@ operators:
                FLUS, FSUS, FLDS, FSDS, LHFLX, SHFLX]
     also_into_suffix: ":next"
     clip_min_zero: [surface_precipitation_rate, frozen_precipitation_rate]
-    unweight_by_ice_fraction: true
-    unweight_stress: false
-    ocean_albedo: 0.06
+    ice_surface_from: ice.
   - operator: ocean.surface_exports
     freezing_sst: 271.35        # sea water, shr_const_tkfrzsw
     land_salinity: 34.7

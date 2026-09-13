@@ -176,9 +176,25 @@ void SshGradients::exports(const model::StepInfo &, model::Fields &f) {
 
 CouplerWindowMean::CouplerWindowMean(const config::Section &o,
                                      const model::ModelInfo &info)
-    : WindowMeanForcing(o, info, o.names("channels")) {
+    : WindowMeanForcing(o, info, o.names("channels")),
+      m_ice_prefix(o.string_or("ice_surface_from", "")),
+      m_ice(info.geometry->num_local()) {
   o.only({"operator", "channels", "also_into_suffix", "clip_min_zero",
-          "unweight_by_ice_fraction", "unweight_stress", "ocean_albedo"});
+          "unweight_by_ice_fraction", "unweight_stress", "ocean_albedo",
+          "ice_surface_from"});
+  if (!m_ice_prefix.empty()) {
+    for (const char *k :
+         {"unweight_by_ice_fraction", "unweight_stress", "ocean_albedo"}) {
+      if (o.has(k)) {
+        throw std::invalid_argument(
+            o.where() + "." + k + ": the cell mean over open water and ice "
+            "(ice_surface_from) neither unweights nor assumes an albedo.");
+      }
+    }
+    for (const auto &name : ice_surface_names()) {
+      m_ice.add(name);
+    }
+  }
   m_options.unweight_by_ice_fraction =
       o.boolean_or("unweight_by_ice_fraction", m_options.unweight_by_ice_fraction);
   m_options.unweight_stress =
@@ -188,7 +204,26 @@ CouplerWindowMean::CouplerWindowMean(const config::Section &o,
 
 void CouplerWindowMean::fill_sample(model::Fields &f,
                                    fields::FieldSet &sample) {
-  coupler_forcing_sample(*f.imports, m_options, sample);
+  if (m_ice_prefix.empty()) {
+    coupler_forcing_sample(*f.imports, m_options, sample);
+    return;
+  }
+  if (f.exchange == nullptr) {
+    throw std::logic_error("ocean.coupler_window_mean: the model has no exchange.");
+  }
+  for (const auto &name : ice_surface_names()) {
+    const auto key = m_ice_prefix + name;
+    if (!f.exchange->has(key)) {
+      throw std::runtime_error(
+          "ocean.coupler_window_mean: nothing has published " + key +
+          ". The cell-mean forcing needs a sea ice in the process that "
+          "publishes its surface, as samudra-e3smv3-sea-ice-energy-balance.yaml "
+          "does.");
+    }
+    const auto from = f.exchange->get(key);
+    std::copy(from.begin(), from.end(), m_ice.get(name).begin());
+  }
+  cell_mean_forcing_sample(*f.imports, m_ice, sample);
 }
 
 void register_ocn_operators() {

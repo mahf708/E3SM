@@ -55,6 +55,55 @@ void coupler_forcing_sample(const fields::FieldSet &in,
   }
 }
 
+const std::vector<std::string> &ice_surface_names() {
+  static const std::vector<std::string> names{
+      "Si_ifrac",   "Faii_lwup",  "Faii_lat",   "Faii_sen",   "Faii_swnet",
+      "Faii_taux",  "Faii_tauy",  "Fioi_swpen", "Fioi_taux",  "Fioi_tauy",
+      "Faxa_lwdn",  "Faxa_rain",  "Faxa_snow",  "Faxa_swvdr", "Faxa_swndr",
+      "Faxa_swvdf", "Faxa_swndf"};
+  return names;
+}
+
+void cell_mean_forcing_sample(const fields::FieldSet &in,
+                              const fields::FieldSet &ice,
+                              fields::FieldSet &out) {
+  const auto taux = in.get("Foxx_taux"), tauy = in.get("Foxx_tauy");
+  const auto lwup = in.get("Foxx_lwup"), swnet = in.get("Foxx_swnet");
+  const auto lat = in.get("Foxx_lat"), sen = in.get("Foxx_sen");
+
+  const auto f = ice.get("Si_ifrac");
+  const auto i_lwup = ice.get("Faii_lwup"), i_lat = ice.get("Faii_lat");
+  const auto i_sen = ice.get("Faii_sen"), i_swnet = ice.get("Faii_swnet");
+  const auto i_taux = ice.get("Faii_taux"), i_tauy = ice.get("Faii_tauy");
+  const auto swpen = ice.get("Fioi_swpen");
+  const auto o_taux_ice = ice.get("Fioi_taux"), o_tauy_ice = ice.get("Fioi_tauy");
+  const auto lwdn = ice.get("Faxa_lwdn");
+  const auto rain = ice.get("Faxa_rain"), snow = ice.get("Faxa_snow");
+  const auto swvdr = ice.get("Faxa_swvdr"), swndr = ice.get("Faxa_swndr");
+  const auto swvdf = ice.get("Faxa_swvdf"), swndf = ice.get("Faxa_swndf");
+
+  auto o_taux = out.get("TAUX"), o_tauy = out.get("TAUY");
+  auto o_prec = out.get("surface_precipitation_rate");
+  auto o_snow = out.get("frozen_precipitation_rate");
+  auto o_flus = out.get("FLUS"), o_fsus = out.get("FSUS");
+  auto o_flds = out.get("FLDS"), o_fsds = out.get("FSDS");
+  auto o_lh = out.get("LHFLX"), o_sh = out.get("SHFLX");
+
+  for (std::size_t i = 0; i < f.size(); ++i) {
+    const double fi = f[i];
+    o_taux[i] = -(taux[i] + fi * (i_taux[i] - o_taux_ice[i]));
+    o_tauy[i] = -(tauy[i] + fi * (i_tauy[i] - o_tauy_ice[i]));
+    o_prec[i] = rain[i] + snow[i];
+    o_snow[i] = snow[i];
+    o_flus[i] = -(lwup[i] + fi * i_lwup[i]);
+    o_flds[i] = lwdn[i];
+    o_fsds[i] = swvdr[i] + swndr[i] + swvdf[i] + swndf[i];
+    o_fsus[i] = o_fsds[i] - (swnet[i] + fi * (i_swnet[i] - swpen[i]));
+    o_lh[i] = -(lat[i] + fi * i_lat[i]);
+    o_sh[i] = -(sen[i] + fi * i_sen[i]);
+  }
+}
+
 void ssh_gradients(std::span<const double> ssh, std::span<const double> lat,
                    std::span<const double> mask, int nx, int ny,
                    std::span<double> dhdx, std::span<double> dhdy) {
