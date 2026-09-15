@@ -6,65 +6,92 @@
 #ifndef E3SM_EMULATOR_INFERENCE_BACKEND_HPP
 #define E3SM_EMULATOR_INFERENCE_BACKEND_HPP
 
+#include <cstdint>
 #include <string>
+
+#include "inference_config.hpp"
+#include "inference_context.hpp"
+#include "tensor.hpp"
 
 namespace emulator {
 namespace inference {
 
 /**
- * @brief Enumeration of available inference backend types.
- */
-enum class BackendType {
-  STUB, ///< No-op backend for testing (no ML dependencies)
-};
-
-/**
- * @brief Minimal configuration for inference backends.
- */
-struct InferenceConfig {
-  int input_channels = 0;  ///< Number of input features per grid point
-  int output_channels = 0; ///< Number of output features per grid point
-  bool verbose = false;    ///< Enable verbose output (for debugging)
-};
-
-/**
  * @brief Abstract interface for inference backends.
  *
- * Provides a unified API for running neural network inference.
- * All backends:
- * - Accept input as a flat array [batch_size * input_channels]
- * - Produce output as a flat array [batch_size * output_channels]
- *
- * Backends are fully configured on construction (config is passed
- * to the constructor). No separate initialization step is needed.
+ * A backend evaluates a model given named input tensors and named output
+ * tensors.  Whether `infer` is an MPI-collective operation depends on the
+ * model: a global model shards a sample across ranks, so every rank must
+ * call it the same number of times, in the same order.  Lifecycle is
+ * construct, initialize() once, infer() per step, finalize(); both ends
+ * are idempotent.
  */
 class InferenceBackend {
 public:
-  explicit InferenceBackend(const InferenceConfig &config) : m_config(config) {}
+  InferenceBackend(const InferenceConfig &config,
+                   const InferenceContext &context)
+      : m_config(config), m_context(context) {}
   virtual ~InferenceBackend() = default;
 
-  /**
-   * @brief Run inference on input data.
-   * @param inputs  Input data array [batch_size * input_channels]
-   * @param outputs Output data array [batch_size * output_channels]
-   * @param batch_size Number of samples in the batch
-   * @return true if inference succeeded
-   */
-  virtual bool infer(const double *inputs, double *outputs,
-                     int batch_size = 1) = 0;
+  /// @brief Load the model.
+  void initialize();
 
   /**
-   * @brief Release resources and finalize the backend.
+   * @brief Evaluate the model.
+   * @param inputs  Named input tensors (usually const views of E3SM memory)
+   * @param outputs Named output tensors (usually writable views of E3SM
+   *                memory); written in place
+   * @return true on success
    */
-  virtual void finalize() = 0;
+  bool infer(const TensorMap &inputs, TensorMap &outputs);
 
   /**
-   * @brief Get the human-readable name of this backend.
+   * @brief Flat-array convenience overload, for code that thinks in arrays.
+   *
+   * Wraps both buffers as `[batch_size, channels]` tensors named by
+   * `config.inputs[0]` / `config.outputs[0]` (defaulting to "input" and
+   * "output") using `input_channels` / `output_channels`.
    */
+  bool infer(const double *inputs, double *outputs, int batch_size = 1);
+
+  /// @brief Release the model and any resources.
+  void finalize();
+
+  /// @brief Human-readable name of this backend.
   virtual std::string name() const = 0;
 
+  bool is_initialized() const { return m_initialized; }
+  const InferenceContext &context() const { return m_context; }
+
+  /**
+   * @brief Tell the backend which model step the next infer() computes.
+   *
+   * The step is the component's own counted step written to its restart
+   * file, not a count of infer() calls (which restarts at zero with the
+   * process).  A backend that draws random numbers derives its seed from
+   * (seed, step), so a restarted run reproduces the same noise; seeding
+   * once at initialize() is not restart-safe, since the stream position is
+   * lost at restart.
+   */
+  void set_step(std::int64_t step) { m_step = step; }
+
+  /// The step last passed to set_step(), or -1 if it never was.
+  std::int64_t step() const { return m_step; }
+
 protected:
-  InferenceConfig m_config; ///< Backend configuration
+  /// @brief Load the model.  Called once, from initialize().
+  virtual void init_impl() = 0;
+
+  /// @brief Evaluate the model.  Called from infer(), after validation.
+  virtual bool infer_impl(const TensorMap &inputs, TensorMap &outputs) = 0;
+
+  /// @brief Release the model.  Called once, from finalize().
+  virtual void final_impl() = 0;
+
+  InferenceConfig m_config;   ///< Backend configuration
+  InferenceContext m_context; ///< Ranks and decomposition from the coupler
+  bool m_initialized = false;
+  std::int64_t m_step = -1; ///< See set_step()
 };
 
 } // namespace inference

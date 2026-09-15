@@ -1,9 +1,6 @@
 /**
  * @file emulator_registry.hpp
  * @brief Singleton registry for managing emulator instances.
- *
- * Inspired by EAMxx's ScreamContext, this provides a type-safe registry
- * for creating and retrieving emulator instances by name.
  */
 
 #ifndef E3SM_EMULATOR_REGISTRY_HPP
@@ -21,24 +18,8 @@ namespace emulator {
 /**
  * @brief Singleton registry for managing emulator instances.
  *
- * Provides type-safe storage and retrieval of emulator instances by name,
- * allowing multiple instances of the same type with different names.
- *
- * ## Usage
- * ```cpp
- * // Create an emulator with a name
- * auto& atm = EmulatorRegistry::instance().create<AtmEmulator>("main_atm",
- * args...);
- *
- * // Later, retrieve it by name
- * auto& atm = EmulatorRegistry::instance().get_mut<AtmEmulator>("main_atm");
- *
- * // Check if it exists
- * if (EmulatorRegistry::instance().has("main_atm")) { ... }
- *
- * // Clean up
- * cleanup_emulator_registry();
- * ```
+ * Type-safe storage and retrieval of emulator instances by name, allowing
+ * multiple instances of the same type with different names.
  */
 class EmulatorRegistry {
 public:
@@ -58,17 +39,10 @@ public:
   EmulatorRegistry &operator=(EmulatorRegistry &&) = delete;
 
   /**
-   * @brief Create and register a new emulator instance with a name.
+   * @brief Create and register a new emulator instance under a unique name.
    *
-   * Creates an instance of type T with the given constructor arguments
-   * and stores it in the registry under the specified name.
-   *
-   * @tparam T Emulator type to create
-   * @tparam Args Constructor argument types
-   * @param name Unique name for this instance
-   * @param args Arguments to pass to T's constructor
-   * @return Reference to the newly created instance
-   * @throws std::runtime_error if an instance with the same name already exists
+   * @param name Unique name for this instance.
+   * @throws std::runtime_error if an instance with the same name already exists.
    */
   template <typename T, typename... Args>
   T &create(const std::string &name, Args &&...args) {
@@ -85,11 +59,8 @@ public:
   }
 
   /**
-   * @brief Get a const reference to an existing emulator.
+   * @brief Get a const reference to an existing emulator by name.
    *
-   * @tparam T Emulator type to retrieve
-   * @param name Name of the instance
-   * @return Const reference to the emulator
    * @throws std::runtime_error if no instance with the given name exists
    * @throws std::bad_any_cast if the type doesn't match
    */
@@ -103,11 +74,8 @@ public:
   }
 
   /**
-   * @brief Get a mutable reference to an existing emulator.
+   * @brief Get a mutable reference to an existing emulator by name.
    *
-   * @tparam T Emulator type to retrieve
-   * @param name Name of the instance
-   * @return Reference to the emulator
    * @throws std::runtime_error if no instance with the given name exists
    * @throws std::bad_any_cast if the type doesn't match
    */
@@ -120,24 +88,18 @@ public:
     return *std::any_cast<const std::shared_ptr<T> &>(it->second);
   }
 
-  /**
-   * @brief Check if an instance with the given name exists.
-   *
-   * @param name Name of the instance to check
-   * @return true if an instance with the name exists in the registry
-   */
+  /// True if an instance with this name exists in the registry.
   bool has(const std::string &name) const {
     return m_objects.find(name) != m_objects.end();
   }
 
   /**
-   * @brief Remove a single named object from the registry.
+   * @brief Remove a named object from the registry.
    *
-   * Erases the entry, which drops the shared_ptr reference count.
-   * If no other shared_ptrs exist the object is destroyed immediately.
+   * Erases the entry; if no other shared_ptr references remain, the object
+   * is destroyed immediately.
    *
-   * @param name Name of the instance to remove.
-   * @return true if the entry was found and removed, false otherwise.
+   * @return true if the entry was found and removed.
    */
   bool remove_by_name(const std::string &name) {
     return m_objects.erase(name) > 0;

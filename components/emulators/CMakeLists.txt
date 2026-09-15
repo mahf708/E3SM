@@ -7,29 +7,294 @@ set(EXTERNALS_ROOT "${E3SM_ROOT}/externals")
 
 option(BUILD_EMULATOR_TESTS "Build emulator unit tests" OFF)
 
-# When built standalone (i.e. this is the top-level project), default to
-# standalone mode so we don't try to compile Fortran sources (the project
-# only declares CXX).  When included from the full E3SM build Fortran
-# is already enabled by the parent project.
+# Standalone (top-level) builds default to CXX only; the full E3SM build already enables Fortran.
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   set(STANDALONE_MODE ON CACHE BOOL "Standalone build (CXX only, no Fortran)" FORCE)
 endif()
 
-if(BUILD_EMULATOR_TESTS)
-  # Catch2 from ekat
-  set(CATCH2_INCLUDE_DIR "${EXTERNALS_ROOT}/ekat/extern/Catch2/single_include")
+# yaml-cpp for specs and input files, pinned to ekat's commit; reuse ekat's target if it already exists.
+if(NOT TARGET yaml-cpp::yaml-cpp AND NOT TARGET yaml-cpp)
+  include(FetchContent)
+  set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+  set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+  set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(yaml-cpp
+    GIT_REPOSITORY https://github.com/e3sm-project/yaml-cpp.git
+    GIT_TAG        95088a0a2b6f2dec0b3e6e59020cdcc0d4f3c658)
+  FetchContent_MakeAvailable(yaml-cpp)
+endif()
+if(NOT TARGET yaml-cpp::yaml-cpp)
+  add_library(yaml-cpp::yaml-cpp ALIAS yaml-cpp)
+endif()
 
-  # Verify Catch2 exists
-  if(NOT EXISTS "${CATCH2_INCLUDE_DIR}/catch2/catch.hpp")
-    message(FATAL_ERROR "Catch2 not found at ${CATCH2_INCLUDE_DIR}. "
-      "Make sure externals/ekat is available.")
+# The specs that ship with the emulators (specs/*.yaml).
+set(EMULATOR_SPEC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/specs")
+
+# MPI turns InferenceContext into a real description of the component's ranks; without it, the context reports rank 0 of 1.
+set(EMULATOR_ENABLE_MPI AUTO CACHE STRING
+  "Use MPI in the inference context: AUTO, ON or OFF")
+
+if(EMULATOR_ENABLE_MPI STREQUAL "AUTO")
+  find_package(MPI QUIET COMPONENTS CXX)
+  set(EMULATOR_HAVE_MPI ${MPI_CXX_FOUND})
+elseif(EMULATOR_ENABLE_MPI)
+  find_package(MPI REQUIRED COMPONENTS CXX)
+  set(EMULATOR_HAVE_MPI TRUE)
+else()
+  set(EMULATOR_HAVE_MPI FALSE)
+endif()
+# The grid, gather and network-stepping layers are MPI programs; a global network runs on one rank for all of them.
+if(NOT EMULATOR_HAVE_MPI)
+  message(FATAL_ERROR "The emulator framework needs MPI (C++); none was found "
+    "or EMULATOR_ENABLE_MPI is OFF.")
+endif()
+# The embedded-Python backend is opt-in: emulator_common builds and tests pass with no ML dependency installed.
+option(EMULATOR_ENABLE_PYTHON
+  "Build the embedded-Python inference backend (needs the Python dev headers, \
+plus numpy at run time)" OFF)
+
+if(EMULATOR_ENABLE_PYTHON)
+  # Development is the embedding half: headers and libpython.
+  find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
+endif()
+
+# The python emulators that ship with E3SM, baked in as a sys.path entry so a run need not set PYTHONPATH.
+set(EMULATOR_PYTHON_PACKAGE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/common/python")
+
+# The LibTorch backend runs a traced ACE checkpoint directly; point CMAKE_PREFIX_PATH (or Torch_DIR) at a libtorch install to enable it.
+option(EMULATOR_ENABLE_LIBTORCH
+  "Build the LibTorch inference backend (needs a libtorch install)" OFF)
+
+if(EMULATOR_ENABLE_LIBTORCH)
+  find_package(Torch REQUIRED)
+endif()
+
+# ------------------------------------------------------------------------------
+# netCDF
+# ------------------------------------------------------------------------------
+
+# The netCDF readers are opt-in (OFF standalone, ON in the integrated build) for serial, global-field reads; SCORPIO handles parallel I/O.
+if (STANDALONE_MODE)
+  set(_emulator_netcdf_default OFF)
+else()
+  set(_emulator_netcdf_default ON)
+endif()
+
+option(EMULATOR_ENABLE_NETCDF
+  "Build the netCDF initial-condition reader (needs a serial netCDF-C install)"
+  ${_emulator_netcdf_default})
+
+if(EMULATOR_ENABLE_NETCDF)
+  # netCDF is located via a CMake package config, then nc-config, then a plain header/library search; point NETCDF_ROOT or CMAKE_PREFIX_PATH at an install if needed.
+  set(NETCDF_ROOT "" CACHE PATH
+    "Root of a serial netCDF-C install, if it is not findable automatically")
+
+  set(EMULATOR_NETCDF_INCLUDE_DIRS "")
+  set(EMULATOR_NETCDF_LIBRARIES "")
+  set(EMULATOR_NETCDF_HOW "")
+
+  # In the integrated build, prefer E3SM's already-found NETCDF_PATH over probing, to avoid linking a different netCDF version.
+  if (NOT STANDALONE_MODE AND NOT NETCDF_ROOT)
+    if (DEFINED ENV{NETCDF_PATH})
+      set(NETCDF_ROOT "$ENV{NETCDF_PATH}" CACHE PATH "" FORCE)
+    elseif (DEFINED ENV{NETCDF_DIR})
+      set(NETCDF_ROOT "$ENV{NETCDF_DIR}" CACHE PATH "" FORCE)
+    endif()
+    if (NETCDF_ROOT)
+      message(STATUS "Emulator netCDF: using E3SM's ${NETCDF_ROOT}")
+    endif()
   endif()
+
+  # So find_package(netCDF) takes NETCDF_ROOT as a search prefix rather than warning that it is ignoring it.
+  if(POLICY CMP0144)
+    cmake_policy(SET CMP0144 NEW)
+  endif()
+
+  find_package(netCDF QUIET CONFIG)
+  if(netCDF_FOUND)
+    if(TARGET netCDF::netcdf)
+      set(EMULATOR_NETCDF_LIBRARIES netCDF::netcdf)
+    else()
+      set(EMULATOR_NETCDF_INCLUDE_DIRS "${netCDF_INCLUDE_DIR}")
+      set(EMULATOR_NETCDF_LIBRARIES "${netCDF_LIBRARIES}")
+    endif()
+    set(EMULATOR_NETCDF_HOW "netCDFConfig.cmake (${netCDF_VERSION})")
+  endif()
+
+  if(NOT EMULATOR_NETCDF_LIBRARIES)
+    find_program(EMULATOR_NC_CONFIG nc-config
+      HINTS "${NETCDF_ROOT}/bin" "$ENV{NETCDF_DIR}/bin" "$ENV{NETCDF_ROOT}/bin")
+    if(EMULATOR_NC_CONFIG)
+      get_filename_component(_nc_bin "${EMULATOR_NC_CONFIG}" DIRECTORY)
+      get_filename_component(_nc_prefix "${_nc_bin}" DIRECTORY)
+      # NETCDF_DIR is what the Cray wrapper insists on; harmless elsewhere.
+      execute_process(
+        COMMAND ${CMAKE_COMMAND} -E env "NETCDF_DIR=${_nc_prefix}"
+                ${EMULATOR_NC_CONFIG} --includedir
+        OUTPUT_VARIABLE _nc_incdir OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _nc_inc_failed ERROR_QUIET)
+      execute_process(
+        COMMAND ${CMAKE_COMMAND} -E env "NETCDF_DIR=${_nc_prefix}"
+                ${EMULATOR_NC_CONFIG} --libdir
+        OUTPUT_VARIABLE _nc_libdir OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE _nc_lib_failed ERROR_QUIET)
+      if(NOT _nc_inc_failed AND NOT _nc_lib_failed
+         AND EXISTS "${_nc_incdir}/netcdf.h")
+        find_library(EMULATOR_NETCDF_LIBRARY netcdf
+          HINTS "${_nc_libdir}" NO_DEFAULT_PATH)
+        if(EMULATOR_NETCDF_LIBRARY)
+          set(EMULATOR_NETCDF_INCLUDE_DIRS "${_nc_incdir}")
+          set(EMULATOR_NETCDF_LIBRARIES "${EMULATOR_NETCDF_LIBRARY}")
+          set(EMULATOR_NETCDF_HOW "${EMULATOR_NC_CONFIG}")
+        endif()
+      endif()
+    endif()
+  endif()
+
+  if(NOT EMULATOR_NETCDF_LIBRARIES)
+    find_path(EMULATOR_NETCDF_INCLUDE_DIR netcdf.h
+      HINTS "${NETCDF_ROOT}/include" "$ENV{NETCDF_DIR}/include"
+            "$ENV{NETCDF_ROOT}/include")
+    find_library(EMULATOR_NETCDF_LIBRARY netcdf
+      HINTS "${NETCDF_ROOT}/lib" "${NETCDF_ROOT}/lib64"
+            "$ENV{NETCDF_DIR}/lib" "$ENV{NETCDF_ROOT}/lib")
+    if(EMULATOR_NETCDF_INCLUDE_DIR AND EMULATOR_NETCDF_LIBRARY)
+      set(EMULATOR_NETCDF_INCLUDE_DIRS "${EMULATOR_NETCDF_INCLUDE_DIR}")
+      set(EMULATOR_NETCDF_LIBRARIES "${EMULATOR_NETCDF_LIBRARY}")
+      set(EMULATOR_NETCDF_HOW "${EMULATOR_NETCDF_LIBRARY}")
+    endif()
+  endif()
+
+  if(NOT EMULATOR_NETCDF_LIBRARIES)
+    message(FATAL_ERROR
+      "EMULATOR_ENABLE_NETCDF=ON but no serial netCDF-C was found.  Pass "
+      "-DNETCDF_ROOT=/path/to/netcdf (a prefix with include/netcdf.h and "
+      "lib/libnetcdf), or -DCMAKE_PREFIX_PATH=... for an install that ships "
+      "netCDFConfig.cmake.  On Perlmutter: "
+      "-DNETCDF_ROOT=/opt/cray/pe/netcdf/4.9.2.3/gnu/12.3")
+  endif()
+
+  # One interface target so the components do not each repeat the search.
+  add_library(emulator_netcdf INTERFACE)
+  if(EMULATOR_NETCDF_INCLUDE_DIRS)
+    target_include_directories(emulator_netcdf SYSTEM INTERFACE
+      ${EMULATOR_NETCDF_INCLUDE_DIRS})
+  endif()
+  target_link_libraries(emulator_netcdf INTERFACE ${EMULATOR_NETCDF_LIBRARIES})
+
+  message(STATUS "Emulator netCDF: ${EMULATOR_NETCDF_HOW}")
+endif()
+
+message(STATUS "Emulator inference: MPI=${EMULATOR_HAVE_MPI} "
+  "python=${EMULATOR_ENABLE_PYTHON} libtorch=${EMULATOR_ENABLE_LIBTORCH}")
+
+# The python package's own unit tests need only an interpreter with numpy, whether or not the embedded backend was built.
+if(BUILD_EMULATOR_TESTS)
+  # MPI tests run on one rank by default so they work wherever ctest does; multi-rank runs need a launcher inside an allocation.
+  set(EMULATOR_TEST_MPI_RANKS 0 CACHE STRING
+    "If greater than 1, also run MPI tests on this many ranks via MPIEXEC")
+  function(emulator_add_mpi_test name target)
+    add_test(NAME ${name} COMMAND ${target})
+    set_tests_properties(${name} PROPERTIES
+      ENVIRONMENT "MPICH_GPU_SUPPORT_ENABLED=0")
+    if(EMULATOR_TEST_MPI_RANKS GREATER 1)
+      add_test(NAME ${name}_np${EMULATOR_TEST_MPI_RANKS}
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG}
+                ${EMULATOR_TEST_MPI_RANKS} ${MPIEXEC_PREFLAGS}
+                $<TARGET_FILE:${target}> ${MPIEXEC_POSTFLAGS})
+      set_tests_properties(${name}_np${EMULATOR_TEST_MPI_RANKS} PROPERTIES
+        ENVIRONMENT "MPICH_GPU_SUPPORT_ENABLED=0")
+    endif()
+  endfunction()
+
+  if(NOT Python3_EXECUTABLE)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+  endif()
+  if(Python3_EXECUTABLE)
+    execute_process(COMMAND ${Python3_EXECUTABLE} -c "import numpy"
+      RESULT_VARIABLE EMULATOR_NUMPY_MISSING OUTPUT_QUIET ERROR_QUIET)
+    if(EMULATOR_NUMPY_MISSING)
+      message(STATUS "Emulator inference: no numpy in ${Python3_EXECUTABLE}, "
+        "skipping the python package tests")
+    endif()
+  endif()
+endif()
+
+
+if(BUILD_EMULATOR_TESTS)
+  # Catch2 v2 single header: prefer a local copy (e.g. ekat's) and otherwise fetch it; set CATCH2_INCLUDE_DIR to point at one offline.
+  if(NOT CATCH2_INCLUDE_DIR)
+    if(EXISTS "${EXTERNALS_ROOT}/ekat/extern/Catch2/single_include/catch2/catch.hpp")
+      set(CATCH2_INCLUDE_DIR
+        "${EXTERNALS_ROOT}/ekat/extern/Catch2/single_include")
+    else()
+      set(CATCH2_INCLUDE_DIR "${CMAKE_BINARY_DIR}/catch2")
+      if(NOT EXISTS "${CATCH2_INCLUDE_DIR}/catch2/catch.hpp")
+        message(STATUS "Emulator tests: downloading Catch2 v2.13.10")
+        file(DOWNLOAD
+          "https://raw.githubusercontent.com/catchorg/Catch2/v2.13.10/single_include/catch2/catch.hpp"
+          "${CATCH2_INCLUDE_DIR}/catch2/catch.hpp"
+          EXPECTED_HASH
+            SHA256=3725c0f0a75f376a5005dde31ead0feb8f7da7507644c201b814443de8355170
+          TLS_VERIFY ON
+          STATUS EMULATOR_CATCH2_DOWNLOAD)
+        list(GET EMULATOR_CATCH2_DOWNLOAD 0 EMULATOR_CATCH2_FAILED)
+        if(EMULATOR_CATCH2_FAILED)
+          list(GET EMULATOR_CATCH2_DOWNLOAD 1 EMULATOR_CATCH2_ERROR)
+          message(FATAL_ERROR "Could not download Catch2: "
+            "${EMULATOR_CATCH2_ERROR}.  Point CATCH2_INCLUDE_DIR at a "
+            "directory containing catch2/catch.hpp instead.")
+        endif()
+      endif()
+    endif()
+  endif()
+
+  if(NOT EXISTS "${CATCH2_INCLUDE_DIR}/catch2/catch.hpp")
+    message(FATAL_ERROR
+      "No catch2/catch.hpp under CATCH2_INCLUDE_DIR (${CATCH2_INCLUDE_DIR}).")
+  endif()
+  # One target for the tests to link, whichever way the header was found.
+  add_library(Catch2 INTERFACE)
+  target_include_directories(Catch2 INTERFACE ${CATCH2_INCLUDE_DIR})
+  # Helpers every test shares: stand-in coupler buffers, input files, MPI.
+  target_include_directories(Catch2 INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/common/tests/support)
 
   # Enable testing at the top level
   enable_testing()
 endif()
 
+# A component's MCT cap is compiled only when the case uses that component.
+if(NOT STANDALONE_MODE)
+  find_package(MPI REQUIRED COMPONENTS Fortran)
+  find_package(CsmShare REQUIRED)
+endif()
+function(emulator_add_mct_cap target comp_name source)
+  if(STANDALONE_MODE OR NOT COMP_NAMES MATCHES "${comp_name}")
+    return()
+  endif()
+  target_sources(${target} PRIVATE ${source})
+  set_target_properties(${target} PROPERTIES
+    Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/modules)
+  target_include_directories(${target} PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/modules)
+  target_link_libraries(${target} PUBLIC MPI::MPI_Fortran)
+endfunction()
+
 # Add subdirectories
 add_subdirectory(common)
+
+# Copy specs on every build, not just at CMake configure, so a built case always has the specs it reads (spec_path in emulator_settings.py).
+if(NOT STANDALONE_MODE AND DEFINED EXEROOT)
+  file(GLOB EMULATOR_SPECS CONFIGURE_DEPENDS
+       ${CMAKE_CURRENT_SOURCE_DIR}/specs/*.yaml)
+  set(EMULATOR_SPECS_BUILT ${EXEROOT}/emulators/specs)
+  add_custom_target(emulator_specs
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${EMULATOR_SPECS_BUILT}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${EMULATOR_SPECS}
+            ${EMULATOR_SPECS_BUILT}
+    COMMENT "Emulator specs -> ${EMULATOR_SPECS_BUILT}")
+  add_dependencies(emulator_common emulator_specs)
+endif()
 add_subdirectory(emulatoratm)
 add_subdirectory(driver)

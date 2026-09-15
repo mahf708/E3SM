@@ -1,22 +1,73 @@
 /**
- * @file create_backend.cpp
+ * @file create_inference_backend.cpp
  * @brief Factory for creating inference backends.
  */
 
 #include "create_inference_backend.hpp"
+
+#include "inference_error.hpp"
 #include "stub_inference_backend.hpp"
+
+#ifdef EMULATOR_ENABLE_PYTHON
+#include "python_inference_backend.hpp"
+#endif
+
+#ifdef EMULATOR_ENABLE_LIBTORCH
+#include "libtorch_inference_backend.hpp"
+#endif
 
 namespace emulator {
 namespace inference {
 
+std::vector<std::string> available_backends() {
+  std::vector<std::string> names{"stub"};
+#ifdef EMULATOR_ENABLE_PYTHON
+  names.push_back("python");
+#endif
+#ifdef EMULATOR_ENABLE_LIBTORCH
+  names.push_back("libtorch");
+#endif
+  return names;
+}
+
 std::shared_ptr<InferenceBackend>
-create_backend(BackendType type, const InferenceConfig &config) {
-  switch (type) {
-  case BackendType::STUB:
-    return std::make_shared<StubBackend>(config);
-  default:
-    return std::make_shared<StubBackend>(config);
+create_backend(const InferenceConfig &config, const InferenceContext &context) {
+  std::shared_ptr<InferenceBackend> backend;
+
+  if (config.backend.empty() || config.backend == "stub" ||
+      config.backend == "none") {
+    backend = std::make_shared<StubBackend>(config, context);
+  } else if (config.backend == "python") {
+#ifdef EMULATOR_ENABLE_PYTHON
+    backend = std::make_shared<PythonBackend>(config, context);
+#else
+    EMULATOR_INFER_REQUIRE(
+        false, "The 'python' inference backend was not built. Reconfigure "
+               "with -DEMULATOR_ENABLE_PYTHON=ON (it needs the Python "
+               "development headers, plus numpy at run time).");
+#endif
+  } else if (config.backend == "libtorch" || config.backend == "torch" ||
+             config.backend == "torchscript") {
+#ifdef EMULATOR_ENABLE_LIBTORCH
+    backend = std::make_shared<LibTorchBackend>(config, context);
+#else
+    EMULATOR_INFER_REQUIRE(
+        false, "The 'libtorch' inference backend was not built. Reconfigure "
+               "with -DEMULATOR_ENABLE_LIBTORCH=ON and point CMAKE_PREFIX_PATH "
+               "(or Torch_DIR) at a libtorch install.");
+#endif
+  } else {
+    std::string names;
+    for (const auto &n : available_backends()) {
+      names += (names.empty() ? "" : ", ") + n;
+    }
+    EMULATOR_INFER_REQUIRE(false, "Unknown inference backend '"
+                                      << config.backend
+                                      << "'. This build has: " << names << ".");
   }
+
+  backend->initialize();
+  return backend;
 }
 
 } // namespace inference

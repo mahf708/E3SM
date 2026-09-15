@@ -1,0 +1,92 @@
+/**
+ * @file emulator_component.hpp
+ * @brief One E3SM component class for every emulated model: its spec and
+ *        its input file say what it is.
+ */
+
+#ifndef E3SM_EMULATOR_COMPONENT_HPP
+#define E3SM_EMULATOR_COMPONENT_HPP
+
+#include <memory>
+#include <string>
+
+#include "emulated_model.hpp"
+#include "emulator.hpp"
+#include "exchange.hpp"
+#include "history.hpp"
+#include "horizontal_grid.hpp"
+#include "yaml_config.hpp"
+
+namespace emulator {
+
+/**
+ * @brief An emulated atmosphere, ocean, sea ice or anything else.
+ *
+ * The input file (atm_in, ocn_in, ice_in) is YAML:
+ *
+ * ```yaml
+ * spec: specs/model.yaml           # relative to this file, or absolute
+ * coupler_dt: 1800
+ * grid: {file: grid.scrip.nc, domain: ocean_mask, mask_variable: mask_2d}
+ * initial_condition: ic.nc
+ * inference: {backend: libtorch, model_path: model.pt, device: cuda}
+ * history: {interval: monthly, fields: [state.sst, exports.So_t]}  # optional
+ * ```
+ *
+ * With no input file (an empty path) the component is unconfigured: it has
+ * no domain until set_grid_data(), and exchanges and runs nothing.  A path
+ * that cannot be read is an error.
+ */
+class EmulatorComponent : public Emulator {
+public:
+  EmulatorComponent(EmulatorType type, std::string name,
+                    coupling::Exchange &exchange = coupling::Exchange::process());
+  ~EmulatorComponent() override;
+
+  void create_instance(int comm, int comp_id, const std::string &input_file,
+                       const std::string &log_file, int run_type,
+                       int start_ymd, int start_tod);
+
+  bool configured() const { return m_spec != nullptr; }
+
+  /**
+   * Restore from `path` at initialize() rather than start from the initial
+   * condition, which still supplies the statics and boundary inputs.  The
+   * file holds the model's restart state (EmulatedModel::save_to) on the
+   * whole grid, so any number of ranks can read it.
+   */
+  void set_restart_file(const std::string &path) override;
+  /// The model's state after the last run(), to `path`.  Collective.
+  void write_restart(const std::string &path) const override;
+  /// The model, once initialized; null before, or when unconfigured.
+  const model::EmulatedModel *model() const { return m_model.get(); }
+  /// Its history output, if the input file asks for one.
+  const model::History *history() const { return m_history.get(); }
+
+protected:
+  CouplingFields coupling_fields() const override;
+  void init_impl() override;
+  void run_impl(int dt) override;
+  void final_impl() override;
+
+private:
+  void setup_grid(const config::Section &grid, const std::string &base_dir);
+
+  coupling::Exchange &m_exchange;
+  int m_comm = 0;
+  int m_run_type = 0;
+  std::string m_restart_file;
+  std::unique_ptr<config::Section> m_input;
+  std::unique_ptr<model::ModelSpec> m_spec;
+  std::string m_base_dir;
+  int m_coupler_dt = 0;
+  grid::HorizontalGrid m_grid;
+  bool m_have_grid = false;
+  grid::Decomposition m_decomp;
+  std::unique_ptr<model::EmulatedModel> m_model;
+  std::unique_ptr<model::History> m_history;
+};
+
+} // namespace emulator
+
+#endif // E3SM_EMULATOR_COMPONENT_HPP

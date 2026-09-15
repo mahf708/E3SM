@@ -32,7 +32,7 @@ TEST_CASE("EmulatorRegistry instance access", "[emulator_registry]") {
 
 TEST_CASE("EmulatorRegistry create and retrieve", "[emulator_registry]") {
   auto &reg = EmulatorRegistry::instance();
-  reg.clean_up(); // Start fresh
+  reg.clean_up();
 
   SECTION("Create default-constructed object") {
     auto &comp = reg.create<TestComponent>("default_comp");
@@ -81,7 +81,7 @@ TEST_CASE("cleanup_emulator_registry free function", "[emulator_registry]") {
   reg.create<TestComponent>("cleanup_comp", 999, "cleanup_test");
   REQUIRE(reg.has("cleanup_comp"));
 
-  cleanup_emulator_registry(); // Test the convenience function
+  cleanup_emulator_registry();
   REQUIRE_FALSE(reg.has("cleanup_comp"));
 }
 
@@ -103,7 +103,6 @@ TEST_CASE("EmulatorRegistry multiple instances of same type",
   auto &reg = EmulatorRegistry::instance();
   reg.clean_up();
 
-  // Create multiple instances of the same type with different names
   auto &comp1 = reg.create<TestComponent>("comp1", 1, "first");
   auto &comp2 = reg.create<TestComponent>("comp2", 2, "second");
 
@@ -113,7 +112,6 @@ TEST_CASE("EmulatorRegistry multiple instances of same type",
   REQUIRE(comp1.value == 1);
   REQUIRE(comp2.value == 2);
 
-  // Retrieve by name
   const auto &ref1 = reg.get<TestComponent>("comp1");
   const auto &ref2 = reg.get<TestComponent>("comp2");
 

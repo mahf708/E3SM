@@ -7,16 +7,11 @@
 extern "C" {
 
 /**
-* @brief Configuration parameters for creating emulator instance.
+* @brief Configuration for creating an emulator instance.
 *
-* Fields: 
-*  - f_comm: MPI communicator from Fortran
-*  - comp_id: component id
-*  - run_type: cold start, restart, etc...
-*  - start_ymd: simulation start date
-*  - start_tod: time of day in seconds
-*  - input_file: config file (null terminated)
-*  - log_file: emulator log file (null terminated)
+* f_comm is Fortran's MPI communicator; run_type distinguishes cold start,
+* restart, etc.; start_ymd/start_tod give the simulation start date and
+* time of day (seconds); input_file and log_file are null-terminated paths.
 */
 struct EmulatorCreateConfig {
   int  f_comm;
@@ -29,19 +24,10 @@ struct EmulatorCreateConfig {
 };
 
 /**
- * @brief Description for the grid decomposition
- * 
- * Fields:
-* - grid_type: structured/unstructured
-* - nx: 
-* - ny
-* - num_local_cols
-* - num_global_cols
-* - col_gids
-* - lat
-* - lon
-* - area
-*/
+ * @brief The grid decomposition passed from Fortran: this rank's columns,
+ * their global ids and coordinates. grid_type is structured or
+ * unstructured.
+ */
 struct EmulatorGridDesc {
   int grid_type;
   int nx;
@@ -55,15 +41,10 @@ struct EmulatorGridDesc {
 };
 
 /**
- * @brief Description of import and export fields to/from the coupler
- * Fields:
- *  - import_data
- *  - export_data
- *  - num_imports
- *  - num_exports
- *  - field_size
-*
-*/
+ * @brief Import and export data exchanged with the coupler: import_data and
+ * export_data are flat arrays of num_imports/num_exports fields, each
+ * field_size columns long.
+ */
 struct EmulatorCouplingDesc {
   double* import_data;
   double* export_data;
@@ -72,8 +53,12 @@ struct EmulatorCouplingDesc {
   int     field_size;
 };
 
-/// Opaque handle type in C/Fortran:
-/// actually points to an EmulatorComp in C++.
+/// Opaque handle: points to an EmulatorComp in C++.
+///
+/// Each component library defines its own creator; emulator_create(kind)
+/// dispatches over them (in emulator_driver, for tools and tests) and
+/// returns null for an unknown kind.
+void* emulator_create_atm(const EmulatorCreateConfig* cfg);
 void* emulator_create(const char* kind,
                       const EmulatorCreateConfig* cfg);
 
@@ -87,8 +72,14 @@ void emulator_init_coupling_indices(void* handle, const char* import_fields, con
 
 void  emulator_init(void* handle);
 void  emulator_run(void* handle, int dt);
+/// One coupler step ending at (ymd, tod): the driver's clock, not a count.
+void  emulator_run_at(void* handle, int dt, int ymd, int tod);
 void  emulator_finalize(void* handle);
 void  emulator_print_info(void* handle);
+/// Before emulator_init: restore from this restart file (null terminated).
+void  emulator_set_restart_file(void* handle, const char* path);
+/// After a step: write the component's restart file.  Collective.
+void  emulator_write_restart(void* handle, const char* path);
 
 /**
  * @brief Destroy an emulator instance created by emulator_create.

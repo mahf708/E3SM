@@ -25,9 +25,8 @@ program test_emulator_factory
   real(c_double), pointer :: lat_ptr(:),lon_ptr(:), imp_ptr(:), exp_ptr(:),area_ptr(:)
   integer(c_int), pointer :: gids_ptr(:)
 
-  ! Null-terminated C strings whose storage persists beyond create_config.
-  ! Using named target variables avoids dangling pointers from string
-  ! expression temporaries.
+  ! Null-terminated C strings whose storage persists beyond create_config;
+  ! named target variables avoid dangling pointers from string temporaries.
   character(kind=c_char, len=5),  target :: input_file_c
   character(kind=c_char, len=9),  target :: log_file_c
 
@@ -52,7 +51,8 @@ program test_emulator_factory
   !----------------------------------------
   ! create config
   !----------------------------------------
-  input_file_c = 'test'//c_null_char
+  ! No input file: an unconfigured component.
+  input_file_c = c_null_char
   log_file_c   = 'test_log'//c_null_char
   cfg = create_config(f_comm=fcomm,comp_id=1_c_int,run_type=0_c_int,&
             start_ymd=20000101_c_int, start_tod=0_c_int,&
@@ -83,23 +83,32 @@ program test_emulator_factory
   !----------------------------------------
   block
      integer :: i
-     character(len=3) :: names(3)
-     names = [character(len=3) :: "atm", "ocn", "atm"]
-     do i = 1, 3
+     character(len=3) :: names(2)
+     ! An unknown kind is null.
+     names = [character(len=3) :: "atm", "lnd"]
+     do i = 1, 2
         cfg%comp_id = i
         emulators(i)%h = emulator_create(names(i)//c_null_char, cfg)
 
-        if (.not. c_associated(emulators(i)%h) .and. names(i) == "atm" ) then
-           print *, "ERROR: emulator_create returned NULL emulators(i)%h for 'atm'"
+        if (.not. c_associated(emulators(i)%h) .and. names(i) /= "lnd" ) then
+           print *, "ERROR: emulator_create returned NULL for " // names(i)
            stop 1
-         else if( .not. c_associated(emulators(i)%h) .and. names(i) .ne. "atm") then
-            print *, "OK: null handle for " // names(i)
-            cycle
+        else if (names(i) == "lnd") then
+           if (c_associated(emulators(i)%h)) then
+              print *, "ERROR: emulator_create made an unknown kind, lnd"
+              stop 1
+           end if
+           print *, "OK: null handle for " // names(i)
+           cycle
         else
-           print *, "OK: emulator_create returned non-null emulators(i)%h for 'atm'"
+           print *, "OK: emulator_create returned a handle for " // names(i)
         end if
 
         call emulators(i)%set_grid_data(grid)
+        ! One field each way, matching num_imports and num_exports above:
+        ! the buffers are bound by these names.
+        call emulators(i)%init_coupling_indices( &
+             "Sa_z"//c_null_char, "Sx_t"//c_null_char)
         call emulators(i)%setup_coupling(cpl)
 
         !----------------------------------------
@@ -107,6 +116,21 @@ program test_emulator_factory
         !----------------------------------------
         call emulators(i)%initialize()
         call emulators(i)%print_info()
+
+        ! The domain round-trips through the C API: coordinates as given,
+        ! mask and frac 1 for a grid set by the caller.
+        block
+          real(c_double) :: got_lat(num_local_cols), got_lon(num_local_cols)
+          real(c_double) :: got_mask(num_local_cols), got_frac(num_local_cols)
+          call emulators(i)%get_cols_latlon(got_lat, got_lon)
+          call emulators(i)%get_cols_mask_frac(got_mask, got_frac)
+          if (any(got_lat /= lat) .or. any(got_mask /= 1.0_c_double) .or. &
+              any(got_frac /= 1.0_c_double)) then
+             print *, "ERROR: domain did not round-trip", got_lat, got_mask, got_frac
+             stop 1
+          end if
+          print *, "OK: domain round-trips (lat, mask, frac)"
+        end block
      end do
 
      dt = 3600_c_int
