@@ -40,9 +40,7 @@ endif()
 # The specs that ship with the emulators (specs/*.yaml).
 set(EMULATOR_SPEC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/specs")
 
-# MPI is what turns InferenceContext from a serial stub into a real
-# description of the component's ranks.  Without it everything still builds
-# and the unit tests still run; the context just reports rank 0 of 1.
+# The component requires MPI for its domain and global inference.
 set(EMULATOR_ENABLE_MPI AUTO CACHE STRING
   "Use MPI in the inference context: AUTO, ON or OFF")
 

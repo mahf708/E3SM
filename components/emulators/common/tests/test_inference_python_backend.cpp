@@ -16,6 +16,28 @@ namespace emulator {
 namespace inference {
 namespace test {
 
+TEST_CASE("Python receives the restored model-step index", "[python][restart]") {
+  InferenceConfig config;
+  config.backend = "python";
+  config.set("python_module", "step_fixture");
+  config.set("python_path", EMULATOR_TEST_FIXTURE_DIR);
+  auto backend = create_backend(config, InferenceContext());
+  const double x[] = {1.0, 2.0};
+  double y[2] = {};
+  TensorMap inputs, outputs;
+  inputs.wrap("x", x, {2});
+  outputs.wrap("y", y, {2});
+  backend->set_step(17);
+  REQUIRE(backend->infer(inputs, outputs));
+  REQUIRE(y[0] == 18.0);
+  REQUIRE(y[1] == 19.0);
+  auto restored = create_backend(config, InferenceContext());
+  restored->set_step(17);
+  REQUIRE(restored->infer(inputs, outputs));
+  REQUIRE(y[0] == 18.0);
+  REQUIRE(y[1] == 19.0);
+}
+
 namespace {
 
 /// Settings pointing at tests/fixtures/emulator_fixture.py.

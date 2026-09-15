@@ -163,6 +163,11 @@ if(EMULATOR_ENABLE_LIBTORCH)
       "libtorch backend test (it needs torch.jit.save to write its "
       "fixtures). Set -DEMULATOR_TORCH_PYTHON=/path/to/python to enable it.")
   else()
+    add_test(NAME python_torchscript_adapter_tests
+      COMMAND ${EMULATOR_TORCH_PYTHON_FOUND}
+              ${CMAKE_CURRENT_SOURCE_DIR}/python/test_torchscript.py)
+    set_tests_properties(python_torchscript_adapter_tests PROPERTIES
+      ENVIRONMENT "PYTHONPATH=${EMULATOR_PYTHON_PACKAGE_DIR}")
     message(STATUS "Emulator tests: writing the TorchScript fixtures with "
       "${EMULATOR_TORCH_PYTHON_FOUND} (torch ${EMULATOR_TORCH_PYTHON_VERSION}); "
       "libtorch ${Torch_VERSION} has to be able to load what it saves")

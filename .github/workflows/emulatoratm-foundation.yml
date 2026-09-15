@@ -31,6 +31,7 @@ jobs:
         env:
           TORCH_ENABLED: ${{ matrix.torch }}
         run: |
+          exec > >(tee build.log) 2>&1
           torch_prefix=''
           if [ "$TORCH_ENABLED" = ON ]; then
             torch_prefix=$(.venv/bin/python -c 'import torch; print(torch.utils.cmake_prefix_path)')
@@ -43,6 +44,22 @@ jobs:
             -DCMAKE_PREFIX_PATH="$torch_prefix" -DCATCH2_INCLUDE_DIR=/usr/include
           cmake --build build -j2
           ctest --test-dir build --output-on-failure --timeout 120
+      - name: Collect build failure summary
+        if: failure()
+        id: diagnostic
+        run: |
+          python3 - <<'PYTHON'
+          import os, re
+          from pathlib import Path
+          lines = Path('build.log').read_text().splitlines() if Path('build.log').exists() else []
+          selected = [s for s in lines if re.search(r'error:|CMake Error|FAILED:|failed', s, re.I)]
+          summary = ' / '.join(selected[:2])[:240] or 'See configure/build logs'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write('summary=' + summary + '\n')
+          PYTHON
+      - name: "Build diagnostic: ${{ steps.diagnostic.outputs.summary }}"
+        if: failure()
+        run: exit 1
       - name: Run the atmosphere and resume it on a different rank count
         env:
           TORCH_ENABLED: ${{ matrix.torch }}
