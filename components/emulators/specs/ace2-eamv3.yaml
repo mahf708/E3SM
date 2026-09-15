@@ -1,0 +1,90 @@
+# ACE2-EAMv3: the ACE2 atmosphere trained on EAMv3, 1 degree Gaussian grid.
+# Channel order is the traced checkpoint's tensor order
+# (ACE2-E3SMv3/ace_traced_cuda.pt).
+
+name: ace2-atmosphere
+
+network:
+  name: ACE2-EAMv3
+  timestep: 21600
+  inputs: [LANDFRAC, OCNFRAC, ICEFRAC, PHIS, SOLIN, PS, TS,
+           "T_{0..7}", "specific_total_water_{0..7}", "U_{0..7}", "V_{0..7}"]
+  outputs: [PS, TS, "T_{0..7}", "specific_total_water_{0..7}",
+            "U_{0..7}", "V_{0..7}",
+            LHFLX, SHFLX, surface_precipitation_rate,
+            surface_upward_longwave_flux, FLUT, FLDS, FSDS,
+            surface_upward_shortwave_flux, top_of_atmos_upward_shortwave_flux,
+            tendency_of_total_water_path_due_to_advection]
+  interval_mean_outputs: [LHFLX, SHFLX, surface_precipitation_rate,
+                          surface_upward_longwave_flux, FLUT, FLDS, FSDS,
+                          surface_upward_shortwave_flux,
+                          top_of_atmos_upward_shortwave_flux,
+                          tendency_of_total_water_path_due_to_advection]
+  # The component owns the surface fractions and TS even though the network
+  # predicts TS; PHIS is fixed from the initial condition; SOLIN is computed.
+  coupled_inputs: [LANDFRAC, OCNFRAC, ICEFRAC, TS]
+  boundary_inputs: [PHIS]
+  forcing_inputs: [SOLIN]
+
+stepping: interpolate
+initial_condition:
+  # Coarsened surface fractions have NaN and fill values on part of the grid.
+  zero_fill: [LANDFRAC, OCNFRAC, ICEFRAC]
+  computed: [SOLIN]
+
+operators:
+  - operator: ace.surface_inputs
+    coupler: {lfrac: imports.Sf_lfrac, ofrac: imports.Sf_ofrac,
+              ifrac: imports.Sf_ifrac, merged_ts: imports.Sx_t}
+    emulator_ts: upper.TS
+    to: {landfrac: inputs.LANDFRAC, ocnfrac: inputs.OCNFRAC,
+         icefrac: inputs.ICEFRAC, ts: inputs.TS}
+  - operator: insolation
+    channel: SOLIN
+    orbit: {eccen: 0.016715, obliq: 23.4441, mvelp: 102.7}
+  - operator: ace.surface_exports
+    layer: lowest_level        # ACE2 has no 2 m / 10 m diagnostics
+    from: {ps: state.PS, phis: inputs.PHIS,
+           t_lowest: state.T_7, q_lowest: state.specific_total_water_7,
+           u_lowest: state.U_7, v_lowest: state.V_7,
+           flds: state.FLDS, fsds: state.FSDS,
+           fsus: state.surface_upward_shortwave_flux,
+           precip: state.surface_precipitation_rate,
+           solin_now: aux.solin_now, solin_window: aux.solin_window}
+    to: {z: exports.Sa_z, u: exports.Sa_u, v: exports.Sa_v,
+         tbot: exports.Sa_tbot, ptem: exports.Sa_ptem, shum: exports.Sa_shum,
+         pbot: exports.Sa_pbot, pslv: exports.Sa_pslv, dens: exports.Sa_dens,
+         topo: exports.Sa_topo, lwdn: exports.Faxa_lwdn,
+         rainc: exports.Faxa_rainc, rainl: exports.Faxa_rainl,
+         snowc: exports.Faxa_snowc, snowl: exports.Faxa_snowl,
+         swndr: exports.Faxa_swndr, swvdr: exports.Faxa_swvdr,
+         swndf: exports.Faxa_swndf, swvdf: exports.Faxa_swvdf,
+         swnet: exports.Faxa_swnet}
+
+coupler:
+  imports:
+    - {name: Sf_lfrac, units: "1"}
+    - {name: Sf_ofrac, units: "1"}
+    - {name: Sf_ifrac, units: "1"}
+    - {name: Sx_t, units: K}
+  exports:
+    - {name: Sa_z, units: m}
+    - {name: Sa_u, units: m/s}
+    - {name: Sa_v, units: m/s}
+    - {name: Sa_tbot, units: K}
+    - {name: Sa_ptem, units: K}
+    - {name: Sa_shum, units: kg/kg}
+    - {name: Sa_pbot, units: Pa}
+    - {name: Sa_pslv, units: Pa}
+    - {name: Sa_dens, units: kg/m3}
+    - {name: Sa_topo, units: m}
+    - {name: Faxa_lwdn, units: W/m2}
+    - {name: Faxa_rainc, units: kg/m2/s}
+    - {name: Faxa_rainl, units: kg/m2/s}
+    - {name: Faxa_snowc, units: kg/m2/s}
+    - {name: Faxa_snowl, units: kg/m2/s}
+    - {name: Faxa_swndr, units: W/m2}
+    - {name: Faxa_swvdr, units: W/m2}
+    - {name: Faxa_swndf, units: W/m2}
+    - {name: Faxa_swvdf, units: W/m2}
+    - {name: Faxa_swnet, units: W/m2}

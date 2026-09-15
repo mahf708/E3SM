@@ -1,0 +1,69 @@
+name: Atmosphere emulator foundation
+on:
+  push:
+    branches: [mahf708/emulators/atmosphere-foundation]
+    paths: ['components/emulators/**', '.github/workflows/emulatoratm-foundation.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  standalone:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        torch: ['OFF', 'ON']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Install CPU build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libmpich-dev mpich libyaml-cpp-dev catch2 libnetcdf-dev python3-dev python3-venv
+          python3 -m venv .venv
+          .venv/bin/pip install numpy scipy pyyaml
+      - name: Install matching Python Torch and LibTorch
+        if: matrix.torch == 'ON'
+        run: .venv/bin/pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+      - name: Configure and build
+        env:
+          TORCH_ENABLED: ${{ matrix.torch }}
+        run: |
+          torch_prefix=''
+          if [ "$TORCH_ENABLED" = ON ]; then
+            torch_prefix=$(.venv/bin/python -c 'import torch; print(torch.utils.cmake_prefix_path)')
+          fi
+          cmake -S components/emulators -B build -DBUILD_EMULATOR_TESTS=ON \
+            -DEMULATOR_ENABLE_MPI=ON -DEMULATOR_TEST_MPI_RANKS=2 \
+            -DEMULATOR_ENABLE_NETCDF=ON -DEMULATOR_ENABLE_PYTHON=ON \
+            -DPython3_EXECUTABLE="$PWD/.venv/bin/python" \
+            -DEMULATOR_ENABLE_LIBTORCH="$TORCH_ENABLED" \
+            -DCMAKE_PREFIX_PATH="$torch_prefix" -DCATCH2_INCLUDE_DIR=/usr/include
+          cmake --build build -j2
+          ctest --test-dir build --output-on-failure --timeout 120
+      - name: Run the atmosphere and resume it on a different rank count
+        env:
+          TORCH_ENABLED: ${{ matrix.torch }}
+        run: |
+          extra=''
+          backends='python_fixture'
+          if [ "$TORCH_ENABLED" = ON ]; then
+            extra='--torch'
+            backends='python_fixture libtorch python_torch'
+          fi
+          .venv/bin/python components/emulators/examples/make_fixture.py fixture $extra
+          for backend in $backends; do
+            mpiexec -n 2 build/driver/emulatoratm_driver fixture/${backend}_full.yaml
+            mpiexec -n 2 build/driver/emulatoratm_driver fixture/${backend}_segment.yaml
+            mpiexec -n 1 build/driver/emulatoratm_driver fixture/${backend}_resume.yaml
+          done
+          .venv/bin/python components/emulators/examples/check_results.py fixture $backends
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atmosphere-${{ matrix.torch }}
+          path: |
+            build/Testing/Temporary/LastTest.log
+            fixture/*.csv

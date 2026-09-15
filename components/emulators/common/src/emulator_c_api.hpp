@@ -74,6 +74,12 @@ struct EmulatorCouplingDesc {
 
 /// Opaque handle type in C/Fortran:
 /// actually points to an EmulatorComp in C++.
+///
+/// Each component library defines its own creator, which its cap calls, so
+/// the three link into one executable.  emulator_create(kind) dispatches over
+/// them; it lives in emulator_driver, for tools and tests, and returns null
+/// for an unknown kind.
+void* emulator_create_atm(const EmulatorCreateConfig* cfg);
 void* emulator_create(const char* kind,
                       const EmulatorCreateConfig* cfg);
 
@@ -87,8 +93,14 @@ void emulator_init_coupling_indices(void* handle, const char* import_fields, con
 
 void  emulator_init(void* handle);
 void  emulator_run(void* handle, int dt);
+/// One coupler step ending at (ymd, tod): the driver's clock, not a count.
+void  emulator_run_at(void* handle, int dt, int ymd, int tod);
 void  emulator_finalize(void* handle);
 void  emulator_print_info(void* handle);
+/// Before emulator_init: restore from this restart file (null terminated).
+void  emulator_set_restart_file(void* handle, const char* path);
+/// After a step: write the component's restart file.  Collective.
+void  emulator_write_restart(void* handle, const char* path);
 
 /**
  * @brief Destroy an emulator instance created by emulator_create.
