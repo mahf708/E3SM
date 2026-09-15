@@ -524,6 +524,8 @@
     </environment_variables>
     <environment_variables compiler="gnugpu">
       <env name="MPICH_GPU_SUPPORT_ENABLED">1</env>
+      <!-- LibTorch for the emulated components (components/emulators) -->
+      <env name="Torch_ROOT">/global/cfs/cdirs/e3sm/software/libtorch/libtorch-shared-with-deps-2.10.0+cu128</env>
     </environment_variables>
     <environment_variables compiler="nvidiagpu">
       <env name="MPICH_GPU_SUPPORT_ENABLED">1</env>

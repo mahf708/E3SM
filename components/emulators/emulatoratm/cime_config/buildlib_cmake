@@ -11,6 +11,8 @@ _CIMEROOT = os.environ.get("CIMEROOT")
 if _CIMEROOT is None:
     raise ValueError("ERROR: CIMEROOT not defined.")
 sys.path.append(os.path.join(_CIMEROOT, "scripts", "Tools"))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "..", "..", "cime_config"))
 
 from standard_script_setup import *  # noqa: F401,F403,E402
 from CIME.buildlib import (  # noqa: E402

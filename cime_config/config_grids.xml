@@ -44,6 +44,28 @@
       <grid name="iac"    compset="SIAC">null</grid>
     </model_grid_defaults>
 
+    <!-- The emulated atmosphere on the 180x360 Gaussian grid of ACE.
+         Alone (stub surface components), or over MPAS-Ocean and MPAS-Seaice. -->
+    <model_grid alias="gauss180x360_gauss180x360" compset="_EMULATORATM">
+      <grid name="atm">gauss180x360</grid>
+      <grid name="lnd">gauss180x360</grid>
+      <grid name="ocnice">gauss180x360</grid>
+      <grid name="rof">null</grid>
+      <grid name="glc">null</grid>
+      <grid name="wav">null</grid>
+      <mask>gauss180x360</mask>
+    </model_grid>
+
+    <model_grid alias="gauss180x360_IcoswISC30E3r5" compset="_EMULATORATM.*_MPASO">
+      <grid name="atm">gauss180x360</grid>
+      <grid name="lnd">gauss180x360</grid>
+      <grid name="ocnice">IcoswISC30E3r5</grid>
+      <grid name="rof">null</grid>
+      <grid name="glc">null</grid>
+      <grid name="wav">null</grid>
+      <mask>IcoswISC30E3r5</mask>
+    </model_grid>
+
     <model_grid alias="g16_g16" compset="DATM.+DROF">
       <grid name="atm">gx1v6</grid>
       <grid name="lnd">gx1v6</grid>
@@ -3038,6 +3060,17 @@
 
   <domains>
 
+    <domain name="gauss180x360">
+      <nx>360</nx>
+      <ny>180</ny>
+      <!-- Development copies, not yet in inputdata. -->
+      <file grid="atm|lnd" mask="gauss180x360">/pscratch/sd/m/mahf708/eocn-inputdata/share/domains/domain.lnd.gauss180x360_gauss180x360.20260913.nc</file>
+      <file grid="ice|ocn" mask="gauss180x360">/pscratch/sd/m/mahf708/eocn-inputdata/share/domains/domain.ocn.gauss180x360_gauss180x360.20260913.nc</file>
+      <file grid="atm|lnd" mask="IcoswISC30E3r5">/pscratch/sd/m/mahf708/eocn-inputdata/share/domains/domain.lnd.gauss180x360_IcoswISC30E3r5.20260914.nc</file>
+      <file grid="ice|ocn" mask="IcoswISC30E3r5">/pscratch/sd/m/mahf708/eocn-inputdata/share/domains/domain.ocn.gauss180x360_IcoswISC30E3r5.20260914.nc</file>
+      <desc>gauss180x360 is the 180x360 Gaussian grid of the ACE emulators</desc>
+    </domain>
+
     <!-- ======================================================== -->
     <!-- Component grid domain specifications -->
     <!-- ======================================================== -->
@@ -4190,6 +4223,14 @@
     <!-- ======================================================== -->
 
     <!-- iac/ehc mappings -->
+
+    <gridmap atm_grid="gauss180x360" ocn_grid="IcoswISC30E3r5">
+      <map name="ATM2OCN_FMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/gauss180x360/map_gauss180x360_to_IcoswISC30E3r5_traave.20260914.nc</map>
+      <map name="ATM2OCN_SMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/gauss180x360/map_gauss180x360_to_IcoswISC30E3r5-nomask_trbilin.20260914.nc</map>
+      <map name="ATM2OCN_VMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/gauss180x360/map_gauss180x360_to_IcoswISC30E3r5_trbilin.20260914.nc</map>
+      <map name="OCN2ATM_FMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/IcoswISC30E3r5/map_IcoswISC30E3r5_to_gauss180x360_traave.20260914.nc</map>
+      <map name="OCN2ATM_SMAPNAME">/pscratch/sd/m/mahf708/eocn-inputdata/cpl/gridmaps/IcoswISC30E3r5/map_IcoswISC30E3r5_to_gauss180x360_traave.20260914.nc</map>
+    </gridmap>
 
     <gridmap atm_grid="ne30np4.pg2" iac_grid="r0125">
       <map name="IAC2ATM_FMAPNAME">cpl/gridmaps/r0125/map_r0125_TO_ne30pg2_aave.241125.nc</map>

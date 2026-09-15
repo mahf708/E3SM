@@ -24,14 +24,48 @@
     <desc>mode for emulatoratm model, NULL means emulatoratm is turned off</desc>
   </entry>
 
-  <description>
-    <desc compset="_EMULATORATM">EMULATORATM:</desc>
-  </description>
+  <entry id="EMULATORATM_GRID_FILE">
+    <type>char</type>
+    <default_value>/pscratch/sd/m/mahf708/eocn-inputdata/share/meshes/gaussian_180x360_latlon_grnwst.scrip.20260913.nc</default_value>
+    <group>run_component_emulatoratm</group>
+    <file>env_run.xml</file>
+    <desc>SCRIP grid the atmosphere emulator runs on (atm_in grid_file)</desc>
+  </entry>
 
-  <help>
-    =========================================
-    EMULATORATM naming conventions
-    =========================================
-  </help>
+  <entry id="EMULATORATM_SPEC">
+    <type>char</type>
+    <default_value>ace2-eamv3.yaml</default_value>
+    <group>run_component_emulatoratm</group>
+    <file>env_run.xml</file>
+    <desc>Spec in components/emulators/specs describing the atmosphere emulator</desc>
+  </entry>
+
+  <entry id="EMULATORATM_MODEL_FILE">
+    <type>char</type>
+    <default_value>/global/cfs/cdirs/e3sm/anolan/ACE2-E3SMv3/ace_traced_cuda.pt</default_value>
+    <group>run_component_emulatoratm</group>
+    <file>env_run.xml</file>
+    <desc>Traced TorchScript atmosphere (atm_in model_path)</desc>
+  </entry>
+
+  <entry id="EMULATORATM_IC_FILE">
+    <type>char</type>
+    <default_value>/global/cfs/cdirs/e3sm/anolan/ACE2-E3SMv3/initial_conditions/1971010100_time_1.nc</default_value>
+    <group>run_component_emulatoratm</group>
+    <file>env_run.xml</file>
+    <desc>Atmosphere emulator initial condition (atm_in ic_file)</desc>
+  </entry>
+
+  <entry id="EMULATORATM_DEVICE">
+    <type>char</type>
+    <default_value>cuda</default_value>
+    <group>run_component_emulatoratm</group>
+    <file>env_run.xml</file>
+    <desc>Inference device for the atmosphere emulator: cuda or cpu</desc>
+  </entry>
+
+  <description>
+    <desc compset="_EMULATORATM">EMULATORATM: machine-learned atmosphere (ACE) on the emulator framework</desc>
+  </description>
 
 </definitions_variables>

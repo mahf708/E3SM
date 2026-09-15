@@ -273,6 +273,7 @@
       <value component="mali"     >$COMP_ROOT_DIR_GLC/cime_config/config_compsets.xml</value>
       <value component="mpassi"   >$COMP_ROOT_DIR_ICE/cime_config/config_compsets.xml</value>
       <value component="mosart"   >$COMP_ROOT_DIR_ROF/cime_config/config_compsets.xml</value>
+      <value component="emulatoratm">$COMP_ROOT_DIR_ATM/cime_config/config_compsets.xml</value>
       <value component="ww3"      >$COMP_ROOT_DIR_WAV/cime_config/config_compsets.xml</value>
       <value component="iac"      >$COMP_ROOT_DIR_IAC/cime_config/config_compsets.xml</value>
     </values>
