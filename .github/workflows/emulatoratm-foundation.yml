@@ -21,7 +21,7 @@ jobs:
       - name: Install CPU build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ libmpich-dev mpich libyaml-cpp-dev catch2 libnetcdf-dev python3-dev python3-venv
+          sudo apt-get install -y cmake g++ libmpich-dev mpich libyaml-cpp-dev libnetcdf-dev python3-dev python3-venv
           python3 -m venv .venv
           .venv/bin/pip install numpy scipy pyyaml
       - name: Install matching Python Torch and LibTorch
@@ -41,7 +41,7 @@ jobs:
             -DEMULATOR_ENABLE_NETCDF=ON -DEMULATOR_ENABLE_PYTHON=ON \
             -DPython3_EXECUTABLE="$PWD/.venv/bin/python" \
             -DEMULATOR_ENABLE_LIBTORCH="$TORCH_ENABLED" \
-            -DCMAKE_PREFIX_PATH="$torch_prefix" -DCATCH2_INCLUDE_DIR=/usr/include
+            -DCMAKE_PREFIX_PATH="$torch_prefix"
           cmake --build build -j2
           ctest --test-dir build --output-on-failure --timeout 120
       - name: Collect build failure summary
@@ -52,8 +52,8 @@ jobs:
           import os, re
           from pathlib import Path
           lines = Path('build.log').read_text().splitlines() if Path('build.log').exists() else []
-          selected = [s for s in lines if re.search(r'error:|CMake Error|FAILED:|failed', s, re.I)]
-          summary = ' / '.join(selected[:2])[:240] or 'See configure/build logs'
+          selected = [line for i, line in enumerate(lines) if re.search(r'error:|CMake Error|FAILED:|failed', line, re.I) for line in lines[i:i+3]]
+          summary = ' / '.join(selected[:4])[:240] or 'See configure/build logs'
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write('summary=' + summary + '\n')
           PYTHON
