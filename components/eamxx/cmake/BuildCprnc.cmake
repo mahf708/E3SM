@@ -43,10 +43,16 @@ macro(BuildCprnc)
         "
       )
       set(SRC_ROOT ${SCREAM_BASE_DIR}/../..)
-      # Let's make sure cprnc can at least find the FindNetCDF.cmake
-      # module that scorpio has.
-      list(APPEND CMAKE_MODULE_PATH ${SRC_ROOT}/externals/scorpio/cmake)
+      # Make sure cprnc finds the FindNetCDF.cmake module that scorpio has, and not
+      # components/cmake/modules/FindNETCDF.cmake, which is a CIME-only placeholder that
+      # reads $ENV{NETCDF_PATH} and hard-errors otherwise. Those two differ only in case,
+      # so on a case-insensitive host filesystem the placeholder answers to either name
+      # and wins if it comes first. Prepend, and restore afterwards since this is a macro
+      # and would otherwise reorder the caller's module path.
+      set(CPRNC_CMAKE_MODULE_PATH_BACKUP ${CMAKE_MODULE_PATH})
+      list(INSERT CMAKE_MODULE_PATH 0 ${SRC_ROOT}/externals/scorpio/cmake)
       add_subdirectory(${SRC_ROOT}/cime/CIME/non_py/cprnc ${BLDROOT})
+      set(CMAKE_MODULE_PATH ${CPRNC_CMAKE_MODULE_PATH_BACKUP})
       EkatDisableAllWarning(cprnc)
 
       set(CPRNC_BINARY ${BLDROOT}/cprnc CACHE INTERNAL "")
