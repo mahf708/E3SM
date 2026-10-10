@@ -57,6 +57,24 @@ torch::ScalarType parse_dtype(const std::string &spec) {
   return torch::kFloat64;
 }
 
+/// Where a tensor's memory is, for torch.
+torch::Device memory_device(const Tensor &tensor) {
+  return tensor.on_device()
+             ? torch::Device(torch::kCUDA,
+                             static_cast<c10::DeviceIndex>(tensor.memory().device))
+             : torch::Device(torch::kCPU);
+}
+
+/// A torch view of a tensor's memory (strided, on its device): no copy.
+at::Tensor as_torch(const Tensor &tensor, const double *data) {
+  const auto opts = torch::TensorOptions()
+                        .dtype(torch::kFloat64)
+                        .device(memory_device(tensor));
+  // The const_cast is safe for inputs, which are only read
+  return torch::from_blob(const_cast<double *>(data), tensor.dims(),
+                          tensor.strides(), opts);
+}
+
 /// A torch tensor of the module's dtype, on the module's device.
 at::Tensor to_torch(const Tensor &tensor, const torch::Device &device,
                     torch::ScalarType dtype) {
@@ -64,11 +82,8 @@ at::Tensor to_torch(const Tensor &tensor, const torch::Device &device,
   if (tensor.size() == 0) {
     return torch::empty(tensor.dims(), opts).to(device, dtype);
   }
-  // A view, not a copy; the const_cast is safe because it is only read.
-  // to() copies only if the device or dtype differ.
-  return torch::from_blob(const_cast<double *>(tensor.cdata()), tensor.dims(),
-                          opts)
-      .to(device, dtype);
+  // to() copies only if the device or dtype differ
+  return as_torch(tensor, tensor.cdata()).to(device, dtype);
 }
 
 /// Copy a module output into the caller's tensor.
@@ -80,10 +95,8 @@ void from_torch(const at::Tensor &result, Tensor &tensor) {
   if (tensor.size() == 0) {
     return;
   }
-  // copy_ handles the device transfer and the conversion back to double.
-  torch::from_blob(tensor.data(), tensor.dims(),
-                   torch::TensorOptions().dtype(torch::kFloat64))
-      .copy_(result);
+  // copy_ handles the device transfer, the strides and the conversion to double
+  as_torch(tensor, tensor.data()).copy_(result);
 }
 
 /// Flatten what forward() returned: a tensor, or a tuple or list of tensors.
@@ -153,10 +166,23 @@ LibTorchBackend::LibTorchBackend(const InferenceConfig &config)
 
 LibTorchBackend::~LibTorchBackend() = default;
 
+bool LibTorchBackend::accepts(MemorySpace space) const {
+  // Device memory only goes to a module on the device, so that it never moves
+  return space == MemorySpace::HOST || (m_impl && m_impl->device.is_cuda());
+}
+
 bool LibTorchBackend::infer(const TensorMap &inputs, TensorMap &outputs) {
   EMULATOR_INFER_REQUIRE(m_impl, "The LibTorch backend was finalized.");
   EMULATOR_INFER_REQUIRE(inputs.size() > 0,
                          "The LibTorch backend was given no input tensors.");
+  for (const TensorMap *map : {&inputs, static_cast<const TensorMap *>(&outputs)}) {
+    for (const auto &tensor : *map) {
+      EMULATOR_INFER_REQUIRE(accepts(tensor.memory().space),
+                             "Tensor " << tensor.to_string()
+                                       << " is in device memory, but the "
+                                          "module runs on the CPU.");
+    }
+  }
 
   torch::NoGradGuard no_grad;
   FpeGuard no_fpe;
@@ -187,8 +213,14 @@ bool LibTorchBackend::infer(const TensorMap &inputs, TensorMap &outputs) {
                                                 << outputs.size()
                                                 << " output(s) were given.");
   std::size_t i = 0;
+  bool on_device = false;
   for (auto &tensor : outputs) {
     from_torch(results[i++], tensor);
+    on_device |= tensor.on_device();
+  }
+  if (on_device) {
+    // The caller reads the outputs on its own stream
+    torch::cuda::synchronize();
   }
   return true;
 }

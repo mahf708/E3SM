@@ -6,15 +6,17 @@
 #include "tensor.hpp"
 
 #include <ekat_assert.hpp>
-#include <ekat_std_utils.hpp>
 
 #include <algorithm>
 #include <sstream>
+#include <type_traits>
 
 namespace scream
 {
 
 namespace {
+
+using namespace emulator::inference;
 
 std::string join (const std::vector<std::string>& v) {
   std::string s;
@@ -22,6 +24,12 @@ std::string join (const std::vector<std::string>& v) {
     s += (s.empty() ? "" : ", ") + e;
   }
   return s;
+}
+
+std::vector<std::string> names_of (const ProcessEmulator::arrays_t& m) {
+  std::vector<std::string> n;
+  for (const auto& [k, a] : m) n.push_back(k);
+  return n;
 }
 
 // Backend options can be given in yaml as strings, numbers or bools
@@ -41,10 +49,9 @@ double number (const ekat::ParameterList& pl, const std::string& key) {
   return pl.isType<int>(key) ? pl.get<int>(key) : pl.get<double>(key);
 }
 
-emulator::inference::InferenceConfig
-make_config (ekat::ParameterList params, const int n_in, const int n_out)
+InferenceConfig make_config (ekat::ParameterList params, const int n_in, const int n_out)
 {
-  emulator::inference::InferenceConfig config;
+  InferenceConfig config;
   config.model_path      = params.get<std::string>("model_path", "");
   config.input_channels  = n_in;
   config.output_channels = n_out;
@@ -58,13 +65,46 @@ make_config (ekat::ParameterList params, const int n_in, const int n_out)
   return config;
 }
 
+// Where the arrays of the default device live
+constexpr bool arrays_on_host =
+  Kokkos::SpaceAccessibility<Kokkos::HostSpace, DefaultDevice::memory_space>::accessible;
+
+TensorMemory array_memory () {
+  TensorMemory m;
+  if (not arrays_on_host) {
+    m.space  = MemorySpace::DEVICE;
+    m.device = Kokkos::device_id();
+  }
+  return m;
+}
+
+std::vector<std::int64_t> dims_of (const ProcessEmulator::Array& a) {
+  if (a.per_column) return {static_cast<std::int64_t>(a.view.extent(0))};
+  return {static_cast<std::int64_t>(a.view.extent(0)), static_cast<std::int64_t>(a.view.extent(1))};
+}
+
+std::vector<std::int64_t> strides_of (const ProcessEmulator::Array& a) {
+  if (a.per_column) return {static_cast<std::int64_t>(a.view.stride(0))};
+  return {static_cast<std::int64_t>(a.view.stride(0)), static_cast<std::int64_t>(a.view.stride(1))};
+}
+
+// Memory range [first, last) spanned by an array
+std::pair<const Real*, const Real*> range_of (const ProcessEmulator::Array& a) {
+  const auto n0 = a.view.extent(0), n1 = a.view.extent(1);
+  if (n0==0 || n1==0) return {a.view.data(), a.view.data()};
+  const auto last = (n0-1)*a.view.stride(0) + (n1-1)*a.view.stride(1);
+  return {a.view.data(), a.view.data() + last + 1};
+}
+
+bool overlap (const std::pair<const Real*, const Real*>& a, const std::pair<const Real*, const Real*>& b) {
+  return a.first < b.second && b.first < a.second;
+}
+
 } // anonymous namespace
 
 ProcessEmulator::backend_ptr
 create_process_emulator_backend (const std::string& name, const ekat::ParameterList& params)
 {
-  using namespace emulator::inference;
-
   const auto backend = params.get<std::string>("backend");
   BackendType type;
   if (backend=="stub") {
@@ -87,27 +127,29 @@ create_process_emulator_backend (const std::string& name, const ekat::ParameterL
   }
 }
 
+ProcessEmulator::Array ProcessEmulator::
+strided (const Real* data, const int n0, const int n1, const int s0, const int s1, const bool per_column)
+{
+  Array a;
+  a.view = view_t(const_cast<Real*>(data), Kokkos::LayoutStride(n0, s0, n1, s1));
+  a.per_column = per_column;
+  return a;
+}
+
 ProcessEmulator::
-ProcessEmulator (const std::string& name, const ekat::ParameterList& params,
-                 const std::vector<std::string>& rate_names,
-                 const int ncol, const int nlev)
- : ProcessEmulator(name, params, rate_names, ncol, nlev,
-                   create_process_emulator_backend(name, params))
+ProcessEmulator (const std::string& name, const ekat::ParameterList& params)
+ : ProcessEmulator(name, params, create_process_emulator_backend(name, params))
 {
   // Nothing else to do
 }
 
 ProcessEmulator::
-ProcessEmulator (const std::string& name, const ekat::ParameterList& params,
-                 const std::vector<std::string>& rate_names,
-                 const int ncol, const int nlev, const backend_ptr& backend)
+ProcessEmulator (const std::string& name, const ekat::ParameterList& params, const backend_ptr& backend)
  : m_name (name)
- , m_ncol (ncol)
- , m_nlev (nlev)
  , m_backend (backend)
 {
   EKAT_REQUIRE_MSG (m_backend!=nullptr, "[ProcessEmulator] Error! Invalid backend for emulator '" + name + "'.\n");
-  setup(params, rate_names);
+  setup(params);
 }
 
 ProcessEmulator::~ProcessEmulator ()
@@ -117,15 +159,10 @@ ProcessEmulator::~ProcessEmulator ()
   }
 }
 
-void ProcessEmulator::
-setup (const ekat::ParameterList& params_in, const std::vector<std::string>& rate_names)
+void ProcessEmulator::setup (const ekat::ParameterList& params_in)
 {
   auto params = params_in;
   const std::string prefix = "[ProcessEmulator] Error! In emulator '" + m_name + "', ";
-  auto rate_index = [&](const std::string& n) {
-    auto it = std::find(rate_names.begin(), rate_names.end(), n);
-    return it==rate_names.end() ? -1 : static_cast<int>(it-rate_names.begin());
-  };
 
   const auto mode = params.get<std::string>("mode", "replace");
   EKAT_REQUIRE_MSG (mode=="replace" or mode=="add", prefix + "mode must be 'replace' or 'add'.\n");
@@ -135,147 +172,200 @@ setup (const ekat::ParameterList& params_in, const std::vector<std::string>& rat
   m_output_names = params.get<std::vector<std::string>>("outputs");
   EKAT_REQUIRE_MSG (m_input_names.size()>0 and m_output_names.size()>0,
       prefix + "inputs and outputs cannot be empty.\n");
-
-  for (const auto& n : m_input_names) {
-    m_input_rates.push_back(rate_index(n));
+  for (size_t o=0; o<m_output_names.size(); ++o) {
+    for (size_t p=0; p<o; ++p) {
+      EKAT_REQUIRE_MSG (m_output_names[p]!=m_output_names[o],
+          prefix + "output '" + m_output_names[o] + "' is repeated.\n");
+    }
   }
 
-  // Outputs: rates, or masks
-  const auto nout = m_output_names.size();
-  m_outputs.resize(nout);
-  std::vector<bool> is_mask(nout, false);
   auto output_index = [&](const std::string& n) {
     auto it = std::find(m_output_names.begin(), m_output_names.end(), n);
     return it==m_output_names.end() ? -1 : static_cast<int>(it-m_output_names.begin());
   };
+  m_outputs.resize(m_output_names.size());
   if (params.isSublist("masks")) {
     const auto& masks = params.sublist("masks");
     for (const auto& mname : masks.param_names()) {
       const int m = output_index(mname);
       EKAT_REQUIRE_MSG (m>=0, prefix + "mask '" + mname + "' is not an output.\n");
-      EKAT_REQUIRE_MSG (rate_index(mname)<0, prefix + "mask '" + mname + "' is a process rate.\n");
-      is_mask[m] = true;
-      for (const auto& r : masks.get<std::vector<std::string>>(mname)) {
-        const int o = output_index(r);
-        EKAT_REQUIRE_MSG (o>=0, prefix + "rate '" + r + "' gated by mask '" + mname + "' is not an output.\n");
-        EKAT_REQUIRE_MSG (m_outputs[o].mask<0, prefix + "rate '" + r + "' is gated by more than one mask.\n");
+      m_outputs[m].is_mask = true;
+    }
+    for (const auto& mname : masks.param_names()) {
+      const int m = output_index(mname);
+      for (const auto& t : masks.get<std::vector<std::string>>(mname)) {
+        const int o = output_index(t);
+        EKAT_REQUIRE_MSG (o>=0, prefix + "'" + t + "', gated by mask '" + mname + "', is not an output.\n");
+        EKAT_REQUIRE_MSG (not m_outputs[o].is_mask, prefix + "mask '" + t + "' is gated by a mask.\n");
+        EKAT_REQUIRE_MSG (m_outputs[o].mask<0, prefix + "'" + t + "' is gated by more than one mask.\n");
         m_outputs[o].mask = m;
       }
     }
   }
-  for (size_t o=0; o<nout; ++o) {
-    const auto& n = m_output_names[o];
-    if (is_mask[o]) {
-      continue;
-    }
-    m_outputs[o].rate = rate_index(n);
-    EKAT_REQUIRE_MSG (m_outputs[o].rate>=0,
-        prefix + "output '" + n + "' is neither a process rate nor a mask.\n"
-        "  Process rates: " + join(rate_names) + "\n");
-    for (size_t p=0; p<o; ++p) {
-      EKAT_REQUIRE_MSG (m_outputs[p].rate!=m_outputs[o].rate, prefix + "output '" + n + "' is repeated.\n");
-    }
-  }
   if (params.isSublist("fallback_scale")) {
     const auto& fs = params.sublist("fallback_scale");
-    for (const auto& rname : fs.param_names()) {
-      const int o = output_index(rname);
-      EKAT_REQUIRE_MSG (o>=0 and m_outputs[o].rate>=0 and m_outputs[o].mask>=0,
-          prefix + "fallback_scale is set for '" + rname + "', which is not a rate gated by a mask.\n");
-      m_outputs[o].fallback_scale = number(fs, rname);
+    for (const auto& t : fs.param_names()) {
+      const int o = output_index(t);
+      EKAT_REQUIRE_MSG (o>=0 and m_outputs[o].mask>=0,
+          prefix + "fallback_scale is set for '" + t + "', which is not an output gated by a mask.\n");
+      m_outputs[o].fallback_scale = number(fs, t);
     }
   }
+}
 
-  // Staging buffers, contiguous (ncol, nlev), on device and host
+std::vector<std::string> ProcessEmulator::target_names () const
+{
+  std::vector<std::string> t;
+  for (size_t o=0; o<m_outputs.size(); ++o) {
+    if (not m_outputs[o].is_mask) t.push_back(m_output_names[o]);
+  }
+  return t;
+}
+
+ProcessEmulator::Buffer& ProcessEmulator::
+buffer (std::map<std::string, Buffer>& buffers, const std::string& name, const int n0, const int n1)
+{
+  auto& b = buffers[name];
+  if (b.dev.extent_int(0)!=n0 or b.dev.extent_int(1)!=n1) {
+    b.dev  = KT::view_2d<double>("emu_" + m_name + "_" + name, n0, n1);
+    b.host = Kokkos::create_mirror_view(b.dev);
+  }
+  return b;
+}
+
+void ProcessEmulator::run (const arrays_t& inputs, const arrays_t& targets)
+{
+  using policy_t = Kokkos::MDRangePolicy<KT::ExeSpace, Kokkos::Rank<2>>;
+  const std::string prefix = "[ProcessEmulator] Error! In emulator '" + m_name + "', ";
+
+  // Arrays go to the backend in place if it accepts their memory, and they are doubles
+  const auto memory = array_memory();
+  const bool in_place = std::is_same<Real, double>::value and m_backend->accepts(memory.space);
+  // Otherwise, through buffers: on device if the backend accepts device memory
+  TensorMemory buf_memory;
+  const bool buffers_on_device = not arrays_on_host and m_backend->accepts(MemorySpace::DEVICE);
+  if (buffers_on_device) {
+    buf_memory = memory;
+  }
+  m_num_in_place = m_num_buffered = 0;
+
+  // The (device) data the backend reads must be ready
+  Kokkos::fence();
+
+  // 1. Inputs
+  TensorMap ins;
+  std::vector<std::pair<const Real*, const Real*>> in_place_ranges;
   for (const auto& n : m_input_names) {
-    m_in.emplace_back("emu_in_" + n, m_ncol, m_nlev);
-    m_in_h.push_back(Kokkos::create_mirror_view(m_in.back()));
-  }
-  for (const auto& n : m_output_names) {
-    m_out.emplace_back("emu_out_" + n, m_ncol, m_nlev);
-    m_out_h.push_back(Kokkos::create_mirror_view(m_out.back()));
-  }
-}
-
-std::vector<int> ProcessEmulator::emulated_rates () const
-{
-  std::vector<int> r;
-  for (const auto& o : m_outputs) {
-    if (o.rate>=0) r.push_back(o.rate);
-  }
-  return r;
-}
-
-void ProcessEmulator::
-run (const std::map<std::string, field_t>& state, const rates_t& rates, const rates_t& original_rates)
-{
-  using ExeSpace = KT::ExeSpace;
-  using policy_t = Kokkos::MDRangePolicy<ExeSpace, Kokkos::Rank<2>>;
-  constexpr int N = Pack::n;
-
-  const policy_t policy({0, 0}, {m_ncol, m_nlev});
-  const int nrates = rates.extent_int(1);
-
-  // 1. Gather the inputs into contiguous buffers
-  for (size_t i=0; i<m_input_names.size(); ++i) {
-    const auto in = m_in[i];
-    const int r = m_input_rates[i];
-    if (r>=0) {
-      const auto src = original_rates;
-      Kokkos::parallel_for("emu_gather_rate", policy, KOKKOS_LAMBDA (const int icol, const int ilev) {
-        in(icol, ilev) = src(icol, r, ilev/N)[ilev%N];
-      });
+    auto it = inputs.find(n);
+    EKAT_REQUIRE_MSG (it!=inputs.end(), prefix + "input '" + n + "' is not available.\n"
+                      "  Available inputs: " + join(names_of(inputs)) + "\n");
+    const auto& a = it->second;
+    if (in_place) {
+      ins.wrap(n, static_cast<const double*>(static_cast<const void*>(a.view.data())),
+               dims_of(a), strides_of(a), memory);
+      in_place_ranges.push_back(range_of(a));
+      ++m_num_in_place;
     } else {
-      auto it = state.find(m_input_names[i]);
-      if (it==state.end()) {
-        std::vector<std::string> names;
-        for (const auto& [n, v] : state) names.push_back(n);
-        EKAT_ERROR_MSG ("[ProcessEmulator] Error! In emulator '" + m_name + "', input '" + m_input_names[i] +
-                        "' is neither a state quantity nor a process rate.\n"
-                        "  State quantities: " + join(names) + "\n");
-      }
-      const auto src = it->second;
-      Kokkos::parallel_for("emu_gather_state", policy, KOKKOS_LAMBDA (const int icol, const int ilev) {
-        in(icol, ilev) = src(icol, ilev/N)[ilev%N];
+      const int n0 = a.view.extent(0), n1 = a.view.extent(1);
+      auto& b = buffer(m_in_buffers, n, n0, n1);
+      const auto src = a.view;
+      const auto dst = b.dev;
+      Kokkos::parallel_for("emu_gather", policy_t({0,0},{n0,n1}), KOKKOS_LAMBDA (const int i, const int k) {
+        dst(i,k) = src(i,k);
       });
+      const double* data = b.dev.data();
+      if (not buffers_on_device) {
+        Kokkos::deep_copy(b.host, b.dev);
+        data = b.host.data();
+      }
+      ins.wrap(n, data, dims_of(a), {}, buf_memory);
+      ++m_num_buffered;
     }
-    Kokkos::deep_copy(m_in_h[i], in);
   }
 
-  // 2. Run the model (on host memory)
-  using namespace emulator::inference;
-  TensorMap ins, outs;
-  const std::vector<std::int64_t> dims = {m_ncol, m_nlev};
-  for (size_t i=0; i<m_input_names.size(); ++i) {
-    ins.wrap(m_input_names[i], static_cast<const double*>(m_in_h[i].data()), dims);
-  }
+  // 2. Outputs: targets written in place by the backend, or buffers merged afterwards
+  TensorMap outs;
+  std::vector<bool> direct(m_output_names.size(), false);
+  std::vector<const Array*> target_of(m_output_names.size(), nullptr);
+  std::vector<std::pair<int,int>> out_dims(m_output_names.size());
   for (size_t o=0; o<m_output_names.size(); ++o) {
-    Kokkos::deep_copy(m_out_h[o], 0);
-    outs.wrap(m_output_names[o], m_out_h[o].data(), dims);
+    const auto& n = m_output_names[o];
+    const Array* t = nullptr;
+    if (not m_outputs[o].is_mask) {
+      auto it = targets.find(n);
+      EKAT_REQUIRE_MSG (it!=targets.end(), prefix + "output '" + n + "' is not a mask, nor an available target.\n"
+                        "  Available targets: " + join(names_of(targets)) + "\n");
+      t = &it->second;
+      target_of[o] = t;
+    }
+    // Masks have the shape of the first target they gate
+    const Array* shape = t;
+    if (shape==nullptr) {
+      for (size_t p=0; p<m_outputs.size() and shape==nullptr; ++p) {
+        if (m_outputs[p].mask==static_cast<int>(o)) {
+          auto it = targets.find(m_output_names[p]);
+          if (it!=targets.end()) shape = &it->second;
+        }
+      }
+      EKAT_REQUIRE_MSG (shape!=nullptr, prefix + "mask '" + n + "' gates no available target.\n");
+    }
+    out_dims[o] = {static_cast<int>(shape->view.extent(0)), static_cast<int>(shape->view.extent(1))};
+
+    bool aliased = false;
+    if (t!=nullptr) {
+      for (const auto& r : in_place_ranges) aliased |= overlap(r, range_of(*t));
+    }
+    direct[o] = in_place and t!=nullptr and m_outputs[o].mask<0 and not m_add and not aliased;
+    if (direct[o]) {
+      outs.wrap(n, static_cast<double*>(static_cast<void*>(t->view.data())),
+                dims_of(*t), strides_of(*t), memory);
+      ++m_num_in_place;
+    } else {
+      auto& b = buffer(m_out_buffers, n, out_dims[o].first, out_dims[o].second);
+      Kokkos::deep_copy(b.dev, 0);
+      double* data = b.dev.data();
+      if (not buffers_on_device) {
+        Kokkos::deep_copy(b.host, 0);
+        data = b.host.data();
+      }
+      outs.wrap(n, data, dims_of(*shape), {}, buf_memory);
+      ++m_num_buffered;
+    }
   }
+  Kokkos::fence();
+
+  // 3. Run the model
   try {
     m_backend->infer(ins, outs);
   } catch (const std::exception& e) {
     EKAT_ERROR_MSG ("[ProcessEmulator] Error! Emulator '" + m_name + "' failed:\n" + e.what() + "\n");
   }
-  for (size_t o=0; o<m_output_names.size(); ++o) {
-    Kokkos::deep_copy(m_out[o], m_out_h[o]);
-  }
 
-  // 3. Merge the outputs into the rates
+  // 4. Merge the buffered outputs into their targets
+  if (not buffers_on_device) {
+    for (size_t o=0; o<m_output_names.size(); ++o) {
+      if (not direct[o]) {
+        auto& b = m_out_buffers.at(m_output_names[o]);
+        Kokkos::deep_copy(b.dev, b.host);
+      }
+    }
+  }
   const bool add = m_add;
-  for (const auto& o : m_outputs) {
-    if (o.rate<0) continue;
-    EKAT_REQUIRE_MSG (o.rate<nrates, "[ProcessEmulator] Error! Rate index out of bounds.\n");
-    const auto out  = m_out[&o-m_outputs.data()];
-    const auto mask = o.mask>=0 ? m_out[o.mask] : staging_t();
-    const bool has_mask = o.mask>=0;
-    const Real fallback = o.fallback_scale;
-    const int r = o.rate;
-    Kokkos::parallel_for("emu_merge", policy, KOKKOS_LAMBDA (const int icol, const int ilev) {
-      auto& v = rates(icol, r, ilev/N)[ilev%N];
-      if (!has_mask || mask(icol, ilev) > 0.5) {
-        v = add ? v + out(icol, ilev) : out(icol, ilev);
+  for (size_t o=0; o<m_output_names.size(); ++o) {
+    if (direct[o] or target_of[o]==nullptr) continue;
+    const auto& oo = m_outputs[o];
+    const auto tgt  = target_of[o]->view;
+    const auto out  = m_out_buffers.at(m_output_names[o]).dev;
+    const auto mask = oo.mask>=0 ? m_out_buffers.at(m_output_names[oo.mask]).dev : KT::view_2d<double>();
+    EKAT_REQUIRE_MSG (oo.mask<0 or (mask.extent(0)==tgt.extent(0) and mask.extent(1)==tgt.extent(1)),
+        prefix + "mask '" + m_output_names[oo.mask] + "' and '" + m_output_names[o] + "' differ in shape.\n");
+    const bool has_mask = oo.mask>=0;
+    const Real fallback = oo.fallback_scale;
+    Kokkos::parallel_for("emu_merge", policy_t({0,0},{out_dims[o].first, out_dims[o].second}),
+                         KOKKOS_LAMBDA (const int i, const int k) {
+      auto& v = tgt(i,k);
+      if (!has_mask || mask(i,k) > 0.5) {
+        v = add ? v + out(i,k) : static_cast<Real>(out(i,k));
       } else {
         v *= fallback;
       }

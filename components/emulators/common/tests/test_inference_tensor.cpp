@@ -51,6 +51,50 @@ TEST_CASE("Const view cannot be written through", "[tensor]") {
   REQUIRE_THROWS_AS(t.data(), InferenceError);
 }
 
+TEST_CASE("Views are contiguous and on the host by default", "[tensor]") {
+  std::vector<double> field(24, 0.0);
+  Tensor t = Tensor::view("T", field.data(), {2, 3, 4});
+
+  REQUIRE(t.strides() == std::vector<std::int64_t>{12, 4, 1});
+  REQUIRE(t.contiguous());
+  REQUIRE(t.span() == 24);
+  REQUIRE_FALSE(t.on_device());
+
+  Tensor owned("dT", {2, 3});
+  REQUIRE(owned.strides() == std::vector<std::int64_t>{3, 1});
+  REQUIRE(owned.contiguous());
+}
+
+TEST_CASE("Views can be strided", "[tensor]") {
+  // (2, 3) values in a (2, 4) buffer: rows padded by one element
+  std::vector<double> padded(8, 0.0);
+  Tensor t = Tensor::view("T", padded.data(), {2, 3}, {4, 1});
+
+  REQUIRE(t.size() == 6);
+  REQUIRE_FALSE(t.contiguous());
+  REQUIRE(t.span() == 7);
+  REQUIRE(t.strides() == std::vector<std::int64_t>{4, 1});
+}
+
+TEST_CASE("Views can be in device memory", "[tensor]") {
+  std::vector<double> field(6, 0.0);
+  TensorMap m;
+  m.wrap("T", static_cast<const double *>(field.data()), {2, 3}, {},
+         TensorMemory{MemorySpace::DEVICE, 1});
+
+  const Tensor &t = *m.begin();
+  REQUIRE(t.on_device());
+  REQUIRE(t.memory().device == 1);
+  REQUIRE_FALSE(t.writable());
+}
+
+TEST_CASE("Invalid strides are refused", "[tensor]") {
+  std::vector<double> field(6, 0.0);
+
+  REQUIRE_THROWS_AS(Tensor::view("T", field.data(), {2, 3}, {3}), InferenceError);
+  REQUIRE_THROWS_AS(Tensor::view("T", field.data(), {2, 3}, {-3, 1}), InferenceError);
+}
+
 TEST_CASE("Invalid views are refused", "[tensor]") {
   std::vector<double> field(6, 0.0);
 

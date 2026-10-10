@@ -31,14 +31,20 @@ namespace inference {
  *             outputs["dT"][:] = self.net(inputs["T"])
  * @endcode
  *
- * `inputs` and `outputs` are dicts of float64 numpy arrays, keyed by tensor
- * name, that view the tensors' memory: nothing is copied, inputs are
- * read-only, and the model writes its results in place.
+ * `inputs` and `outputs` are dicts keyed by tensor name, that view the
+ * tensors' memory: nothing is copied, inputs are read-only, and the model
+ * writes its results in place. Host tensors are float64 numpy arrays, with
+ * the tensors' strides. Device tensors, if the `device_arrays` option is set,
+ * are objects with a `__cuda_array_interface__`, which cupy, torch, numba,
+ * ... wrap without a copy (`cupy.asarray(x)`, `torch.as_tensor(x)`); the
+ * caller has synchronized its own work on them before calling infer().
  *
  * Options read from `config.options`:
  * - `python_module`  Module to import (required).
  * - `python_factory` Factory function in it (default `create_emulator`).
  * - `python_path`    Colon-separated directories to prepend to sys.path.
+ * - `device_arrays`  Accept device tensors (default false). The model must
+ *                    then handle CUDA array interface objects.
  *
  * Only the CPython C API is used, so numpy is needed at run time but not
  * to build. If the process already runs an interpreter (e.g. EAMxx's), it
@@ -60,6 +66,9 @@ public:
 
   /// @copydoc InferenceBackend::finalize
   void finalize() override;
+
+  /// Host memory, and device memory if the device_arrays option is set.
+  bool accepts(MemorySpace space) const override;
 
   /// @copydoc InferenceBackend::name
   std::string name() const override { return "Python"; }

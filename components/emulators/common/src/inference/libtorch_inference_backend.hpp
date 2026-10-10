@@ -17,7 +17,9 @@ namespace inference {
  * @brief Runs a TorchScript module (saved by torch.jit.save) in-process.
  *
  * Input tensors are passed to forward() positionally, in TensorMap order,
- * with the shapes they declare. The module may return a tensor, or a tuple
+ * with the shapes they declare. Strided and device tensors are viewed in
+ * place: an input is copied only if the module's device or dtype differ, and
+ * an output is written in place, once. The module may return a tensor, or a tuple
  * or list of tensors; these are copied into the output tensors in order,
  * and their shapes must match exactly (nothing is reshaped to fit).
  *
@@ -47,6 +49,9 @@ public:
 
   /// @copydoc InferenceBackend::finalize
   void finalize() override;
+
+  /// Host memory, and device memory if the module runs on a CUDA device.
+  bool accepts(MemorySpace space) const override;
 
   /// @copydoc InferenceBackend::name
   std::string name() const override { return "LibTorch"; }

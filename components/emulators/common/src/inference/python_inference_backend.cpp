@@ -11,6 +11,7 @@
 #include "fpe_guard.hpp"
 #include "inference_error.hpp"
 
+#include <cstdint>
 #include <sstream>
 #include <vector>
 
@@ -163,19 +164,55 @@ PyRef config_dict(const InferenceConfig &config) {
   return dict;
 }
 
-/// A numpy array that views (does not copy) a tensor's memory.
+/// A python tuple of integers; scale multiplies each entry.
+PyRef py_tuple(const std::vector<std::int64_t> &v, const std::string &doing,
+               std::int64_t scale = 1) {
+  PyRef t = checked(PyTuple_New(static_cast<Py_ssize_t>(v.size())), doing);
+  for (std::size_t i = 0; i < v.size(); ++i) {
+    // PyTuple_SetItem takes over the reference
+    PyTuple_SetItem(t.get(), static_cast<Py_ssize_t>(i),
+                    PyLong_FromLongLong(v[i] * scale));
+  }
+  return t;
+}
+
+/**
+ * An object exposing a tensor's device memory through the CUDA array
+ * interface, which cupy, torch, numba, ... wrap without a copy
+ * (e.g. cupy.asarray(x), torch.as_tensor(x, device='cuda')).
+ */
+PyRef as_device_array(const PyRef &namespace_type, const Tensor &tensor,
+                      const double *data, bool writable) {
+  const std::string doing = "wrapping device tensor '" + tensor.name() + "'";
+  PyRef cai = checked(PyDict_New(), doing);
+  set_item(cai, "shape", py_tuple(tensor.dims(), doing));
+  set_item(cai, "strides",
+           py_tuple(tensor.strides(), doing,
+                    static_cast<std::int64_t>(sizeof(double))));
+  set_item(cai, "typestr", py_string("<f8"));
+  PyRef ptr_and_ro = checked(PyTuple_New(2), doing);
+  PyTuple_SetItem(ptr_and_ro.get(), 0,
+                  PyLong_FromUnsignedLongLong(
+                      reinterpret_cast<std::uintptr_t>(data)));
+  PyTuple_SetItem(ptr_and_ro.get(), 1, PyBool_FromLong(writable ? 0 : 1));
+  set_item(cai, "data", ptr_and_ro);
+  set_item(cai, "version", py_int(3));
+  // The caller synchronizes its own work before calling infer()
+  Py_INCREF(Py_None);
+  set_item(cai, "stream", PyRef(Py_None));
+
+  PyRef args = checked(PyTuple_New(0), doing);
+  PyRef kwargs = checked(PyDict_New(), doing);
+  set_item(kwargs, "__cuda_array_interface__", cai);
+  return checked(PyObject_Call(namespace_type.get(), args.get(), kwargs.get()),
+                 doing);
+}
+
+/// A numpy array that views (does not copy) a tensor's host memory.
 PyRef as_numpy(const PyRef &numpy, const Tensor &tensor, const double *data,
                bool writable) {
   const std::string doing = "wrapping tensor '" + tensor.name() + "'";
-  const auto &dims = tensor.dims();
-
-  PyRef shape =
-      checked(PyTuple_New(static_cast<Py_ssize_t>(dims.size())), doing);
-  for (std::size_t i = 0; i < dims.size(); ++i) {
-    // PyTuple_SetItem takes over the reference
-    PyTuple_SetItem(shape.get(), static_cast<Py_ssize_t>(i),
-                    PyLong_FromLongLong(dims[i]));
-  }
+  PyRef shape = py_tuple(tensor.dims(), doing);
 
   if (tensor.size() == 0) {
     // There is no memory to view
@@ -193,13 +230,29 @@ PyRef as_numpy(const PyRef &numpy, const Tensor &tensor, const double *data,
   PyRef memory = checked(
       PyMemoryView_FromMemory(
           const_cast<char *>(reinterpret_cast<const char *>(data)),
-          static_cast<Py_ssize_t>(tensor.size() * sizeof(double)),
+          static_cast<Py_ssize_t>(tensor.span() * sizeof(double)),
           writable ? PyBUF_WRITE : PyBUF_READ),
       doing);
   PyRef flat = checked(PyObject_CallMethod(numpy.get(), "frombuffer", "Os",
                                            memory.get(), "float64"),
                        doing);
-  return checked(PyObject_CallMethod(flat.get(), "reshape", "(O)", shape.get()),
+  if (tensor.contiguous()) {
+    return checked(
+        PyObject_CallMethod(flat.get(), "reshape", "(O)", shape.get()), doing);
+  }
+
+  // Strided memory (e.g. a padded field): view it with its strides
+  PyRef ndarray =
+      checked(PyObject_GetAttrString(numpy.get(), "ndarray"), doing);
+  PyRef kwargs = checked(PyDict_New(), doing);
+  set_item(kwargs, "shape", shape);
+  set_item(kwargs, "dtype", py_string("float64"));
+  set_item(kwargs, "buffer", flat);
+  set_item(kwargs, "strides",
+           py_tuple(tensor.strides(), doing,
+                    static_cast<std::int64_t>(sizeof(double))));
+  PyRef args = checked(PyTuple_New(0), doing);
+  return checked(PyObject_Call(ndarray.get(), args.get(), kwargs.get()),
                  doing);
 }
 
@@ -207,7 +260,9 @@ PyRef as_numpy(const PyRef &numpy, const Tensor &tensor, const double *data,
 
 struct PythonBackend::Impl {
   PyRef numpy;
-  PyRef model; ///< What the factory returned
+  PyRef simple_namespace; ///< types.SimpleNamespace, to wrap device memory
+  PyRef model;            ///< What the factory returned
+  bool device_arrays = false;
 };
 
 PythonBackend::PythonBackend(const InferenceConfig &config)
@@ -227,6 +282,11 @@ PythonBackend::PythonBackend(const InferenceConfig &config)
 
   prepend_sys_path(m_config.get("python_path"));
   m_impl->numpy = checked(PyImport_ImportModule("numpy"), "importing numpy");
+  PyRef types = checked(PyImport_ImportModule("types"), "importing types");
+  m_impl->simple_namespace =
+      checked(PyObject_GetAttrString(types.get(), "SimpleNamespace"),
+              "looking up types.SimpleNamespace");
+  m_impl->device_arrays = m_config.get_bool("device_arrays", false);
 
   PyRef module = checked(PyImport_ImportModule(module_name.c_str()),
                          "importing '" + module_name +
@@ -248,21 +308,32 @@ bool PythonBackend::infer(const TensorMap &inputs, TensorMap &outputs) {
   GilGuard gil;
   FpeGuard no_fpe;
 
+  auto wrap = [&](const Tensor &tensor, const double *data, bool writable) {
+    EMULATOR_INFER_REQUIRE(accepts(tensor.memory().space),
+                           "Tensor " << tensor.to_string()
+                                     << " is in device memory: set the "
+                                        "device_arrays option to accept it.");
+    return tensor.on_device()
+               ? as_device_array(m_impl->simple_namespace, tensor, data,
+                                 writable)
+               : as_numpy(m_impl->numpy, tensor, data, writable);
+  };
   PyRef in = checked(PyDict_New(), "building the inputs");
   for (const auto &tensor : inputs) {
-    set_item(in, tensor.name(),
-             as_numpy(m_impl->numpy, tensor, tensor.cdata(), false));
+    set_item(in, tensor.name(), wrap(tensor, tensor.cdata(), false));
   }
   PyRef out = checked(PyDict_New(), "building the outputs");
   for (auto &tensor : outputs) {
-    set_item(out, tensor.name(),
-             as_numpy(m_impl->numpy, tensor, tensor.data(), true));
+    set_item(out, tensor.name(), wrap(tensor, tensor.data(), true));
   }
-
   checked(PyObject_CallMethod(m_impl->model.get(), "infer", "OO", in.get(),
                               out.get()),
           "calling infer(inputs, outputs)");
   return true;
+}
+
+bool PythonBackend::accepts(MemorySpace space) const {
+  return space == MemorySpace::HOST || (m_impl && m_impl->device_arrays);
 }
 
 void PythonBackend::finalize() {

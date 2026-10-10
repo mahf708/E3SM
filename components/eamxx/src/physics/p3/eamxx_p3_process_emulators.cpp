@@ -72,27 +72,22 @@ void P3Microphysics::initialize_process_emulators ()
     return;
   }
 
-  std::vector<std::string> rate_names;
-  for (int i=0; i<PR::num_rates; ++i) {
-    rate_names.push_back(PR::name(i));
-  }
-
   bool rates_as_inputs = false;
   std::vector<int> emulated;
   for (const auto& n : names) {
-    auto emu = std::make_shared<ProcessEmulator>(n, m_params.sublist(n), rate_names,
-                                                 m_num_cols, m_num_levs);
+    auto emu = std::make_shared<ProcessEmulator>(n, m_params.sublist(n));
     for (const auto& in : emu->input_names()) {
       rates_as_inputs |= PR::index(in)>=0;
     }
-    for (int r : emu->emulated_rates()) {
+    m_atm_logger->info("[P3Microphysics] Process emulator '" + n + "' emulates:");
+    for (const auto& t : emu->target_names()) {
+      const int r = PR::index(t);
+      EKAT_REQUIRE_MSG (r>=0, "[P3Microphysics] Error! Output '" + t + "' of process emulator '" + n +
+                        "' is not a P3 process rate (see p3_process_rates.hpp), nor a mask.\n");
       emulated.push_back(r);
+      m_atm_logger->info("    " + t);
     }
     m_process_emulators.push_back(emu);
-    m_atm_logger->info("[P3Microphysics] Process emulator '" + n + "' emulates:");
-    for (int r : emu->emulated_rates()) {
-      m_atm_logger->info("    " + std::string(PR::name(r)));
-    }
   }
 
   const int nk_pack = ekat::npack<Pack>(m_num_levs);
@@ -128,8 +123,19 @@ void P3Microphysics::run_process_emulators (const P3F::P3ProcessState& s)
     Kokkos::deep_copy(m_original_process_rates, rates);
   }
 
+  // Inputs: the state, and the rates as P3 computed them; targets: the rates
+  ProcessEmulator::arrays_t inputs, targets;
+  for (const auto& [name, v] : s.state) {
+    inputs[name] = ProcessEmulator::array(v, s.nlev);
+  }
+  for (int r=0; r<PR::num_rates; ++r) {
+    targets[PR::name(r)] = ProcessEmulator::array(rates, r, s.nlev);
+    if (keep_original) {
+      inputs[PR::name(r)] = ProcessEmulator::array(m_original_process_rates, r, s.nlev);
+    }
+  }
   for (const auto& emu : m_process_emulators) {
-    emu->run(s.state, rates, keep_original ? m_original_process_rates : rates);
+    emu->run(inputs, targets);
   }
 
   // Emulated self-collection rates must not remove more number than there is in one step:

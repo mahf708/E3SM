@@ -24,17 +24,29 @@ std::int64_t product(const std::vector<std::int64_t> &dims) {
   return n;
 }
 
+std::vector<std::int64_t>
+contiguous_strides(const std::vector<std::int64_t> &dims) {
+  std::vector<std::int64_t> strides(dims.size(), 1);
+  for (std::size_t i = dims.size(); i-- > 1;) {
+    strides[i - 1] = strides[i] * dims[i];
+  }
+  return strides;
+}
+
 } // namespace
 
 Tensor::Tensor(std::string name, std::vector<std::int64_t> dims)
     : m_name(std::move(name)), m_dims(std::move(dims)),
-      m_size(product(m_dims)), m_writable(true) {
+      m_strides(contiguous_strides(m_dims)), m_size(product(m_dims)),
+      m_writable(true) {
   m_storage.assign(static_cast<std::size_t>(m_size), 0.0);
   m_data = m_storage.data();
 }
 
 Tensor Tensor::make_view(std::string name, const double *data,
-                         std::vector<std::int64_t> dims, bool writable) {
+                         std::vector<std::int64_t> dims,
+                         std::vector<std::int64_t> strides,
+                         TensorMemory memory, bool writable) {
   Tensor t;
   t.m_name = std::move(name);
   t.m_dims = std::move(dims);
@@ -42,19 +54,53 @@ Tensor Tensor::make_view(std::string name, const double *data,
   EMULATOR_INFER_REQUIRE(data != nullptr || t.m_size == 0,
                          "Null pointer for non-empty tensor view '" << t.m_name
                                                                     << "'.");
+  if (strides.empty()) {
+    strides = contiguous_strides(t.m_dims);
+  }
+  EMULATOR_INFER_REQUIRE(strides.size() == t.m_dims.size(),
+                         "Tensor view '" << t.m_name << "' has "
+                                         << strides.size() << " strides for "
+                                         << t.m_dims.size() << " dims.");
+  for (std::int64_t st : strides) {
+    EMULATOR_INFER_REQUIRE(st >= 0, "Tensor view '"
+                                        << t.m_name
+                                        << "' has a negative stride.");
+  }
+  t.m_strides = std::move(strides);
+  t.m_memory = memory;
   t.m_data = data;
   t.m_writable = writable;
   return t;
 }
 
 Tensor Tensor::view(std::string name, double *data,
-                    std::vector<std::int64_t> dims) {
-  return make_view(std::move(name), data, std::move(dims), true);
+                    std::vector<std::int64_t> dims,
+                    std::vector<std::int64_t> strides, TensorMemory memory) {
+  return make_view(std::move(name), data, std::move(dims), std::move(strides),
+                   memory, true);
 }
 
 Tensor Tensor::const_view(std::string name, const double *data,
-                          std::vector<std::int64_t> dims) {
-  return make_view(std::move(name), data, std::move(dims), false);
+                          std::vector<std::int64_t> dims,
+                          std::vector<std::int64_t> strides,
+                          TensorMemory memory) {
+  return make_view(std::move(name), data, std::move(dims), std::move(strides),
+                   memory, false);
+}
+
+bool Tensor::contiguous() const {
+  return m_strides == contiguous_strides(m_dims);
+}
+
+std::int64_t Tensor::span() const {
+  if (m_size == 0) {
+    return 0;
+  }
+  std::int64_t last = 0;
+  for (std::size_t i = 0; i < m_dims.size(); ++i) {
+    last += (m_dims[i] - 1) * m_strides[i];
+  }
+  return last + 1;
 }
 
 double *Tensor::data() {
@@ -81,13 +127,16 @@ void TensorMap::add(Tensor tensor) {
 }
 
 void TensorMap::wrap(const std::string &name, double *data,
-                     std::vector<std::int64_t> dims) {
-  add(Tensor::view(name, data, std::move(dims)));
+                     std::vector<std::int64_t> dims,
+                     std::vector<std::int64_t> strides, TensorMemory memory) {
+  add(Tensor::view(name, data, std::move(dims), std::move(strides), memory));
 }
 
 void TensorMap::wrap(const std::string &name, const double *data,
-                     std::vector<std::int64_t> dims) {
-  add(Tensor::const_view(name, data, std::move(dims)));
+                     std::vector<std::int64_t> dims,
+                     std::vector<std::int64_t> strides, TensorMemory memory) {
+  add(Tensor::const_view(name, data, std::move(dims), std::move(strides),
+                         memory));
 }
 
 } // namespace inference

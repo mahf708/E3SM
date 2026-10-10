@@ -61,6 +61,17 @@ public:
   bool infer(const double *inputs, double *outputs, int batch_size = 1);
 
   /**
+   * @brief Whether infer() can be given tensors in this memory space.
+   *
+   * Callers with data on a device should pass it as is to a backend that
+   * accepts device memory (no copy), and copy it to the host otherwise.
+   * Strided tensors are accepted by all backends.
+   */
+  virtual bool accepts(MemorySpace space) const {
+    return space == MemorySpace::HOST;
+  }
+
+  /**
    * @brief Release resources and finalize the backend.
    */
   virtual void finalize() = 0;

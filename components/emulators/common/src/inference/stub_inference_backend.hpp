@@ -33,6 +33,9 @@ public:
   /// @copydoc InferenceBackend::finalize
   void finalize() override;
 
+  /// It never touches the data
+  bool accepts(MemorySpace) const override { return true; }
+
   /// @copydoc InferenceBackend::name
   std::string name() const override { return "Stub"; }
 };

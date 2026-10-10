@@ -90,6 +90,58 @@ TEST_CASE("PythonBackend runs a torch.nn module", "[python][torch]") {
 }
 #endif
 
+TEST_CASE("PythonBackend views strided memory in place", "[python]") {
+  InferenceConfig config;
+  config.set("python_module", "python_strided_fixture");
+  config.set("python_path", kPythonPath);
+  auto backend = create(config);
+  REQUIRE(backend->accepts(MemorySpace::HOST));
+  REQUIRE_FALSE(backend->accepts(MemorySpace::DEVICE));
+
+  // (2, 3) values in (2, 4) buffers: rows padded by one element
+  std::vector<double> x{1, 2, 3, -1, 4, 5, 6, -1};
+  std::vector<double> y(8, -7.0);
+  TensorMap inputs;
+  inputs.wrap("x", static_cast<const double *>(x.data()), {2, 3}, {4, 1});
+  TensorMap outputs;
+  outputs.wrap("y", y.data(), {2, 3}, {4, 1});
+
+  REQUIRE(backend->infer(inputs, outputs));
+  // y = 2x, and the padding is untouched
+  REQUIRE(y == std::vector<double>{2, 4, 6, -7, 8, 10, 12, -7});
+
+  // Device memory needs the device_arrays option
+  TensorMap dev_inputs;
+  dev_inputs.wrap("x", static_cast<const double *>(x.data()), {2, 3}, {4, 1},
+                  TensorMemory{MemorySpace::DEVICE, 0});
+  REQUIRE_THROWS_AS(backend->infer(dev_inputs, outputs), InferenceError);
+  backend->finalize();
+}
+
+TEST_CASE("PythonBackend passes device memory as CUDA array interfaces",
+          "[python]") {
+  InferenceConfig config;
+  config.set("python_module", "python_strided_fixture");
+  config.set("python_path", kPythonPath);
+  config.set("device_arrays", "true");
+  auto backend = create(config);
+  REQUIRE(backend->accepts(MemorySpace::DEVICE));
+
+  // Host memory, marked as device memory: the fixture reads it through the
+  // pointer and strides of the __cuda_array_interface__
+  std::vector<double> x{1, 2, 3, -1, 4, 5, 6, -1};
+  std::vector<double> y(8, -7.0);
+  const TensorMemory dev{MemorySpace::DEVICE, 0};
+  TensorMap inputs;
+  inputs.wrap("x", static_cast<const double *>(x.data()), {2, 3}, {4, 1}, dev);
+  TensorMap outputs;
+  outputs.wrap("y", y.data(), {2, 3}, {4, 1}, dev);
+
+  REQUIRE(backend->infer(inputs, outputs));
+  REQUIRE(y == std::vector<double>{2, 4, 6, -7, 8, 10, 12, -7});
+  backend->finalize();
+}
+
 TEST_CASE("PythonBackend accepts empty tensors", "[python]") {
   // e.g. an MPI rank that owns no columns
   auto backend = create(fixture());

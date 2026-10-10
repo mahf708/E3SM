@@ -69,6 +69,49 @@ TEST_CASE("LibTorchBackend runs a TorchScript module", "[libtorch]") {
   REQUIRE(x == ramp());
 }
 
+TEST_CASE("LibTorchBackend views strided memory in place", "[libtorch]") {
+  auto backend = create(fixture("affine.pt"));
+  REQUIRE(backend->accepts(MemorySpace::HOST));
+
+  // [1, 3, 2, 4] values in buffers whose last dimension is padded to 6
+  const Dims strides{36, 12, 6, 1};
+  std::vector<double> x(36, -1.0), y(36, -999.0);
+  for (int c = 0; c < 3; ++c)
+    for (int j = 0; j < 2; ++j)
+      for (int i = 0; i < 4; ++i)
+        x[12 * c + 6 * j + i] = 100 * c + 10 * j + i;
+
+  TensorMap inputs;
+  inputs.wrap("x", static_cast<const double *>(x.data()), kDims, strides);
+  TensorMap outputs;
+  outputs.wrap("y", y.data(), kDims, strides);
+  REQUIRE(backend->infer(inputs, outputs));
+
+  for (int c = 0; c < 3; ++c) {
+    for (int j = 0; j < 2; ++j) {
+      for (int i = 0; i < 6; ++i) {
+        const int n = 12 * c + 6 * j + i;
+        // y = 2x + 1, and the padding is untouched
+        REQUIRE(y[n] == (i < 4 ? 2 * x[n] + 1 : -999.0));
+      }
+    }
+  }
+}
+
+TEST_CASE("LibTorchBackend refuses device memory for a CPU module",
+          "[libtorch]") {
+  auto backend = create(fixture("affine.pt"));
+  REQUIRE_FALSE(backend->accepts(MemorySpace::DEVICE));
+
+  std::vector<double> x(24, 1.0), y(24, 0.0);
+  TensorMap inputs;
+  inputs.wrap("x", static_cast<const double *>(x.data()), kDims, {},
+              TensorMemory{MemorySpace::DEVICE, 0});
+  TensorMap outputs;
+  outputs.wrap("y", y.data(), kDims);
+  REQUIRE_THROWS_AS(backend->infer(inputs, outputs), InferenceError);
+}
+
 TEST_CASE("LibTorchBackend flat-array inference", "[libtorch]") {
   auto config = fixture("affine.pt");
   config.input_channels = 3;
