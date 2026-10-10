@@ -87,6 +87,28 @@ written in place by the backend when nothing else has to happen to it (no
 mask, `mode: replace`, no overlap with an input); otherwise the backend writes
 into a buffer, merged into the target by a device kernel.
 
+## What it costs
+
+P3 alone, 2048 columns × 72 levels, 10 steps, one CPU node with 4 OpenMP
+threads, Release build with small kernels; the models are a pointwise MLP
+(inputs → 64 → 64 → outputs, float64) through libtorch, whose outputs are
+multiplied by zero so P3 stays sane; mean of 3 runs (±10% run to run):
+
+| run | P3 s/step | the cut alone (stub backend) |
+|---|---|---|
+| stock P3 | 0.274 | |
+| warm rain overwritten (7 rates) | 0.401 | 0.279 |
+| warm rain replaced (`physics: skip`) | 0.425 | 0.282 |
+| rain sedimentation replaced | 0.378 | 0.271 |
+| all of P3 replaced (field emulators) | 0.182 | 0.014 |
+
+The cuts themselves cost about nothing (within the noise). On a CPU, inference
+of even a small MLP over every grid point costs as much as a large part of P3,
+and warm rain or rain sedimentation are a small part of P3's cost: replacing
+them saves less than the model costs. Replacing all of P3 is faster. Speed
+comes from coarse cuts and from models that are cheaper than what they replace
+(on GPUs, libtorch on device memory); fine cuts are for accuracy.
+
 ## Whole processes: field emulators
 
 Any process (or group) can run emulators on its fields:
