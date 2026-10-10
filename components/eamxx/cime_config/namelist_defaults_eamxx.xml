@@ -248,6 +248,11 @@ be lost if SCREAM_HACK_XML is not enabled.
       <set_cld_frac_i_to_one type="logical" doc="set P3 input ice cloud fraction to 1 everywhere">false</set_cld_frac_i_to_one>
       <use_separate_ice_liq_frac type="logical" doc="use separate ice and liquid cloud fractions from shoc">false</use_separate_ice_liq_frac>
       <extra_p3_diags type="logical" doc="Extra P3 diagnostics">false</extra_p3_diags>
+      <use_warm_rain_emulator type="logical" doc="Replace P3's warm-rain collision rates with an emulator where it is valid (requires small kernels and python)">false</use_warm_rain_emulator>
+      <warm_rain_emulator_backend type="string" valid_values="python,kokkos" doc="Where the warm-rain emulator runs: in a python module (host), or as a native MLP inside a device kernel">python</warm_rain_emulator_backend>
+      <warm_rain_emulator_file type="string" doc="Model file passed to the warm-rain emulator python module">none</warm_rain_emulator_file>
+      <warm_rain_emulator_kk_factor type="real" doc="Factor applied to P3's autoconversion where the warm-rain emulator is not used (1 = stock P3)">1.0</warm_rain_emulator_kk_factor>
+      <warm_rain_emulator_cloud_self_collection type="logical" doc="Use the emulated cloud droplet self-collection (zero in stock P3)">true</warm_rain_emulator_cloud_self_collection>
     </p3>
 
     <!-- SHOC macrophysics -->

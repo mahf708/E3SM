@@ -90,6 +90,7 @@ struct UnitWrap {
     struct TestCldliqImmersionFreezing;
     struct TestRainImmersionFreezing;
     struct TestDropletSelfCollection;
+    struct TestWarmRainEmulatorMerge;
     struct TestCloudSed;
     struct TestCloudRainAccretion;
     struct TestIceSed;

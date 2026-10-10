@@ -9,6 +9,9 @@
 #include <ekat_parameter_list.hpp>
 #include <ekat_workspace.hpp>
 #include <ekat_comm.hpp>
+#include <ekat_subview_utils.hpp>
+
+#include <functional>
 
 namespace scream
 {
@@ -329,6 +332,33 @@ template <typename ScalarT, typename DeviceT> struct Functions {
     view_dnu_table dnu_table_vals;
   };
 
+  // IN-CLOUD tendencies of the four warm-rain collision processes (autoconversion,
+  // droplet self-collection, accretion, rain self-collection). They are computed by
+  // the warm-rain stage (and, optionally, overwritten by an emulator) and consumed
+  // by p3_main_part2, which maps them back to cell averages.
+  // View is uview_1d<Pack> (one column) or view_2d<Pack> (all columns).
+  template <typename View>
+  struct P3WarmRainRates {
+    View qc2qr_autoconv_tend; // cloud droplet autoconversion to rain [kg/kg/s]
+    View nc2nr_autoconv_tend; // change in cloud droplet number from autoconversion [#/kg/s]
+    View ncautr;              // change in rain number from autoconversion [#/kg/s]
+    View nc_selfcollect_tend; // change in cloud droplet number from self-collection [#/kg/s]
+    View qc2qr_accret_tend;   // cloud droplet accretion by rain [kg/kg/s]
+    View nc_accret_tend;      // change in cloud droplet number from accretion [#/kg/s]
+    View nr_selfcollect_tend; // change in rain number from self-collection [#/kg/s]
+
+    // Single-column view of all-columns rates
+    KOKKOS_INLINE_FUNCTION
+    P3WarmRainRates<uview_1d<Pack>> column (const Int& i) const {
+      return {ekat::subview(qc2qr_autoconv_tend, i), ekat::subview(nc2nr_autoconv_tend, i),
+              ekat::subview(ncautr, i), ekat::subview(nc_selfcollect_tend, i),
+              ekat::subview(qc2qr_accret_tend, i), ekat::subview(nc_accret_tend, i),
+              ekat::subview(nr_selfcollect_tend, i)};
+    }
+  };
+  using P3WarmRainRates1d = P3WarmRainRates<uview_1d<Pack>>;
+  using P3WarmRainRates2d = P3WarmRainRates<view_2d<Pack>>;
+
 #ifdef SCREAM_P3_SMALL_KERNELS
   struct P3Temporaries {
     // shape parameter of rain
@@ -364,8 +394,15 @@ template <typename ScalarT, typename DeviceT> struct Functions {
     view_2d<Pack> flux_qir, flux_qit;
     // rain sedimentation
     view_2d<Pack> v_qr, v_nr;
+    // in-cloud warm-rain process rates
+    P3WarmRainRates2d warm_rain;
     view_1d<bool> nucleationPossible, hydrometeorsPresent;
   };
+
+  // Host callback run by p3_main between the warm-rain stage and part2, i.e.,
+  // outside of any kernel. It may overwrite temporaries.warm_rain in place
+  // (e.g., with emulated rates). All other temporaries are read-only for it.
+  using WarmRainHook = std::function<void(const P3Temporaries&)>;
 #endif
 
   // -- Table3 --
@@ -739,6 +776,132 @@ template <typename ScalarT, typename DeviceT> struct Functions {
                                    Pack &nr_selfcollect_tend, const P3Runtime &runtime_options,
                                    const Mask &context = Mask(true));
 
+  //
+  // Warm-rain stage. Everything here is pointwise in (column, level pack), so it
+  // can run as a team loop inside the monolithic kernel, or as its own fully
+  // parallel (column, level) kernel with small kernels, where the rates can be
+  // replaced by an emulator between kernels.
+  //
+
+  // Levels skipped by all of p3_main_part2: padding, plus dry, hydrometeor-free levels
+  // where ice nucleation is not possible.
+  KOKKOS_FUNCTION
+  static Mask part2_skip_mask(const Int &k, const Int &nk, const Pack &qc, const Pack &qr,
+                              const Pack &qi, const Pack &T_atm, const Pack &qv_supersat_i);
+
+  // Cloud and rain size distributions (formerly the first step of part2's process loop).
+  // Clips nc_incld/nr_incld to the DSD limits and updates the cell-average nc/nr to match.
+  KOKKOS_FUNCTION
+  static void part2_size_distributions(
+      const view_dnu_table &dnu, const Pack &rho, const Pack &cld_frac_l, const Pack &cld_frac_r,
+      const Pack &qc_incld, const Pack &qr_incld, const Pack &qi_incld, Pack &nc, Pack &nr,
+      Pack &nc_incld, Pack &nr_incld, Pack &mu_c, Pack &nu, Pack &lamc, Pack &cdist, Pack &cdist1,
+      Pack &mu_r, Pack &lamr, Pack &cdistr, Pack &logn0r, const P3Runtime &runtime_options,
+      const Mask &not_skip_all);
+
+  // The four warm-rain collision processes, in cloud. Rates are zero outside of context.
+  KOKKOS_FUNCTION
+  static void warm_rain_processes(
+      const Pack &rho, const Pack &inv_rho, const Pack &qc_incld, const Pack &nc_incld,
+      const Pack &qr_incld, const Pack &nr_incld, const Pack &inv_qc_relvar, const Pack &mu_c,
+      const Pack &nu, Pack &qc2qr_autoconv_tend, Pack &nc2nr_autoconv_tend, Pack &ncautr,
+      Pack &nc_selfcollect_tend, Pack &qc2qr_accret_tend, Pack &nc_accret_tend,
+      Pack &nr_selfcollect_tend, const P3Runtime &runtime_options, const Mask &context);
+
+  // Merge GRID-MEAN emulated warm-rain rates into the IN-CLOUD rates of the warm-rain stage.
+  //  - use_cloud > 0.5: the six cloud-process rates are replaced by the emulated ones;
+  //    elsewhere the stock autoconversion rates are scaled by kk_factor.
+  //  - use_rain > 0.5: the rain self-collection rate is replaced by the emulated one.
+  //  - emulated self-collection rates are capped so that they cannot remove more
+  //    than the available nc (nr) in one step, before P3's own conservation checks.
+  // Emulated rates are divided by the same cloud fractions that back_to_cell_average
+  // multiplies them by, so they enter part2 unchanged (up to roundoff).
+  KOKKOS_FUNCTION
+  static void warm_rain_emulator_merge(
+      const Pack &cld_frac_l, const Pack &cld_frac_r, const Pack &nc, const Pack &nr,
+      const Scalar &inv_dt, const Scalar &kk_factor, const bool &do_cloud_self_collection,
+      const Pack &emu_qc2qr_autoconv_tend, const Pack &emu_nc2nr_autoconv_tend,
+      const Pack &emu_ncautr, const Pack &emu_nc_selfcollect_tend,
+      const Pack &emu_qc2qr_accret_tend, const Pack &emu_nc_accret_tend,
+      const Pack &emu_nr_selfcollect_tend, const Pack &emu_use_cloud, const Pack &emu_use_rain,
+      Pack &qc2qr_autoconv_tend, Pack &nc2nr_autoconv_tend, Pack &ncautr,
+      Pack &nc_selfcollect_tend, Pack &qc2qr_accret_tend, Pack &nc_accret_tend,
+      Pack &nr_selfcollect_tend, const Mask &context);
+
+  // Team-level drivers, used by the monolithic p3_main and by tests
+  KOKKOS_FUNCTION
+  static void p3_main_size_distributions(
+      const MemberType &team, const Int &nk_pack, const Int &nk, const view_dnu_table &dnu,
+      const uview_1d<const Pack> &cld_frac_l, const uview_1d<const Pack> &cld_frac_r,
+      const uview_1d<const Pack> &qc, const uview_1d<const Pack> &qr,
+      const uview_1d<const Pack> &qi, const uview_1d<const Pack> &T_atm,
+      const uview_1d<const Pack> &qv_supersat_i, const uview_1d<const Pack> &rho,
+      const uview_1d<const Pack> &qc_incld, const uview_1d<const Pack> &qr_incld,
+      const uview_1d<const Pack> &qi_incld, const uview_1d<Pack> &nc, const uview_1d<Pack> &nr,
+      const uview_1d<Pack> &nc_incld, const uview_1d<Pack> &nr_incld, const uview_1d<Pack> &mu_c,
+      const uview_1d<Pack> &nu, const uview_1d<Pack> &lamc, const uview_1d<Pack> &cdist,
+      const uview_1d<Pack> &cdist1, const uview_1d<Pack> &mu_r, const uview_1d<Pack> &lamr,
+      const uview_1d<Pack> &cdistr, const uview_1d<Pack> &logn0r,
+      const P3Runtime &runtime_options);
+
+  KOKKOS_FUNCTION
+  static void p3_main_warm_rain(
+      const MemberType &team, const Int &nk_pack, const Int &nk,
+      const uview_1d<const Pack> &inv_qc_relvar, const uview_1d<const Pack> &qc,
+      const uview_1d<const Pack> &qr, const uview_1d<const Pack> &qi,
+      const uview_1d<const Pack> &T_atm, const uview_1d<const Pack> &qv_supersat_i,
+      const uview_1d<const Pack> &rho, const uview_1d<const Pack> &inv_rho,
+      const uview_1d<const Pack> &qc_incld, const uview_1d<const Pack> &nc_incld,
+      const uview_1d<const Pack> &qr_incld, const uview_1d<const Pack> &nr_incld,
+      const uview_1d<const Pack> &mu_c, const uview_1d<const Pack> &nu,
+      const P3WarmRainRates1d &warm_rain, const P3Runtime &runtime_options);
+
+#ifdef SCREAM_P3_SMALL_KERNELS
+  // (column, level pack) kernels for the small-kernels p3_main
+  static void p3_main_size_distributions_disp(
+      const Int &nj, const Int &nk, const view_dnu_table &dnu,
+      const uview_2d<const Pack> &cld_frac_l, const uview_2d<const Pack> &cld_frac_r,
+      const uview_2d<const Pack> &qc, const uview_2d<const Pack> &qr,
+      const uview_2d<const Pack> &qi, const uview_2d<const Pack> &T_atm,
+      const uview_2d<const Pack> &qv_supersat_i, const uview_2d<const Pack> &rho,
+      const uview_2d<const Pack> &qc_incld, const uview_2d<const Pack> &qr_incld,
+      const uview_2d<const Pack> &qi_incld, const uview_2d<Pack> &nc, const uview_2d<Pack> &nr,
+      const uview_2d<Pack> &nc_incld, const uview_2d<Pack> &nr_incld, const uview_2d<Pack> &mu_c,
+      const uview_2d<Pack> &nu, const uview_2d<Pack> &lamc, const uview_2d<Pack> &cdist,
+      const uview_2d<Pack> &cdist1, const uview_2d<Pack> &mu_r, const uview_2d<Pack> &lamr,
+      const uview_2d<Pack> &cdistr, const uview_2d<Pack> &logn0r,
+      const uview_1d<bool> &is_nucleat_possible, const uview_1d<bool> &is_hydromet_present,
+      const P3Runtime &runtime_options);
+
+  static void p3_main_warm_rain_disp(
+      const Int &nj, const Int &nk, const uview_2d<const Pack> &inv_qc_relvar,
+      const uview_2d<const Pack> &qc, const uview_2d<const Pack> &qr,
+      const uview_2d<const Pack> &qi, const uview_2d<const Pack> &T_atm,
+      const uview_2d<const Pack> &qv_supersat_i, const uview_2d<const Pack> &rho,
+      const uview_2d<const Pack> &inv_rho, const uview_2d<const Pack> &qc_incld,
+      const uview_2d<const Pack> &nc_incld, const uview_2d<const Pack> &qr_incld,
+      const uview_2d<const Pack> &nr_incld, const uview_2d<const Pack> &mu_c,
+      const uview_2d<const Pack> &nu, const P3WarmRainRates2d &warm_rain,
+      const uview_1d<bool> &is_nucleat_possible, const uview_1d<bool> &is_hydromet_present,
+      const P3Runtime &runtime_options);
+
+  // Gather the grid-mean state the emulator sees at the warm-rain stage: qc, nc, qr, nr
+  // as seen by part2 (i.e., after the size-distribution clipping) and dry density rho.
+  static void warm_rain_emulator_inputs_disp(
+      const Int &nj, const Int &nk, const P3PrognosticState &prognostic_state,
+      const P3Temporaries &temporaries, const uview_2d<Pack> &emu_qc,
+      const uview_2d<Pack> &emu_nc, const uview_2d<Pack> &emu_qr, const uview_2d<Pack> &emu_nr,
+      const uview_2d<Pack> &emu_rho);
+
+  // Apply warm_rain_emulator_merge to all columns and levels
+  static void warm_rain_emulator_merge_disp(
+      const Int &nj, const Int &nk, const Scalar &dt, const Scalar &kk_factor,
+      const bool &do_cloud_self_collection, const P3PrognosticState &prognostic_state,
+      const P3DiagnosticInputs &diagnostic_inputs, const P3Temporaries &temporaries,
+      const P3WarmRainRates<uview_2d<const Pack>> &emu_rates,
+      const uview_2d<const Pack> &emu_use_cloud, const uview_2d<const Pack> &emu_use_rain);
+#endif
+
   // Impose maximum ice number
   KOKKOS_FUNCTION
   static void impose_max_total_ni(Pack &ni_local, const Scalar &max_total_ni,
@@ -1064,8 +1227,8 @@ template <typename ScalarT, typename DeviceT> struct Functions {
       const uview_1d<Pack> &qc2qi_collect, const uview_1d<Pack> &qr2qi_collect,
       const uview_1d<Pack> &qc2qi_hetero_freeze, const uview_1d<Pack> &qr2qi_immers_freeze,
       const uview_1d<Pack> &qi2qr_melt, const uview_1d<Pack> &pratot,
-      const uview_1d<Pack> &prctot, bool &is_hydromet_present, const Int &nk,
-      const P3Runtime &runtime_options);
+      const uview_1d<Pack> &prctot, const P3WarmRainRates1d &warm_rain,
+      bool &is_hydromet_present, const Int &nk, const P3Runtime &runtime_options);
 
 #ifdef SCREAM_P3_SMALL_KERNELS
   static void p3_main_part2_disp(
@@ -1107,8 +1270,9 @@ template <typename ScalarT, typename DeviceT> struct Functions {
       const uview_2d<Pack> &qc2qi_collect, const uview_2d<Pack> &qr2qi_collect,
       const uview_2d<Pack> &qc2qi_hetero_freeze, const uview_2d<Pack> &qr2qi_immers_freeze,
       const uview_2d<Pack> &qi2qr_melt, const uview_2d<Pack> &pratot,
-      const uview_2d<Pack> &prctot, const uview_1d<bool> &is_nucleat_possible,
-      const uview_1d<bool> &is_hydromet_present, const P3Runtime &runtime_options);
+      const uview_2d<Pack> &prctot, const P3WarmRainRates2d &warm_rain,
+      const uview_1d<bool> &is_nucleat_possible, const uview_1d<bool> &is_hydromet_present,
+      const P3Runtime &runtime_options);
 #endif
 
   KOKKOS_FUNCTION
@@ -1160,6 +1324,7 @@ template <typename ScalarT, typename DeviceT> struct Functions {
                      const P3LookupTables &lookup_tables,
 #ifdef SCREAM_P3_SMALL_KERNELS
                      const P3Temporaries &temporaries,
+                     const WarmRainHook &warm_rain_hook, // may be empty
 #endif
                      const WorkspaceManager &workspace_mgr,
                      Int nj,  // number of columns
@@ -1181,6 +1346,7 @@ template <typename ScalarT, typename DeviceT> struct Functions {
                         const P3DiagnosticOutputs &diagnostic_outputs,
                         const P3Infrastructure &infrastructure, const P3HistoryOnly &history_only,
                         const P3LookupTables &lookup_tables, const P3Temporaries &temporaries,
+                        const WarmRainHook &warm_rain_hook,
                         const WorkspaceManager &workspace_mgr,
                         Int nj,  // number of columns
                         Int nk); // number of vertical cells per column
@@ -1278,5 +1444,6 @@ constexpr ScalarT Functions<ScalarT, DeviceT>::P3C::lookup_table_1a_dum1_c;
 #include "p3_table_ice_impl.hpp"
 #include "p3_update_prognostics_impl.hpp"
 #include "p3_upwind_impl.hpp"
+#include "p3_warm_rain_impl.hpp"
 #endif // GPU && !KOKKOS_ENABLE_*_RELOCATABLE_DEVICE_CODE
 #endif // P3_FUNCTIONS_HPP

@@ -3,6 +3,7 @@
 
 #include "share/atm_process/atmosphere_process.hpp"
 #include "physics/p3/p3_functions.hpp"
+#include "physics/p3/warm_rain_emulator/p3_warm_rain_mlp.hpp"
 #include "share/physics/eamxx_common_physics_functions.hpp"
 
 #include <ekat_parameter_list.hpp>
@@ -393,7 +394,7 @@ public:
     static constexpr int num_1d_scalar = 2; //no 2d vars now, but keeping 1d struct for future expansion
     // 2d view packed, size (ncol, nlev_packs)
 #ifdef SCREAM_P3_SMALL_KERNELS
-    static constexpr int num_2d_vector = 63;
+    static constexpr int num_2d_vector = 70;
 #else
     static constexpr int num_2d_vector = 8;
 #endif
@@ -424,7 +425,9 @@ public:
       diag_diam_qi, pratot, prctot, qtend_ignore, ntend_ignore,
       mu_c, lamc, qr_evap_tend, v_qc, v_nc, flux_qx, flux_nx,
       v_qit, v_nit, flux_nit, flux_bir, flux_qir, flux_qit,
-      v_qr, v_nr;
+      v_qr, v_nr,
+      qc2qr_autoconv_tend, nc2nr_autoconv_tend, ncautr, nc_selfcollect_tend,
+      qc2qr_accret_tend, nc_accret_tend, nr_selfcollect_tend;
     ubview_1d nucleationPossible, hydrometeorsPresent;
 #endif
 
@@ -439,6 +442,16 @@ protected:
   void initialize_impl (const RunType run_type);
   void run_impl        (const double dt);
   void finalize_impl   ();
+
+  // Warm-rain emulator (see eamxx_p3_warm_rain_emulator.cpp)
+  static ekat::ParameterList set_warm_rain_emulator_params (const ekat::ParameterList& params);
+  void create_warm_rain_emulator_fields ();
+  void initialize_warm_rain_emulator ();
+#ifdef SCREAM_P3_SMALL_KERNELS
+  void run_warm_rain_emulator (const P3F::P3Temporaries& temporaries);
+  void run_warm_rain_emulator_kokkos (const p3::WarmRainMLP<Pack, DefaultDevice>& mlp,
+                                      const P3F::P3Temporaries& temporaries);
+#endif
 
   // Computes total number of bytes needed for local variables
   size_t requested_buffer_size_in_bytes() const;
@@ -471,6 +484,14 @@ protected:
 
   // WSM for internal local variables
   ekat::WorkspaceManager<Pack, KT::Device> workspace_mgr;
+
+  // Warm-rain emulator settings
+  bool m_use_warm_rain_emulator = false;
+  Real m_warm_rain_emulator_kk_factor = 1;
+  bool m_warm_rain_emulator_cloud_self_collection = true;
+#ifdef SCREAM_P3_SMALL_KERNELS
+  P3F::WarmRainHook m_warm_rain_hook;
+#endif
 
   std::shared_ptr<const AbstractGrid>   m_grid;
   // Iteration count is internal to P3 and keeps track of the number of times p3_main has been called.

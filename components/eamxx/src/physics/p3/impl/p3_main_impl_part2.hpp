@@ -106,12 +106,12 @@ void Functions<S,D>
   const uview_1d<Pack>& qi2qr_melt,
   const uview_1d<Pack>& pratot,
   const uview_1d<Pack>& prctot,
+  const P3WarmRainRates1d& warm_rain,
   bool& hydrometeorsPresent, const Int& nk,
   const P3Runtime& runtime_options)
 {
   constexpr Scalar qsmall       = C::QSMALL;
   constexpr Scalar nsmall       = C::NSMALL;
-  constexpr Scalar T_zerodegc   = C::T_zerodegc.value;
   constexpr Scalar f1r          = C::f1r;
   constexpr Scalar f2r          = C::f2r;
   constexpr Scalar nmltratio    = C::nmltratio;
@@ -131,14 +131,8 @@ void Functions<S,D>
   Kokkos::parallel_for(
     Kokkos::TeamVectorRange(team, nk_pack), [&] (Int k) {
 
-    //compute mask to identify padded values in packs, which shouldn't be used in calculations
-    const auto range_pack = ekat::range<IntPack>(k*Pack::n);
-    const auto range_mask = range_pack < nk;
-
     // if relatively dry and no hydrometeors at this level, skip to end of k-loop (i.e. skip this level)
-    const auto skip_all = ( !range_mask ||
-        (qc(k)<qsmall && qr(k)<qsmall && qi(k)<qsmall &&
-         T_atm(k)<T_zerodegc && qv_supersat_i(k)< -0.05) );
+    const auto skip_all = part2_skip_mask(k, nk, qc(k), qr(k), qi(k), T_atm(k), qv_supersat_i(k));
 
     if (skip_all.all()) {
       return; // skip all process rates
@@ -147,17 +141,20 @@ void Functions<S,D>
 
     // All microphysics tendencies will be computed as IN-CLOUD, they will be mapped back to cell-average later.
 
+    // warm-rain collision rates, computed by the warm-rain stage (see p3_warm_rain_impl.hpp)
+    Pack
+      qc2qr_accret_tend   = warm_rain.qc2qr_accret_tend(k),   // cloud droplet accretion by rain
+      qc2qr_autoconv_tend = warm_rain.qc2qr_autoconv_tend(k), // cloud droplet autoconversion to rain
+      nc_accret_tend      = warm_rain.nc_accret_tend(k),      // change in cloud droplet number from accretion by rain
+      nc_selfcollect_tend = warm_rain.nc_selfcollect_tend(k), // change in cloud droplet number from self-collection  (Not in paper?)
+      nc2nr_autoconv_tend = warm_rain.nc2nr_autoconv_tend(k), // change in cloud droplet number from autoconversion
+      nr_selfcollect_tend = warm_rain.nr_selfcollect_tend(k), // change in rain number from self-collection  (Not in paper?)
+      ncautr              = warm_rain.ncautr(k);              // change in rain number from autoconversion of cloud water
+
     Pack
       // initialize warm-phase process rates
-      qc2qr_accret_tend   (0), // cloud droplet accretion by rain
       qr2qv_evap_tend   (0), // rain evaporation
-      qc2qr_autoconv_tend   (0), // cloud droplet autoconversion to rain
-      nc_accret_tend   (0), // change in cloud droplet number from accretion by rain
-      nc_selfcollect_tend   (0), // change in cloud droplet number from self-collection  (Not in paper?)
-      nc2nr_autoconv_tend  (0), // change in cloud droplet number from autoconversion
-      nr_selfcollect_tend   (0), // change in rain number from self-collection  (Not in paper?)
       nr_evap_tend   (0), // change in rain number from evaporation
-      ncautr  (0), // change in rain number from autoconversion of cloud water
 
       // initialize ice-phase  process rates
       qi2qv_sublim_tend   (0), // sublimation of ice
@@ -234,13 +231,7 @@ void Functions<S,D>
         T_atm(k), pres(k), rho(k), qv_sat_l(k), qv_sat_i(k),
         mu, dv, sc, dqsdt, dqsidt, ab, abi, kap, eii, not_skip_micro);
 
-      get_cloud_dsd2(qc_incld(k), nc_incld(k), mu_c(k), rho(k), nu(k), dnu,
-                     lamc(k), cdist(k), cdist1(k), not_skip_micro);
-      nc(k).set(not_skip_micro, nc_incld(k) * cld_frac_l(k));
-
-      get_rain_dsd2(qr_incld(k), nr_incld(k), mu_r(k), lamr(k), runtime_options, not_skip_micro);
-      get_cdistr_logn0r(qr_incld(k), nr_incld(k), mu_r(k), lamr(k), cdistr(k), logn0r(k), not_skip_micro);
-      nr(k).set(not_skip_micro, nr_incld(k) * cld_frac_r(k));
+      // NOTE: cloud/rain size distributions were computed by p3_main_size_distributions
 
       impose_max_total_ni(ni_incld(k), max_total_ni, inv_rho(k), not_skip_micro);
 
@@ -248,8 +239,8 @@ void Functions<S,D>
 
       if (qi_gt_small.any()) {
         // impose lower limits to prevent taking log of # < 0
+        // (nr_incld was limited by p3_main_size_distributions)
         ni_incld(k).set(qi_gt_small, max(ni_incld(k), nsmall));
-        nr_incld(k).set(qi_gt_small, max(nr_incld(k), nsmall));
 
         const auto rhop = calc_bulk_rho_rime(qi_incld(k), qm_incld(k), bm_incld(k), runtime_options, qi_gt_small);
         qm(k).set(qi_gt_small, qm_incld(k)*cld_frac_i(k) );
@@ -401,28 +392,6 @@ void Functions<S,D>
                      qv2qi_nucleat_tend, ni_nucleat_tend, runtime_options,
                      not_skip_all);
     }
-
-    // cloud water autoconversion
-    // NOTE: cloud_water_autoconversion must be called before droplet_self_collection
-    cloud_water_autoconversion(
-      rho(k), qc_incld(k), nc_incld(k), inv_qc_relvar(k),
-      qc2qr_autoconv_tend, nc2nr_autoconv_tend, ncautr, runtime_options, not_skip_all);
-
-    // self-collection of droplets
-    droplet_self_collection(
-      rho(k), inv_rho(k), qc_incld(k),
-      mu_c(k), nu(k), nc2nr_autoconv_tend, nc_selfcollect_tend, not_skip_all);
-
-    // accretion of cloud by rain
-    cloud_rain_accretion(
-      rho(k), inv_rho(k), qc_incld(k), nc_incld(k), qr_incld(k), inv_qc_relvar(k),
-      qc2qr_accret_tend, nc_accret_tend, runtime_options, not_skip_all);
-
-    // self-collection and breakup of rain
-    // (breakup following modified Verlinde and Cotton scheme)
-    rain_self_collection(
-      rho(k), qr_incld(k), nr_incld(k),
-      nr_selfcollect_tend, runtime_options, not_skip_all);
 
     // Here we map the microphysics tendency rates back to CELL-AVERAGE quantities for updating
     // cell-average quantities.

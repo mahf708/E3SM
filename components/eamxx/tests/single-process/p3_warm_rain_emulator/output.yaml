@@ -1,0 +1,17 @@
+%YAML 1.1
+---
+filename_prefix: p3_warm_rain_emulator_${BACKEND}
+averaging_type: instant
+field_names:
+  - T_mid
+  - qv
+  - qc
+  - qr
+  - nc
+  - nr
+  - precip_liq_surf_mass
+  - micro_vap_liq_exchange
+output_control:
+  frequency: 1
+  frequency_units: nsteps
+...

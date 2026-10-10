@@ -13,9 +13,13 @@ namespace scream
 
 // =========================================================================================
 P3Microphysics::P3Microphysics(const ekat::Comm& comm, const ekat::ParameterList& params)
-  : AtmosphereProcess(comm, params)
+  : AtmosphereProcess(comm, set_warm_rain_emulator_params(params))
 {
-  // Nothing to do here
+  m_use_warm_rain_emulator = m_params.get<bool>("use_warm_rain_emulator", false);
+  m_warm_rain_emulator_kk_factor =
+    m_params.get<double>("warm_rain_emulator_kk_factor", m_warm_rain_emulator_kk_factor);
+  m_warm_rain_emulator_cloud_self_collection =
+    m_params.get<bool>("warm_rain_emulator_cloud_self_collection", m_warm_rain_emulator_cloud_self_collection);
 }
 
 // =========================================================================================
@@ -152,6 +156,10 @@ void P3Microphysics::create_requests()
   add_field<Computed>("micro_vap_ice_exchange", scalar3d_layout_mid, kg/kg,  grid_name, ps);
   add_field<Computed>("rainfrac",               scalar3d_layout_mid, none,   grid_name, ps);
 
+  if (m_use_warm_rain_emulator) {
+    create_warm_rain_emulator_fields();
+  }
+
   // Boundary flux fields for energy and mass conservation checks
   if (has_column_conservation_check()) {
     add_field<Computed>("vapor_flux", scalar2d_layout, kg/m2/s, grid_name);
@@ -181,7 +189,7 @@ size_t P3Microphysics::requested_buffer_size_in_bytes() const
 
   // Number of Reals needed by the WorkspaceManager passed to p3_main
   const auto policy        = TPF::get_default_team_policy(m_num_cols, nk_pack);
-  const size_t wsm_request = WSM::get_total_bytes_needed(nk_pack_p1, 52, policy);
+  const size_t wsm_request = WSM::get_total_bytes_needed(nk_pack_p1, 59, policy);
 #ifdef SCREAM_P3_SMALL_KERNELS
   const size_t bool_request = 2 * ((m_num_cols*sizeof(bool) + sizeof(Pack) - 1) / sizeof(Pack)) * sizeof(Pack);
 #else
@@ -237,7 +245,9 @@ void P3Microphysics::init_buffers(const ATMBufferManager &buffer_manager)
     &m_buffer.ntend_ignore, &m_buffer.mu_c, &m_buffer.lamc, &m_buffer.qr_evap_tend, &m_buffer.v_qc,
     &m_buffer.v_nc, &m_buffer.flux_qx, &m_buffer.flux_nx, &m_buffer.v_qit, &m_buffer.v_nit,
     &m_buffer.flux_nit, &m_buffer.flux_bir, &m_buffer.flux_qir, &m_buffer.flux_qit, &m_buffer.v_qr,
-    &m_buffer.v_nr
+    &m_buffer.v_nr, &m_buffer.qc2qr_autoconv_tend, &m_buffer.nc2nr_autoconv_tend, &m_buffer.ncautr,
+    &m_buffer.nc_selfcollect_tend, &m_buffer.qc2qr_accret_tend, &m_buffer.nc_accret_tend,
+    &m_buffer.nr_selfcollect_tend
 #endif
   };
   for (int i=0; i<Buffer::num_2d_vector; ++i) {
@@ -259,7 +269,7 @@ void P3Microphysics::init_buffers(const ATMBufferManager &buffer_manager)
   // Compute workspace manager size to check used memory
   // vs. requested memory
   const auto policy  = TPF::get_default_team_policy(m_num_cols, nk_pack);
-  const int wsm_size = WSM::get_total_bytes_needed(nk_pack_p1, 52, policy)/sizeof(Pack);
+  const int wsm_size = WSM::get_total_bytes_needed(nk_pack_p1, 59, policy)/sizeof(Pack);
   s_mem += wsm_size;
 
 #ifdef SCREAM_P3_SMALL_KERNELS
@@ -512,9 +522,17 @@ void P3Microphysics::initialize_impl (const RunType /* run_type */)
   temporaries.flux_qit                = m_buffer.flux_qit;
   temporaries.v_qr                    = m_buffer.v_qr;
   temporaries.v_nr                    = m_buffer.v_nr;
+  temporaries.warm_rain               = {m_buffer.qc2qr_autoconv_tend, m_buffer.nc2nr_autoconv_tend,
+                                         m_buffer.ncautr, m_buffer.nc_selfcollect_tend,
+                                         m_buffer.qc2qr_accret_tend, m_buffer.nc_accret_tend,
+                                         m_buffer.nr_selfcollect_tend};
   temporaries.nucleationPossible      = m_buffer.nucleationPossible;
   temporaries.hydrometeorsPresent     = m_buffer.hydrometeorsPresent;
 #endif
+
+  if (m_use_warm_rain_emulator) {
+    initialize_warm_rain_emulator();
+  }
 
   // -- Set values for the post-amble structure
   p3_postproc.set_variables(m_num_cols,nk_pack,
@@ -537,7 +555,7 @@ void P3Microphysics::initialize_impl (const RunType /* run_type */)
 
   // Setup WSM for internal local variables
   const auto policy = TPF::get_default_team_policy(m_num_cols, nk_pack);
-  workspace_mgr.setup(m_buffer.wsm_data, nk_pack_p1, 52, policy);
+  workspace_mgr.setup(m_buffer.wsm_data, nk_pack_p1, 59, policy);
 }
 
 // =========================================================================================

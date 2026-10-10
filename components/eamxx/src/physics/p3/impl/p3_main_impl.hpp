@@ -144,7 +144,10 @@ Int Functions<S,D>
       // Variables still used in F90 but removed from C++ interface
       mu_c, lamc, qr_evap_tend;
 
-    workspace.template take_many_and_reset<43>(
+    // In-cloud warm-rain process rates
+    P3WarmRainRates1d warm_rain;
+
+    workspace.template take_many_and_reset<50>(
       {
         "mu_r", "T_atm", "lamr", "logn0r", "nu", "cdist", "cdist1", "cdistr",
         "inv_cld_frac_i", "inv_cld_frac_l", "inv_cld_frac_r", "qc_incld", "qr_incld", "qi_incld", "qm_incld",
@@ -153,7 +156,9 @@ Int Functions<S,D>
         "rhofacr", "rhofaci", "acn", "qv_sat_l", "qv_sat_i", "sup", "qv_supersat_i",
         "tmparr1", "exner", "diag_vm_qi", "diag_diam_qi",
         "pratot", "prctot", "qtend_ignore", "ntend_ignore",
-        "mu_c", "lamc", "qr_evap_tend"
+        "mu_c", "lamc", "qr_evap_tend",
+        "qc2qr_autoconv_tend", "nc2nr_autoconv_tend", "ncautr", "nc_selfcollect_tend",
+        "qc2qr_accret_tend", "nc_accret_tend", "nr_selfcollect_tend"
       },
       {
         &mu_r, &T_atm, &lamr, &logn0r, &nu, &cdist, &cdist1, &cdistr,
@@ -163,7 +168,10 @@ Int Functions<S,D>
         &rhofacr, &rhofaci, &acn, &qv_sat_l, &qv_sat_i, &sup, &qv_supersat_i,
         &tmparr1, &exner, &diag_vm_qi, &diag_diam_qi,
         &pratot, &prctot, &qtend_ignore, &ntend_ignore,
-        &mu_c, &lamc, &qr_evap_tend
+        &mu_c, &lamc, &qr_evap_tend,
+        &warm_rain.qc2qr_autoconv_tend, &warm_rain.nc2nr_autoconv_tend, &warm_rain.ncautr,
+        &warm_rain.nc_selfcollect_tend, &warm_rain.qc2qr_accret_tend, &warm_rain.nc_accret_tend,
+        &warm_rain.nr_selfcollect_tend
       });
 
     // Get single-column subviews of all inputs, shouldn't need any i-indexing
@@ -264,7 +272,17 @@ Int Functions<S,D>
     }
 
     // ------------------------------------------------------------------------------------------
-    // main k-loop (for processes):
+    // main k-loop (for processes), in three steps: size distributions, warm rain, the rest
+
+    p3_main_size_distributions(
+      team, nk_pack, nk, lookup_tables.dnu_table_vals, ocld_frac_l, ocld_frac_r,
+      oqc, oqr, oqi, T_atm, qv_supersat_i, rho, qc_incld, qr_incld, qi_incld,
+      onc, onr, nc_incld, nr_incld, mu_c, nu, lamc, cdist, cdist1, mu_r, lamr, cdistr, logn0r,
+      runtime_options);
+
+    p3_main_warm_rain(
+      team, nk_pack, nk, oinv_qc_relvar, oqc, oqr, oqi, T_atm, qv_supersat_i, rho, inv_rho,
+      qc_incld, nc_incld, qr_incld, nr_incld, mu_c, nu, warm_rain, runtime_options);
 
     p3_main_part2(
       team, nk_pack, runtime_options.max_total_ni, infrastructure.predictNc, infrastructure.prescribedCCN, infrastructure.dt, inv_dt,
@@ -279,7 +297,7 @@ Int Functions<S,D>
       ovap_liq_exchange, ovap_ice_exchange, oliq_ice_exchange,
       oqr2qv_evap, oqi2qv_sublim, oqc2qr_accret, oqc2qr_autoconv, oqv2qi_vapdep,
       oqc2qi_berg, oqc2qr_ice_shed, oqc2qi_collect, oqr2qi_collect, oqc2qi_hetero_freeze, oqr2qi_immers_freeze, oqi2qr_melt,
-      pratot, prctot, hydrometeorsPresent, nk, runtime_options);
+      pratot, prctot, warm_rain, hydrometeorsPresent, nk, runtime_options);
 
     //NOTE: At this point, it is possible to have negative (but small) nc, nr, ni.  This is not
     //      a problem; those values get clipped to zero in the sedimentation section (if necessary).
@@ -370,6 +388,7 @@ Int Functions<S,D>
   const P3LookupTables& lookup_tables,
 #ifdef SCREAM_P3_SMALL_KERNELS
   const P3Temporaries& temporaries,
+  const WarmRainHook& warm_rain_hook,
 #endif
   const WorkspaceManager& workspace_mgr,
   Int nj,
@@ -384,6 +403,7 @@ Int Functions<S,D>
                                history_only,
                                lookup_tables,
                                temporaries,
+                               warm_rain_hook,
                                workspace_mgr,
                                nj, nk);
 #else

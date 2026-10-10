@@ -114,6 +114,7 @@ Int Functions<Real,DefaultDevice>
   const P3HistoryOnly& history_only,
   const P3LookupTables& lookup_tables,
   const P3Temporaries& temporaries,
+  const WarmRainHook& warm_rain_hook,
   const WorkspaceManager& workspace_mgr,
   Int nj,
   Int nk)
@@ -276,7 +277,24 @@ Int Functions<Real,DefaultDevice>
     ni_incld, bm_incld, nucleationPossible, hydrometeorsPresent, runtime_options);
 
   // ------------------------------------------------------------------------------------------
-  // main k-loop (for processes):
+  // main k-loop (for processes), in three steps: size distributions, warm rain, the rest
+
+  p3_main_size_distributions_disp(
+    nj, nk, lookup_tables.dnu_table_vals, cld_frac_l, cld_frac_r, qc, qr, qi, T_atm, qv_supersat_i,
+    rho, qc_incld, qr_incld, qi_incld, nc, nr, nc_incld, nr_incld, mu_c, nu, lamc, cdist, cdist1,
+    mu_r, lamr, cdistr, logn0r, nucleationPossible, hydrometeorsPresent, runtime_options);
+
+  p3_main_warm_rain_disp(
+    nj, nk, inv_qc_relvar, qc, qr, qi, T_atm, qv_supersat_i, rho, inv_rho,
+    qc_incld, nc_incld, qr_incld, nr_incld, mu_c, nu, temporaries.warm_rain,
+    nucleationPossible, hydrometeorsPresent, runtime_options);
+
+  // Outside of any kernel: the warm-rain rates may be replaced here (e.g., by an emulator)
+  if (warm_rain_hook) {
+    Kokkos::fence();
+    warm_rain_hook(temporaries);
+    Kokkos::fence();
+  }
 
   p3_main_part2_disp(
     nj, nk, runtime_options.max_total_ni, infrastructure.predictNc, infrastructure.prescribedCCN, infrastructure.dt, inv_dt,
@@ -292,7 +310,7 @@ Int Functions<Real,DefaultDevice>
     qr2qv_evap, qi2qv_sublim, qc2qr_accret, qc2qr_autoconv,
     qv2qi_vapdep, qc2qi_berg, qc2qr_ice_shed, qc2qi_collect,
     qr2qi_collect, qc2qi_hetero_freeze, qr2qi_immers_freeze, qi2qr_melt,
-    pratot, prctot, nucleationPossible, hydrometeorsPresent, runtime_options);
+    pratot, prctot, temporaries.warm_rain, nucleationPossible, hydrometeorsPresent, runtime_options);
 
   //NOTE: At this point, it is possible to have negative (but small) nc, nr, ni.  This is not
   //      a problem; those values get clipped to zero in the sedimentation section (if necessary).
