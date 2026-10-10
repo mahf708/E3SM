@@ -1112,24 +1112,8 @@ void p3_main_part2_host(
   const auto collect_table_vals     = tables.collect_table_vals;
   const auto revap_table_vals = tables.revap_table_vals;
   bview_1d bools_d("bools", 1);
-  const P3F::P3WarmRainRates1d warm_rain{
-    view_1d("qc2qr_autoconv_tend", nk_pack), view_1d("nc2nr_autoconv_tend", nk_pack),
-    view_1d("ncautr", nk_pack), view_1d("nc_selfcollect_tend", nk_pack),
-    view_1d("qc2qr_accret_tend", nk_pack), view_1d("nc_accret_tend", nk_pack),
-    view_1d("nr_selfcollect_tend", nk_pack)};
-  const P3F::P3Runtime runtime_options;
   auto policy = TPF::get_default_team_policy(1, nk_pack);
   Kokkos::parallel_for(policy, KOKKOS_LAMBDA(const MemberType& team) {
-
-    // part2's process loop is split in three: size distributions, warm rain, the rest
-    P3F::p3_main_size_distributions(
-      team, nk_pack, nk, dnu, cld_frac_l_d, cld_frac_r_d, qc_d, qr_d, qi_d, t_d, qv_supersat_i_d,
-      rho_d, qc_incld_d, qr_incld_d, qi_incld_d, nc_d, nr_d, nc_incld_d, nr_incld_d,
-      mu_c_d, nu_d, lamc_d, cdist_d, cdist1_d, mu_r_d, lamr_d, cdistr_d, logn0r_d, runtime_options);
-
-    P3F::p3_main_warm_rain(
-      team, nk_pack, nk, inv_qc_relvar_d, qc_d, qr_d, qi_d, t_d, qv_supersat_i_d, rho_d, inv_rho_d,
-      qc_incld_d, nc_incld_d, qr_incld_d, nr_incld_d, mu_c_d, nu_d, warm_rain, runtime_options);
 
     P3F::p3_main_part2(
       team, nk_pack, max_total_ni, do_predict_nc, do_prescribed_CCN, dt, inv_dt,
@@ -1147,7 +1131,8 @@ void p3_main_part2_host(
       qc2qr_accret_d, qc2qr_autoconv_d, qv2qi_vapdep_d, qc2qi_berg_d,
       qc2qr_ice_shed_d, qc2qi_collect_d, qr2qi_collect_d,
       qc2qi_hetero_freeze_d, qr2qi_immers_freeze_d, qi2qr_melt_d,
-      pratot_d, prctot_d, warm_rain, bools_d(0),nk, runtime_options);
+      pratot_d, prctot_d, P3Part2Mode::Fused, typename P3F::template uview_2d<Pack>(),
+      bools_d(0),nk, P3F::P3Runtime());
   });
 
   // Sync back to host. Skip intent in variables.
@@ -1305,7 +1290,7 @@ Int p3_main_host_impl(
   Real* qv2qi_depos_tend, Real* precip_liq_flux, Real* precip_ice_flux, Real* cld_frac_r, Real* cld_frac_l, Real* cld_frac_i,
   Real* liq_ice_exchange, Real* vap_liq_exchange, Real* vap_ice_exchange, Real* qv_prev, Real* t_prev
 #ifdef SCREAM_P3_SMALL_KERNELS
-  , const Functions<Real,DefaultDevice>::WarmRainHook& warm_rain_hook
+  , const Functions<Real,DefaultDevice>::P3ProcessRatesHook& process_rates_hook
 #endif
   )
 {
@@ -1505,11 +1490,6 @@ Int p3_main_host_impl(
      v_qc("v_qc", nj, nk_pack), v_nc("v_nc", nj, nk_pack), flux_qx("flux_qx", nj, nk_pack), flux_nx("flux_nx", nj, nk_pack), v_qit("v_qit", nj, nk_pack),
      v_nit("v_nit", nj, nk_pack), flux_nit("flux_nit", nj, nk_pack), flux_bir("flux_bir", nj, nk_pack), flux_qir("flux_qir", nj, nk_pack),
      flux_qit("flux_qit", nj, nk_pack), v_qr("v_qr", nj, nk_pack), v_nr("v_nr", nj, nk_pack);
-  const P3F::P3WarmRainRates2d warm_rain{
-    view_2d("qc2qr_autoconv_tend", nj, nk_pack), view_2d("nc2nr_autoconv_tend", nj, nk_pack),
-    view_2d("ncautr", nj, nk_pack), view_2d("nc_selfcollect_tend", nj, nk_pack),
-    view_2d("qc2qr_accret_tend", nj, nk_pack), view_2d("nc_accret_tend", nj, nk_pack),
-    view_2d("nr_selfcollect_tend", nj, nk_pack)};
    P3F::view_1d<bool> nucleationPossible("nucleationPossible", nj),
      hydrometeorsPresent("hydrometeorsPresent", nj);
 
@@ -1521,7 +1501,7 @@ Int p3_main_host_impl(
     tmparr2, exner, diag_equiv_reflectivity, diag_vm_qi, diag_diam_qi,
     pratot, prctot, qtend_ignore, ntend_ignore, mu_c, lamc, qr_evap_tend,
     v_qc, v_nc, flux_qx, flux_nx, v_qit, v_nit, flux_nit, flux_bir, flux_qir,
-    flux_qit, v_qr, v_nr, warm_rain, nucleationPossible, hydrometeorsPresent
+    flux_qit, v_qr, v_nr, nucleationPossible, hydrometeorsPresent
   };
 #endif
 
@@ -1531,12 +1511,12 @@ Int p3_main_host_impl(
 
   // Create local workspace
   const auto policy = TPF::get_default_team_policy(nj, nk_pack);
-  ekat::WorkspaceManager<Pack, KT::Device> workspace_mgr(nk_pack, 59, policy);
+  ekat::WorkspaceManager<Pack, KT::Device> workspace_mgr(nk_pack, 52, policy);
 
   auto elapsed_microsec = P3F::p3_main(runtime_options, prog_state, diag_inputs, diag_outputs, infrastructure,
                                        history_only, lookup_tables,
 #ifdef SCREAM_P3_SMALL_KERNELS
-                                       temporaries, warm_rain_hook,
+                                       temporaries, process_rates_hook,
 #endif
                                        workspace_mgr, nj, nk);
 
@@ -1582,14 +1562,15 @@ Int p3_main_host(
   Real* qv2qi_depos_tend, Real* precip_liq_flux, Real* precip_ice_flux, Real* cld_frac_r, Real* cld_frac_l, Real* cld_frac_i,
   Real* liq_ice_exchange, Real* vap_liq_exchange, Real* vap_ice_exchange, Real* qv_prev, Real* t_prev)
 {
-  return p3_main_host_impl(qc, nc, qr, nr, th_atm, qv, dt, qi, qm, ni, bm, pres, dz, nc_nuceat_tend, nccn_prescribed,
+  return p3_main_host_impl(
+    qc, nc, qr, nr, th_atm, qv, dt, qi, qm, ni, bm, pres, dz, nc_nuceat_tend, nccn_prescribed,
     ni_activated, inv_qc_relvar, it, precip_liq_surf, precip_ice_surf, its, ite, kts, kte,
     diag_eff_radius_qc, diag_eff_radius_qi, diag_eff_radius_qr, rho_qi, do_predict_nc,
     do_prescribed_CCN, use_hetfrz_classnuc, dpres, inv_exner, qv2qi_depos_tend, precip_liq_flux,
     precip_ice_flux, cld_frac_r, cld_frac_l, cld_frac_i, liq_ice_exchange, vap_liq_exchange,
     vap_ice_exchange, qv_prev, t_prev
 #ifdef SCREAM_P3_SMALL_KERNELS
-    , Functions<Real,DefaultDevice>::WarmRainHook()
+    , Functions<Real,DefaultDevice>::P3ProcessRatesHook()
 #endif
     );
 }
@@ -1603,14 +1584,15 @@ Int p3_main_host_hook(
   Real* diag_eff_radius_qi, Real* diag_eff_radius_qr, Real* rho_qi, bool do_predict_nc, bool do_prescribed_CCN, bool use_hetfrz_classnuc, Real* dpres, Real* inv_exner,
   Real* qv2qi_depos_tend, Real* precip_liq_flux, Real* precip_ice_flux, Real* cld_frac_r, Real* cld_frac_l, Real* cld_frac_i,
   Real* liq_ice_exchange, Real* vap_liq_exchange, Real* vap_ice_exchange, Real* qv_prev, Real* t_prev,
-  const Functions<Real,DefaultDevice>::WarmRainHook& warm_rain_hook)
+  const Functions<Real,DefaultDevice>::P3ProcessRatesHook& process_rates_hook)
 {
-  return p3_main_host_impl(qc, nc, qr, nr, th_atm, qv, dt, qi, qm, ni, bm, pres, dz, nc_nuceat_tend, nccn_prescribed,
+  return p3_main_host_impl(
+    qc, nc, qr, nr, th_atm, qv, dt, qi, qm, ni, bm, pres, dz, nc_nuceat_tend, nccn_prescribed,
     ni_activated, inv_qc_relvar, it, precip_liq_surf, precip_ice_surf, its, ite, kts, kte,
     diag_eff_radius_qc, diag_eff_radius_qi, diag_eff_radius_qr, rho_qi, do_predict_nc,
     do_prescribed_CCN, use_hetfrz_classnuc, dpres, inv_exner, qv2qi_depos_tend, precip_liq_flux,
     precip_ice_flux, cld_frac_r, cld_frac_l, cld_frac_i, liq_ice_exchange, vap_liq_exchange,
-    vap_ice_exchange, qv_prev, t_prev, warm_rain_hook);
+    vap_ice_exchange, qv_prev, t_prev, process_rates_hook);
 }
 #endif
 

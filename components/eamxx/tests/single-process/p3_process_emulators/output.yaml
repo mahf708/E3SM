@@ -1,16 +1,25 @@
 %YAML 1.1
 ---
-filename_prefix: p3_warm_rain_emulator_${BACKEND}
+filename_prefix: p3_process_emulators_${CASE}
 averaging_type: instant
 field_names:
   - T_mid
   - qv
   - qc
   - qr
+  - qi
+  - qm
   - nc
   - nr
+  - ni
+  - bm
+  - eff_radius_qc
+  - eff_radius_qi
   - precip_liq_surf_mass
+  - precip_ice_surf_mass
+  - micro_liq_ice_exchange
   - micro_vap_liq_exchange
+  - micro_vap_ice_exchange
 output_control:
   frequency: 1
   frequency_units: nsteps

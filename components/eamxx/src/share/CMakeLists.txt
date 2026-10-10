@@ -37,6 +37,11 @@ add_subdirectory(io)
 # Algorithm library
 add_subdirectory(algorithm)
 
+# Emulators of physics process rates
+if (EAMXX_ENABLE_PROCESS_EMULATORS)
+  add_subdirectory(emulation)
+endif()
+
 # For bwd compatibility: a "catch" all interface lib of all the stuff in the share folder
 add_library(scream_share INTERFACE)
 target_link_libraries(scream_share INTERFACE

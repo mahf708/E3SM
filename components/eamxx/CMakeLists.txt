@@ -262,6 +262,7 @@ set(SCREAM_SRC_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set(SCREAM_BIN_DIR  ${CMAKE_CURRENT_BINARY_DIR})
 
 option (EAMXX_ENABLE_PYTHON "Whether to enable interfaces to python via pybind11" OFF)
+option (EAMXX_ENABLE_PROCESS_EMULATORS "Whether physics processes can replace some of their process rates with emulators, run by the components/emulators inference backends" OFF)
 
 ####################################################################
 #                    Packs-related settings                        #

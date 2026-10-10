@@ -1,7 +1,7 @@
 set(P3_SRCS
   eamxx_p3_process_interface.cpp
+  eamxx_p3_process_emulators.cpp
   eamxx_p3_run.cpp
-  eamxx_p3_warm_rain_emulator.cpp
 )
 
 # Add ETI source files if not on CUDA/HIP
@@ -49,7 +49,6 @@ if (NOT EAMXX_ENABLE_GPU OR Kokkos_ENABLE_CUDA_RELOCATABLE_DEVICE_CODE OR Kokkos
     eti/p3_nr_conservation.cpp
     eti/p3_ni_conservation.cpp
     eti/p3_prevent_liq_supersaturation.cpp
-    eti/p3_warm_rain.cpp
   ) # P3 ETI SRCS
 endif()
 
@@ -63,7 +62,6 @@ set(P3_SK_SRCS
     disp/p3_main_impl_disp.cpp
     disp/p3_main_impl_part2_disp.cpp
     disp/p3_rain_sed_impl_disp.cpp
-    disp/p3_warm_rain_impl_disp.cpp
     )
 
 set(P3_LIBS "p3")
@@ -90,9 +88,9 @@ foreach (P3_LIB IN LISTS P3_LIBS)
     ${SCREAM_BASE_DIR}/../eam/src/physics/cam
   )
   target_link_libraries(${P3_LIB} eamxx_physics_share scream_share)
-  # Default location of the warm-rain emulator python module
-  target_compile_definitions(${P3_LIB} PRIVATE
-    P3_WARM_RAIN_EMULATOR_DIR="${CMAKE_CURRENT_SOURCE_DIR}/warm_rain_emulator")
+  if (TARGET eamxx_process_emulator)
+    target_link_libraries(${P3_LIB} eamxx_process_emulator)
+  endif()
 endforeach()
 
 # Ensure tables are present in the data dir

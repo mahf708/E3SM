@@ -916,7 +916,7 @@ Int p3_main_host(
   Real* liq_ice_exchange, Real* vap_liq_exchange, Real* vap_ice_exchange, Real* qv_prev, Real* t_prev);
 
 #ifdef SCREAM_P3_SMALL_KERNELS
-// Same as p3_main_host, with a warm-rain hook (only available if all of p3 uses small kernels)
+// Same as p3_main_host, with a process-rates hook (only if all of p3 uses small kernels)
 Int p3_main_host_hook(
   Real* qc, Real* nc, Real* qr, Real* nr, Real* th_atm, Real* qv, Real dt,
   Real* qi, Real* qm, Real* ni, Real* bm, Real* pres, Real* dz,
@@ -925,7 +925,7 @@ Int p3_main_host_hook(
   Real* diag_eff_radius_qi, Real* diag_eff_radius_qr, Real* rho_qi, bool do_predict_nc, bool do_prescribed_CCN, bool use_hetfrz_classnuc, Real* dpres, Real* inv_exner,
   Real* qv2qi_depos_tend, Real* precip_liq_flux, Real* precip_ice_flux, Real* cld_frac_r, Real* cld_frac_l, Real* cld_frac_i,
   Real* liq_ice_exchange, Real* vap_liq_exchange, Real* vap_ice_exchange, Real* qv_prev, Real* t_prev,
-  const Functions<Real,DefaultDevice>::WarmRainHook& warm_rain_hook);
+  const Functions<Real,DefaultDevice>::P3ProcessRatesHook& process_rates_hook);
 #endif
 
 }  // namespace p3

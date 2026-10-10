@@ -3,15 +3,18 @@
 
 #include "share/atm_process/atmosphere_process.hpp"
 #include "physics/p3/p3_functions.hpp"
-#include "physics/p3/warm_rain_emulator/p3_warm_rain_mlp.hpp"
 #include "share/physics/eamxx_common_physics_functions.hpp"
 
 #include <ekat_parameter_list.hpp>
 
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace scream
 {
+
+class ProcessEmulator;
 /*
  * The class responsible to handle the atmosphere microphysics
  *
@@ -394,7 +397,7 @@ public:
     static constexpr int num_1d_scalar = 2; //no 2d vars now, but keeping 1d struct for future expansion
     // 2d view packed, size (ncol, nlev_packs)
 #ifdef SCREAM_P3_SMALL_KERNELS
-    static constexpr int num_2d_vector = 70;
+    static constexpr int num_2d_vector = 63;
 #else
     static constexpr int num_2d_vector = 8;
 #endif
@@ -425,9 +428,7 @@ public:
       diag_diam_qi, pratot, prctot, qtend_ignore, ntend_ignore,
       mu_c, lamc, qr_evap_tend, v_qc, v_nc, flux_qx, flux_nx,
       v_qit, v_nit, flux_nit, flux_bir, flux_qir, flux_qit,
-      v_qr, v_nr,
-      qc2qr_autoconv_tend, nc2nr_autoconv_tend, ncautr, nc_selfcollect_tend,
-      qc2qr_accret_tend, nc_accret_tend, nr_selfcollect_tend;
+      v_qr, v_nr;
     ubview_1d nucleationPossible, hydrometeorsPresent;
 #endif
 
@@ -443,14 +444,12 @@ protected:
   void run_impl        (const double dt);
   void finalize_impl   ();
 
-  // Warm-rain emulator (see eamxx_p3_warm_rain_emulator.cpp)
-  static ekat::ParameterList set_warm_rain_emulator_params (const ekat::ParameterList& params);
-  void create_warm_rain_emulator_fields ();
-  void initialize_warm_rain_emulator ();
-#ifdef SCREAM_P3_SMALL_KERNELS
-  void run_warm_rain_emulator (const P3F::P3Temporaries& temporaries);
-  void run_warm_rain_emulator_kokkos (const p3::WarmRainMLP<Pack, DefaultDevice>& mlp,
-                                      const P3F::P3Temporaries& temporaries);
+  // Emulators of process rates (see eamxx_p3_process_emulators.cpp)
+  std::vector<std::string> process_emulator_names () const;
+  void check_process_emulators_support () const;
+#if defined(SCREAM_P3_SMALL_KERNELS) && defined(EAMXX_HAS_PROCESS_EMULATORS)
+  void initialize_process_emulators ();
+  void run_process_emulators (const P3F::P3ProcessState& s);
 #endif
 
   // Computes total number of bytes needed for local variables
@@ -476,6 +475,14 @@ protected:
   P3F::P3LookupTables      lookup_tables;
 #ifdef SCREAM_P3_SMALL_KERNELS
   P3F::P3Temporaries       temporaries;
+  // Inactive unless process emulators are used
+  P3F::P3ProcessRatesHook  m_process_rates_hook;
+#endif
+#if defined(SCREAM_P3_SMALL_KERNELS) && defined(EAMXX_HAS_PROCESS_EMULATORS)
+  std::vector<std::shared_ptr<ProcessEmulator>> m_process_emulators;
+  P3F::view_3d<Pack> m_original_process_rates;
+  bool m_limit_emulated_nc_selfcollect = false;
+  bool m_limit_emulated_nr_selfcollect = false;
 #endif
   P3F::P3Infrastructure    infrastructure;
   P3F::P3Runtime           runtime_options;
@@ -484,14 +491,6 @@ protected:
 
   // WSM for internal local variables
   ekat::WorkspaceManager<Pack, KT::Device> workspace_mgr;
-
-  // Warm-rain emulator settings
-  bool m_use_warm_rain_emulator = false;
-  Real m_warm_rain_emulator_kk_factor = 1;
-  bool m_warm_rain_emulator_cloud_self_collection = true;
-#ifdef SCREAM_P3_SMALL_KERNELS
-  P3F::WarmRainHook m_warm_rain_hook;
-#endif
 
   std::shared_ptr<const AbstractGrid>   m_grid;
   // Iteration count is internal to P3 and keeps track of the number of times p3_main has been called.

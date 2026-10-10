@@ -62,7 +62,7 @@ void P3Microphysics::run_impl (const double dt)
   P3F::p3_main(runtime_options, prog_state, diag_inputs, diag_outputs, infrastructure,
                history_only, lookup_tables,
 #ifdef SCREAM_P3_SMALL_KERNELS
-               temporaries, m_warm_rain_hook,
+               temporaries, m_process_rates_hook,
 #endif
                workspace_mgr, m_num_cols, m_num_levs);
   stop_timer("EAMxx::P3::p3_main");

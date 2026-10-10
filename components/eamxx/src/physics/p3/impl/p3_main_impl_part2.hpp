@@ -2,6 +2,7 @@
 #define P3_MAIN_IMPL_PART_2_HPP
 
 #include "p3_functions.hpp" // for ETI only but harmless for GPU
+#include "p3_process_rates.hpp"
 #include "share/physics/physics_functions.hpp" // also for ETI not on GPUs
 #include "share/physics/physics_saturation_impl.hpp"
 
@@ -106,12 +107,14 @@ void Functions<S,D>
   const uview_1d<Pack>& qi2qr_melt,
   const uview_1d<Pack>& pratot,
   const uview_1d<Pack>& prctot,
-  const P3WarmRainRates1d& warm_rain,
+  const P3Part2Mode& mode,
+  const uview_2d<Pack>& process_rates,
   bool& hydrometeorsPresent, const Int& nk,
   const P3Runtime& runtime_options)
 {
   constexpr Scalar qsmall       = C::QSMALL;
   constexpr Scalar nsmall       = C::NSMALL;
+  constexpr Scalar T_zerodegc   = C::T_zerodegc.value;
   constexpr Scalar f1r          = C::f1r;
   constexpr Scalar f2r          = C::f2r;
   constexpr Scalar nmltratio    = C::nmltratio;
@@ -124,59 +127,50 @@ void Functions<S,D>
   const bool use_separate_ice_liq_frac = runtime_options.use_separate_ice_liq_frac;
   const bool extra_p3_diags = runtime_options.extra_p3_diags;
 
-  team.team_barrier();
-  hydrometeorsPresent = false;
-  team.team_barrier();
+  using PR = P3ProcessRates;
+
+  // Rates are computed unless they are read back from process_rates
+  const bool compute_rates = mode != P3Part2Mode::Apply;
+
+  if (mode != P3Part2Mode::Rates) {
+    team.team_barrier();
+    hydrometeorsPresent = false;
+    team.team_barrier();
+  }
 
   Kokkos::parallel_for(
     Kokkos::TeamVectorRange(team, nk_pack), [&] (Int k) {
 
+    //compute mask to identify padded values in packs, which shouldn't be used in calculations
+    const auto range_pack = ekat::range<IntPack>(k*Pack::n);
+    const auto range_mask = range_pack < nk;
+
     // if relatively dry and no hydrometeors at this level, skip to end of k-loop (i.e. skip this level)
-    const auto skip_all = part2_skip_mask(k, nk, qc(k), qr(k), qi(k), T_atm(k), qv_supersat_i(k));
+    const auto skip_all = ( !range_mask ||
+        (qc(k)<qsmall && qr(k)<qsmall && qi(k)<qsmall &&
+         T_atm(k)<T_zerodegc && qv_supersat_i(k)< -0.05) );
 
     if (skip_all.all()) {
+      if (mode == P3Part2Mode::Rates) {
+        for (int n = 0; n < PR::num_rates; ++n) {
+          process_rates(n, k) = 0;
+        }
+      }
       return; // skip all process rates
     }
     const auto not_skip_all = !skip_all;
 
     // All microphysics tendencies will be computed as IN-CLOUD, they will be mapped back to cell-average later.
 
-    // warm-rain collision rates, computed by the warm-rain stage (see p3_warm_rain_impl.hpp)
-    Pack
-      qc2qr_accret_tend   = warm_rain.qc2qr_accret_tend(k),   // cloud droplet accretion by rain
-      qc2qr_autoconv_tend = warm_rain.qc2qr_autoconv_tend(k), // cloud droplet autoconversion to rain
-      nc_accret_tend      = warm_rain.nc_accret_tend(k),      // change in cloud droplet number from accretion by rain
-      nc_selfcollect_tend = warm_rain.nc_selfcollect_tend(k), // change in cloud droplet number from self-collection  (Not in paper?)
-      nc2nr_autoconv_tend = warm_rain.nc2nr_autoconv_tend(k), // change in cloud droplet number from autoconversion
-      nr_selfcollect_tend = warm_rain.nr_selfcollect_tend(k), // change in rain number from self-collection  (Not in paper?)
-      ncautr              = warm_rain.ncautr(k);              // change in rain number from autoconversion of cloud water
+    // Process rates (and two auxiliary quantities) handed from their computation
+    // to their application, which can happen in two steps (see p3_process_rates.hpp)
+    Pack rates[PR::num_packs];
+#define P3_PR_LOCAL(name) Pack& name = rates[PR::name]; name = 0;
+    P3_PROCESS_RATE_PACKS(P3_PR_LOCAL)
+#undef P3_PR_LOCAL
+    rho_qm_cloud = 400;
 
     Pack
-      // initialize warm-phase process rates
-      qr2qv_evap_tend   (0), // rain evaporation
-      nr_evap_tend   (0), // change in rain number from evaporation
-
-      // initialize ice-phase  process rates
-      qi2qv_sublim_tend   (0), // sublimation of ice
-      nr_ice_shed_tend  (0), // source for rain number from collision of rain/ice above freezing and shedding
-      qc2qi_hetero_freeze_tend  (0), // immersion freezing droplets
-      qr2qi_collect_tend   (0), // collection rain mass by ice
-      qc2qr_ice_shed_tend   (0), // source for rain mass due to cloud water/ice collision above freezing and shedding or wet growth and shedding
-      qi2qr_melt_tend   (0), // melting of ice
-      qc2qi_collect_tend   (0), // collection of cloud water by ice
-      qr2qi_immers_freeze_tend  (0), // immersion freezing rain
-      qv2qi_nucleat_tend   (0), // deposition/condensation freezing nuc
-      ni2nr_melt_tend   (0), // melting of ice
-      nc_collect_tend   (0), // change in cloud droplet number from collection by ice
-      ncshdc  (0), // source for rain number due to cloud water/ice collision above freezing  and shedding (combined with NRSHD in the paper)
-      nc2ni_immers_freeze_tend  (0), // immersion freezing droplets
-      nr_collect_tend   (0), // change in rain number from collection by ice
-      ni_selfcollect_tend   (0), // change in ice number from collection within a category (Not in paper?)
-      ni_nucleat_tend   (0), // change in ice number from deposition/cond-freezing nucleation
-      qv2qi_vapdep_tend   (0), // vapor deposition
-      qc2qi_berg_tend  (0), // Bergeron process
-      nr2ni_immers_freeze_tend  (0), // immersion freezing rain
-      ni_sublim_tend   (0), // change in ice number from sublimation
       qc_growth_rate  (0), // wet growth rate
 
       // initialize time/space varying physical variables
@@ -189,9 +183,6 @@ void Functions<S,D>
       abi     (0), // TODO(doc)
       kap     (0), // TODO(doc)
       eii     (0), // temperature dependent aggregation efficiency
-
-      //Hetreogeneous freezing
-      ncheti_cnt(0), qcheti_cnt(0), nicnt(0), qicnt(0), ninuc_cnt(0), qinuc_cnt(0),
 
       // quantities related to process rates/parameters, interpolated from lookup tables:
       // For a more in depth reference to where these came from consult the file
@@ -213,7 +204,6 @@ void Functions<S,D>
 
       // TODO(doc)
       vtrmi1   (0),   // TODO(doc)
-      rho_qm_cloud(400), // TODO(doc)
       epsi(0),        // TODO(doc)
       epsr(0),        // TODO(doc)
       epsc(0),        // TODO(doc)
@@ -225,13 +215,19 @@ void Functions<S,D>
     const auto skip_micro = skip_all || !(qc_incld(k) >= qsmall || qr_incld(k) >= qsmall || qi_incld(k) >= qsmall);
     const auto not_skip_micro = !skip_micro;
 
-    if (not_skip_micro.any()) {
+    if (compute_rates && not_skip_micro.any()) {
       // time/space varying physical variables
       get_time_space_phys_variables(
         T_atm(k), pres(k), rho(k), qv_sat_l(k), qv_sat_i(k),
         mu, dv, sc, dqsdt, dqsidt, ab, abi, kap, eii, not_skip_micro);
 
-      // NOTE: cloud/rain size distributions were computed by p3_main_size_distributions
+      get_cloud_dsd2(qc_incld(k), nc_incld(k), mu_c(k), rho(k), nu(k), dnu,
+                     lamc(k), cdist(k), cdist1(k), not_skip_micro);
+      nc(k).set(not_skip_micro, nc_incld(k) * cld_frac_l(k));
+
+      get_rain_dsd2(qr_incld(k), nr_incld(k), mu_r(k), lamr(k), runtime_options, not_skip_micro);
+      get_cdistr_logn0r(qr_incld(k), nr_incld(k), mu_r(k), lamr(k), cdistr(k), logn0r(k), not_skip_micro);
+      nr(k).set(not_skip_micro, nr_incld(k) * cld_frac_r(k));
 
       impose_max_total_ni(ni_incld(k), max_total_ni, inv_rho(k), not_skip_micro);
 
@@ -239,8 +235,8 @@ void Functions<S,D>
 
       if (qi_gt_small.any()) {
         // impose lower limits to prevent taking log of # < 0
-        // (nr_incld was limited by p3_main_size_distributions)
         ni_incld(k).set(qi_gt_small, max(ni_incld(k), nsmall));
+        nr_incld(k).set(qi_gt_small, max(nr_incld(k), nsmall));
 
         const auto rhop = calc_bulk_rho_rime(qi_incld(k), qm_incld(k), bm_incld(k), runtime_options, qi_gt_small);
         qm(k).set(qi_gt_small, qm_incld(k)*cld_frac_i(k) );
@@ -386,22 +382,63 @@ void Functions<S,D>
     }
 
     // deposition/condensation-freezing nucleation
-    if(do_ice_production) {
+    if(compute_rates && do_ice_production) {
       ice_nucleation(T_atm(k), inv_rho(k), ni(k), ni_activated(k),
                      qv_supersat_i(k), inv_dt, predictNc, do_prescribed_CCN,
                      qv2qi_nucleat_tend, ni_nucleat_tend, runtime_options,
                      not_skip_all);
     }
 
-    // Here we map the microphysics tendency rates back to CELL-AVERAGE quantities for updating
-    // cell-average quantities.
-    back_to_cell_average(
-      cld_frac_l(k), cld_frac_r(k), cld_frac_i(k), qc2qr_accret_tend, qr2qv_evap_tend, qc2qr_autoconv_tend,
-      nc_accret_tend, nc_selfcollect_tend, nc2nr_autoconv_tend, nr_selfcollect_tend, nr_evap_tend, ncautr, qi2qv_sublim_tend, nr_ice_shed_tend, qc2qi_hetero_freeze_tend,
-      qr2qi_collect_tend, qc2qr_ice_shed_tend, qi2qr_melt_tend, qc2qi_collect_tend, qr2qi_immers_freeze_tend, ni2nr_melt_tend, nc_collect_tend,
-      ncshdc, nc2ni_immers_freeze_tend, nr_collect_tend, ni_selfcollect_tend,
-      qv2qi_vapdep_tend, nr2ni_immers_freeze_tend, ni_sublim_tend, qv2qi_nucleat_tend, ni_nucleat_tend, qc2qi_berg_tend, 
-      ncheti_cnt, qcheti_cnt, nicnt, qicnt, ninuc_cnt, qinuc_cnt, not_skip_all, runtime_options);
+    if (compute_rates) {
+      // cloud water autoconversion
+      // NOTE: cloud_water_autoconversion must be called before droplet_self_collection
+      cloud_water_autoconversion(
+        rho(k), qc_incld(k), nc_incld(k), inv_qc_relvar(k),
+        qc2qr_autoconv_tend, nc2nr_autoconv_tend, ncautr, runtime_options, not_skip_all);
+
+      // self-collection of droplets
+      droplet_self_collection(
+        rho(k), inv_rho(k), qc_incld(k),
+        mu_c(k), nu(k), nc2nr_autoconv_tend, nc_selfcollect_tend, not_skip_all);
+
+      // accretion of cloud by rain
+      cloud_rain_accretion(
+        rho(k), inv_rho(k), qc_incld(k), nc_incld(k), qr_incld(k), inv_qc_relvar(k),
+        qc2qr_accret_tend, nc_accret_tend, runtime_options, not_skip_all);
+
+      // self-collection and breakup of rain
+      // (breakup following modified Verlinde and Cotton scheme)
+      rain_self_collection(
+        rho(k), qr_incld(k), nr_incld(k),
+        nr_selfcollect_tend, runtime_options, not_skip_all);
+
+      // Here we map the microphysics tendency rates back to CELL-AVERAGE quantities for updating
+      // cell-average quantities.
+      back_to_cell_average(
+        cld_frac_l(k), cld_frac_r(k), cld_frac_i(k), qc2qr_accret_tend, qr2qv_evap_tend, qc2qr_autoconv_tend,
+        nc_accret_tend, nc_selfcollect_tend, nc2nr_autoconv_tend, nr_selfcollect_tend, nr_evap_tend, ncautr, qi2qv_sublim_tend, nr_ice_shed_tend, qc2qi_hetero_freeze_tend,
+        qr2qi_collect_tend, qc2qr_ice_shed_tend, qi2qr_melt_tend, qc2qi_collect_tend, qr2qi_immers_freeze_tend, ni2nr_melt_tend, nc_collect_tend,
+        ncshdc, nc2ni_immers_freeze_tend, nr_collect_tend, ni_selfcollect_tend,
+        qv2qi_vapdep_tend, nr2ni_immers_freeze_tend, ni_sublim_tend, qv2qi_nucleat_tend, ni_nucleat_tend, qc2qi_berg_tend, 
+        ncheti_cnt, qcheti_cnt, nicnt, qicnt, ninuc_cnt, qinuc_cnt, not_skip_all, runtime_options);
+    }
+
+    if (mode == P3Part2Mode::Rates) {
+      // Store the rates, to be applied by another call (Apply)
+      for (int n = 0; n < PR::num_packs; ++n) {
+        process_rates(n, k) = rates[n];
+      }
+      process_rates(PR::wetgrowth, k) = 0;
+      process_rates(PR::wetgrowth, k).set(wetgrowth, 1);
+      return;
+    }
+    if (mode == P3Part2Mode::Apply) {
+      // Apply the stored rates (possibly modified since they were computed)
+      for (int n = 0; n < PR::num_packs; ++n) {
+        rates[n] = process_rates(n, k);
+      }
+      wetgrowth = process_rates(PR::wetgrowth, k) > sp(0.5);
+    }
 
     //
     // conservation of water

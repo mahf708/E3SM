@@ -38,7 +38,7 @@ set(P3_TESTS_SRCS
     p3_ni_conservation_tests.cpp
     p3_ice_deposition_sublimation_tests.cpp
     p3_prevent_liq_supersaturation_tests.cpp
-    p3_warm_rain_unit_tests.cpp
+    p3_process_rates_tests.cpp
     ) # P3_TESTS_SRCS
 
 if (SCREAM_DEBUG AND NOT SCREAM_TEST_SIZE STREQUAL "SHORT")

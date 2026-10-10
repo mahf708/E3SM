@@ -1,0 +1,65 @@
+%YAML 1.1
+---
+driver_options:
+  atmosphere_dag_verbosity_level: 5
+
+time_stepping:
+  time_step: ${ATM_TIME_STEP}
+  run_t0: ${RUN_T0}  # YYYY-MM-DD-XXXXX
+  number_of_steps: ${NUM_STEPS}
+
+eamxx:
+  atm_procs_list: [p3]
+  p3:
+    max_total_ni: 740.0e3
+    do_prescribed_ccn: false
+    use_hetfrz_classnuc: false
+    process_emulators: [${EMULATORS}]
+    process_emulators_limit_self_collection: false
+    warm: {backend: python, inputs: [${WARM_RATES}], outputs: [${WARM_RATES}],
+           options: {python_module: p3_identity_emulator, python_path: ${CMAKE_CURRENT_SOURCE_DIR}}}
+    all_rates: {backend: python, inputs: [${ALL_RATES}], outputs: [${ALL_RATES}],
+                options: {python_module: p3_identity_emulator, python_path: ${CMAKE_CURRENT_SOURCE_DIR}}}
+    ice: {backend: libtorch, model_path: ${ICE_MODEL}, inputs: [${ICE_RATES}], outputs: [${ICE_RATES}],
+          options: {dtype: float64}}
+
+grids_manager:
+  type: mesh_free
+  grids_names: [physics]
+  physics:
+    type: point_grid
+    number_of_global_columns:   8
+    number_of_vertical_levels:  20
+
+# Mixed-phase, drizzling columns, so that warm and ice processes are active
+initial_conditions:
+  T_mid: 268.0
+  T_prev_micro_step: 268.0
+  qv: 3.0e-3
+  qv_prev_micro_step: 3.0e-3
+  qc: 4.0e-4
+  nc: 5.0e7
+  qr: 2.0e-5
+  nr: 1.0e4
+  qi: 1.0e-4
+  qm: 1.0e-5
+  ni: 1.0e5
+  bm: 2.5e-8
+  p_mid: 8.0e4
+  p_dry_mid: 7.96e4
+  pseudo_density: 1000.0
+  pseudo_density_dry: 996.0
+  cldfrac_tot: 0.6
+  nc_nuceat_tend: 0.0
+  nccn: 0.0
+  ni_activated: 0.0
+  inv_qc_relvar: 1.0
+  precip_liq_surf_mass: 0.0
+  precip_ice_surf_mass: 0.0
+  hetfrz_immersion_nucleation_tend: 0.0
+  hetfrz_contact_nucleation_tend: 0.0
+  hetfrz_deposition_nucleation_tend: 0.0
+
+scorpio:
+  output_yaml_files: [output_${CASE}.yaml]
+...

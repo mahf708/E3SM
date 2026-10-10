@@ -104,7 +104,8 @@ void Functions<Real,DefaultDevice>
   const uview_2d<Pack>& qi2qr_melt,
   const uview_2d<Pack>& pratot,
   const uview_2d<Pack>& prctot,
-  const P3WarmRainRates2d& warm_rain,
+  const P3Part2Mode& mode,
+  const view_3d<Pack>& process_rates,
   const uview_1d<bool>& nucleationPossible,
   const uview_1d<bool>& hydrometeorsPresent,
   const P3Runtime& runtime_options)
@@ -125,6 +126,10 @@ void Functions<Real,DefaultDevice>
     if (!(nucleationPossible(i) || hydrometeorsPresent(i))) {
       return;
     }
+
+    // Storage for the process rates, if part2 runs in two steps
+    const auto oprocess_rates = mode == P3Part2Mode::Fused ?
+      uview_2d<Pack>() : ekat::subview(process_rates, i);
 
     // ------------------------------------------------------------------------------------------
     // main k-loop (for processes):
@@ -150,7 +155,7 @@ void Functions<Real,DefaultDevice>
       ekat::subview(qv2qi_vapdep, i), ekat::subview(qc2qi_berg, i), ekat::subview(qc2qr_ice_shed, i), ekat::subview(qc2qi_collect, i),
       ekat::subview(qr2qi_collect, i), ekat::subview(qc2qi_hetero_freeze, i), ekat::subview(qr2qi_immers_freeze, i),
       ekat::subview(qi2qr_melt, i),
-      ekat::subview(pratot, i), ekat::subview(prctot, i), warm_rain.column(i), hydrometeorsPresent(i), nk, runtime_options);
+      ekat::subview(pratot, i), ekat::subview(prctot, i), mode, oprocess_rates, hydrometeorsPresent(i), nk, runtime_options);
 
     if (!hydrometeorsPresent(i)) return;
   });

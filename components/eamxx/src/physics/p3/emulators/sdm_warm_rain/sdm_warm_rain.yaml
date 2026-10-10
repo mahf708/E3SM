@@ -1,0 +1,29 @@
+# P3 parameters to emulate the four warm-rain collision processes with the
+# SDM-trained emulator. Paths are placeholders.
+p3:
+  process_emulators: [sdm_warm_rain]
+  sdm_warm_rain:
+    # python backend: the model file of the SDM_emulator bundle
+    backend: python
+    model_path: /path/to/warm_rain_emulator.pt
+    options:
+      python_module: sdm_warm_rain
+      python_path: /path/to/E3SM/components/eamxx/src/physics/p3/emulators/sdm_warm_rain
+    # libtorch backend instead: the file written by export_torchscript.py
+    #   backend: libtorch
+    #   model_path: /path/to/sdm_warm_rain_torchscript.pt
+    #   options: {dtype: float64}
+    inputs: [qc, nc, qr, nr, rho]
+    # For libtorch, the order of the outputs is the order of the tuple forward() returns
+    outputs: [qc2qr_autoconv_tend, qc2qr_accret_tend, ncautr, nc2nr_autoconv_tend,
+              nc_accret_tend, nc_selfcollect_tend, nr_selfcollect_tend, use_cloud, use_rain]
+    # Use the emulator only within its training envelope, and stock P3 elsewhere,
+    # with autoconversion scaled toward the SDM mean
+    masks:
+      use_cloud: [qc2qr_autoconv_tend, qc2qr_accret_tend, ncautr, nc2nr_autoconv_tend,
+                  nc_accret_tend, nc_selfcollect_tend]
+      use_rain: [nr_selfcollect_tend]
+    fallback_scale:
+      qc2qr_autoconv_tend: 0.36
+      ncautr: 0.36
+      nc2nr_autoconv_tend: 0.36

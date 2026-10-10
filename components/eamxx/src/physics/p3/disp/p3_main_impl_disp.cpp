@@ -114,7 +114,7 @@ Int Functions<Real,DefaultDevice>
   const P3HistoryOnly& history_only,
   const P3LookupTables& lookup_tables,
   const P3Temporaries& temporaries,
-  const WarmRainHook& warm_rain_hook,
+  const P3ProcessRatesHook& process_rates_hook,
   const WorkspaceManager& workspace_mgr,
   Int nj,
   Int nk)
@@ -277,40 +277,68 @@ Int Functions<Real,DefaultDevice>
     ni_incld, bm_incld, nucleationPossible, hydrometeorsPresent, runtime_options);
 
   // ------------------------------------------------------------------------------------------
-  // main k-loop (for processes), in three steps: size distributions, warm rain, the rest
+  // main k-loop (for processes)
+  //
+  // With a process-rates hook, it runs in two kernels: compute the rates and store them,
+  // then apply them. In between, outside of any kernel, the hook may change any of them.
 
-  p3_main_size_distributions_disp(
-    nj, nk, lookup_tables.dnu_table_vals, cld_frac_l, cld_frac_r, qc, qr, qi, T_atm, qv_supersat_i,
-    rho, qc_incld, qr_incld, qi_incld, nc, nr, nc_incld, nr_incld, mu_c, nu, lamc, cdist, cdist1,
-    mu_r, lamr, cdistr, logn0r, nucleationPossible, hydrometeorsPresent, runtime_options);
+  auto part2 = [&](const P3Part2Mode mode) {
+    p3_main_part2_disp(
+      nj, nk, runtime_options.max_total_ni, infrastructure.predictNc, infrastructure.prescribedCCN, infrastructure.dt, inv_dt,
+      hetfrz_immersion_nucleation_tend, hetfrz_contact_nucleation_tend, hetfrz_deposition_nucleation_tend,
+      lookup_tables.dnu_table_vals, lookup_tables.ice_table_vals, lookup_tables.collect_table_vals,
+      lookup_tables.revap_table_vals, pres, dpres, dz, nc_nuceat_tend, inv_exner,
+      exner, inv_cld_frac_l, inv_cld_frac_i, inv_cld_frac_r, ni_activated, inv_qc_relvar, cld_frac_i,
+      cld_frac_l, cld_frac_r, qv_prev, t_prev, T_atm, rho, inv_rho, qv_sat_l, qv_sat_i, qv_supersat_i, rhofacr, rhofaci, acn,
+      qv, th, qc, nc, qr, nr, qi, ni, qm, bm, qc_incld, qr_incld, qi_incld, qm_incld, nc_incld,
+      nr_incld, ni_incld, bm_incld, mu_c, nu, lamc, cdist, cdist1, cdistr,
+      mu_r, lamr, logn0r, qv2qi_depos_tend, precip_total_tend, nevapr, qr_evap_tend,
+      vap_liq_exchange, vap_ice_exchange, liq_ice_exchange,
+      qr2qv_evap, qi2qv_sublim, qc2qr_accret, qc2qr_autoconv,
+      qv2qi_vapdep, qc2qi_berg, qc2qr_ice_shed, qc2qi_collect,
+      qr2qi_collect, qc2qi_hetero_freeze, qr2qi_immers_freeze, qi2qr_melt,
+      pratot, prctot, mode, process_rates_hook.process_rates, nucleationPossible, hydrometeorsPresent,
+      runtime_options);
+  };
 
-  p3_main_warm_rain_disp(
-    nj, nk, inv_qc_relvar, qc, qr, qi, T_atm, qv_supersat_i, rho, inv_rho,
-    qc_incld, nc_incld, qr_incld, nr_incld, mu_c, nu, temporaries.warm_rain,
-    nucleationPossible, hydrometeorsPresent, runtime_options);
+  if (process_rates_hook.active()) {
+    EKAT_REQUIRE_MSG (process_rates_hook.process_rates.extent_int(0)==nj &&
+                      process_rates_hook.process_rates.extent_int(1)==P3ProcessRates::num_rates &&
+                      process_rates_hook.process_rates.extent_int(2)==ekat::npack<Pack>(nk),
+        "Error! The process-rates hook storage must have extents (ncol, num_rates, nlev_packs).\n");
 
-  // Outside of any kernel: the warm-rain rates may be replaced here (e.g., by an emulator)
-  if (warm_rain_hook) {
+    part2(P3Part2Mode::Rates);
     Kokkos::fence();
-    warm_rain_hook(temporaries);
+
+    // The state the rates were computed from
+    P3ProcessState process_state;
+    process_state.process_rates = process_rates_hook.process_rates;
+    process_state.dt   = infrastructure.dt;
+    process_state.ncol = nj;
+    process_state.nlev = nk;
+    auto& st = process_state.state;
+    st["qv"] = qv; st["th_atm"] = th; st["qc"] = qc; st["nc"] = nc; st["qr"] = qr; st["nr"] = nr;
+    st["qi"] = qi; st["ni"] = ni; st["qm"] = qm; st["bm"] = bm;
+    st["pres"] = pres; st["dpres"] = dpres; st["dz"] = dz; st["inv_exner"] = inv_exner;
+    st["cld_frac_l"] = cld_frac_l; st["cld_frac_r"] = cld_frac_r; st["cld_frac_i"] = cld_frac_i;
+    st["inv_qc_relvar"] = inv_qc_relvar; st["nc_nuceat_tend"] = nc_nuceat_tend;
+    st["ni_activated"] = ni_activated; st["qv_prev"] = qv_prev; st["t_prev"] = t_prev;
+    st["T_atm"] = T_atm; st["rho"] = rho; st["inv_rho"] = inv_rho; st["exner"] = exner;
+    st["qv_sat_l"] = qv_sat_l; st["qv_sat_i"] = qv_sat_i; st["qv_supersat_i"] = qv_supersat_i;
+    st["rhofacr"] = rhofacr; st["rhofaci"] = rhofaci; st["acn"] = acn;
+    st["qc_incld"] = qc_incld; st["qr_incld"] = qr_incld; st["qi_incld"] = qi_incld;
+    st["qm_incld"] = qm_incld; st["nc_incld"] = nc_incld; st["nr_incld"] = nr_incld;
+    st["ni_incld"] = ni_incld; st["bm_incld"] = bm_incld;
+    st["mu_c"] = mu_c; st["nu"] = nu; st["lamc"] = lamc; st["cdist"] = cdist; st["cdist1"] = cdist1;
+    st["mu_r"] = mu_r; st["lamr"] = lamr; st["cdistr"] = cdistr; st["logn0r"] = logn0r;
+
+    process_rates_hook.callback(process_state);
     Kokkos::fence();
+
+    part2(P3Part2Mode::Apply);
+  } else {
+    part2(P3Part2Mode::Fused);
   }
-
-  p3_main_part2_disp(
-    nj, nk, runtime_options.max_total_ni, infrastructure.predictNc, infrastructure.prescribedCCN, infrastructure.dt, inv_dt,
-    hetfrz_immersion_nucleation_tend, hetfrz_contact_nucleation_tend, hetfrz_deposition_nucleation_tend,
-    lookup_tables.dnu_table_vals, lookup_tables.ice_table_vals, lookup_tables.collect_table_vals,
-    lookup_tables.revap_table_vals, pres, dpres, dz, nc_nuceat_tend, inv_exner,
-    exner, inv_cld_frac_l, inv_cld_frac_i, inv_cld_frac_r, ni_activated, inv_qc_relvar, cld_frac_i,
-    cld_frac_l, cld_frac_r, qv_prev, t_prev, T_atm, rho, inv_rho, qv_sat_l, qv_sat_i, qv_supersat_i, rhofacr, rhofaci, acn,
-    qv, th, qc, nc, qr, nr, qi, ni, qm, bm, qc_incld, qr_incld, qi_incld, qm_incld, nc_incld,
-    nr_incld, ni_incld, bm_incld, mu_c, nu, lamc, cdist, cdist1, cdistr,
-    mu_r, lamr, logn0r, qv2qi_depos_tend, precip_total_tend, nevapr, qr_evap_tend,
-    vap_liq_exchange, vap_ice_exchange, liq_ice_exchange,
-    qr2qv_evap, qi2qv_sublim, qc2qr_accret, qc2qr_autoconv,
-    qv2qi_vapdep, qc2qi_berg, qc2qr_ice_shed, qc2qi_collect,
-    qr2qi_collect, qc2qi_hetero_freeze, qr2qi_immers_freeze, qi2qr_melt,
-    pratot, prctot, temporaries.warm_rain, nucleationPossible, hydrometeorsPresent, runtime_options);
 
   //NOTE: At this point, it is possible to have negative (but small) nc, nr, ni.  This is not
   //      a problem; those values get clipped to zero in the sedimentation section (if necessary).
