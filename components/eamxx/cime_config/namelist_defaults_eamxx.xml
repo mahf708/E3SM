@@ -153,6 +153,11 @@ be lost if SCREAM_HACK_XML is not enabled.
         type="array(string)"
         doc="list of computed fields/groups for which this process will back out tendencies"
         />
+      <field_emulators
+        type="array(string)"
+        doc="Emulators of this process, working on its fields, run in this order (each needs its own sublist, see share/emulation/eamxx_field_emulators.hpp). Requires EAMXX_ENABLE_PROCESS_EMULATORS"
+        />
+      <field_emulators_mode type="string" valid_values="replace,after" doc="Run the field emulators instead of the process (replace), or after it (after)">replace</field_emulators_mode>
     </atm_proc_base>
 
     <!-- Basic options for each atm process group -->
@@ -274,6 +279,7 @@ be lost if SCREAM_HACK_XML is not enabled.
       <coeff_km_horiz type="real" doc="Horizontal eddy diffusivity coefficient for momentum">0.1</coeff_km_horiz>
       <extra_shoc_diags type="logical" doc="Extra SHOC diagnostics">false</extra_shoc_diags>
       <shoc_1p5tke type="logical" doc="turn off SGS variability in SHOC, effectively reducing it to a 1.5 TKE closure">false</shoc_1p5tke>
+      <eddy_diffusivity_emulators type="array(string)" doc="Emulators of SHOC eddy diffusivities (tk, tkh), TKE and isotropy, run after shoc_tke in this order (each needs its own sublist). Requires SCREAM_SHOC_SMALL_KERNELS and EAMXX_ENABLE_PROCESS_EMULATORS"/>
     </shoc>
 
     <!-- ZM deep convection -->

@@ -534,6 +534,8 @@ void SHOCMacrophysics::initialize_impl (const RunType run_type)
   }
   input.dx = cell_length;
   input.dy = cell_length;
+
+  initialize_emulators();
 }
 
 // =========================================================================================
@@ -580,7 +582,7 @@ void SHOCMacrophysics::run_impl (const double dt)
   SHF::shoc_main(m_num_cols, m_num_levs, m_num_levs+1, m_npbl, m_nadv, m_num_tracers, dt,
                  workspace_mgr,runtime_options,input,input_output,output,history_output
 #ifdef SCREAM_SHOC_SMALL_KERNELS
-                 , temporaries
+                 , temporaries, m_hooks
 #endif
                  );
 

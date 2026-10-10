@@ -1,5 +1,6 @@
 set(SHOC_SRCS
   eamxx_shoc_process_interface.cpp
+  eamxx_shoc_emulators.cpp
 )
 
 set(SHOC_HEADERS
@@ -116,6 +117,9 @@ foreach (SHOC_LIB IN LISTS SHOC_LIBS)
     ${CMAKE_CURRENT_SOURCE_DIR}/impl
   )
   target_link_libraries(${SHOC_LIB} eamxx_physics_share scream_share)
+  if (TARGET eamxx_process_emulator)
+    target_link_libraries(${SHOC_LIB} eamxx_process_emulator)
+  endif()
 endforeach()
 
 if (NOT SCREAM_LIB_ONLY)

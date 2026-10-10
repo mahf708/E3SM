@@ -1019,6 +1019,10 @@ void diag_second_shoc_moments                       (DiagSecondShocMomentsData& 
 void compute_shoc_vapor                             (ComputeShocVaporData& d);
 void update_prognostics_implicit                    (UpdatePrognosticsImplicitData& d);
 void shoc_main                                      (ShocMainData& d);
+#ifdef SCREAM_SHOC_SMALL_KERNELS
+// shoc_main, running the given host hooks
+void shoc_main (ShocMainData& d, const Functions<Real,DefaultDevice>::SHOCHooks& hooks);
+#endif
 void pblintd_height                                 (PblintdHeightData& d);
 void vd_shoc_decomp_and_solve                       (VdShocDecompandSolveData& d);
 void pblintd_surf_temp(PblintdSurfTempData& d);

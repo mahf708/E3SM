@@ -439,7 +439,8 @@ void Functions<S,D>::shoc_main_internal(
   const view_2d<Pack>& shoc_qv,
   const view_2d<Pack>& shoc_tabs,
   const view_2d<Pack>& dz_zt,
-  const view_2d<Pack>& dz_zi)
+  const view_2d<Pack>& dz_zi,
+  const SHOCHooks& hooks)
 {
   // Scalarize some views for single entry access
   const auto s_thetal  = ekat::scalarize(thetal);
@@ -516,6 +517,25 @@ void Functions<S,D>::shoc_main_internal(
                   workspace_mgr,                        // Workspace mgr
                   tke,tk,tkh,                           // Input/Output
                   isotropy);                            // Output
+
+    if (hooks.eddy_diffusivities) {
+      Kokkos::fence();
+      SHOCEddyDiffusivityState st;
+      st.dt = dtime; st.ncol = shcol; st.nlev = nlev; st.nlevi = nlevi;
+      st.outputs = {{"tk", tk}, {"tkh", tkh}, {"tke", tke}, {"isotropy", isotropy}};
+      st.state = {{"zt_grid", zt_grid}, {"pres", pres}, {"pdel", pdel}, {"thv", thv},
+                  {"w_field", w_field}, {"inv_exner", inv_exner}, {"thetal", thetal}, {"qw", qw},
+                  {"shoc_ql", shoc_ql}, {"shoc_qv", shoc_qv}, {"shoc_tabs", shoc_tabs},
+                  {"shoc_cldfrac", shoc_cldfrac}, {"u_wind", u_wind}, {"v_wind", v_wind},
+                  {"wthv_sec", wthv_sec}, {"shoc_mix", shoc_mix}, {"brunt", brunt},
+                  {"rho_zt", rho_zt}, {"dz_zt", dz_zt}};
+      st.interface_state = {{"zi_grid", zi_grid}, {"presi", presi}, {"dz_zi", dz_zi}};
+      st.column_state = {{"dx", dx}, {"dy", dy}, {"wthl_sfc", wthl_sfc}, {"wqw_sfc", wqw_sfc},
+                         {"uw_sfc", uw_sfc}, {"vw_sfc", vw_sfc}, {"pblh", pblh}, {"ustar", ustar},
+                         {"obklen", obklen}, {"kbfs", kbfs}, {"phis", phis}};
+      hooks.eddy_diffusivities(st);
+      Kokkos::fence();
+    }
 
     // Update SHOC prognostic variables here
     // via implicit diffusion solver
@@ -624,6 +644,7 @@ Int Functions<S,D>::shoc_main(
   const SHOCHistoryOutput& shoc_history_output  // Output (diagnostic)
 #ifdef SCREAM_SHOC_SMALL_KERNELS
   , const SHOCTemporaries& shoc_temporaries     // Temporaries for small kernels
+  , const SHOCHooks&       hooks                // Host hooks, may be inactive
 #endif
                               )
 {
@@ -774,7 +795,7 @@ Int Functions<S,D>::shoc_main(
     shoc_temporaries.se_a, shoc_temporaries.ke_a, shoc_temporaries.wv_a, shoc_temporaries.wl_a,
     shoc_temporaries.kbfs, shoc_temporaries.ustar2,
     shoc_temporaries.wstar, shoc_temporaries.rho_zt, shoc_temporaries.shoc_qv,
-    shoc_temporaries.tabs, shoc_temporaries.dz_zt, shoc_temporaries.dz_zi);
+    shoc_temporaries.tabs, shoc_temporaries.dz_zt, shoc_temporaries.dz_zi, hooks);
 #endif
 
   auto finish = std::chrono::steady_clock::now();

@@ -8,10 +8,15 @@
 
 #include <ekat_parameter_list.hpp>
 
+#include <memory>
+#include <vector>
+
 #include <string>
 
 namespace scream
 {
+
+class ProcessEmulator;
 
 /*
  * The class responsible to handle the atmosphere microphysics
@@ -542,6 +547,12 @@ protected:
   // SHOC updates the 'tracers' group.
   void set_computed_group_impl (const FieldGroup& group);
 
+  // Emulators of eddy diffusivities (see eamxx_shoc_emulators.cpp)
+  void initialize_emulators ();
+#ifdef SCREAM_SHOC_SMALL_KERNELS
+  void run_eddy_diffusivity_emulators (const SHF::SHOCEddyDiffusivityState& s);
+#endif
+
   // Computes total number of bytes needed for local variables
   size_t requested_buffer_size_in_bytes() const;
 
@@ -571,7 +582,10 @@ protected:
   SHF::SHOCRuntime runtime_options;
 #ifdef SCREAM_SHOC_SMALL_KERNELS
   SHF::SHOCTemporaries temporaries;
+  // Inactive unless emulators are used
+  SHF::SHOCHooks m_hooks;
 #endif
+  std::vector<std::shared_ptr<ProcessEmulator>> m_eddy_diffusivity_emulators;
 
   // Structures which compute pre/post process
   SHOCPreprocess shoc_preprocess;

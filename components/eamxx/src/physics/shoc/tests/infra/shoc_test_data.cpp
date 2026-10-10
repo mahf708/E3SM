@@ -261,6 +261,20 @@ void update_prognostics_implicit(UpdatePrognosticsImplicitData& d)
                                    d.wtracer_sfc, d.thetal, d.qw, d.tracer, d.tke, d.u_wind, d.v_wind);
 }
 
+#ifdef SCREAM_SHOC_SMALL_KERNELS
+namespace {
+// Hooks for the next shoc_main_host call, if any
+const Functions<Real,DefaultDevice>::SHOCHooks* s_shoc_main_hooks = nullptr;
+}
+
+void shoc_main(ShocMainData& d, const Functions<Real,DefaultDevice>::SHOCHooks& hooks)
+{
+  s_shoc_main_hooks = &hooks;
+  shoc_main(d);
+  s_shoc_main_hooks = nullptr;
+}
+#endif
+
 void shoc_main(ShocMainData& d)
 {
   const int npbl = shoc_init_host(d.nlev, d.pref_mid, d.nbot_shoc, d.ntop_shoc);
@@ -2608,6 +2622,7 @@ Int shoc_main_host(Int shcol, Int nlev, Int nlevi, Real dtime, Int nadv, Int npb
                                                shoc_input, shoc_input_output, shoc_output, shoc_history_output
 #ifdef SCREAM_SHOC_SMALL_KERNELS
                                                , shoc_temporaries
+                                               , s_shoc_main_hooks ? *s_shoc_main_hooks : SHF::SHOCHooks()
 #endif
                                                );
 

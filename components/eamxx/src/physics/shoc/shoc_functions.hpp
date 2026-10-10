@@ -9,6 +9,10 @@
 #include <ekat_pack_kokkos.hpp>
 #include <ekat_workspace.hpp>
 
+#include <functional>
+#include <map>
+#include <string>
+
 namespace scream
 {
 namespace shoc
@@ -228,6 +232,27 @@ template <typename ScalarT, typename DeviceT> struct Functions {
     view_2d<Pack> dz_zt;
     view_2d<Pack> dz_zi;
     view_2d<Pack> tkh;
+  };
+
+  // What an eddy-diffusivity hook sees: the eddy diffusivities, TKE and
+  // isotropy computed by shoc_tke, and the state they were computed from, by
+  // name. The hook may overwrite the outputs; it must not change the state.
+  // The implicit diffusion solver then uses the (possibly changed) outputs.
+  struct SHOCEddyDiffusivityState {
+    // tk, tkh, tke, isotropy: (ncol, nlev packs)
+    std::map<std::string, view_2d_strided<Pack>> outputs;
+    // State on midpoints (ncol, nlev packs), on interfaces (ncol, nlevi packs), per column
+    std::map<std::string, view_2d_strided<const Pack>> state, interface_state;
+    std::map<std::string, view_1d<const Scalar>> column_state;
+    Scalar dt;
+    Int ncol, nlev, nlevi;
+  };
+
+  // Host callbacks run by shoc_main between its kernels, outside of any kernel.
+  // Only with small kernels.
+  struct SHOCHooks {
+    // After shoc_tke, before the implicit diffusion solver (in each of the nadv steps)
+    std::function<void(const SHOCEddyDiffusivityState&)> eddy_diffusivities;
   };
 #endif
 
@@ -819,7 +844,7 @@ template <typename ScalarT, typename DeviceT> struct Functions {
       const view_1d<Scalar> &wv_a, const view_1d<Scalar> &wl_a, const view_1d<Scalar> &kbfs,
       const view_1d<Scalar> &ustar2, const view_1d<Scalar> &wstar, const view_2d<Pack> &rho_zt,
       const view_2d<Pack> &shoc_qv, const view_2d<Pack> &tabs, const view_2d<Pack> &dz_zt,
-      const view_2d<Pack> &dz_zi);
+      const view_2d<Pack> &dz_zi, const SHOCHooks &hooks);
 #endif
 
   // Return microseconds elapsed
@@ -838,7 +863,8 @@ template <typename ScalarT, typename DeviceT> struct Functions {
                        const SHOCHistoryOutput &shoc_history_output // Output (diagnostic)
 #ifdef SCREAM_SHOC_SMALL_KERNELS
                        ,
-                       const SHOCTemporaries &shoc_temporaries // Temporaries for small kernels
+                       const SHOCTemporaries &shoc_temporaries, // Temporaries for small kernels
+                       const SHOCHooks &hooks = SHOCHooks()     // Host hooks, may be inactive
 #endif
   );
 

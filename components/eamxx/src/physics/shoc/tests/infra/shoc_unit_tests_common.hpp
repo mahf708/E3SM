@@ -122,6 +122,7 @@ struct UnitWrap {
     struct TestComputeShocVapor;
     struct TestUpdatePrognosticsImplicit;
     struct TestShocMain;
+    struct TestShocHooks;
     struct TestPblintdHeight;
     struct TestVdShocDecompandSolve;
     struct TestPblintdSurfTemp;
