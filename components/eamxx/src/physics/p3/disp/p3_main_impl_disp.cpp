@@ -103,6 +103,107 @@ void Functions<Real,DefaultDevice>
   Kokkos::fence();
 }
 
+namespace {
+
+// Run a sedimentation hook (see P3SedimentationHook), after sedimentation:
+// store its tendencies, run the hook, re-apply the tendencies it selects, and
+// diagnose the surface precipitation it asks for.
+template <typename F>
+void run_sedimentation_hook (
+  const typename F::P3SedimentationHook& hook,
+  const Kokkos::Array<typename F::template uview_2d<typename F::Pack>, P3SedimentationRates::num_rates>& vars,
+  const typename F::P3HistoryOnly& history_only,
+  const typename F::P3DiagnosticOutputs& diagnostic_outputs,
+  const typename F::template uview_2d<typename F::Pack>& rho,
+  const typename F::template uview_2d<const typename F::Pack>& dz,
+  const std::map<std::string, typename F::template view_2d<const typename F::Pack>>& other_state,
+  const typename F::Scalar dt, const int nj, const int nk)
+{
+  using SR       = P3SedimentationRates;
+  using Pack     = typename F::Pack;
+  using Scalar   = typename F::Scalar;
+  using ExeSpace = typename F::KT::ExeSpace;
+  using C        = typename F::C;
+  using policy_t = Kokkos::MDRangePolicy<ExeSpace, Kokkos::Rank<2>>;
+  constexpr int N = Pack::n;
+
+  const int nk_pack = ekat::npack<Pack>(nk);
+  const Scalar inv_dt = 1 / dt;
+  const auto tend   = hook.tendencies;
+  const auto before = hook.before;
+
+  Kokkos::parallel_for("p3_sedimentation_hook_tendencies", policy_t({0, 0}, {nj, nk_pack}),
+                       KOKKOS_LAMBDA (int i, int k) {
+    for (int r=0; r<SR::num_rates; ++r) {
+      tend(r,i,k) = (vars[r](i,k) - before(r,i,k)) * inv_dt;
+    }
+  });
+  Kokkos::fence();
+
+  typename F::P3SedimentationState state;
+  state.tendencies      = tend;
+  state.precip_liq_surf = diagnostic_outputs.precip_liq_surf;
+  state.precip_ice_surf = diagnostic_outputs.precip_ice_surf;
+  state.dt   = dt;
+  state.ncol = nj;
+  state.nlev = nk;
+  state.state = other_state;
+  for (int r=0; r<SR::num_rates; ++r) {
+    std::string name = SR::name(r);
+    name = name.substr(0, name.find("_sed_tend"));
+    state.state[name] = Kokkos::subview(before, r, Kokkos::ALL, Kokkos::ALL);
+  }
+
+  hook.callback(state);
+  Kokkos::fence();
+
+  // Re-apply the selected tendencies
+  const int mask = hook.apply_mask;
+  if (mask!=0) {
+    const auto qc_sed = history_only.qc_sed;
+    const auto qr_sed = history_only.qr_sed;
+    const auto qi_sed = history_only.qi_sed;
+    const bool history = qc_sed.extent_int(0)==nj && qr_sed.extent_int(0)==nj && qi_sed.extent_int(0)==nj;
+    Kokkos::parallel_for("p3_sedimentation_hook_apply", policy_t({0, 0}, {nj, nk_pack}),
+                         KOKKOS_LAMBDA (int i, int k) {
+      for (int r=0; r<SR::num_rates; ++r) {
+        if (mask & (1<<r)) {
+          vars[r](i,k) = max(before(r,i,k) + tend(r,i,k)*dt, Scalar(0));
+        }
+      }
+      if (history) {
+        if (mask & (1<<SR::qc_sed_tend)) qc_sed(i,k) = tend(SR::qc_sed_tend,i,k);
+        if (mask & (1<<SR::qr_sed_tend)) qr_sed(i,k) = tend(SR::qr_sed_tend,i,k);
+        if (mask & (1<<SR::qi_sed_tend)) qi_sed(i,k) = tend(SR::qi_sed_tend,i,k);
+      }
+    });
+  }
+
+  // Diagnose the surface precipitation: what leaves the column [m/s]
+  const bool liq = hook.diagnose_precip_liq;
+  const bool ice = hook.diagnose_precip_ice;
+  if (liq or ice) {
+    const auto precip_liq_surf = diagnostic_outputs.precip_liq_surf;
+    const auto precip_ice_surf = diagnostic_outputs.precip_ice_surf;
+    Kokkos::parallel_for("p3_sedimentation_hook_precip", Kokkos::RangePolicy<ExeSpace>(0, nj),
+                         KOKKOS_LAMBDA (int i) {
+      Scalar pl = 0, pi = 0;
+      for (int k=0; k<nk; ++k) {
+        const int p = k/N, s = k%N;
+        const Scalar mass = rho(i,p)[s] * dz(i,p)[s];
+        pl -= (tend(SR::qc_sed_tend,i,p)[s] + tend(SR::qr_sed_tend,i,p)[s]) * mass;
+        pi -= tend(SR::qi_sed_tend,i,p)[s] * mass;
+      }
+      // (round-off can make an empty column slightly negative)
+      if (liq) precip_liq_surf(i) = Kokkos::max(pl, Scalar(0)) * C::INV_RHO_H2O.value;
+      if (ice) precip_ice_surf(i) = Kokkos::max(pi, Scalar(0)) * C::INV_RHO_H2O.value;
+    });
+  }
+  Kokkos::fence();
+}
+
+} // anonymous namespace
+
 template <>
 Int Functions<Real,DefaultDevice>
 ::p3_main_internal_disp(
@@ -114,7 +215,7 @@ Int Functions<Real,DefaultDevice>
   const P3HistoryOnly& history_only,
   const P3LookupTables& lookup_tables,
   const P3Temporaries& temporaries,
-  const P3ProcessRatesHook& process_rates_hook,
+  const P3Hooks& hooks,
   const WorkspaceManager& workspace_mgr,
   Int nj,
   Int nk)
@@ -282,6 +383,7 @@ Int Functions<Real,DefaultDevice>
   // With a process-rates hook, it runs in two kernels: compute the rates and store them,
   // then apply them. In between, outside of any kernel, the hook may change any of them.
 
+  const auto& process_rates_hook = hooks.process_rates;
   auto part2 = [&](const P3Part2Mode mode) {
     p3_main_part2_disp(
       nj, nk, runtime_options.max_total_ni, infrastructure.predictNc, infrastructure.prescribedCCN, infrastructure.dt, inv_dt,
@@ -351,6 +453,24 @@ Int Functions<Real,DefaultDevice>
   // ==========================================================================================!
   // Sedimentation:
 
+  // With a sedimentation hook, save the state before sedimentation
+  using SR = P3SedimentationRates;
+  const auto& sed_hook = hooks.sedimentation;
+  const Kokkos::Array<uview_2d<Pack>, SR::num_rates> sed_vars = {qc, nc, qr, nr, qi, ni, qm, bm};
+  if (sed_hook.active()) {
+    for (const auto& v : {sed_hook.tendencies, sed_hook.before}) {
+      EKAT_REQUIRE_MSG (v.extent_int(0)==SR::num_rates && v.extent_int(1)==nj && v.extent_int(2)==nk_pack,
+          "Error! The sedimentation hook storage must have extents (num_rates, ncol, nlev_packs).\n");
+    }
+    const auto before = sed_hook.before;
+    Kokkos::parallel_for("p3_sedimentation_hook_save",
+      Kokkos::MDRangePolicy<ExeSpace, Kokkos::Rank<2>>({0, 0}, {nj, nk_pack}), KOKKOS_LAMBDA (int i, int k) {
+      for (int r=0; r<SR::num_rates; ++r) {
+        before(r,i,k) = sed_vars[r](i,k);
+      }
+    });
+  }
+
   // Cloud sedimentation:  (adaptive substepping)
   cloud_sedimentation_disp(
     qc_incld, rho, inv_rho, cld_frac_l, acn, inv_dz, lookup_tables.dnu_table_vals, workspace_mgr,
@@ -372,6 +492,15 @@ Int Functions<Real,DefaultDevice>
     kdir, infrastructure.dt, inv_dt, qi, qi_incld, ni, ni_incld,
     qm, qm_incld, bm, bm_incld, qi_sed, ntend_ignore,
     lookup_tables.ice_table_vals, diagnostic_outputs.precip_ice_surf, nucleationPossible, hydrometeorsPresent, runtime_options);
+
+  if (sed_hook.active()) {
+    run_sedimentation_hook<Functions<Real,DefaultDevice>>(sed_hook, sed_vars, history_only, diagnostic_outputs, rho, dz,
+        {{"qv", qv}, {"th_atm", th}, {"T_atm", T_atm}, {"inv_exner", inv_exner}, {"pres", pres},
+         {"dpres", dpres}, {"dz", dz}, {"rho", rho}, {"inv_rho", inv_rho}, {"cld_frac_l", cld_frac_l},
+         {"cld_frac_r", cld_frac_r}, {"cld_frac_i", cld_frac_i}, {"inv_qc_relvar", inv_qc_relvar},
+         {"rhofacr", rhofacr}, {"rhofaci", rhofaci}, {"acn", acn}},
+        infrastructure.dt, nj, nk);
+  }
 
   // homogeneous freezing f cloud and rain
   if(do_ice_production) {

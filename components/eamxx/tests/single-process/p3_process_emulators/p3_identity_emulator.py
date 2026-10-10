@@ -1,4 +1,5 @@
-"""Python-backend test emulator: returns its inputs, which are P3 process rates.
+"""Python-backend test emulator: returns its inputs, which are P3 process rates
+(or sedimentation tendencies, or surface precipitation).
 
 Run on all the rates (or any subset), P3 must give the same answers as without it.
 """

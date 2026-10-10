@@ -18,11 +18,15 @@ set (ICE_RATES  "qi2qv_sublim_tend, qv2qi_vapdep_tend, qc2qi_collect_tend, nc_co
 set (ALL_RATES  "${WARM_RATES}, qr2qv_evap_tend, nr_evap_tend, ${ICE_RATES}, nr_ice_shed_tend, qc2qi_hetero_freeze_tend, qc2qr_ice_shed_tend, qi2qr_melt_tend, qr2qi_immers_freeze_tend, qv2qi_nucleat_tend, ni2nr_melt_tend, ncshdc, nc2ni_immers_freeze_tend, ni_nucleat_tend, nr2ni_immers_freeze_tend, ni_sublim_tend, ncheti_cnt, qcheti_cnt, nicnt, qicnt, ninuc_cnt, qinuc_cnt, rho_qm_cloud, wetgrowth")
 set (ICE_MODEL ${CMAKE_CURRENT_BINARY_DIR}/ice_identity.pt)
 
-# Creates test p3_process_emulators_${CASE}, running the emulators in ${EMULATORS}
+set (SED_TENDS "qc_sed_tend, nc_sed_tend, qr_sed_tend, nr_sed_tend, qi_sed_tend, ni_sed_tend, qm_sed_tend, bm_sed_tend")
+
+# Creates test p3_process_emulators_${CASE}, running the process emulators in ${EMULATORS},
+# and the sedimentation emulators in the optional third argument
 macro (CreateCase CASE EMULATORS)
   # Macro arguments are not variables: make them visible to configure_file
   set (CASE ${CASE})
   set (EMULATORS ${EMULATORS})
+  set (SED_EMULATORS "${ARGN}")
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/input.yaml ${CMAKE_CURRENT_BINARY_DIR}/input_${CASE}.yaml)
   configure_file(${CMAKE_CURRENT_SOURCE_DIR}/output.yaml ${CMAKE_CURRENT_BINARY_DIR}/output_${CASE}.yaml)
   CreateUnitTestFromExec(p3_process_emulators_${CASE} p3_process_emulators
@@ -31,13 +35,18 @@ macro (CreateCase CASE EMULATORS)
     FIXTURES_SETUP p3_process_emulators_${CASE})
 endmacro()
 
-# Compares the output of test p3_process_emulators_${CASE} with the stock one
+# Compares the output of test p3_process_emulators_${CASE} with the stock one,
+# within the optional tolerance TOL (default 0)
 macro (CompareWithStock CASE)
+  set (TOL 0)
+  if (${ARGC} GREATER 1)
+    set (TOL ${ARGV1})
+  endif()
   set (SRC_FILE p3_process_emulators_stock.INSTANT.nsteps_x1.np1.${RUN_T0}.nc)
   set (TGT_FILE p3_process_emulators_${CASE}.INSTANT.nsteps_x1.np1.${RUN_T0}.nc)
   add_test (NAME p3_process_emulators_${CASE}_vs_stock
     COMMAND ${SCREAM_BASE_DIR}/scripts/compare-nc-files
-    -s ${SRC_FILE} -t ${TGT_FILE} --tol 0
+    -s ${SRC_FILE} -t ${TGT_FILE} --tol ${TOL}
     -c T_mid=T_mid qv=qv qc=qc qr=qr qi=qi qm=qm nc=nc nr=nr ni=ni bm=bm
        precip_liq_surf_mass=precip_liq_surf_mass precip_ice_surf_mass=precip_ice_surf_mass
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
@@ -53,6 +62,16 @@ if (EMULATOR_ENABLE_PYTHON)
   # All the rates, through the python backend
   CreateCase(all_rates "all_rates")
   CompareWithStock(all_rates)
+
+  # All the sedimentation tendencies and surface precipitation. Tendencies are
+  # re-applied to the state before sedimentation, x_before + (x - x_before)/dt*dt,
+  # which is not BFB, only to round-off
+  CreateCase(sedimentation "" "sed_all")
+  CompareWithStock(sedimentation 1e-12)
+
+  # The tendencies only: the surface precipitation is diagnosed from them
+  CreateCase(sedimentation_diagnosed "" "sed_tends")
+  CompareWithStock(sedimentation_diagnosed 1e-12)
 endif()
 
 if (EMULATOR_ENABLE_PYTHON AND EMULATOR_ENABLE_LIBTORCH)

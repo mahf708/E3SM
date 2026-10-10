@@ -2,6 +2,8 @@
 ---
 filename_prefix: p3_process_emulators_${CASE}
 averaging_type: instant
+# Full precision, so that comparisons see round-off differences
+floating_point_precision: real
 field_names:
   - T_mid
   - qv

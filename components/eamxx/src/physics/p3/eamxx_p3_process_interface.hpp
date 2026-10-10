@@ -444,12 +444,13 @@ protected:
   void run_impl        (const double dt);
   void finalize_impl   ();
 
-  // Emulators of process rates (see eamxx_p3_process_emulators.cpp)
-  std::vector<std::string> process_emulator_names () const;
+  // Emulators of process rates and of sedimentation (see eamxx_p3_process_emulators.cpp)
+  std::vector<std::string> emulator_names (const std::string& list) const;
   void check_process_emulators_support () const;
 #if defined(SCREAM_P3_SMALL_KERNELS) && defined(EAMXX_HAS_PROCESS_EMULATORS)
   void initialize_process_emulators ();
   void run_process_emulators (const P3F::P3ProcessState& s);
+  void run_sedimentation_emulators (const P3F::P3SedimentationState& s);
 #endif
 
   // Computes total number of bytes needed for local variables
@@ -475,12 +476,12 @@ protected:
   P3F::P3LookupTables      lookup_tables;
 #ifdef SCREAM_P3_SMALL_KERNELS
   P3F::P3Temporaries       temporaries;
-  // Inactive unless process emulators are used
-  P3F::P3ProcessRatesHook  m_process_rates_hook;
+  // Inactive unless emulators are used
+  P3F::P3Hooks             m_hooks;
 #endif
 #if defined(SCREAM_P3_SMALL_KERNELS) && defined(EAMXX_HAS_PROCESS_EMULATORS)
-  std::vector<std::shared_ptr<ProcessEmulator>> m_process_emulators;
-  P3F::view_3d<Pack> m_original_process_rates;
+  std::vector<std::shared_ptr<ProcessEmulator>> m_process_emulators, m_sedimentation_emulators;
+  P3F::view_3d<Pack> m_original_process_rates, m_original_sedimentation_tendencies;
   bool m_limit_emulated_nc_selfcollect = false;
   bool m_limit_emulated_nr_selfcollect = false;
 #endif

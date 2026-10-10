@@ -395,6 +395,45 @@ template <typename ScalarT, typename DeviceT> struct Functions {
 
     bool active () const { return static_cast<bool>(callback); }
   };
+
+  // What a sedimentation hook sees: the tendencies of P3's sedimentation, its
+  // surface precipitation rates, and the state before sedimentation. The hook
+  // may overwrite any of the tendencies and precipitation rates; it must not
+  // change the state.
+  struct P3SedimentationState {
+    // (P3SedimentationRates::Index, column, level pack) [unit/s]
+    view_3d<Pack> tendencies;
+    // Surface precipitation rates [m/s], per column
+    view_1d<Scalar> precip_liq_surf, precip_ice_surf;
+    // State before sedimentation, by name (qc, nc, qr, nr, qi, ni, qm, bm; and
+    // what sedimentation does not change: qv, th_atm, T_atm, rho, dz, ...)
+    std::map<std::string, view_2d<const Pack>> state;
+    Scalar dt;
+    Int ncol, nlev;
+  };
+
+  // A host callback run by p3_main after sedimentation, outside of any kernel.
+  // The tendencies selected by apply_mask (bit i for P3SedimentationRates
+  // index i) are then re-applied, x = max(x_before + tend*dt, 0), the others
+  // are left as sedimentation computed them (BFB). The surface precipitation
+  // can be diagnosed from the column-integrated tendencies of liquid (qc, qr)
+  // or ice (qi), for hooks that change the tendencies but not the precipitation.
+  // Only with small kernels.
+  struct P3SedimentationHook {
+    std::function<void(const P3SedimentationState&)> callback;
+    // Storage, (P3SedimentationRates::num_rates, ncol, nk_pack) each
+    view_3d<Pack> tendencies, before;
+    int apply_mask = 0;
+    bool diagnose_precip_liq = false, diagnose_precip_ice = false;
+
+    bool active () const { return static_cast<bool>(callback); }
+  };
+
+  // All the host hooks of p3_main; inactive ones cost nothing
+  struct P3Hooks {
+    P3ProcessRatesHook  process_rates;
+    P3SedimentationHook sedimentation;
+  };
 #endif
 
   // -- Table3 --
@@ -1191,7 +1230,7 @@ template <typename ScalarT, typename DeviceT> struct Functions {
                      const P3LookupTables &lookup_tables,
 #ifdef SCREAM_P3_SMALL_KERNELS
                      const P3Temporaries &temporaries,
-                     const P3ProcessRatesHook &process_rates_hook, // may be inactive
+                     const P3Hooks &hooks, // may be inactive
 #endif
                      const WorkspaceManager &workspace_mgr,
                      Int nj,  // number of columns
@@ -1213,7 +1252,7 @@ template <typename ScalarT, typename DeviceT> struct Functions {
                         const P3DiagnosticOutputs &diagnostic_outputs,
                         const P3Infrastructure &infrastructure, const P3HistoryOnly &history_only,
                         const P3LookupTables &lookup_tables, const P3Temporaries &temporaries,
-                        const P3ProcessRatesHook &process_rates_hook,
+                        const P3Hooks &hooks,
                         const WorkspaceManager &workspace_mgr,
                         Int nj,  // number of columns
                         Int nk); // number of vertical cells per column

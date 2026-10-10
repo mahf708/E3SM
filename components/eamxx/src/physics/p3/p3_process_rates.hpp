@@ -86,6 +86,42 @@ struct P3ProcessRates {
   }
 };
 
+/*
+ * Named registry of what P3's sedimentation (cloud, rain, ice) does to the
+ * state: one tendency per sedimenting quantity [unit/s], and the surface
+ * precipitation rates (precip_liq_surf, precip_ice_surf [m/s], per column).
+ *
+ * With a sedimentation hook, p3_main saves the state before sedimentation,
+ * runs it, stores these tendencies, runs the hook (outside of any kernel),
+ * then re-applies the tendencies the hook may have changed:
+ *   x = x_before + x_sed_tend*dt
+ * so that tendencies the hook does not change stay BFB.
+ */
+#define P3_SEDIMENTATION_RATES(X) \
+  X(qc_sed_tend) X(nc_sed_tend) X(qr_sed_tend) X(nr_sed_tend) \
+  X(qi_sed_tend) X(ni_sed_tend) X(qm_sed_tend) X(bm_sed_tend)
+
+struct P3SedimentationRates {
+#define P3_SR_ENUM(name) name,
+  enum Index : int { P3_SEDIMENTATION_RATES(P3_SR_ENUM) num_rates };
+#undef P3_SR_ENUM
+
+  static const char* name (const int i) {
+#define P3_SR_NAME(name) #name,
+    static const char* names[] = { P3_SEDIMENTATION_RATES(P3_SR_NAME) };
+#undef P3_SR_NAME
+    return i>=0 && i<num_rates ? names[i] : "";
+  }
+
+  // Index of a tendency from its name, or -1 if there is none
+  static int index (const std::string& n) {
+    for (int i=0; i<num_rates; ++i) {
+      if (n==name(i)) return i;
+    }
+    return -1;
+  }
+};
+
 // How p3_main_part2 runs: in one go (default), or in two steps, compute
 // (Rates: fill the P3ProcessRates storage) then apply (Apply: read it).
 enum class P3Part2Mode { Fused, Rates, Apply };

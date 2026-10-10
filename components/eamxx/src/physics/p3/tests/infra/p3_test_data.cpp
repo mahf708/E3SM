@@ -1290,7 +1290,7 @@ Int p3_main_host_impl(
   Real* qv2qi_depos_tend, Real* precip_liq_flux, Real* precip_ice_flux, Real* cld_frac_r, Real* cld_frac_l, Real* cld_frac_i,
   Real* liq_ice_exchange, Real* vap_liq_exchange, Real* vap_ice_exchange, Real* qv_prev, Real* t_prev
 #ifdef SCREAM_P3_SMALL_KERNELS
-  , const Functions<Real,DefaultDevice>::P3ProcessRatesHook& process_rates_hook
+  , const Functions<Real,DefaultDevice>::P3Hooks& hooks
 #endif
   )
 {
@@ -1516,7 +1516,7 @@ Int p3_main_host_impl(
   auto elapsed_microsec = P3F::p3_main(runtime_options, prog_state, diag_inputs, diag_outputs, infrastructure,
                                        history_only, lookup_tables,
 #ifdef SCREAM_P3_SMALL_KERNELS
-                                       temporaries, process_rates_hook,
+                                       temporaries, hooks,
 #endif
                                        workspace_mgr, nj, nk);
 
@@ -1570,7 +1570,7 @@ Int p3_main_host(
     precip_ice_flux, cld_frac_r, cld_frac_l, cld_frac_i, liq_ice_exchange, vap_liq_exchange,
     vap_ice_exchange, qv_prev, t_prev
 #ifdef SCREAM_P3_SMALL_KERNELS
-    , Functions<Real,DefaultDevice>::P3ProcessRatesHook()
+    , Functions<Real,DefaultDevice>::P3Hooks()
 #endif
     );
 }
@@ -1584,7 +1584,7 @@ Int p3_main_host_hook(
   Real* diag_eff_radius_qi, Real* diag_eff_radius_qr, Real* rho_qi, bool do_predict_nc, bool do_prescribed_CCN, bool use_hetfrz_classnuc, Real* dpres, Real* inv_exner,
   Real* qv2qi_depos_tend, Real* precip_liq_flux, Real* precip_ice_flux, Real* cld_frac_r, Real* cld_frac_l, Real* cld_frac_i,
   Real* liq_ice_exchange, Real* vap_liq_exchange, Real* vap_ice_exchange, Real* qv_prev, Real* t_prev,
-  const Functions<Real,DefaultDevice>::P3ProcessRatesHook& process_rates_hook)
+  const Functions<Real,DefaultDevice>::P3Hooks& hooks)
 {
   return p3_main_host_impl(
     qc, nc, qr, nr, th_atm, qv, dt, qi, qm, ni, bm, pres, dz, nc_nuceat_tend, nccn_prescribed,
@@ -1592,7 +1592,7 @@ Int p3_main_host_hook(
     diag_eff_radius_qc, diag_eff_radius_qi, diag_eff_radius_qr, rho_qi, do_predict_nc,
     do_prescribed_CCN, use_hetfrz_classnuc, dpres, inv_exner, qv2qi_depos_tend, precip_liq_flux,
     precip_ice_flux, cld_frac_r, cld_frac_l, cld_frac_i, liq_ice_exchange, vap_liq_exchange,
-    vap_ice_exchange, qv_prev, t_prev, process_rates_hook);
+    vap_ice_exchange, qv_prev, t_prev, hooks);
 }
 #endif
 

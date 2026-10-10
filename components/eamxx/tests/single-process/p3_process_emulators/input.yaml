@@ -22,6 +22,12 @@ eamxx:
                 options: {python_module: p3_identity_emulator, python_path: ${CMAKE_CURRENT_SOURCE_DIR}}}
     ice: {backend: libtorch, model_path: ${ICE_MODEL}, inputs: [${ICE_RATES}], outputs: [${ICE_RATES}],
           options: {dtype: float64}}
+    sedimentation_emulators: [${SED_EMULATORS}]
+    sed_all: {backend: python, inputs: [${SED_TENDS}, precip_liq_surf, precip_ice_surf],
+              outputs: [${SED_TENDS}, precip_liq_surf, precip_ice_surf],
+              options: {python_module: p3_identity_emulator, python_path: ${CMAKE_CURRENT_SOURCE_DIR}}}
+    sed_tends: {backend: python, inputs: [${SED_TENDS}], outputs: [${SED_TENDS}],
+                options: {python_module: p3_identity_emulator, python_path: ${CMAKE_CURRENT_SOURCE_DIR}}}
 
 grids_manager:
   type: mesh_free

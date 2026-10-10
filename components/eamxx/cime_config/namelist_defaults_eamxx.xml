@@ -250,6 +250,8 @@ be lost if SCREAM_HACK_XML is not enabled.
       <extra_p3_diags type="logical" doc="Extra P3 diagnostics">false</extra_p3_diags>
       <process_emulators type="array(string)" doc="Emulators of P3 process rates, run in this order (each needs its own sublist, see src/physics/p3/emulators/README.md). Requires SCREAM_P3_SMALL_KERNELS and EAMXX_ENABLE_PROCESS_EMULATORS"/>
       <process_emulators_limit_self_collection type="logical" doc="Limit emulated nc/nr self-collection rates so that they cannot remove more number than there is in one step">true</process_emulators_limit_self_collection>
+      <sedimentation_emulators type="array(string)" doc="Emulators of P3 sedimentation tendencies and surface precipitation, run in this order (each needs its own sublist, see src/physics/p3/emulators/README.md). Requires SCREAM_P3_SMALL_KERNELS and EAMXX_ENABLE_PROCESS_EMULATORS"/>
+      <sedimentation_emulators_diagnose_precip type="logical" doc="Diagnose the surface precipitation from emulated sedimentation tendencies, when the emulators do not output it">true</sedimentation_emulators_diagnose_precip>
     </p3>
 
     <!-- SHOC macrophysics -->

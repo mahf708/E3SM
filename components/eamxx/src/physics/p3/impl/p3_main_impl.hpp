@@ -370,7 +370,7 @@ Int Functions<S,D>
   const P3LookupTables& lookup_tables,
 #ifdef SCREAM_P3_SMALL_KERNELS
   const P3Temporaries& temporaries,
-  const P3ProcessRatesHook& process_rates_hook,
+  const P3Hooks& hooks,
 #endif
   const WorkspaceManager& workspace_mgr,
   Int nj,
@@ -385,7 +385,7 @@ Int Functions<S,D>
                                history_only,
                                lookup_tables,
                                temporaries,
-                               process_rates_hook,
+                               hooks,
                                workspace_mgr,
                                nj, nk);
 #else
