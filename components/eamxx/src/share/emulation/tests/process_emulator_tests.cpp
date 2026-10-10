@@ -186,6 +186,37 @@ TEST_CASE ("process_emulator") {
     }
   }
 
+  SECTION ("an output the model does not write") {
+    // The model writes a = 1 and skips b. In replace mode, b keeps its value,
+    // whether it is passed in place (no alias) or through a buffer (b is also an input)
+    for (const bool b_is_input : {false, true}) {
+      ekat::ParameterList pl("emu");
+      pl.set<std::vector<std::string>>("inputs", b_is_input ? std::vector<std::string>{"x", "b"}
+                                                            : std::vector<std::string>{"x"});
+      pl.set<std::vector<std::string>>("outputs", {"a", "b"});
+      auto backend = std::make_shared<FunctionBackend>([&](const TensorMap&, TensorMap& out) {
+        auto& a = find(out, "a");
+        for (int i=0; i<ncol; ++i)
+          for (int k=0; k<nlev; ++k)
+            set(a, i, k, 1);
+      });
+      PE emu("emu", pl, backend);
+      PE::arrays_t ins = inputs;
+      ins["b"] = PE::array(rates, 1, nlev);
+      reset();
+      emu.run(ins, targets);
+      if (on_host and is_double) {
+        REQUIRE (emu.num_buffered() == (b_is_input ? 1 : 0));
+      }
+      for (int i=0; i<ncol; ++i) {
+        for (int k=0; k<nlev; ++k) {
+          REQUIRE (rate(i,0,k) == 1);
+          REQUIRE (rate(i,1,k) == 200);
+        }
+      }
+    }
+  }
+
   SECTION ("tensors") {
     // Inputs are named, in the configured order, read-only, (ncol, nlev)
     ekat::ParameterList pl("emu");

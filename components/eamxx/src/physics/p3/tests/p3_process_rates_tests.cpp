@@ -8,6 +8,7 @@
 #include "share/core/eamxx_types.hpp"
 
 #include <set>
+#include <vector>
 #include <string>
 
 namespace scream {
@@ -139,6 +140,56 @@ struct UnitWrap::UnitTest<D>::TestP3ProcessRates : public UnitWrap::UnitTest<D>:
     REQUIRE (qr_max_ref > 0);
   }
 
+  // In columns where nothing happens, part2 skips its work: the stored rates
+  // must be zero, not what the storage held before
+  void run_quiet_columns ()
+  {
+    using P3F   = Functions;
+    using PR    = P3ProcessRates;
+    using Hook  = typename P3F::P3ProcessRatesHook;
+    using Hooks = typename P3F::P3Hooks;
+
+    auto engine = Base::get_engine();
+
+    // Warm, dry columns with no hydrometeors: no nucleation, nothing to do
+    //           its, ite, kts, kte, it,  dt, do_predict_nc, do_prescribed_CCN
+    P3MainData d(1,   4,   1,  20,  1, 300, true,          false);
+    d.randomize(engine, {
+        {d.pres, {8.0e+04, 1.0e+05}}, {d.dz, {1.0e+02, 3.0e+02}}, {d.dpres, {1.0e+03, 1.5e+03}},
+        {d.nc_nuceat_tend, {0, 0}}, {d.nccn_prescribed, {0, 0}}, {d.ni_activated, {0, 0}},
+        {d.inv_exner, {1, 1}}, {d.cld_frac_i, {1, 1}}, {d.cld_frac_l, {1, 1}}, {d.cld_frac_r, {1, 1}},
+        {d.inv_qc_relvar, {1, 1}},
+        {d.qc, {0, 0}}, {d.nc, {0, 0}}, {d.qr, {0, 0}}, {d.nr, {0, 0}},
+        {d.qi, {0, 0}}, {d.qm, {0, 0}}, {d.ni, {0, 0}}, {d.bm, {0, 0}},
+        {d.qv, {1.0e-4, 2.0e-4}}, {d.qv_prev, {1.0e-4, 2.0e-4}},
+        {d.th_atm, {2.9e+02, 3.0e+02}}, {d.t_prev, {2.9e+02, 3.0e+02}}
+    });
+
+    const Int ncol = d.ite - d.its + 1, nk = d.kte - d.kts + 1;
+    Hook hook;
+    hook.process_rates = typename P3F::template view_3d<Pack>("process_rates", ncol, PR::num_rates, ekat::npack<Pack>(nk));
+    Kokkos::deep_copy(hook.process_rates, Pack(7)); // last step's leftovers
+    int num_calls = 0;
+    hook.callback = [&](const typename P3F::P3ProcessState& s) {
+      ++num_calls;
+      auto r = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.process_rates);
+      for (int i = 0; i < ncol; ++i)
+        for (int n = 0; n < PR::num_rates; ++n)
+          for (int k = 0; k < nk; ++k)
+            REQUIRE (r(i, n, k / Pack::n)[k % Pack::n] == 0);
+    };
+    Hooks hooks;
+    hooks.process_rates = hook;
+    p3_main_host_hook(
+      d.qc, d.nc, d.qr, d.nr, d.th_atm, d.qv, d.dt, d.qi, d.qm, d.ni,
+      d.bm, d.pres, d.dz, d.nc_nuceat_tend, d.nccn_prescribed, d.ni_activated, d.inv_qc_relvar, d.it, d.precip_liq_surf,
+      d.precip_ice_surf, d.its, d.ite, d.kts, d.kte, d.diag_eff_radius_qc, d.diag_eff_radius_qi, d.diag_eff_radius_qr,
+      d.rho_qi, d.do_predict_nc, d.do_prescribed_CCN, d.use_hetfrz_classnuc, d.dpres, d.inv_exner, d.qv2qi_depos_tend,
+      d.precip_liq_flux, d.precip_ice_flux, d.cld_frac_r, d.cld_frac_l, d.cld_frac_i,
+      d.liq_ice_exchange, d.vap_liq_exchange, d.vap_ice_exchange, d.qv_prev, d.t_prev, hooks);
+    REQUIRE (num_calls == 1);
+  }
+
   // With a sedimentation hook, sedimentation tendencies can be changed by name
   void run_sedimentation_hook ()
   {
@@ -237,6 +288,36 @@ struct UnitWrap::UnitTest<D>::TestP3ProcessRates : public UnitWrap::UnitTest<D>:
     run(d_zero, zero);
     REQUIRE (num_calls == 3);
 
+    // Tendencies that remove more than there is: the state is clipped at zero,
+    // and the diagnosed precip is what actually left the column
+    P3MainData d_wipe(d_ref);
+    std::vector<Real> expected_liq(ncol, 0);
+    auto wipe = hook();
+    wipe.apply_mask = (1<<SR::qc_sed_tend) | (1<<SR::qr_sed_tend);
+    wipe.diagnose_precip_liq = true;
+    wipe.callback = [&](const typename P3F::P3SedimentationState& s) {
+      ++num_calls;
+      constexpr Real rho_h2o = 1000;
+      auto qc  = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.state.at("qc"));
+      auto qr  = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.state.at("qr"));
+      auto rho = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.state.at("rho"));
+      auto dz  = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.state.at("dz"));
+      for (int i = 0; i < ncol; ++i) {
+        for (int k = 0; k < nk; ++k) {
+          const int p = k / Pack::n, l = k % Pack::n;
+          expected_liq[i] += (qc(i,p)[l] + qr(i,p)[l]) * rho(i,p)[l] * dz(i,p)[l] / (rho_h2o * s.dt);
+        }
+      }
+      for (const int r : {int(SR::qc_sed_tend), int(SR::qr_sed_tend)}) {
+        Kokkos::deep_copy(Kokkos::subview(s.tendencies, r, Kokkos::ALL, Kokkos::ALL), Pack(-1.0e3));
+      }
+    };
+    run(d_wipe, wipe);
+    REQUIRE (num_calls == 4);
+    for (Int i = 0; i < ncol; ++i) {
+      REQUIRE (d_wipe.precip_liq_surf[i] == Approx(expected_liq[i]).epsilon(1e-10));
+    }
+
     const auto tot = d_ref.total(d_ref.qc);
     for (Int t = 0; t < tot; ++t) {
       REQUIRE(d_noop.qc[t] == d_ref.qc[t]);
@@ -285,6 +366,13 @@ TEST_CASE("p3_process_rates_hook", "[p3_functions]")
   using T = scream::p3::unit_test::UnitWrap::UnitTest<scream::DefaultDevice>::TestP3ProcessRates;
 
   T t; t.run_hook();
+}
+
+TEST_CASE("p3_process_rates_quiet_columns", "[p3_functions]")
+{
+  using T = scream::p3::unit_test::UnitWrap::UnitTest<scream::DefaultDevice>::TestP3ProcessRates;
+
+  T t; t.run_quiet_columns();
 }
 
 TEST_CASE("p3_sedimentation_hook", "[p3_functions]")

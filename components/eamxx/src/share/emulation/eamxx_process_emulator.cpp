@@ -100,6 +100,27 @@ bool overlap (const std::pair<const Real*, const Real*>& a, const std::pair<cons
   return a.first < b.second && b.first < a.second;
 }
 
+// Whether two arrays share an element. Exact for arrays whose rows are
+// contiguous and equally strided (slices of one packed view, fields of a
+// group); otherwise, whether their memory ranges overlap.
+bool overlap (const ProcessEmulator::Array& a, const ProcessEmulator::Array& b) {
+  if (not overlap(range_of(a), range_of(b))) return false;
+  const auto& va = a.view;
+  const auto& vb = b.view;
+  const auto s0 = static_cast<std::ptrdiff_t>(va.stride(0));
+  const bool rows = va.extent(0)>1 and vb.extent(0)>1 and s0==static_cast<std::ptrdiff_t>(vb.stride(0)) and
+                    (va.extent(1)<=1 or va.stride(1)==1) and (vb.extent(1)<=1 or vb.stride(1)==1) and
+                    static_cast<std::ptrdiff_t>(va.extent(1))<=s0 and static_cast<std::ptrdiff_t>(vb.extent(1))<=s0;
+  if (not rows) return true;
+  // Rows of a: [i*s0, i*s0+na); rows of b: [d + j*s0, d + j*s0 + nb). With the
+  // memory ranges overlapping, they share an element if b's rows start within
+  // a row of a, or a's rows start within a row of b.
+  const std::ptrdiff_t d  = vb.data() - va.data();
+  const std::ptrdiff_t na = va.extent(1), nb = vb.extent(1);
+  const std::ptrdiff_t r  = ((d % s0) + s0) % s0;
+  return r < na or s0 - r < nb;
+}
+
 } // anonymous namespace
 
 ProcessEmulator::backend_ptr
@@ -254,7 +275,7 @@ void ProcessEmulator::run (const arrays_t& inputs, const arrays_t& targets)
 
   // 1. Inputs
   TensorMap ins;
-  std::vector<std::pair<const Real*, const Real*>> in_place_ranges;
+  std::vector<const Array*> in_place_arrays;
   for (const auto& n : m_input_names) {
     auto it = inputs.find(n);
     EKAT_REQUIRE_MSG (it!=inputs.end(), prefix + "input '" + n + "' is not available.\n"
@@ -263,7 +284,7 @@ void ProcessEmulator::run (const arrays_t& inputs, const arrays_t& targets)
     if (in_place) {
       ins.wrap(n, static_cast<const double*>(static_cast<const void*>(a.view.data())),
                dims_of(a), strides_of(a), memory);
-      in_place_ranges.push_back(range_of(a));
+      in_place_arrays.push_back(&a);
       ++m_num_in_place;
     } else {
       const int n0 = a.view.extent(0), n1 = a.view.extent(1);
@@ -313,7 +334,7 @@ void ProcessEmulator::run (const arrays_t& inputs, const arrays_t& targets)
 
     bool aliased = false;
     if (t!=nullptr) {
-      for (const auto& r : in_place_ranges) aliased |= overlap(r, range_of(*t));
+      for (const auto* a : in_place_arrays) aliased |= overlap(*a, *t);
     }
     direct[o] = in_place and t!=nullptr and m_outputs[o].mask<0 and not m_add and not aliased;
     if (direct[o]) {
@@ -322,10 +343,22 @@ void ProcessEmulator::run (const arrays_t& inputs, const arrays_t& targets)
       ++m_num_in_place;
     } else {
       auto& b = buffer(m_out_buffers, n, out_dims[o].first, out_dims[o].second);
-      Kokkos::deep_copy(b.dev, 0);
+      if (t!=nullptr and not m_add) {
+        // Replace mode: start from the target, so that what the model does not
+        // write keeps its value, as it does when the target is passed in place
+        const auto src = t->view;
+        const auto dst = b.dev;
+        Kokkos::parallel_for("emu_seed", policy_t({0,0},{out_dims[o].first, out_dims[o].second}),
+                             KOKKOS_LAMBDA (const int i, const int k) {
+          dst(i,k) = src(i,k);
+        });
+      } else {
+        // Masks start off, and add mode adds what the model writes
+        Kokkos::deep_copy(b.dev, 0);
+      }
       double* data = b.dev.data();
       if (not buffers_on_device) {
-        Kokkos::deep_copy(b.host, 0);
+        Kokkos::deep_copy(b.host, b.dev);
         data = b.host.data();
       }
       outs.wrap(n, data, dims_of(*shape), {}, buf_memory);

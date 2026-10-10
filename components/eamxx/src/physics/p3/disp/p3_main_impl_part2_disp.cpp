@@ -123,13 +123,22 @@ void Functions<Real,DefaultDevice>
     policy, KOKKOS_LAMBDA(const MemberType& team) {
 
     const Int i = team.league_rank();
-    if (!(nucleationPossible(i) || hydrometeorsPresent(i))) {
-      return;
-    }
 
     // Storage for the process rates, if part2 runs in two steps
     const auto oprocess_rates = mode == P3Part2Mode::Fused ?
       uview_2d<Pack>() : ekat::subview(process_rates, i);
+
+    if (!(nucleationPossible(i) || hydrometeorsPresent(i))) {
+      // Nothing happens in this column: its rates are zero, not last step's
+      if (mode == P3Part2Mode::Rates) {
+        const int npk = oprocess_rates.extent_int(1);
+        Kokkos::parallel_for(Kokkos::TeamVectorRange(team, oprocess_rates.extent_int(0)*npk),
+                             [&] (const int n) {
+          oprocess_rates(n / npk, n % npk) = 0;
+        });
+      }
+      return;
+    }
 
     // ------------------------------------------------------------------------------------------
     // main k-loop (for processes):

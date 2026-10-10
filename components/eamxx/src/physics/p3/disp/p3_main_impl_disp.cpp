@@ -168,6 +168,8 @@ void p3_run_sedimentation_hook (
       for (int r=0; r<SR::num_rates; ++r) {
         if (mask & (1<<r)) {
           vars[r](i,k) = max(before(r,i,k) + tend(r,i,k)*dt, Scalar(0));
+          // The tendency actually applied, after the clip, for history and precip
+          tend(r,i,k) = (vars[r](i,k) - before(r,i,k)) * inv_dt;
         }
       }
       if (history) {

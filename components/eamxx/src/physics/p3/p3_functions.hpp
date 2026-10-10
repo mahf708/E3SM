@@ -415,7 +415,8 @@ template <typename ScalarT, typename DeviceT> struct Functions {
   // A host callback run by p3_main after sedimentation, outside of any kernel.
   // The tendencies selected by apply_mask (bit i for P3SedimentationRates
   // index i) are then re-applied, x = max(x_before + tend*dt, 0), the others
-  // are left as sedimentation computed them (BFB). The surface precipitation
+  // are left as sedimentation computed them (BFB); after the clip, tend is the
+  // tendency actually applied, (x - x_before)/dt. The surface precipitation
   // can be diagnosed from the column-integrated tendencies of liquid (qc, qr)
   // or ice (qi), for hooks that change the tendencies but not the precipitation.
   // Only with small kernels.
