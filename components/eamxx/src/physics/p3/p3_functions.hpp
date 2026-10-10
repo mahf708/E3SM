@@ -140,6 +140,10 @@ template <typename ScalarT, typename DeviceT> struct Functions {
     bool use_hetfrz_classnuc                    = false;
     bool use_separate_ice_liq_frac              = false;
     bool extra_p3_diags                         = false;
+    // Computations of part2 to skip (bit P3RateProducers::Index), because a
+    // process-rates hook replaces the rates they produce. Set by p3_main from
+    // P3ProcessRatesHook::skip_producers, used only when part2 computes rates.
+    unsigned skip_rate_producers                = 0;
 
     void
     load_runtime_options_from_file(ekat::ParameterList &params)
@@ -393,6 +397,10 @@ template <typename ScalarT, typename DeviceT> struct Functions {
     std::function<void(const P3ProcessState&)> callback;
     // Storage for the rates, (ncol, P3ProcessRates::num_rates, nk_pack)
     view_3d<Pack> process_rates;
+    // Computations part2 does not run (bit P3RateProducers::Index), because the
+    // hook replaces what they produce (see P3RateProducers::skippable). Their
+    // rates reach the hook as zero.
+    unsigned skip_producers = 0;
 
     bool active () const { return static_cast<bool>(callback); }
   };

@@ -73,6 +73,13 @@ if (EMULATOR_ENABLE_PYTHON)
   CreateCase(sedimentation_diagnosed "" "sed_tends")
   CompareWithStock(sedimentation_diagnosed 1e-12)
 
+  # Warm-rain processes replaced (not computed by P3) by an emulator of zero rates
+  CreateCase(warm_replaced "warm_off")
+
+  # A replaced rate cannot be an input: P3 does not compute it
+  CreateCase(warm_reads_itself "warm_reads_itself")
+  set_tests_properties(p3_process_emulators_warm_reads_itself PROPERTIES WILL_FAIL TRUE)
+
   # Rain sedimentation replaced (not run) by an emulator of zero tendencies:
   # no rain reaches the surface
   CreateCase(sedimentation_no_rain "" "rain_off")

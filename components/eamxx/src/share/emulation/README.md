@@ -56,15 +56,15 @@ an identity model, but it saves no time.
 
 With `physics: skip`, an emulator **replaces**: the physics that computes its
 targets is not run at all. Each cut point decides what it can skip, and refuses
-at init what it cannot (reading a replaced target as an input, masks, `mode:
-add`, part of a computation that produces several targets):
+at init what it cannot (masks, `mode: add`, and, in P3, reading a replaced
+target as an input, or replacing part of a species' sedimentation):
 
 | cut point | what `physics: skip` skips |
 |---|---|
 | whole process | the process itself, with `field_emulators_mode: replace` |
 | P3 sedimentation | the sedimentation of each species whose tendencies are all replaced: cloud (`qc`, `nc`), rain (`qr`, `nr`), ice (`qi`, `ni`, `qm`, `bm`) |
-| P3 process rates | not supported yet |
-| SHOC eddy diffusivities | not supported yet |
+| P3 process rates | each part2 computation whose rates are all replaced and that nothing still running needs (`P3RateProducers` in `p3_process_rates.hpp`); the log says which ones, and which replaced rates P3 still computes |
+| SHOC eddy diffusivities | `shoc_tke`, when `tk`, `tkh`, `tke` and `isotropy` are all replaced; they reach the emulators as they were before `shoc_tke` |
 
 ## No copies
 

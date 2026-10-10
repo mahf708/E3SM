@@ -505,18 +505,20 @@ void Functions<S,D>::shoc_main_internal(
                      workspace_mgr,         // Workspace mgr
                      brunt,shoc_mix);       // Output
 
-    shoc_tke_disp(shcol,nlev,nlevi,dtime,               // Input
-	          lambda_low,lambda_high,lambda_slope,  // Runtime options
-		  lambda_thresh,Ckh,Ckm,shoc_1p5tke,    // Runtime options
-                  do_3d_turb,                           // Runtime options
-                  wthv_sec,shear_strain3d_components,   // Input
-                  shear_strain3d,                       // Input/Output
-                  shoc_mix,dz_zi,dz_zt,pres,shoc_tabs,  // Input
-                  u_wind,v_wind,w_field,brunt,zt_grid,  // Input
-                  zi_grid,pblh,                         // Input
-                  workspace_mgr,                        // Workspace mgr
-                  tke,tk,tkh,                           // Input/Output
-                  isotropy);                            // Output
+    if (not (hooks.eddy_diffusivities and hooks.skip_tke)) {
+      shoc_tke_disp(shcol,nlev,nlevi,dtime,               // Input
+  	          lambda_low,lambda_high,lambda_slope,  // Runtime options
+  		  lambda_thresh,Ckh,Ckm,shoc_1p5tke,    // Runtime options
+                    do_3d_turb,                           // Runtime options
+                    wthv_sec,shear_strain3d_components,   // Input
+                    shear_strain3d,                       // Input/Output
+                    shoc_mix,dz_zi,dz_zt,pres,shoc_tabs,  // Input
+                    u_wind,v_wind,w_field,brunt,zt_grid,  // Input
+                    zi_grid,pblh,                         // Input
+                    workspace_mgr,                        // Workspace mgr
+                    tke,tk,tkh,                           // Input/Output
+                    isotropy);
+    }                            // Output
 
     if (hooks.eddy_diffusivities) {
       Kokkos::fence();

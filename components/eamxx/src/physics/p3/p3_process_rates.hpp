@@ -2,6 +2,7 @@
 #define P3_PROCESS_RATES_HPP
 
 #include <string>
+#include <vector>
 
 namespace scream {
 namespace p3 {
@@ -119,6 +120,116 @@ struct P3SedimentationRates {
       if (n==name(i)) return i;
     }
     return -1;
+  }
+};
+
+/*
+ * The computations of p3_main_part2 that produce the process rates, with what
+ * each one writes and reads among the rates, and which other computations use
+ * its local results. Emulators that replace (physics: skip) rates let part2
+ * skip a computation when everything it writes is replaced, and nothing that
+ * still runs reads it (see skippable).
+ *
+ * To add a computation: add it to the list, and to writes/reads/feeds; wrap
+ * its call in part2 with P3_RUN_PRODUCER.
+ */
+#define P3_RATE_PRODUCERS(X) \
+  X(ice_cldliq_collection) X(ice_rain_collection) X(ice_self_collection) X(ice_melting) \
+  X(ice_cldliq_wet_growth) X(ice_relaxation_timescale) X(rime_density) \
+  X(ice_classical_nucleation) X(cldliq_immersion_freezing) X(rain_immersion_freezing) \
+  X(rain_evaporation) X(ice_deposition_sublimation) X(ice_nucleation) \
+  X(cloud_water_autoconversion) X(droplet_self_collection) X(cloud_rain_accretion) \
+  X(rain_self_collection)
+
+struct P3RateProducers {
+#define P3_RP_ENUM(name) name,
+  enum Index : int { P3_RATE_PRODUCERS(P3_RP_ENUM) num_producers };
+#undef P3_RP_ENUM
+  static_assert(num_producers <= 32, "The producer mask is 32 bits.");
+
+  static const char* name (const int i) {
+#define P3_RP_NAME(name) #name,
+    static const char* names[] = { P3_RATE_PRODUCERS(P3_RP_NAME) };
+#undef P3_RP_NAME
+    return i>=0 && i<num_producers ? names[i] : "";
+  }
+
+  // The rates (P3ProcessRates::Index) a computation sets or changes
+  static std::vector<int> writes (const int p) {
+    using R = P3ProcessRates;
+    switch (p) {
+      case ice_cldliq_collection:      return {R::qc2qi_collect_tend, R::nc_collect_tend, R::qc2qr_ice_shed_tend, R::ncshdc};
+      case ice_rain_collection:        return {R::qr2qi_collect_tend, R::nr_collect_tend};
+      case ice_self_collection:        return {R::ni_selfcollect_tend};
+      case ice_melting:                return {R::qi2qr_melt_tend, R::ni2nr_melt_tend};
+      case ice_cldliq_wet_growth:      return {R::wetgrowth, R::qc2qi_collect_tend, R::qr2qi_collect_tend,
+                                               R::qc2qr_ice_shed_tend, R::nr_ice_shed_tend};
+      case ice_relaxation_timescale:   return {};
+      case rime_density:               return {R::rho_qm_cloud};
+      case ice_classical_nucleation:   return {R::ncheti_cnt, R::qcheti_cnt, R::nicnt, R::qicnt, R::ninuc_cnt, R::qinuc_cnt};
+      case cldliq_immersion_freezing:  return {R::qc2qi_hetero_freeze_tend, R::nc2ni_immers_freeze_tend};
+      case rain_immersion_freezing:    return {R::qr2qi_immers_freeze_tend, R::nr2ni_immers_freeze_tend};
+      case rain_evaporation:           return {R::qr2qv_evap_tend, R::nr_evap_tend};
+      case ice_deposition_sublimation: return {R::qv2qi_vapdep_tend, R::qi2qv_sublim_tend, R::ni_sublim_tend, R::qc2qi_berg_tend};
+      case ice_nucleation:             return {R::qv2qi_nucleat_tend, R::ni_nucleat_tend};
+      case cloud_water_autoconversion: return {R::qc2qr_autoconv_tend, R::nc2nr_autoconv_tend, R::ncautr};
+      case droplet_self_collection:    return {R::nc_selfcollect_tend};
+      case cloud_rain_accretion:       return {R::qc2qr_accret_tend, R::nc_accret_tend};
+      case rain_self_collection:       return {R::nr_selfcollect_tend};
+      default:                         return {};
+    }
+  }
+
+  // The rates a computation reads (or changes, which reads them too)
+  static std::vector<int> reads (const int p) {
+    using R = P3ProcessRates;
+    switch (p) {
+      case ice_cldliq_wet_growth:   return {R::qc2qi_collect_tend, R::qr2qi_collect_tend,
+                                            R::qc2qr_ice_shed_tend, R::nr_ice_shed_tend};
+      case rime_density:            return {R::qc2qi_collect_tend};
+      case droplet_self_collection: return {R::nc2nr_autoconv_tend};
+      default:                      return {};
+    }
+  }
+
+  // The computations that use a computation's local results (not rates)
+  static std::vector<int> feeds (const int p) {
+    switch (p) {
+      case ice_relaxation_timescale: return {rain_evaporation, ice_deposition_sublimation};
+      default:                       return {};
+    }
+  }
+
+  // Mask (bit p for producer p) of the computations part2 can skip when the
+  // rates in `replaced` (by P3ProcessRates::Index) are replaced
+  static unsigned skippable (const std::vector<bool>& replaced) {
+    std::vector<bool> skip(num_producers);
+    for (int p=0; p<num_producers; ++p) {
+      bool all = true;
+      for (int r : writes(p)) all = all && replaced[r];
+      skip[p] = all;
+    }
+    // A computation runs if something that runs needs what it writes
+    for (bool changed=true; changed; ) {
+      changed = false;
+      for (int p=0; p<num_producers; ++p) {
+        if (not skip[p]) continue;
+        bool needed = false;
+        for (int q=0; q<num_producers and not needed; ++q) {
+          if (skip[q]) continue;
+          for (int r : reads(q))
+            for (int w : writes(p)) needed = needed || r==w;
+        }
+        const auto f = feeds(p);
+        if (not f.empty()) {
+          for (int q : f) needed = needed || not skip[q];
+        }
+        if (needed) { skip[p] = false; changed = true; }
+      }
+    }
+    unsigned mask = 0;
+    for (int p=0; p<num_producers; ++p) if (skip[p]) mask |= 1u << p;
+    return mask;
   }
 };
 

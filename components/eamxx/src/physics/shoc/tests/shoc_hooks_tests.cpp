@@ -6,6 +6,10 @@
 
 #include "shoc_unit_tests_common.hpp"
 
+#include <map>
+#include <string>
+#include <vector>
+
 namespace scream {
 namespace shoc {
 namespace unit_test {
@@ -44,7 +48,7 @@ struct UnitWrap::UnitTest<D>::TestShocHooks : public UnitWrap::UnitTest<D>::Base
         {d_ref.v_wind, {-10, 0}},
         {d_ref.shoc_ql, {0, 1e-3}},
       });
-    ShocMainData d_init(d_ref), d_noop(d_ref), d_zero(d_ref);
+    ShocMainData d_init(d_ref), d_noop(d_ref), d_zero(d_ref), d_record(d_ref), d_skip(d_ref);
     const Int shcol = d_ref.shcol, nlev = d_ref.nlev;
 
     shoc_main(d_ref);
@@ -75,6 +79,44 @@ struct UnitWrap::UnitTest<D>::TestShocHooks : public UnitWrap::UnitTest<D>::Base
     };
     shoc_main(d_zero, zero);
 
+    // shoc_tke skipped: a hook that puts back what shoc_tke computes, step by
+    // step, reproduces SHOC exactly
+    using host_t = typename SHF::template view_2d_strided<Pack>::host_mirror_type;
+    const std::vector<std::string> outs = {"tk", "tkh", "tke", "isotropy"};
+    std::vector<std::map<std::string, host_t>> recorded;
+    Hooks record;
+    record.eddy_diffusivities = [&](const State& s) {
+      std::map<std::string, host_t> m;
+      for (const auto& n : outs) {
+        // A copy, not a mirror: on host builds a mirror is the view itself
+        m[n] = Kokkos::create_mirror(Kokkos::HostSpace(), s.outputs.at(n));
+        Kokkos::deep_copy(m[n], s.outputs.at(n));
+      }
+      recorded.push_back(m);
+    };
+    shoc_main(d_record, record);
+    REQUIRE (static_cast<int>(recorded.size()) == d_ref.nadv);
+
+    int step = 0;
+    Hooks skip;
+    skip.skip_tke = true;
+    bool tk_untouched = true;
+    skip.eddy_diffusivities = [&](const State& s) {
+      if (step == 0) {
+        // shoc_tke did not run: tk is still the input
+        auto tk = Kokkos::create_mirror(Kokkos::HostSpace(), s.outputs.at("tk"));
+        Kokkos::deep_copy(tk, s.outputs.at("tk"));
+        for (Int i = 0; i < shcol; ++i)
+          for (Int k = 0; k < nlev; ++k)
+            tk_untouched &= tk(i, k / Pack::n)[k % Pack::n] == d_init.tk[k + i*nlev];
+      }
+      for (const auto& n : outs) Kokkos::deep_copy(s.outputs.at(n), recorded[step].at(n));
+      ++step;
+    };
+    shoc_main(d_skip, skip);
+    REQUIRE (step == d_ref.nadv);
+    REQUIRE (tk_untouched);
+
     bool differs = false;
     for (Int i = 0; i < shcol; ++i) {
       for (Int k = 0; k < nlev; ++k) {
@@ -84,6 +126,11 @@ struct UnitWrap::UnitTest<D>::TestShocHooks : public UnitWrap::UnitTest<D>::Base
         REQUIRE (d_noop.tke[o]    == d_ref.tke[o]);
         REQUIRE (d_noop.u_wind[o] == d_ref.u_wind[o]);
         REQUIRE (d_noop.tk[o]     == d_ref.tk[o]);
+        REQUIRE (d_skip.thetal[o] == d_ref.thetal[o]);
+        REQUIRE (d_skip.qw[o]     == d_ref.qw[o]);
+        REQUIRE (d_skip.tke[o]    == d_ref.tke[o]);
+        REQUIRE (d_skip.u_wind[o] == d_ref.u_wind[o]);
+        REQUIRE (d_skip.tkh[o]    == d_ref.tkh[o]);
         if (k < nlev-1) {
           REQUIRE (d_zero.u_wind[o] == d_init.u_wind[o]);
           REQUIRE (d_zero.v_wind[o] == d_init.v_wind[o]);

@@ -6,6 +6,7 @@
 
 #include <ekat_assert.hpp>
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,9 @@
  *     model_path: /path/to/model.pt
  *     inputs:  [tke, shoc_mix, brunt, shoc_tabs, pblh, ...]  # SHOCEddyDiffusivityState
  *     outputs: [tk, tkh]                      # tk, tkh, tke, isotropy, or masks
+ *     physics: skip                           # optional: with all four replaced, shoc_tke
+ *                                             # is not run (they reach the emulators as
+ *                                             # they were before shoc_tke)
  *
  * With emulators, shoc_main runs them after computing TKE and the eddy
  * diffusivities (shoc_tke), outside of any kernel, and the implicit diffusion
@@ -46,18 +50,29 @@ void SHOCMacrophysics::initialize_emulators ()
 #elif !defined(EAMXX_HAS_PROCESS_EMULATORS)
   EKAT_ERROR_MSG ("[SHOCMacrophysics] Error! eddy_diffusivity_emulators requires EAMXX_ENABLE_PROCESS_EMULATORS=ON.\n");
 #else
+  std::set<std::string> replaced;
   for (const auto& n : names) {
     EKAT_REQUIRE_MSG (m_params.isSublist(n),
         "[SHOCMacrophysics] Error! Missing parameter sublist for emulator '" + n + "'.\n");
     auto emu = std::make_shared<ProcessEmulator>(n, m_params.sublist(n));
-    m_atm_logger->info("[SHOCMacrophysics] Eddy-diffusivity emulator '" + n + "' emulates:");
+    m_atm_logger->info("[SHOCMacrophysics] Eddy-diffusivity emulator '" + n + "' " +
+                       (emu->skips_physics() ? "replaces" : "overwrites") + ":");
     for (const auto& t : emu->target_names()) {
       EKAT_REQUIRE_MSG (t=="tk" or t=="tkh" or t=="tke" or t=="isotropy",
           "[SHOCMacrophysics] Error! Output '" + t + "' of emulator '" + n + "' is not tk, tkh, tke, "
           "isotropy, nor a mask.\n");
       m_atm_logger->info("    " + t);
+      if (emu->skips_physics()) replaced.insert(t);
     }
     m_eddy_diffusivity_emulators.push_back(emu);
+  }
+  // shoc_tke computes all four: it is skipped only if all four are replaced
+  m_hooks.skip_tke = replaced.size()==4;
+  if (m_hooks.skip_tke) {
+    m_atm_logger->info("[SHOCMacrophysics] SHOC skips shoc_tke, replaced by emulators.");
+  } else if (not replaced.empty()) {
+    m_atm_logger->info("[SHOCMacrophysics] shoc_tke still runs: it computes all of tk, tkh, tke and isotropy,\n"
+                       "  and the emulators replace only some of them.");
   }
   m_hooks.eddy_diffusivities = [this](const SHF::SHOCEddyDiffusivityState& s) {
     run_eddy_diffusivity_emulators(s);

@@ -28,6 +28,10 @@ eamxx:
               options: {python_module: p3_identity_emulator, python_path: ${CMAKE_CURRENT_SOURCE_DIR}}}
     sed_tends: {backend: python, inputs: [${SED_TENDS}], outputs: [${SED_TENDS}],
                 options: {python_module: p3_identity_emulator, python_path: ${CMAKE_CURRENT_SOURCE_DIR}}}
+    warm_off: {backend: python, physics: skip, inputs: [qc, nc, qr, nr, rho], outputs: [${WARM_RATES}],
+               options: {python_module: p3_zero_emulator, python_path: ${CMAKE_CURRENT_SOURCE_DIR}}}
+    warm_reads_itself: {backend: python, physics: skip, inputs: [${WARM_RATES}], outputs: [${WARM_RATES}],
+                        options: {python_module: p3_identity_emulator, python_path: ${CMAKE_CURRENT_SOURCE_DIR}}}
     rain_off: {backend: python, physics: skip, inputs: [qr, nr], outputs: [qr_sed_tend, nr_sed_tend],
                options: {python_module: p3_zero_emulator, python_path: ${CMAKE_CURRENT_SOURCE_DIR}}}
     half_rain: {backend: python, physics: skip, inputs: [qr], outputs: [qr_sed_tend],

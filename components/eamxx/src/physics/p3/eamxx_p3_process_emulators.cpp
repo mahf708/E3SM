@@ -140,8 +140,28 @@ void P3Microphysics::initialize_process_emulators ()
         emulated.push_back(r);
       });
     m_process_emulators = emus;
-    EKAT_REQUIRE_MSG (skipped_rates.empty(),
-        "[P3Microphysics] Error! physics: skip is not supported yet for process_emulators.\n");
+    // Rates replaced by emulators (physics: skip): part2 skips the computations
+    // that produce only replaced rates, and that nothing still running needs
+    if (not skipped_rates.empty()) {
+      using RP = p3::P3RateProducers;
+      std::vector<bool> replaced(PR::num_rates, false);
+      for (const auto& t : skipped_rates) replaced[PR::index(t)] = true;
+      m_hooks.process_rates.skip_producers = RP::skippable(replaced);
+      std::vector<bool> produced_anyway(PR::num_rates, false);
+      for (int p=0; p<RP::num_producers; ++p) {
+        if (m_hooks.process_rates.skip_producers & (1u << p)) {
+          m_atm_logger->info("[P3Microphysics] P3 skips " + std::string(RP::name(p)) + ", replaced by emulators.");
+        } else {
+          for (int r : RP::writes(p)) produced_anyway[r] = true;
+        }
+      }
+      for (int r=0; r<PR::num_rates; ++r) {
+        if (replaced[r] and produced_anyway[r]) {
+          m_atm_logger->info("[P3Microphysics] " + std::string(PR::name(r)) + " is replaced, but P3 still computes it:\n"
+                             "  its computation also produces rates that are not replaced, or that P3 needs.");
+        }
+      }
+    }
     if (not emus.empty()) {
       auto& hook = m_hooks.process_rates;
       hook.process_rates = decltype(hook.process_rates)("p3_process_rates", m_num_cols, PR::num_rates, nk_pack);

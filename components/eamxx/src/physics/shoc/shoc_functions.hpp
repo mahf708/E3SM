@@ -253,6 +253,9 @@ template <typename ScalarT, typename DeviceT> struct Functions {
   struct SHOCHooks {
     // After shoc_tke, before the implicit diffusion solver (in each of the nadv steps)
     std::function<void(const SHOCEddyDiffusivityState&)> eddy_diffusivities;
+    // Do not run shoc_tke: the hook replaces all of tk, tkh, tke and isotropy,
+    // which reach it as they were before shoc_tke (the 3d shear strain too)
+    bool skip_tke = false;
   };
 #endif
 

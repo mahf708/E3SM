@@ -131,6 +131,9 @@ void Functions<S,D>
 
   // Rates are computed unless they are read back from process_rates
   const bool compute_rates = mode != P3Part2Mode::Apply;
+  // Computations replaced by emulators (see P3RateProducers), skipped when only computing rates
+  const unsigned skip_producers = mode == P3Part2Mode::Rates ? runtime_options.skip_rate_producers : 0u;
+#define P3_RUN_PRODUCER(p) (!(skip_producers & (1u << P3RateProducers::p)))
 
   if (mode != P3Part2Mode::Rates) {
     team.team_barrier();
@@ -278,80 +281,102 @@ void Functions<S,D>
 
       if(do_ice_production) {
         // collection of droplets
-        ice_cldliq_collection(rho(k), T_atm(k), rhofaci(k),
-                              table_val_qc2qi_collect, qi_incld(k), qc_incld(k),
-                              ni_incld(k), nc_incld(k), qc2qi_collect_tend,
-                              nc_collect_tend, qc2qr_ice_shed_tend, ncshdc,
-                              runtime_options, not_skip_micro);
+        if (P3_RUN_PRODUCER(ice_cldliq_collection)) {
+          ice_cldliq_collection(rho(k), T_atm(k), rhofaci(k),
+                                table_val_qc2qi_collect, qi_incld(k), qc_incld(k),
+                                ni_incld(k), nc_incld(k), qc2qi_collect_tend,
+                                nc_collect_tend, qc2qr_ice_shed_tend, ncshdc,
+                                runtime_options, not_skip_micro);
+        }
 
         // collection of rain
-        ice_rain_collection(rho(k), T_atm(k), rhofaci(k), logn0r(k),
-                            table_val_nr_collect, table_val_qr2qi_collect,
-                            qi_incld(k), ni_incld(k), qr_incld(k),
-                            qr2qi_collect_tend, nr_collect_tend,
-                            runtime_options, not_skip_micro);
+        if (P3_RUN_PRODUCER(ice_rain_collection)) {
+          ice_rain_collection(rho(k), T_atm(k), rhofaci(k), logn0r(k),
+                              table_val_nr_collect, table_val_qr2qi_collect,
+                              qi_incld(k), ni_incld(k), qr_incld(k),
+                              qr2qi_collect_tend, nr_collect_tend,
+                              runtime_options, not_skip_micro);
+        }
 
         // collection between ice categories
 
         // PMC nCat deleted lots of stuff here.
 
         // self-collection of ice
-        ice_self_collection(rho(k), rhofaci(k), table_val_ni_self_collect, eii,
-                            qm_incld(k), qi_incld(k), ni_incld(k),
-                            ni_selfcollect_tend, not_skip_micro);
+        if (P3_RUN_PRODUCER(ice_self_collection)) {
+          ice_self_collection(rho(k), rhofaci(k), table_val_ni_self_collect, eii,
+                              qm_incld(k), qi_incld(k), ni_incld(k),
+                              ni_selfcollect_tend, not_skip_micro);
+        }
       }
 
       // melting
-      ice_melting(rho(k), T_atm(k), pres(k), rhofaci(k),
-                  table_val_qi2qr_melting, table_val_qi2qr_vent_melt, dv, sc,
-                  mu, kap, qv(k), qi_incld(k), ni_incld(k), qi2qr_melt_tend,
-                  ni2nr_melt_tend, not_skip_micro);
+      if (P3_RUN_PRODUCER(ice_melting)) {
+        ice_melting(rho(k), T_atm(k), pres(k), rhofaci(k),
+                    table_val_qi2qr_melting, table_val_qi2qr_vent_melt, dv, sc,
+                    mu, kap, qv(k), qi_incld(k), ni_incld(k), qi2qr_melt_tend,
+                    ni2nr_melt_tend, not_skip_micro);
+      }
 
       if(do_ice_production) {
         // calculate wet growth
-        ice_cldliq_wet_growth(
-            rho(k), T_atm(k), pres(k), rhofaci(k), table_val_qi2qr_melting,
-            table_val_qi2qr_vent_melt, dv, kap, mu, sc, qv(k), qc_incld(k),
-            qi_incld(k), ni_incld(k), qr_incld(k), wetgrowth,
-            qr2qi_collect_tend, qc2qi_collect_tend, qc_growth_rate,
-            nr_ice_shed_tend, qc2qr_ice_shed_tend, not_skip_micro);
+        if (P3_RUN_PRODUCER(ice_cldliq_wet_growth)) {
+          ice_cldliq_wet_growth(
+              rho(k), T_atm(k), pres(k), rhofaci(k), table_val_qi2qr_melting,
+              table_val_qi2qr_vent_melt, dv, kap, mu, sc, qv(k), qc_incld(k),
+              qi_incld(k), ni_incld(k), qr_incld(k), wetgrowth,
+              qr2qi_collect_tend, qc2qi_collect_tend, qc_growth_rate,
+              nr_ice_shed_tend, qc2qr_ice_shed_tend, not_skip_micro);
+        }
       }
 
       // calculate total inverse ice relaxation timescale combined for all ice
       // categories note 'f1pr' values are normalized, so we need to multiply
       // by N
-      ice_relaxation_timescale(
-          rho(k), T_atm(k), rhofaci(k), table_val_qi2qr_melting,
-          table_val_qi2qr_vent_melt, dv, mu, sc, qi_incld(k), ni_incld(k), epsi,
-          epsi_tot, not_skip_micro);
+      if (P3_RUN_PRODUCER(ice_relaxation_timescale)) {
+        ice_relaxation_timescale(
+            rho(k), T_atm(k), rhofaci(k), table_val_qi2qr_melting,
+            table_val_qi2qr_vent_melt, dv, mu, sc, qi_incld(k), ni_incld(k), epsi,
+            epsi_tot, not_skip_micro);
+      }
 
       // calculate rime density
-      calc_rime_density(T_atm(k), rhofaci(k), table_val_qi_fallspd, acn(k),
-                        lamc(k), mu_c(k), qc_incld(k), qc2qi_collect_tend,
-                        vtrmi1, rho_qm_cloud, not_skip_micro);
+      if (P3_RUN_PRODUCER(rime_density)) {
+        calc_rime_density(T_atm(k), rhofaci(k), table_val_qi_fallspd, acn(k),
+                          lamc(k), mu_c(k), qc_incld(k), qc2qi_collect_tend,
+                          vtrmi1, rho_qm_cloud, not_skip_micro);
+      }
 
       if(do_ice_production) {
         // contact and immersion freezing droplets
         if (use_hetfrz_classnuc){
-          ice_classical_nucleation(hetfrz_immersion_nucleation_tend(k), hetfrz_contact_nucleation_tend(k),
-                     hetfrz_deposition_nucleation_tend(k), rho(k), qc_incld(k), nc_incld(k), 1,
-                     ncheti_cnt, qcheti_cnt, nicnt, qicnt, ninuc_cnt, qinuc_cnt);
-          ice_classical_nucleation(hetfrz_immersion_nucleation_tend(k), hetfrz_contact_nucleation_tend(k),
-                     hetfrz_deposition_nucleation_tend(k), rho(k), qc_incld(k), nc_incld(k), 2, 
-                     ncheti_cnt, qcheti_cnt, nicnt, qicnt, ninuc_cnt, qinuc_cnt);
+          if (P3_RUN_PRODUCER(ice_classical_nucleation)) {
+            ice_classical_nucleation(hetfrz_immersion_nucleation_tend(k), hetfrz_contact_nucleation_tend(k),
+                       hetfrz_deposition_nucleation_tend(k), rho(k), qc_incld(k), nc_incld(k), 1,
+                       ncheti_cnt, qcheti_cnt, nicnt, qicnt, ninuc_cnt, qinuc_cnt);
+          }
+          if (P3_RUN_PRODUCER(ice_classical_nucleation)) {
+            ice_classical_nucleation(hetfrz_immersion_nucleation_tend(k), hetfrz_contact_nucleation_tend(k),
+                       hetfrz_deposition_nucleation_tend(k), rho(k), qc_incld(k), nc_incld(k), 2, 
+                       ncheti_cnt, qcheti_cnt, nicnt, qicnt, ninuc_cnt, qinuc_cnt);
+          }
         }
         else{
-          cldliq_immersion_freezing(
-              T_atm(k), lamc(k), mu_c(k), cdist1(k), qc_incld(k),
-              inv_qc_relvar(k), qc2qi_hetero_freeze_tend,
-              nc2ni_immers_freeze_tend, runtime_options, not_skip_micro);
+          if (P3_RUN_PRODUCER(cldliq_immersion_freezing)) {
+            cldliq_immersion_freezing(
+                T_atm(k), lamc(k), mu_c(k), cdist1(k), qc_incld(k),
+                inv_qc_relvar(k), qc2qi_hetero_freeze_tend,
+                nc2ni_immers_freeze_tend, runtime_options, not_skip_micro);
+          }
         }
 
         // for future: get rid of log statements below for rain freezing
-        rain_immersion_freezing(T_atm(k), lamr(k), mu_r(k), cdistr(k),
-                                qr_incld(k), qr2qi_immers_freeze_tend,
-                                nr2ni_immers_freeze_tend, runtime_options,
-                                not_skip_micro);
+        if (P3_RUN_PRODUCER(rain_immersion_freezing)) {
+          rain_immersion_freezing(T_atm(k), lamr(k), mu_r(k), cdistr(k),
+                                  qr_incld(k), qr2qi_immers_freeze_tend,
+                                  nr2ni_immers_freeze_tend, runtime_options,
+                                  not_skip_micro);
+        }
         //  rime splintering (Hallet-Mossop 1974)
         // PMC comment: Morrison and Milbrandt 2015 part 1 and 2016 part 3 both
         // say that Hallet-Mossop should be neglected if 1 category to
@@ -363,54 +388,70 @@ void Functions<S,D>
       //    (use semi-analytic formulation)
 
       //  calculate rain evaporation including ventilation
-      calc_liq_relaxation_timescale(
-        revap_table_vals, rho(k), f1r, f2r, dv, mu, sc, mu_r(k), lamr(k), cdistr(k), cdist(k), qr_incld(k), qc_incld(k),
-        epsr, epsc, not_skip_micro);
+      if (P3_RUN_PRODUCER(rain_evaporation)) {
+        calc_liq_relaxation_timescale(
+          revap_table_vals, rho(k), f1r, f2r, dv, mu, sc, mu_r(k), lamr(k), cdistr(k), cdist(k), qr_incld(k), qc_incld(k),
+          epsr, epsc, not_skip_micro);
+      }
 
-      evaporate_rain(qr_incld(k),qc_incld(k),nr_incld(k),qi_incld(k),
-		     cld_frac_l(k),cld_frac_r(k),qv(k),qv_prev(k),qv_sat_l(k),qv_sat_i(k),
-		     ab,abi,epsr,epsi_tot,T_atm(k),t_prev(k),dqsdt,dt,
-		     qr2qv_evap_tend,nr_evap_tend, not_skip_micro);
+      if (P3_RUN_PRODUCER(rain_evaporation)) {
+        evaporate_rain(qr_incld(k),qc_incld(k),nr_incld(k),qi_incld(k),
+  		     cld_frac_l(k),cld_frac_r(k),qv(k),qv_prev(k),qv_sat_l(k),qv_sat_i(k),
+  		     ab,abi,epsr,epsi_tot,T_atm(k),t_prev(k),dqsdt,dt,
+  		     qr2qv_evap_tend,nr_evap_tend, not_skip_micro);
+      }
 
       if(do_ice_production) {
-        ice_deposition_sublimation(
-            qi_incld(k), ni_incld(k), T_atm(k), qv_sat_l(k), qv_sat_i(k), epsi,
-            abi, qv(k), inv_dt, qv2qi_vapdep_tend, qi2qv_sublim_tend,
-            ni_sublim_tend, qc2qi_berg_tend, not_skip_micro);
+        if (P3_RUN_PRODUCER(ice_deposition_sublimation)) {
+          ice_deposition_sublimation(
+              qi_incld(k), ni_incld(k), T_atm(k), qv_sat_l(k), qv_sat_i(k), epsi,
+              abi, qv(k), inv_dt, qv2qi_vapdep_tend, qi2qv_sublim_tend,
+              ni_sublim_tend, qc2qi_berg_tend, not_skip_micro);
+        }
       }
 
     }
 
     // deposition/condensation-freezing nucleation
     if(compute_rates && do_ice_production) {
-      ice_nucleation(T_atm(k), inv_rho(k), ni(k), ni_activated(k),
-                     qv_supersat_i(k), inv_dt, predictNc, do_prescribed_CCN,
-                     qv2qi_nucleat_tend, ni_nucleat_tend, runtime_options,
-                     not_skip_all);
+      if (P3_RUN_PRODUCER(ice_nucleation)) {
+        ice_nucleation(T_atm(k), inv_rho(k), ni(k), ni_activated(k),
+                       qv_supersat_i(k), inv_dt, predictNc, do_prescribed_CCN,
+                       qv2qi_nucleat_tend, ni_nucleat_tend, runtime_options,
+                       not_skip_all);
+      }
     }
 
     if (compute_rates) {
       // cloud water autoconversion
       // NOTE: cloud_water_autoconversion must be called before droplet_self_collection
-      cloud_water_autoconversion(
-        rho(k), qc_incld(k), nc_incld(k), inv_qc_relvar(k),
-        qc2qr_autoconv_tend, nc2nr_autoconv_tend, ncautr, runtime_options, not_skip_all);
+      if (P3_RUN_PRODUCER(cloud_water_autoconversion)) {
+        cloud_water_autoconversion(
+          rho(k), qc_incld(k), nc_incld(k), inv_qc_relvar(k),
+          qc2qr_autoconv_tend, nc2nr_autoconv_tend, ncautr, runtime_options, not_skip_all);
+      }
 
       // self-collection of droplets
-      droplet_self_collection(
-        rho(k), inv_rho(k), qc_incld(k),
-        mu_c(k), nu(k), nc2nr_autoconv_tend, nc_selfcollect_tend, not_skip_all);
+      if (P3_RUN_PRODUCER(droplet_self_collection)) {
+        droplet_self_collection(
+          rho(k), inv_rho(k), qc_incld(k),
+          mu_c(k), nu(k), nc2nr_autoconv_tend, nc_selfcollect_tend, not_skip_all);
+      }
 
       // accretion of cloud by rain
-      cloud_rain_accretion(
-        rho(k), inv_rho(k), qc_incld(k), nc_incld(k), qr_incld(k), inv_qc_relvar(k),
-        qc2qr_accret_tend, nc_accret_tend, runtime_options, not_skip_all);
+      if (P3_RUN_PRODUCER(cloud_rain_accretion)) {
+        cloud_rain_accretion(
+          rho(k), inv_rho(k), qc_incld(k), nc_incld(k), qr_incld(k), inv_qc_relvar(k),
+          qc2qr_accret_tend, nc_accret_tend, runtime_options, not_skip_all);
+      }
 
       // self-collection and breakup of rain
       // (breakup following modified Verlinde and Cotton scheme)
-      rain_self_collection(
-        rho(k), qr_incld(k), nr_incld(k),
-        nr_selfcollect_tend, runtime_options, not_skip_all);
+      if (P3_RUN_PRODUCER(rain_self_collection)) {
+        rain_self_collection(
+          rho(k), qr_incld(k), nr_incld(k),
+          nr_selfcollect_tend, runtime_options, not_skip_all);
+      }
 
       // Here we map the microphysics tendency rates back to CELL-AVERAGE quantities for updating
       // cell-average quantities.
@@ -422,6 +463,8 @@ void Functions<S,D>
         qv2qi_vapdep_tend, nr2ni_immers_freeze_tend, ni_sublim_tend, qv2qi_nucleat_tend, ni_nucleat_tend, qc2qi_berg_tend, 
         ncheti_cnt, qcheti_cnt, nicnt, qicnt, ninuc_cnt, qinuc_cnt, not_skip_all, runtime_options);
     }
+
+#undef P3_RUN_PRODUCER
 
     if (mode == P3Part2Mode::Rates) {
       // Store the rates, to be applied by another call (Apply)

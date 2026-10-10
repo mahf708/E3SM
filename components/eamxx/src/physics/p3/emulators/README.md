@@ -109,7 +109,26 @@ p3:
     outputs: [qr_sed_tend, nr_sed_tend]   # precip_liq_surf is diagnosed
 ```
 
-Each output must be a process rate or a mask. Rates that no mask gates are
+Each output must be a process rate or a mask.
+
+With `physics: skip`, emulators replace rates instead of overwriting them:
+part2 does not run a computation (autoconversion, accretion, ice collection,
+melting, ...) when every rate it produces is replaced and nothing that still
+runs reads them, e.g. self-collection reads autoconversion's
+`nc2nr_autoconv_tend`. Skipped rates reach the emulators as zero, so they cannot
+be inputs. The table of which computation writes and reads which rates is
+`P3RateProducers` in `p3_process_rates.hpp`; the log lists what P3 skips.
+
+```yaml
+  process_emulators: [warm]
+  warm:
+    backend: libtorch
+    model_path: /path/to/warm.pt
+    physics: skip                   # P3 skips autoconversion, accretion, self-collection
+    inputs:  [qc, nc, qr, nr, rho]
+    outputs: [qc2qr_autoconv_tend, nc2nr_autoconv_tend, ncautr, nc_selfcollect_tend,
+              qc2qr_accret_tend, nc_accret_tend, nr_selfcollect_tend]
+``` Rates that no mask gates are
 always used. With `mode: add` and P3's own rates as inputs, a model can learn a
 correction of P3 rather than a replacement.
 

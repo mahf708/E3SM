@@ -383,6 +383,8 @@ Int Functions<Real,DefaultDevice>
   // then apply them. In between, outside of any kernel, the hook may change any of them.
 
   const auto& process_rates_hook = hooks.process_rates;
+  auto rates_runtime = runtime_options;
+  rates_runtime.skip_rate_producers = process_rates_hook.skip_producers;
   auto part2 = [&](const P3Part2Mode mode) {
     p3_main_part2_disp(
       nj, nk, runtime_options.max_total_ni, infrastructure.predictNc, infrastructure.prescribedCCN, infrastructure.dt, inv_dt,
@@ -399,7 +401,7 @@ Int Functions<Real,DefaultDevice>
       qv2qi_vapdep, qc2qi_berg, qc2qr_ice_shed, qc2qi_collect,
       qr2qi_collect, qc2qi_hetero_freeze, qr2qi_immers_freeze, qi2qr_melt,
       pratot, prctot, mode, process_rates_hook.process_rates, nucleationPossible, hydrometeorsPresent,
-      runtime_options);
+      mode == P3Part2Mode::Rates ? rates_runtime : runtime_options);
   };
 
   if (process_rates_hook.active()) {

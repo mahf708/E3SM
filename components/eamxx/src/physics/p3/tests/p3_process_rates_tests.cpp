@@ -31,6 +31,40 @@ struct UnitWrap::UnitTest<D>::TestP3ProcessRates : public UnitWrap::UnitTest<D>:
     REQUIRE (PR::index("not_a_rate") == -1);
     REQUIRE (PR::num_packs == PR::num_rates-1);
     REQUIRE (std::string(PR::name(PR::wetgrowth)) == "wetgrowth");
+
+    // What part2 can skip, given the replaced rates
+    using RP = P3RateProducers;
+    auto skippable = [](const std::vector<int>& rates) {
+      std::vector<bool> replaced(PR::num_rates, false);
+      for (int r : rates) replaced[r] = true;
+      return RP::skippable(replaced);
+    };
+    auto bit = [](const int p) { return 1u << p; };
+    // every rate a computation writes must be replaced
+    REQUIRE (skippable({PR::nc_selfcollect_tend}) == bit(RP::droplet_self_collection));
+    REQUIRE (skippable({PR::qc2qr_autoconv_tend, PR::ncautr}) == 0);
+    // autoconversion feeds self-collection, which must then be replaced too
+    REQUIRE (skippable({PR::qc2qr_autoconv_tend, PR::nc2nr_autoconv_tend, PR::ncautr}) == 0);
+    REQUIRE (skippable({PR::qc2qr_autoconv_tend, PR::nc2nr_autoconv_tend, PR::ncautr, PR::nc_selfcollect_tend}) ==
+             (bit(RP::cloud_water_autoconversion) | bit(RP::droplet_self_collection)));
+    // collection is changed by wet growth, and read by the rime density
+    const std::vector<int> collection = {PR::qc2qi_collect_tend, PR::nc_collect_tend, PR::qc2qr_ice_shed_tend, PR::ncshdc};
+    REQUIRE (skippable(collection) == 0);
+    auto all = collection;
+    for (int r : {PR::qr2qi_collect_tend, PR::nr_collect_tend, PR::wetgrowth, PR::nr_ice_shed_tend, PR::rho_qm_cloud}) all.push_back(r);
+    REQUIRE (skippable(all) == (bit(RP::ice_cldliq_collection) | bit(RP::ice_rain_collection) |
+                                bit(RP::ice_cldliq_wet_growth) | bit(RP::rime_density)));
+    // the ice relaxation timescale goes only when both its users go
+    const std::vector<int> evap = {PR::qr2qv_evap_tend, PR::nr_evap_tend};
+    auto both = evap;
+    for (int r : {PR::qv2qi_vapdep_tend, PR::qi2qv_sublim_tend, PR::ni_sublim_tend, PR::qc2qi_berg_tend}) both.push_back(r);
+    REQUIRE (skippable(evap) == bit(RP::rain_evaporation));
+    REQUIRE (skippable(both) == (bit(RP::rain_evaporation) | bit(RP::ice_deposition_sublimation) |
+                                 bit(RP::ice_relaxation_timescale)));
+    // every rate is written by some computation
+    std::vector<bool> written(PR::num_rates, false);
+    for (int p = 0; p < RP::num_producers; ++p) for (int r : RP::writes(p)) written[r] = true;
+    for (int r = 0; r < PR::num_rates; ++r) REQUIRE (written[r]);
   }
 
 #ifdef SCREAM_P3_SMALL_KERNELS
@@ -72,7 +106,7 @@ struct UnitWrap::UnitTest<D>::TestP3ProcessRates : public UnitWrap::UnitTest<D>:
         {d_ref.th_atm         , {2.85e+02, 3.0e+02}},
         {d_ref.t_prev         , {2.85e+02, 3.0e+02}}
     });
-    P3MainData d_noop(d_ref), d_zero(d_ref);
+    P3MainData d_noop(d_ref), d_zero(d_ref), d_record(d_ref), d_skip(d_ref);
 
     auto run = [](P3MainData& d, const Hook& hook) {
       Hooks hooks;
@@ -122,8 +156,49 @@ struct UnitWrap::UnitTest<D>::TestP3ProcessRates : public UnitWrap::UnitTest<D>:
     run(d_zero, zero);
     REQUIRE (num_calls == 2);
 
+    // Warm-rain computations skipped: their rates reach the hook as zero, and a
+    // hook that puts back what P3 computes reproduces P3 exactly
+    using RP = P3RateProducers;
+    typename P3F::template view_3d<Pack>::host_mirror_type stock;
+    Hook record;
+    record.process_rates = storage();
+    record.callback = [&](const typename P3F::P3ProcessState& s) {
+      stock = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.process_rates);
+    };
+    run(d_record, record);
+
+    const std::vector<int> warm = {PR::qc2qr_autoconv_tend, PR::nc2nr_autoconv_tend, PR::ncautr, PR::nc_selfcollect_tend,
+                                   PR::qc2qr_accret_tend, PR::nc_accret_tend, PR::nr_selfcollect_tend};
+    std::vector<bool> replaced(PR::num_rates, false);
+    for (int r : warm) replaced[r] = true;
+    Hook skip;
+    skip.process_rates = storage();
+    skip.skip_producers = RP::skippable(replaced);
+    REQUIRE (skip.skip_producers == ((1u << RP::cloud_water_autoconversion) | (1u << RP::droplet_self_collection) |
+                                     (1u << RP::cloud_rain_accretion) | (1u << RP::rain_self_collection)));
+    bool skipped_were_zero = true, others_match = true;
+    skip.callback = [&](const typename P3F::P3ProcessState& s) {
+      auto r = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.process_rates);
+      for (int i = 0; i < ncol; ++i)
+        for (int n = 0; n < PR::num_rates; ++n)
+          for (int k = 0; k < nk; ++k) {
+            const auto v = r(i, n, k / Pack::n)[k % Pack::n];
+            if (replaced[n]) skipped_were_zero &= v == 0;
+            else             others_match &= v == stock(i, n, k / Pack::n)[k % Pack::n];
+          }
+      Kokkos::deep_copy(s.process_rates, stock);
+    };
+    run(d_skip, skip);
+    REQUIRE (skipped_were_zero);
+    REQUIRE (others_match);
+
     const auto tot = d_ref.total(d_ref.qc);
     for (Int t = 0; t < tot; ++t) {
+      REQUIRE(d_skip.qc[t] == d_ref.qc[t]);
+      REQUIRE(d_skip.nc[t] == d_ref.nc[t]);
+      REQUIRE(d_skip.qr[t] == d_ref.qr[t]);
+      REQUIRE(d_skip.nr[t] == d_ref.nr[t]);
+      REQUIRE(d_skip.th_atm[t] == d_ref.th_atm[t]);
       REQUIRE(d_noop.qc[t] == d_ref.qc[t]);
       REQUIRE(d_noop.nc[t] == d_ref.nc[t]);
       REQUIRE(d_noop.qr[t] == d_ref.qr[t]);
