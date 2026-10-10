@@ -437,6 +437,13 @@ public:
     Pack* wsm_data;
   };
 
+#if defined(SCREAM_P3_SMALL_KERNELS) && defined(EAMXX_HAS_PROCESS_EMULATORS)
+  // Run by the hooks of p3_main (public: Cuda requires methods enclosing
+  // __device__ lambdas to be public)
+  void run_process_emulators (const P3F::P3ProcessState& s);
+  void run_sedimentation_emulators (const P3F::P3SedimentationState& s);
+#endif
+
 protected:
 
   // The three main overrides for the subcomponent
@@ -449,8 +456,6 @@ protected:
   void check_process_emulators_support () const;
 #if defined(SCREAM_P3_SMALL_KERNELS) && defined(EAMXX_HAS_PROCESS_EMULATORS)
   void initialize_process_emulators ();
-  void run_process_emulators (const P3F::P3ProcessState& s);
-  void run_sedimentation_emulators (const P3F::P3SedimentationState& s);
 #endif
 
   // Computes total number of bytes needed for local variables

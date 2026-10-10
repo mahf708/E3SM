@@ -103,13 +103,12 @@ void Functions<Real,DefaultDevice>
   Kokkos::fence();
 }
 
-namespace {
-
 // Run a sedimentation hook (see P3SedimentationHook), after sedimentation:
 // store its tendencies, run the hook, re-apply the tendencies it selects, and
-// diagnose the surface precipitation it asks for.
+// diagnose the surface precipitation it asks for. (Not in an anonymous
+// namespace: Cuda does not allow extended lambdas in functions with internal linkage.)
 template <typename F>
-void run_sedimentation_hook (
+void p3_run_sedimentation_hook (
   const typename F::P3SedimentationHook& hook,
   const Kokkos::Array<typename F::template uview_2d<typename F::Pack>, P3SedimentationRates::num_rates>& vars,
   const typename F::P3HistoryOnly& history_only,
@@ -201,8 +200,6 @@ void run_sedimentation_hook (
   }
   Kokkos::fence();
 }
-
-} // anonymous namespace
 
 template <>
 Int Functions<Real,DefaultDevice>
@@ -494,7 +491,7 @@ Int Functions<Real,DefaultDevice>
     lookup_tables.ice_table_vals, diagnostic_outputs.precip_ice_surf, nucleationPossible, hydrometeorsPresent, runtime_options);
 
   if (sed_hook.active()) {
-    run_sedimentation_hook<Functions<Real,DefaultDevice>>(sed_hook, sed_vars, history_only, diagnostic_outputs, rho, dz,
+    p3_run_sedimentation_hook<Functions<Real,DefaultDevice>>(sed_hook, sed_vars, history_only, diagnostic_outputs, rho, dz,
         {{"qv", qv}, {"th_atm", th}, {"T_atm", T_atm}, {"inv_exner", inv_exner}, {"pres", pres},
          {"dpres", dpres}, {"dz", dz}, {"rho", rho}, {"inv_rho", inv_rho}, {"cld_frac_l", cld_frac_l},
          {"cld_frac_r", cld_frac_r}, {"cld_frac_i", cld_frac_i}, {"inv_qc_relvar", inv_qc_relvar},

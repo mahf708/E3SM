@@ -1,9 +1,11 @@
-# Emulating P3 process rates
+# Emulating P3
 
 Any subset of P3's process rates can be computed by an emulator instead of P3,
 from one rate to all of them, warm or ice, with any number of emulators, each
-on its own inference backend. Which rates are emulated is only configuration:
-adding a new emulator needs no C++ change.
+on its own inference backend. So can P3's sedimentation, and P3 as a whole
+(with the field emulators of any process, see `share/emulation/README.md`).
+What is emulated is only configuration: adding a new emulator needs no C++
+change.
 
 ## How it works
 
@@ -32,19 +34,30 @@ part1 → part2 (Rates): compute and store the rates → emulators → part2 (Ap
   `SCREAM_P3_SMALL_KERNELS=ON`, since the monolithic kernel cannot be split.
 
 The emulators themselves (`share/emulation/eamxx_process_emulator.hpp`) know
-nothing about P3: they map named inputs to named outputs, so any
-parameterization that exposes its rates the same way can use them. They run
-through the inference backends of `components/emulators`:
+nothing about P3: they map named inputs to named outputs, through the inference
+backends of `components/emulators` (python, libtorch, stub). P3's packed views
+go to the backends in place, with no copy, when they can (see
+`share/emulation/README.md`), and the emulators merge their outputs into the
+packed rates on device.
 
-| backend | model | what it gets |
-|---|---|---|
-| `python` | a python module with `create_emulator(config)`, returning an object with `infer(inputs, outputs)` | dicts of numpy arrays, by name, each `(ncol, nlev)`; outputs are written in place |
-| `libtorch` | a TorchScript file | the inputs as positional arguments of `forward()`, which returns a tuple of the outputs, in the order of the configuration |
-| `stub` | none | leaves the outputs at zero |
+## Sedimentation
 
-Inputs are gathered on device from P3's packed views into contiguous
-`(ncol, nlev)` buffers, copied to host for the backend (a no-op on CPU), and the
-outputs are merged into the packed rates on device.
+```
+… part2 → save the state → cloud, rain, ice sedimentation → tendencies → emulators → re-apply → part3
+```
+
+The tendencies of sedimentation (`qc_sed_tend`, `nc_sed_tend`, `qr_sed_tend`,
+`nr_sed_tend`, `qi_sed_tend`, `ni_sed_tend`, `qm_sed_tend`, `bm_sed_tend`,
+[unit/s]) and the surface precipitation (`precip_liq_surf`, `precip_ice_surf`,
+[m/s]) are named targets. Emulated tendencies are re-applied to the state
+before sedimentation, `x = max(x_before + tend*dt, 0)`; the others are left as
+P3 computed them. Inputs are the state before sedimentation (`qc` ... `bm`,
+and `qv`, `th_atm`, `T_atm`, `rho`, `dz`, `dpres`, cloud fractions, ...), the
+tendencies as P3 computed them, and the surface precipitation. When emulators
+change the qc/qr (qi) tendencies but not `precip_liq_surf` (`precip_ice_surf`),
+the surface precipitation is diagnosed from what leaves the column,
+`-sum(tend*rho*dz)/rho_h2o`, unless `sedimentation_emulators_diagnose_precip`
+is false. `precip_liq_flux` (the rain flux profile) stays as P3 computed it.
 
 ## Configuration (p3 parameters)
 
@@ -71,6 +84,13 @@ p3:
     inputs:  [T_atm, qi_incld, ni_incld, qi2qr_melt_tend]
     outputs: [qi2qr_melt_tend, ni2nr_melt_tend]
     options: {device: cpu, dtype: float64}
+  sedimentation_emulators: [rain_sed]
+  sedimentation_emulators_diagnose_precip: true
+  rain_sed:
+    backend: libtorch
+    model_path: /path/to/rain_sed.pt
+    inputs:  [qr, nr, rho, dz, cld_frac_r]
+    outputs: [qr_sed_tend, nr_sed_tend]   # precip_liq_surf is diagnosed
 ```
 
 Each output must be a process rate or a mask. Rates that no mask gates are
@@ -106,6 +126,13 @@ by `export_torchscript.py` for the libtorch one). See `sdm_warm_rain.yaml`.
 - `physics/p3/tests/p3_process_rates_tests.cpp`: the registry, and the split of
   part2 (a hook that changes nothing changes nothing; turning the warm-rain
   rates off by name leaves no rain).
+- `physics/p3/tests/p3_process_rates_tests.cpp`, `p3_sedimentation_hook`: a
+  sedimentation hook that changes nothing changes nothing; re-applying P3's
+  own tendencies and diagnosing the precipitation from them reproduces P3 (mass
+  conservation); zero tendencies give no precipitation.
 - `tests/single-process/p3_process_emulators`: P3 with emulators that return
   P3's own rates must be BFB with stock P3, for all 37 quantities through the
-  python backend, and for two emulators in a chain (python, then libtorch).
+  python backend, and for two emulators in a chain (python, then libtorch);
+  same with all sedimentation tendencies and precipitation (BFB), and with the
+  tendencies only (precipitation diagnosed, equal to round-off). Outputs are
+  written in full precision.
