@@ -12,6 +12,7 @@
 #include <ekat_comm.hpp>
 
 #include <functional>
+#include <initializer_list>
 #include <map>
 #include <string>
 
@@ -425,7 +426,17 @@ template <typename ScalarT, typename DeviceT> struct Functions {
     // Storage, (P3SedimentationRates::num_rates, ncol, nk_pack) each
     view_3d<Pack> tendencies, before;
     int apply_mask = 0;
+    // Species whose sedimentation is not run, because the hook replaces it:
+    // cloud if both qc and nc tendencies are in skip_mask, rain if qr and nr,
+    // ice if qi, ni, qm and bm. Their tendencies reach the hook as zero.
+    int skip_mask = 0;
     bool diagnose_precip_liq = false, diagnose_precip_ice = false;
+
+    bool skips (std::initializer_list<int> tends) const {
+      if (not active()) return false;
+      for (int t : tends) if (not (skip_mask & (1<<t))) return false;
+      return true;
+    }
 
     bool active () const { return static_cast<bool>(callback); }
   };

@@ -189,6 +189,14 @@ void ProcessEmulator::setup (const ekat::ParameterList& params_in)
   EKAT_REQUIRE_MSG (mode=="replace" or mode=="add", prefix + "mode must be 'replace' or 'add'.\n");
   m_add = mode=="add";
 
+  const auto physics = params.get<std::string>("physics", "run");
+  EKAT_REQUIRE_MSG (physics=="run" or physics=="skip", prefix + "physics must be 'run' or 'skip'.\n");
+  m_skip_physics = physics=="skip";
+  EKAT_REQUIRE_MSG (not (m_skip_physics and m_add),
+      prefix + "physics: skip needs mode: replace (there is no physics value to add to).\n");
+  EKAT_REQUIRE_MSG (not (m_skip_physics and params.isSublist("masks")),
+      prefix + "physics: skip cannot use masks (there is no physics value to fall back to).\n");
+
   m_input_names  = params.get<std::vector<std::string>>("inputs");
   m_output_names = params.get<std::vector<std::string>>("outputs");
   EKAT_REQUIRE_MSG (m_input_names.size()>0 and m_output_names.size()>0,

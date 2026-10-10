@@ -55,6 +55,10 @@ namespace scream
  *   fallback_scale:     (optional) sublist target: factor, applied to the
  *                       target where its mask is <= 0.5 (default 1)
  *   mode:     replace | add   overwrite the targets, or add the outputs to them
+ *   physics:  run | skip      (default run) with skip, the physics that computes
+ *                       the targets is not run where the cut point allows it
+ *                       (it is then an error to read the targets as inputs, or
+ *                       to use masks or mode add)
  *   options:            (optional) sublist of backend options, see the
  *                       InferenceConfig of each backend
  *   verbose:  bool
@@ -88,6 +92,10 @@ public:
 
   // The outputs that are targets (i.e., not masks)
   std::vector<std::string> target_names () const;
+
+  // Whether the physics that computes the targets may be skipped (physics: skip):
+  // the emulator replaces it, instead of overwriting what it computed
+  bool skips_physics () const { return m_skip_physics; }
 
   // Run the model on the inputs, and update the targets with its outputs.
   // Inputs and targets may be the same arrays.
@@ -159,6 +167,7 @@ private:
 
   std::string               m_name;
   bool                      m_add;
+  bool                      m_skip_physics = false;
   std::vector<std::string>  m_input_names, m_output_names;
   std::vector<Output>       m_outputs;
   std::map<std::string, Buffer> m_in_buffers, m_out_buffers;

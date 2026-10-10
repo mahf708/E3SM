@@ -59,6 +59,22 @@ the surface precipitation is diagnosed from what leaves the column,
 `-sum(tend*rho*dz)/rho_h2o`, unless `sedimentation_emulators_diagnose_precip`
 is false. `precip_liq_flux` (the rain flux profile) stays as P3 computed it.
 
+With `physics: skip`, sedimentation emulators replace P3's: the sedimentation of
+a species whose tendencies are all emulated with `physics: skip` is not run, and
+its tendencies reach the emulators as zero. The surface precipitation then
+comes from the emulators or is diagnosed (required). A replaced rain
+sedimentation leaves `precip_liq_flux` without its rain flux.
+
+```yaml
+  sedimentation_emulators: [rain_sed]
+  rain_sed:
+    backend: libtorch
+    model_path: /path/to/rain_sed.pt
+    physics: skip                   # P3 does not run rain sedimentation
+    inputs:  [qr, nr, rho, dz, cld_frac_r]
+    outputs: [qr_sed_tend, nr_sed_tend]
+```
+
 ## Configuration (p3 parameters)
 
 ```yaml

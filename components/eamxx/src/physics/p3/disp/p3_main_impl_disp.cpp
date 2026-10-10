@@ -470,27 +470,38 @@ Int Functions<Real,DefaultDevice>
     });
   }
 
+  // A sedimentation hook may replace the sedimentation of some species
+  const bool run_cloud_sed = not sed_hook.skips({SR::qc_sed_tend, SR::nc_sed_tend});
+  const bool run_rain_sed  = not sed_hook.skips({SR::qr_sed_tend, SR::nr_sed_tend});
+  const bool run_ice_sed   = not sed_hook.skips({SR::qi_sed_tend, SR::ni_sed_tend, SR::qm_sed_tend, SR::bm_sed_tend});
+
   // Cloud sedimentation:  (adaptive substepping)
-  cloud_sedimentation_disp(
-    qc_incld, rho, inv_rho, cld_frac_l, acn, inv_dz, lookup_tables.dnu_table_vals, workspace_mgr,
-    nj, nk, ktop, kbot, kdir, infrastructure.dt, inv_dt, infrastructure.predictNc,
-    qc, nc, nc_incld, mu_c, lamc, qc_sed, ntend_ignore,
-    diagnostic_outputs.precip_liq_surf, nucleationPossible, hydrometeorsPresent);
+  if (run_cloud_sed) {
+    cloud_sedimentation_disp(
+      qc_incld, rho, inv_rho, cld_frac_l, acn, inv_dz, lookup_tables.dnu_table_vals, workspace_mgr,
+      nj, nk, ktop, kbot, kdir, infrastructure.dt, inv_dt, infrastructure.predictNc,
+      qc, nc, nc_incld, mu_c, lamc, qc_sed, ntend_ignore,
+      diagnostic_outputs.precip_liq_surf, nucleationPossible, hydrometeorsPresent);
+  }
 
 
   // Rain sedimentation:  (adaptive substepping)
-  rain_sedimentation_disp(
-    rho, inv_rho, rhofacr, cld_frac_r, inv_dz, qr_incld, workspace_mgr,
-    lookup_tables.vn_table_vals, lookup_tables.vm_table_vals, nj, nk, ktop, kbot, kdir, infrastructure.dt, inv_dt, qr,
-    nr, nr_incld, mu_r, lamr, precip_liq_flux, qr_sed, ntend_ignore,
-    diagnostic_outputs.precip_liq_surf, nucleationPossible, hydrometeorsPresent, runtime_options);
+  if (run_rain_sed) {
+    rain_sedimentation_disp(
+      rho, inv_rho, rhofacr, cld_frac_r, inv_dz, qr_incld, workspace_mgr,
+      lookup_tables.vn_table_vals, lookup_tables.vm_table_vals, nj, nk, ktop, kbot, kdir, infrastructure.dt, inv_dt, qr,
+      nr, nr_incld, mu_r, lamr, precip_liq_flux, qr_sed, ntend_ignore,
+      diagnostic_outputs.precip_liq_surf, nucleationPossible, hydrometeorsPresent, runtime_options);
+  }
 
   // Ice sedimentation:  (adaptive substepping)
-  ice_sedimentation_disp(
-    rho, inv_rho, rhofaci, cld_frac_i, inv_dz, workspace_mgr, nj, nk, ktop, kbot,
-    kdir, infrastructure.dt, inv_dt, qi, qi_incld, ni, ni_incld,
-    qm, qm_incld, bm, bm_incld, qi_sed, ntend_ignore,
-    lookup_tables.ice_table_vals, diagnostic_outputs.precip_ice_surf, nucleationPossible, hydrometeorsPresent, runtime_options);
+  if (run_ice_sed) {
+    ice_sedimentation_disp(
+      rho, inv_rho, rhofaci, cld_frac_i, inv_dz, workspace_mgr, nj, nk, ktop, kbot,
+      kdir, infrastructure.dt, inv_dt, qi, qi_incld, ni, ni_incld,
+      qm, qm_incld, bm, bm_incld, qi_sed, ntend_ignore,
+      lookup_tables.ice_table_vals, diagnostic_outputs.precip_ice_surf, nucleationPossible, hydrometeorsPresent, runtime_options);
+  }
 
   if (sed_hook.active()) {
     p3_run_sedimentation_hook<Functions<Real,DefaultDevice>>(sed_hook, sed_vars, history_only, diagnostic_outputs, rho, dz,

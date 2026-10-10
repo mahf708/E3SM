@@ -72,6 +72,14 @@ if (EMULATOR_ENABLE_PYTHON)
   # The tendencies only: the surface precipitation is diagnosed from them
   CreateCase(sedimentation_diagnosed "" "sed_tends")
   CompareWithStock(sedimentation_diagnosed 1e-12)
+
+  # Rain sedimentation replaced (not run) by an emulator of zero tendencies:
+  # no rain reaches the surface
+  CreateCase(sedimentation_no_rain "" "rain_off")
+
+  # Replacing half of a species' sedimentation is refused at init
+  CreateCase(sedimentation_half_rain "" "half_rain")
+  set_tests_properties(p3_process_emulators_sedimentation_half_rain PROPERTIES WILL_FAIL TRUE)
 endif()
 
 if (EMULATOR_ENABLE_PYTHON AND EMULATOR_ENABLE_LIBTORCH)

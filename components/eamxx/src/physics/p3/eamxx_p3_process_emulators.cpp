@@ -8,6 +8,7 @@
 #include <ekat_assert.hpp>
 
 #include <algorithm>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -94,28 +95,43 @@ void P3Microphysics::initialize_process_emulators ()
 
   // Create the emulators of a list. is_input(name) says whether an input is one
   // of the quantities the emulators can change; target(name) registers a target.
-  auto create = [&](const std::string& list, auto&& is_input, auto&& target) {
+  // Also returns the targets of emulators that skip the physics (physics: skip),
+  // which no emulator of the list may read as an input: P3 does not compute them.
+  struct Created {
     std::vector<std::shared_ptr<ProcessEmulator>> emus;
     bool targets_as_inputs = false;
+    std::set<std::string> skipped;
+  };
+  auto create = [&](const std::string& list, auto&& is_input, auto&& target) {
+    Created c;
+    std::set<std::string> inputs;
     for (const auto& n : emulator_names(list)) {
       auto emu = std::make_shared<ProcessEmulator>(n, m_params.sublist(n));
       for (const auto& in : emu->input_names()) {
-        targets_as_inputs |= is_input(in);
+        c.targets_as_inputs |= is_input(in);
+        inputs.insert(in);
       }
-      m_atm_logger->info("[P3Microphysics] Emulator '" + n + "' (" + list + ") emulates:");
+      m_atm_logger->info("[P3Microphysics] Emulator '" + n + "' (" + list + ") " +
+                         (emu->skips_physics() ? "replaces" : "overwrites") + ":");
       for (const auto& t : emu->target_names()) {
         target(n, t);
+        if (emu->skips_physics()) c.skipped.insert(t);
         m_atm_logger->info("    " + t);
       }
-      emus.push_back(emu);
+      c.emus.push_back(emu);
     }
-    return std::make_pair(emus, targets_as_inputs);
+    for (const auto& t : c.skipped) {
+      EKAT_REQUIRE_MSG (inputs.count(t)==0,
+          "[P3Microphysics] Error! '" + t + "' is an input of an emulator in " + list + ", but an emulator\n"
+          "  with physics: skip replaces it, so P3 does not compute it.\n");
+    }
+    return c;
   };
 
   // Process rates
   {
     std::vector<int> emulated;
-    auto [emus, rates_as_inputs] = create("process_emulators",
+    auto [emus, rates_as_inputs, skipped_rates] = create("process_emulators",
       [](const std::string& in) { return PR::index(in)>=0; },
       [&](const std::string& n, const std::string& t) {
         const int r = PR::index(t);
@@ -124,6 +140,8 @@ void P3Microphysics::initialize_process_emulators ()
         emulated.push_back(r);
       });
     m_process_emulators = emus;
+    EKAT_REQUIRE_MSG (skipped_rates.empty(),
+        "[P3Microphysics] Error! physics: skip is not supported yet for process_emulators.\n");
     if (not emus.empty()) {
       auto& hook = m_hooks.process_rates;
       hook.process_rates = decltype(hook.process_rates)("p3_process_rates", m_num_cols, PR::num_rates, nk_pack);
@@ -150,7 +168,7 @@ void P3Microphysics::initialize_process_emulators ()
   {
     int mask = 0;
     bool precip_liq = false, precip_ice = false;
-    auto [emus, tends_as_inputs] = create("sedimentation_emulators",
+    auto [emus, tends_as_inputs, skipped] = create("sedimentation_emulators",
       [](const std::string& in) { return SR::index(in)>=0; },
       [&](const std::string& n, const std::string& t) {
         const int r = SR::index(t);
@@ -172,11 +190,40 @@ void P3Microphysics::initialize_process_emulators ()
       hook.tendencies = decltype(hook.tendencies)("p3_sed_tendencies", SR::num_rates, m_num_cols, nk_pack);
       hook.before     = decltype(hook.before)("p3_sed_before", SR::num_rates, m_num_cols, nk_pack);
       hook.apply_mask = mask;
+
+      // Species whose sedimentation the emulators replace: all of its tendencies, or none
+      for (const auto& species : std::vector<std::vector<int>>{
+             {SR::qc_sed_tend, SR::nc_sed_tend}, {SR::qr_sed_tend, SR::nr_sed_tend},
+             {SR::qi_sed_tend, SR::ni_sed_tend, SR::qm_sed_tend, SR::bm_sed_tend}}) {
+        int n = 0;
+        std::string names;
+        for (int r : species) {
+          n += skipped.count(SR::name(r));
+          names += std::string(names.empty() ? "" : ", ") + SR::name(r);
+        }
+        EKAT_REQUIRE_MSG (n==0 or n==static_cast<int>(species.size()),
+            "[P3Microphysics] Error! physics: skip replaces the sedimentation of a species as a whole.\n"
+            "  Emulate all of " + names + " with physics: skip, or none of them.\n");
+        if (n>0) {
+          for (int r : species) hook.skip_mask |= 1 << r;
+          m_atm_logger->info("[P3Microphysics] Sedimentation of " + names + " is replaced by emulators.");
+        }
+      }
+
       const bool diagnose = m_params.get<bool>("sedimentation_emulators_diagnose_precip", true);
       auto emulated = [&](const int r) { return (mask & (1 << r)) != 0; };
+      auto replaced = [&](const int r) { return (hook.skip_mask & (1 << r)) != 0; };
       hook.diagnose_precip_liq = diagnose and not precip_liq and
                                  (emulated(SR::qc_sed_tend) or emulated(SR::qr_sed_tend));
       hook.diagnose_precip_ice = diagnose and not precip_ice and emulated(SR::qi_sed_tend);
+      // Replaced species add nothing to P3's surface precipitation: it must come from somewhere
+      EKAT_REQUIRE_MSG (not (replaced(SR::qc_sed_tend) or replaced(SR::qr_sed_tend)) or
+                        precip_liq or hook.diagnose_precip_liq,
+          "[P3Microphysics] Error! The emulators replace cloud or rain sedimentation, but nothing provides\n"
+          "  precip_liq_surf: emulate it, or set sedimentation_emulators_diagnose_precip: true.\n");
+      EKAT_REQUIRE_MSG (not replaced(SR::qi_sed_tend) or precip_ice or hook.diagnose_precip_ice,
+          "[P3Microphysics] Error! The emulators replace ice sedimentation, but nothing provides\n"
+          "  precip_ice_surf: emulate it, or set sedimentation_emulators_diagnose_precip: true.\n");
       if (tends_as_inputs) {
         m_original_sedimentation_tendencies = decltype(m_original_sedimentation_tendencies)(
             "p3_original_sed_tendencies", SR::num_rates, m_num_cols, nk_pack);

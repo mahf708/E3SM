@@ -190,8 +190,10 @@ struct UnitWrap::UnitTest<D>::TestP3ProcessRates : public UnitWrap::UnitTest<D>:
     REQUIRE (num_calls == 1);
   }
 
-  // With a sedimentation hook, sedimentation tendencies can be changed by name
-  void run_sedimentation_hook ()
+  // With a sedimentation hook, sedimentation tendencies can be changed by name.
+  // Warm columns test liquid (cloud and rain), cold ones ice: in cold columns,
+  // rain can freeze within the step, leaving no liquid to sediment.
+  void run_sedimentation_hook (const bool warm)
   {
     using P3F   = Functions;
     using SR    = P3SedimentationRates;
@@ -200,7 +202,7 @@ struct UnitWrap::UnitTest<D>::TestP3ProcessRates : public UnitWrap::UnitTest<D>:
 
     auto engine = Base::get_engine();
 
-    // Columns with cloud, rain and ice, all of which sediment
+    // Columns with cloud and rain, or with ice, which sediment
     //               its, ite, kts, kte, it,  dt, do_predict_nc, do_prescribed_CCN
     P3MainData d_ref(1,   8,   1,  72,  1, 300, true,          false);
     d_ref.randomize(engine, {
@@ -217,18 +219,18 @@ struct UnitWrap::UnitTest<D>::TestP3ProcessRates : public UnitWrap::UnitTest<D>:
         {d_ref.inv_qc_relvar  , {1      , 1}},
         {d_ref.qc             , {1.0e-5 , 1.0e-3}},
         {d_ref.nc             , {1.0e+07, 1.0e+08}},
-        {d_ref.qr             , {1.0e-5 , 1.0e-3}},
-        {d_ref.nr             , {1.0e+03, 1.0e+05}},
-        {d_ref.qi             , {1.0e-5 , 1.0e-4}},
+        {d_ref.qr             , warm ? std::pair<Real,Real>{1.0e-5, 1.0e-3} : std::pair<Real,Real>{0, 0}},
+        {d_ref.nr             , warm ? std::pair<Real,Real>{1.0e+03, 1.0e+05} : std::pair<Real,Real>{0, 0}},
+        {d_ref.qi             , warm ? std::pair<Real,Real>{0, 0} : std::pair<Real,Real>{1.0e-5, 1.0e-4}},
         {d_ref.qm             , {0      , 0}},
-        {d_ref.ni             , {1.0e+04, 1.0e+05}},
+        {d_ref.ni             , warm ? std::pair<Real,Real>{0, 0} : std::pair<Real,Real>{1.0e+04, 1.0e+05}},
         {d_ref.bm             , {0      , 0}},
-        {d_ref.qv             , {1.0e-3 , 5.0e-3}},
-        {d_ref.qv_prev        , {1.0e-3 , 5.0e-3}},
-        {d_ref.th_atm         , {2.4e+02, 2.6e+02}},
-        {d_ref.t_prev         , {2.4e+02, 2.6e+02}}
+        {d_ref.qv             , warm ? std::pair<Real,Real>{8.0e-3, 1.2e-2} : std::pair<Real,Real>{1.0e-3, 5.0e-3}},
+        {d_ref.qv_prev        , warm ? std::pair<Real,Real>{8.0e-3, 1.2e-2} : std::pair<Real,Real>{1.0e-3, 5.0e-3}},
+        {d_ref.th_atm         , warm ? std::pair<Real,Real>{2.85e+02, 2.95e+02} : std::pair<Real,Real>{2.4e+02, 2.6e+02}},
+        {d_ref.t_prev         , warm ? std::pair<Real,Real>{2.85e+02, 2.95e+02} : std::pair<Real,Real>{2.4e+02, 2.6e+02}}
     });
-    P3MainData d_noop(d_ref), d_reapply(d_ref), d_zero(d_ref);
+    P3MainData d_noop(d_ref), d_reapply(d_ref), d_zero(d_ref), d_wipe(d_ref), d_record(d_ref), d_skip(d_ref);
 
     auto run = [](P3MainData& d, const Hook& hook) {
       Hooks hooks;
@@ -288,34 +290,81 @@ struct UnitWrap::UnitTest<D>::TestP3ProcessRates : public UnitWrap::UnitTest<D>:
     run(d_zero, zero);
     REQUIRE (num_calls == 3);
 
-    // Tendencies that remove more than there is: the state is clipped at zero,
-    // and the diagnosed precip is what actually left the column
-    P3MainData d_wipe(d_ref);
-    std::vector<Real> expected_liq(ncol, 0);
-    auto wipe = hook();
-    wipe.apply_mask = (1<<SR::qc_sed_tend) | (1<<SR::qr_sed_tend);
-    wipe.diagnose_precip_liq = true;
-    wipe.callback = [&](const typename P3F::P3SedimentationState& s) {
-      ++num_calls;
-      constexpr Real rho_h2o = 1000;
-      auto qc  = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.state.at("qc"));
-      auto qr  = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.state.at("qr"));
-      auto rho = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.state.at("rho"));
-      auto dz  = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.state.at("dz"));
-      for (int i = 0; i < ncol; ++i) {
-        for (int k = 0; k < nk; ++k) {
-          const int p = k / Pack::n, l = k % Pack::n;
-          expected_liq[i] += (qc(i,p)[l] + qr(i,p)[l]) * rho(i,p)[l] * dz(i,p)[l] / (rho_h2o * s.dt);
+    if (warm) {
+      // Tendencies that remove more than there is: the state is clipped at zero,
+      // and the diagnosed precip is what actually left the column
+      std::vector<Real> expected_liq(ncol, 0);
+      auto wipe = hook();
+      wipe.apply_mask = (1<<SR::qc_sed_tend) | (1<<SR::qr_sed_tend);
+      wipe.diagnose_precip_liq = true;
+      wipe.callback = [&](const typename P3F::P3SedimentationState& s) {
+        ++num_calls;
+        constexpr Real rho_h2o = 1000;
+        auto qc  = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.state.at("qc"));
+        auto qr  = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.state.at("qr"));
+        auto rho = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.state.at("rho"));
+        auto dz  = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.state.at("dz"));
+        for (int i = 0; i < ncol; ++i) {
+          for (int k = 0; k < nk; ++k) {
+            const int p = k / Pack::n, l = k % Pack::n;
+            expected_liq[i] += (qc(i,p)[l] + qr(i,p)[l]) * rho(i,p)[l] * dz(i,p)[l] / (rho_h2o * s.dt);
+          }
+        }
+        for (const int r : {int(SR::qc_sed_tend), int(SR::qr_sed_tend)}) {
+          Kokkos::deep_copy(Kokkos::subview(s.tendencies, r, Kokkos::ALL, Kokkos::ALL), Pack(-1.0e3));
+        }
+      };
+      run(d_wipe, wipe);
+      REQUIRE (num_calls == 4);
+      for (Int i = 0; i < ncol; ++i) {
+        REQUIRE (d_wipe.precip_liq_surf[i] == Approx(expected_liq[i]).epsilon(1e-10));
+      }
+
+    }
+
+    // Rain (or ice) sedimentation replaced (skipped): its tendencies reach the
+    // hook as zero; a hook that puts back P3's own reproduces P3 (to round-off)
+    const std::vector<int> species = warm ? std::vector<int>{SR::qr_sed_tend, SR::nr_sed_tend}
+      : std::vector<int>{SR::qi_sed_tend, SR::ni_sed_tend, SR::qm_sed_tend, SR::bm_sed_tend};
+    using host_tend_t = typename P3F::template view_3d<Pack>::host_mirror_type;
+    host_tend_t stock;
+    auto record = hook();
+    record.callback = [&](const typename P3F::P3SedimentationState& s) {
+      stock = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.tendencies);
+    };
+    run(d_record, record);
+
+    auto skip = hook();
+    for (int r : species) skip.skip_mask |= 1 << r;
+    skip.apply_mask = skip.skip_mask;
+    (warm ? skip.diagnose_precip_liq : skip.diagnose_precip_ice) = true;
+    bool rain_was_zero = true;
+    skip.callback = [&](const typename P3F::P3SedimentationState& s) {
+      auto t = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), s.tendencies);
+      for (const int r : species) {
+        for (int i = 0; i < ncol; ++i) {
+          for (int k = 0; k < nk; ++k) {
+            rain_was_zero &= t(r, i, k / Pack::n)[k % Pack::n] == 0;
+          }
+          for (int p = 0; p < ekat::npack<Pack>(nk); ++p) {
+            t(r, i, p) = stock(r, i, p);
+          }
         }
       }
-      for (const int r : {int(SR::qc_sed_tend), int(SR::qr_sed_tend)}) {
-        Kokkos::deep_copy(Kokkos::subview(s.tendencies, r, Kokkos::ALL, Kokkos::ALL), Pack(-1.0e3));
-      }
+      Kokkos::deep_copy(s.tendencies, t);
     };
-    run(d_wipe, wipe);
-    REQUIRE (num_calls == 4);
+    run(d_skip, skip);
+    REQUIRE (rain_was_zero);
+    // (round-off can move a value across one of P3's thresholds at qsmall)
+    constexpr Real qsmall = 1e-14;
+    for (Int t = 0; t < d_ref.total(d_ref.qr); ++t) {
+      REQUIRE(d_skip.qr[t] == Approx(d_ref.qr[t]).epsilon(1e-10).margin(qsmall));
+      REQUIRE(d_skip.qi[t] == Approx(d_ref.qi[t]).epsilon(1e-10).margin(qsmall));
+      REQUIRE(d_skip.qc[t] == Approx(d_ref.qc[t]).epsilon(1e-10).margin(qsmall));
+    }
     for (Int i = 0; i < ncol; ++i) {
-      REQUIRE (d_wipe.precip_liq_surf[i] == Approx(expected_liq[i]).epsilon(1e-10));
+      REQUIRE(d_skip.precip_liq_surf[i] == Approx(d_ref.precip_liq_surf[i]).epsilon(1e-8).margin(1e-20));
+      REQUIRE(d_skip.precip_ice_surf[i] == Approx(d_ref.precip_ice_surf[i]).epsilon(1e-8).margin(1e-20));
     }
 
     const auto tot = d_ref.total(d_ref.qc);
@@ -326,9 +375,9 @@ struct UnitWrap::UnitTest<D>::TestP3ProcessRates : public UnitWrap::UnitTest<D>:
       REQUIRE(d_noop.qi[t] == d_ref.qi[t]);
       REQUIRE(d_noop.ni[t] == d_ref.ni[t]);
       REQUIRE(d_noop.th_atm[t] == d_ref.th_atm[t]);
-      REQUIRE(d_reapply.qc[t] == Approx(d_ref.qc[t]).epsilon(1e-10).margin(1e-20));
-      REQUIRE(d_reapply.qr[t] == Approx(d_ref.qr[t]).epsilon(1e-10).margin(1e-20));
-      REQUIRE(d_reapply.qi[t] == Approx(d_ref.qi[t]).epsilon(1e-10).margin(1e-20));
+      REQUIRE(d_reapply.qc[t] == Approx(d_ref.qc[t]).epsilon(1e-10).margin(qsmall));
+      REQUIRE(d_reapply.qr[t] == Approx(d_ref.qr[t]).epsilon(1e-10).margin(qsmall));
+      REQUIRE(d_reapply.qi[t] == Approx(d_ref.qi[t]).epsilon(1e-10).margin(qsmall));
     }
     Real liq_max = 0, ice_max = 0;
     for (Int i = 0; i < ncol; ++i) {
@@ -341,8 +390,7 @@ struct UnitWrap::UnitTest<D>::TestP3ProcessRates : public UnitWrap::UnitTest<D>:
       liq_max = std::max(liq_max, d_ref.precip_liq_surf[i]);
       ice_max = std::max(ice_max, d_ref.precip_ice_surf[i]);
     }
-    REQUIRE (liq_max > 0);
-    REQUIRE (ice_max > 0);
+    REQUIRE ((warm ? liq_max : ice_max) > 0);
   }
 #endif
 };
@@ -379,7 +427,9 @@ TEST_CASE("p3_sedimentation_hook", "[p3_functions]")
 {
   using T = scream::p3::unit_test::UnitWrap::UnitTest<scream::DefaultDevice>::TestP3ProcessRates;
 
-  T t; t.run_sedimentation_hook();
+  T t;
+  SECTION ("liquid") { t.run_sedimentation_hook(true); }
+  SECTION ("ice")    { t.run_sedimentation_hook(false); }
 }
 #endif
 

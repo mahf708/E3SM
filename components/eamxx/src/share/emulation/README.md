@@ -31,6 +31,8 @@ my_emulator:
   fallback_scale:                 # optional: scale the gated target where the mask is <= 0.5
     qc2qr_autoconv_tend: 0.5
   mode: replace                   # replace | add (add the outputs to the targets)
+  physics: run                    # run | skip: with skip, the physics that computes the
+                                  # targets is not run, where the cut point allows it
   options:                        # backend options (see the backend headers in components/emulators)
     python_module: my_module
     python_path: /path/to/module
@@ -42,6 +44,27 @@ returning an object with `infer(inputs, outputs)` (dicts by name; outputs are
 written in place). A TorchScript model gets the inputs as positional
 arguments of `forward()`, in the configured order, and returns the outputs
 (a tensor, or a tuple) in the configured order.
+
+A target the model does not write keeps its value (in replace mode).
+
+## Overwrite, or replace
+
+By default an emulator **overwrites**: the physics runs, then the emulator
+rewrites some of its results. That is what lets an emulator read the physics'
+own value of what it emulates, correct it (`mode: add`), or be checked BFB with
+an identity model, but it saves no time.
+
+With `physics: skip`, an emulator **replaces**: the physics that computes its
+targets is not run at all. Each cut point decides what it can skip, and refuses
+at init what it cannot (reading a replaced target as an input, masks, `mode:
+add`, part of a computation that produces several targets):
+
+| cut point | what `physics: skip` skips |
+|---|---|
+| whole process | the process itself, with `field_emulators_mode: replace` |
+| P3 sedimentation | the sedimentation of each species whose tendencies are all replaced: cloud (`qc`, `nc`), rain (`qr`, `nr`), ice (`qi`, `ni`, `qm`, `bm`) |
+| P3 process rates | not supported yet |
+| SHOC eddy diffusivities | not supported yet |
 
 ## No copies
 
