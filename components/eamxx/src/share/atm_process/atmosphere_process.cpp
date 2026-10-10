@@ -12,6 +12,10 @@
 namespace py = pybind11;
 #endif
 
+#ifdef EAMXX_HAS_PROCESS_EMULATORS
+#include "share/emulation/eamxx_field_emulators.hpp"
+#endif
+
 #include <ekat_assert.hpp>
 
 #include <set>
@@ -96,6 +100,16 @@ AtmosphereProcess (const ekat::Comm& comm, const ekat::ParameterList& params)
            " enable_energy_fixer_debug_info is true, which is not allowed. \n");
 
   m_internal_diagnostics_level = m_params.get<int>("internal_diagnostics_level", 0);
+
+  if (m_params.isParameter("field_emulators") and
+      not m_params.get<std::vector<std::string>>("field_emulators").empty()) {
+#ifdef EAMXX_HAS_PROCESS_EMULATORS
+    m_field_emulators = std::make_shared<FieldEmulators>(m_params.name(), m_params);
+#else
+    EKAT_ERROR_MSG ("Error! In param list " + m_params.name() + ", field_emulators requires "
+                    "EAMXX_ENABLE_PROCESS_EMULATORS=ON.\n");
+#endif
+  }
 #ifdef EAMXX_HAS_PYTHON
   if (m_params.get("py_module_name",std::string(""))!="") {
     auto& pysession = PySession::get();
@@ -126,6 +140,23 @@ void AtmosphereProcess::initialize (const TimeStamp& t0, const RunType run_type)
   set_fields_and_groups_pointers();
   m_start_of_step_ts = m_end_of_step_ts = t0;
   initialize_impl(run_type);
+
+#ifdef EAMXX_HAS_PROCESS_EMULATORS
+  if (m_field_emulators) {
+    // The fields of the process, including those of its groups
+    auto fields_in  = get_fields_in();
+    auto fields_out = get_fields_out();
+    for (const auto& g : get_groups_in()) {
+      for (const auto& [n, f] : g.individual_fields()) fields_in.push_back(f);
+    }
+    for (const auto& g : get_groups_out()) {
+      for (const auto& [n, f] : g.individual_fields()) fields_out.push_back(f);
+    }
+    m_field_emulators->set_fields(fields_in, fields_out);
+    log (LogLevel::info, "  " + name() + " runs field emulators " +
+         std::string(m_field_emulators->replaces_process() ? "instead of the process" : "after the process"));
+  }
+#endif
 
   log (LogLevel::info,"  Initializing " + name() + "... done!");
   m_atm_logger->flush(); // During init, flush often (to help debug crashes)
@@ -176,8 +207,20 @@ void AtmosphereProcess::run (const double dt) {
       print_global_state_hash(name() + "-pre-sc-" + std::to_string(m_subcycle_iter),
                               m_start_of_step_ts, true);
 
-    // Run derived class implementation
+    // Run derived class implementation, and/or its emulators
+#ifdef EAMXX_HAS_PROCESS_EMULATORS
+    if (m_field_emulators) {
+      m_field_emulators->pre_run();
+      if (not m_field_emulators->replaces_process()) {
+        run_impl(dt_sub);
+      }
+      m_field_emulators->run();
+    } else {
+      run_impl(dt_sub);
+    }
+#else
     run_impl(dt_sub);
+#endif
 
     if (m_internal_diagnostics_level > 0)
       // Print hash of OUTPUTS/INTERNALS after run

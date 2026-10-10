@@ -12,6 +12,11 @@ target_link_libraries(eamxx_atm_process PUBLIC
   eamxx_property_checks
   eamxx_data_managers)
 
+if (TARGET eamxx_process_emulator)
+  # Emulators of whole processes (field_emulators)
+  target_link_libraries(eamxx_atm_process PUBLIC eamxx_process_emulator)
+endif()
+
 if (NOT SCREAM_LIB_ONLY)
   add_subdirectory(tests)
 endif()

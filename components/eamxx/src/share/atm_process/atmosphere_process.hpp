@@ -32,6 +32,8 @@ class array;
 
 namespace scream
 {
+
+class FieldEmulators;
 /*
  *  The abstract interface of a process of the atmosphere (AP)
  *
@@ -628,6 +630,9 @@ protected:
   //       manually call std::any_cast<pybind11::array> on the fields
   //       and std::any_cast<pybind11::module> on the module
   std::any  m_py_module;
+
+  // Emulators of the whole process (field_emulators), if any
+  std::shared_ptr<FieldEmulators> m_field_emulators;
 
   strmap_t<strmap_t<std::any>> m_py_fields_dev;
   strmap_t<strmap_t<std::any>> m_py_fields_host;

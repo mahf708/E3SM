@@ -28,6 +28,11 @@ add_subdirectory(remap)
 # Data managers structures
 add_subdirectory(data_managers)
 
+# Emulators of physics process rates, or of whole processes
+if (EAMXX_ENABLE_PROCESS_EMULATORS)
+  add_subdirectory(emulation)
+endif()
+
 # Atm process
 add_subdirectory(atm_process)
 
@@ -36,11 +41,6 @@ add_subdirectory(io)
 
 # Algorithm library
 add_subdirectory(algorithm)
-
-# Emulators of physics process rates
-if (EAMXX_ENABLE_PROCESS_EMULATORS)
-  add_subdirectory(emulation)
-endif()
 
 # For bwd compatibility: a "catch" all interface lib of all the stuff in the share folder
 add_library(scream_share INTERFACE)
