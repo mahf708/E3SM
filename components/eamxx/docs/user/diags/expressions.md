@@ -128,6 +128,14 @@ Notes:
   never read.
 - `where` takes a single comparison. `and`/`or` are not supported; chain
   `where(..)` calls instead.
+- **A scalar threshold is in the field's own units, as the model stores them.**
+  `T_mid.where(T_mid<273.15)` is degrees kelvin because that is what `T_mid`
+  holds; `p_mid.where(p_mid>85000)` is pascals, not hectopascals. There is
+  nowhere to write a unit on the number, so nothing can check it for you --
+  the model's base units are the contract. A comparison between two *fields*
+  is checked: `T_mid.where(T_mid>qv)` is rejected, because both operands carry
+  units and they disagree. (Fields that never declared units are not checked,
+  since a missing declaration is not evidence of a mismatch.)
 - **`mask` and `lev` are placeholders, not fields.** Neither exists in the field
   manager, and neither means anything on its own. `mask` is only legal as the
   receiver of `.where(..)`: `mask.where(cond)` is the 0/1 indicator of `cond`
@@ -175,8 +183,13 @@ xarray, on the same arguments. The rest have no xarray spelling we could adopt:
 | `over_dt`, `tend` | no xarray equivalent |
 | `mean('lev', weights=..)` | xarray would be `weighted(dp).mean('lev')`, again a chain |
 
-`X.mean('lev', weights='dp')` is `(X*dp).sum('lev')/dp.sum('lev')`, but computed
-in one sweep rather than as three diagnostics.
+`X.mean('lev', weights='dp')` is `(X*dp).sum('lev')/dp.sum('lev')`, expressed as
+one diagnostic rather than as a graph of three. One diagnostic object is not the
+same thing as one kernel: `VertContract` updates its weight field, contracts a
+numerator, contracts a denominator, and divides. What the method form buys you is
+a named, unit-checked, mask-aware primitive, not a fused sweep. (The internal
+`1/g` that converts pressure thickness to mass per area cancels between numerator
+and denominator, so the explicit spelling needs no gravity correction to match.)
 
 Two operand names have no xarray analogue at all, because they are not fields:
 `mask` and `lev`, both inherited from the underscore syntax and both legal only

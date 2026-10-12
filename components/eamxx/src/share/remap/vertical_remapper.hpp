@@ -70,6 +70,13 @@ public:
   void extrapolate (const Field& f_src, const Field& f_tgt,
                     const Field& p_src, const Field& p_tgt) const;
 
+  // Finding 25: ekat::LinInterp has no notion of a fill value, so a target
+  // level bracketed by one masked and one unmasked source level comes back as
+  // w*fill_value + (1-w)*y, which is neither data nor fill. This re-masks any
+  // target level whose bracketing source levels are not both valid.
+  void mask_fill_contaminated (const Field& f_src, const Field& f_tgt,
+                               const Field& p_src, const Field& p_tgt) const;
+
   template<int N>
   void setup_lin_interp (const ekat::LinInterp<Real,N>& lin_interp,
                          const Field& p_src, const Field& p_tgt) const;

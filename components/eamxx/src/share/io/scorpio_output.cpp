@@ -197,7 +197,19 @@ AtmosphereOutput::AtmosphereOutput(const ekat::Comm &comm, const ekat::Parameter
   }
 
   // Then we 1) create aliases, and b) create diagnostics, adding alias/diag fields to fm_model
+  // Parsing, call validation, lowering and dependency resolution all happen in
+  // here, once per stream. That is the "setup cost" half of the claim that
+  // expressions are free at run time, so it needs a number of its own.
+  start_timer("EAMxx::IO::setup_fields");
   process_requested_fields ();
+  stop_timer("EAMxx::IO::setup_fields");
+
+  // Report the lowered graph. This is the cheapest way to see how many
+  // diagnostic objects a stream actually built, which is not obvious from the
+  // request list: nested subexpressions add nodes, and equal requests share
+  // them.
+  m_atm_logger->debug("[EAMxx::scorpio_output] stream '" + m_stream_name + "': "
+      + std::to_string(m_diagnostics.size()) + " diagnostic object(s) lowered");
 
   // Avg count only makes sense if we have
   //  - non-instant output
@@ -482,7 +494,12 @@ run (const std::string& filename, const util::TimeStamp& ts,
 
   // Update all diagnostics, we need to do this before applying the remapper
   // to make sure that the remapped fields are the most up to date.
+  // This is the timer that separates expression evaluation from everything
+  // else the stream does. Without it an every-step output stream is an I/O
+  // benchmark, since the remap timers below were the only ones here.
+  start_timer("EAMxx::IO::diagnostics");
   computes(ts,allow_invalid_fields);
+  stop_timer("EAMxx::IO::diagnostics");
 
   auto apply_remap = [&](AbstractRemapper& remapper)
   {
@@ -519,6 +536,7 @@ run (const std::string& filename, const util::TimeStamp& ts,
   // We do count++ only where the fields are NOT equal to the fill value.
   // Note, we assume that all fields that share a layout are also masked/filled in the same way.
   if (m_track_avg_cnt) {
+    start_timer("EAMxx::IO::avg_cnt");
     // Since 2+ fields may have same avg count, make sure we update the counts only ONCE.
     for (auto& [fname, count] : m_field_to_avg_count) {
       count.get_header().set_extra_data("updated",false);
@@ -559,6 +577,10 @@ run (const std::string& filename, const util::TimeStamp& ts,
 
       // Handle writing the average count variables to file
       if (is_write_step) {
+        // NOTE: this nests inside EAMxx::IO::avg_cnt, since the counts are
+        // written from the same loop that updates them. GPTL reports the
+        // nesting, so the parent's exclusive time is still the counting work.
+        start_timer("EAMxx::IO::sync_and_write");
         // Bring data to host
         count.sync_to_host();
 
@@ -578,6 +600,7 @@ run (const std::string& filename, const util::TimeStamp& ts,
         auto func_finish = std::chrono::steady_clock::now();
         auto duration_loc = std::chrono::duration_cast<std::chrono::milliseconds>(func_finish - func_start);
         duration_write += duration_loc.count();
+        stop_timer("EAMxx::IO::sync_and_write");
 
         // If it's an output step, for Avg we need to ensure count>threshold.
         // If count<=threshold, we set count=fill_value, so that fill_val propagates
@@ -597,6 +620,7 @@ run (const std::string& filename, const util::TimeStamp& ts,
       }
       count.get_header().set_extra_data("updated",true);
     }
+    stop_timer("EAMxx::IO::avg_cnt");
   }
 
   // Take care of updating and possibly writing fields.
@@ -617,6 +641,7 @@ run (const std::string& filename, const util::TimeStamp& ts,
         "This indicates the field was marked may_be_filled after output initialization or tracking logic missed it." );
     }
 
+    start_timer("EAMxx::IO::accumulate");
     switch (m_avg_type) {
       case OutputAvgType::Instant:
         f_out.deep_copy(f_in);  break; // Note: if f_in aliases f_out, this is a no-op
@@ -629,6 +654,7 @@ run (const std::string& filename, const util::TimeStamp& ts,
       default:
         EKAT_ERROR_MSG ("Unexpected/unsupported averaging type.\n");
     }
+    stop_timer("EAMxx::IO::accumulate");
 
     if (is_write_step) {
       // NOTE: we don't divide by the avg cnt for checkpoint output
@@ -651,6 +677,7 @@ run (const std::string& filename, const util::TimeStamp& ts,
       }
 
       // Write to file
+      start_timer("EAMxx::IO::sync_and_write");
       auto func_start = std::chrono::steady_clock::now();
 
       if (m_transpose) {
@@ -670,6 +697,7 @@ run (const std::string& filename, const util::TimeStamp& ts,
       auto func_finish = std::chrono::steady_clock::now();
       auto duration_loc = std::chrono::duration_cast<std::chrono::milliseconds>(func_finish - func_start);
       duration_write += duration_loc.count();
+      stop_timer("EAMxx::IO::sync_and_write");
     }
   }
 
@@ -1139,16 +1167,35 @@ process_requested_fields()
     name = tokens[0];
   }
 
-  // In case someone has an alias of an alias, we need to resolve the TRUE orig names.
-  bool has_multiple_aliasing_layers = false;
-  do {
-    for (auto it : m_alias_to_orig) {
-      if (m_alias_to_orig.count(it.second)>0) {
-        it.second = m_alias_to_orig[it.second];
-        has_multiple_aliasing_layers = true;
-      }
+  // An alias may point at another alias ('b := a' together with 'c := b').
+  // We deliberately do NOT flatten the chain here. The processing loop below
+  // defers an alias whose target is not yet in the field manager, so 'c'
+  // resolves on a pass after 'b' does, and 'alias_of' then records what the
+  // user actually wrote rather than a rewritten target.
+  //
+  // What that loop cannot detect is a CYCLE: with 'a := b' and 'b := a'
+  // neither name ever reaches the field manager, so it makes no progress and
+  // dies on the generic "endless loop" guard further down, which cannot say
+  // why. Diagnose it here, where the whole chain is in hand.
+  for (const auto& it : m_alias_to_orig) {
+    const auto& alias = it.first;
+    std::vector<std::string> chain{alias};
+    auto cur = it.second;
+    while (m_alias_to_orig.count(cur)>0) {
+      chain.push_back(cur);
+      EKAT_REQUIRE_MSG (cur!=alias,
+          "Error! Circular alias definition.\n"
+          " - stream name: " + m_stream_name + "\n"
+          " - cycle: " + ekat::join(chain," := ") + "\n");
+      // A chain longer than the number of aliases must have revisited some
+      // name, even one this walk did not start from.
+      EKAT_REQUIRE_MSG (chain.size()<=m_alias_to_orig.size(),
+          "Error! Alias chain does not terminate.\n"
+          " - stream name: " + m_stream_name + "\n"
+          " - chain: " + ekat::join(chain," := ") + "\n");
+      cur = m_alias_to_orig.at(cur);
     }
-  } while (has_multiple_aliasing_layers);
+  }
 
   EKAT_REQUIRE_MSG (not has_duplicates(m_fields_names),
       "Error! The list of requested output fields contains duplicates.\n"
@@ -1194,34 +1241,59 @@ process_requested_fields()
     // Add the field to the diag group
     diag_field.get_header().get_tracking().add_group("diagnostic");
 
-    // Some diags need some extra setup or trigger extra behaviors
-    std::string diag_avg_cnt_name = "";
-    auto& params = diag->get_params();
-    if (diag->name()=="FieldAtPressureLevel") {
-      diag_avg_cnt_name = "_"
-                        + params.get<std::string>("pressure_value")
-                        + params.get<std::string>("pressure_units");
-      m_track_avg_cnt |= m_avg_type!=OutputAvgType::Instant;
-    } else if (diag->name()=="FieldAtHeight") {
-      if (params.get<std::string>("surface_reference")=="sealevel") {
-        diag_avg_cnt_name = "_"
-                          + params.get<std::string>("height_value")
-                          + params.get<std::string>("height_units") + "_above_sealevel";
-        m_track_avg_cnt |= m_avg_type!=OutputAvgType::Instant;
-      }
-    } else if (diag->name()=="AerosolOpticalDepth550nm") {
-      m_track_avg_cnt = m_track_avg_cnt || m_avg_type!=OutputAvgType::Instant;
-      diag_avg_cnt_name = "_" + diag->name();
-    }
-    else if (diag_field.get_header().has_extra_data("mask_data")) {
-      m_track_avg_cnt = m_track_avg_cnt || m_avg_type!=OutputAvgType::Instant;
-      diag_avg_cnt_name = "_" + diag_field.name();
-    }
-
-    // If specified, set avg_cnt tracking for this diagnostic.
-    if (m_track_avg_cnt) {
-      m_field_to_avg_cnt_suffix.emplace(diag_field.name(),diag_avg_cnt_name);
-    }
+    // Diagnostics are enrolled exactly like model fields: a count of their
+    // own, if and only if their OUTPUT can contain fill values.
+    //
+    // There used to be an exception here. FieldAtPressureLevel, FieldAtHeight
+    // at sea level, and AerosolOpticalDepth550nm shared ONE count between
+    // every field they produce at the same level, justified by the claim that
+    // those fields are "invalid in exactly the same places: every field
+    // interpolated to 500hPa is missing wherever 500hPa is below ground".
+    //
+    // That is false whenever the INPUT carries a mask of its own.
+    // field_at_pressure_level.cpp validates a column only where the level is
+    // in range AND the bracketing source values are valid,
+    //
+    //     if (not masked or (fmask(icol,k1)!=0 and fmask(icol,k1-1)!=0))
+    //
+    // and field_at_height.cpp does the same. Only the first half of that is
+    // geometric. Two fields at one level therefore differ wherever their
+    // inputs do, and sharing a denominator divides one of them by a count that
+    // never saw its samples.
+    //
+    // Measured, on a two-day ne4pg2 case asking for T_mid_at_500hPa alongside
+    // Tmasked_at_500hPa with Tmasked := T_mid.where(qv>0.01), where qv>0.01 is
+    // nowhere true at 500hPa: the file carried one avg_count_500hPa_ncol equal
+    // to 12, and Tmasked_at_500hPa was written as 0 K in all 1536 columns with
+    // no fill flag. Its accumulator was 0 because every contribution was fill
+    // and correctly skipped; dividing that by 12 instead of by 0 turned "no
+    // valid samples" into a temperature of absolute zero. The same expression
+    // spelled 'p := T_mid.where(qv>0.01).interp(p_mid=500)' came back correctly
+    // as all-fill, because ':=' makes the written name an alias, and aliases
+    // are enrolled per-field below. So the bug was reachable only through the
+    // ordinary YAML spelling, which is the one users write.
+    //
+    // The exception bought one count variable per level instead of one per
+    // field. It is not worth a fabricated field, and per-field counts are
+    // already what every other fill-aware output gets after finding 21.
+    //
+    // Note the deleted branch also set m_track_avg_cnt for a FieldAtHeight
+    // whose input has no mask. Such an output is not fill-aware at all --
+    // field_at_height.cpp extrapolates rather than filling when it has no
+    // input mask -- so it needs no count, and check_for_avg_cnt correctly
+    // gives it none.
+    //
+    // Both halves of that rule matter, and an earlier version got both wrong.
+    // Keying enrollment on the class list alone left a fill-aware output with
+    // no count at all -- an averaged X.where(C) or X.tend() would reach the
+    // safety check in run(). And falling through to an emplace guarded by the
+    // stream-level m_track_avg_cnt flag, with an empty suffix, gave whatever
+    // did get enrolled a count keyed only by LAYOUT, shared with every other
+    // fill-aware field of the same shape. That is correct only when those
+    // fields happen to carry the same mask, and silently divides by the wrong
+    // denominator when they do not. Which of the two happened depended on the
+    // order in which the stream's requests were resolved.
+    check_for_avg_cnt(diag_field);
   };
 
   // Now process each requested field, if possible. We can process a field if either:
@@ -1271,6 +1343,14 @@ process_requested_fields()
           const auto& orig = fm_model->get_field(m_alias_to_orig[name]);
           auto alias = orig.alias(name);
           fm_model->add_field(alias);
+          // An alias shares its target's header extra data, so it is
+          // fill-aware exactly when the target is. It still needs enrolling
+          // under its OWN name: the stream writes 'a1', and looks its avg
+          // count up by that name, while the target was enrolled as the
+          // diagnostic's internal name ('X_where_C1_gt_0'). Miss that and the
+          // lookup falls through to a count keyed only by layout, shared with
+          // every other fill-aware field of the same shape.
+          check_for_avg_cnt(alias);
           remove_these.insert(name);
         }
       } else {
