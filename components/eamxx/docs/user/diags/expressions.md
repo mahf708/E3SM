@@ -127,7 +127,11 @@ Notes:
   that of `Y`. Notice that `Y` is only used for its layout, its values are
   never read.
 - `where` takes a single comparison. `and`/`or` are not supported; chain
-  `where(..)` calls instead.
+  `where(..)` calls instead. A chain is the intersection of its conditions:
+  `X.where(A>0).where(B>0)` is valid only where both hold.
+- **`X.sum('lev')` of a masked `X` is masked where no level is valid.** Invalid
+  levels are skipped, and a column with none left has no sum; it is written as
+  missing rather than as 0. `mean('lev')` behaves the same way.
 - **A scalar threshold is in the field's own units, as the model stores them.**
   `T_mid.where(T_mid<273.15)` is degrees kelvin because that is what `T_mid`
   holds; `p_mid.where(p_mid>85000)` is pascals, not hectopascals. There is
