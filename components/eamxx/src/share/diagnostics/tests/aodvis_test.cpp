@@ -63,6 +63,10 @@ TEST_CASE("aodvis") {
     diag->set_input_field(sunlit);
     diag->initialize();
 
+    // Night columns hold the fill value, so the output must say it may be
+    // filled: that flag is what selects fill-aware averaging in IO.
+    REQUIRE(diag->get().get_header().may_be_filled());
+
     // Run diag
     diag->compute(t0);
 

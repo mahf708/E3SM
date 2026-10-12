@@ -31,6 +31,10 @@ AODVis(const ekat::Comm &comm, const ekat::ParameterList &params,
 
 void AODVis::initialize_impl() {
   m_diagnostic_output.set_valid_mask(m_fields_in.at("sunlit_mask"));
+  // Night columns are written as the fill value below, so say so: Field::update
+  // and IO read this flag to choose the fill-aware accumulation, and without
+  // it an averaged AOD sums the fill value as though it were data.
+  m_diagnostic_output.get_header().set_may_be_filled(true);
 }
 
 void AODVis::compute_impl()
