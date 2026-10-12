@@ -183,6 +183,8 @@ protected:
   // --- Internal variables --- //
   ekat::Comm m_comm;
   bool m_transpose = false;
+  // True if this stream writes at every model step
+  bool m_output_every_step = false;
 
   // We store separate shared pointers for field mgrs at different stages of IO:
   // More specifically, the order of operations is as follows:

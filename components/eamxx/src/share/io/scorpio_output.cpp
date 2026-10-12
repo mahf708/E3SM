@@ -3,6 +3,7 @@
 #include "share/field/field_utils.hpp"
 #include "share/field/field_reader.hpp"
 #include "share/io/eamxx_io_utils.hpp"
+#include "share/diagnostics/field_prev.hpp"
 #include "share/remap/horizontal_remapper.hpp"
 #include "share/remap/vertical_remapper.hpp"
 #include "share/util/eamxx_timing.hpp"
@@ -120,6 +121,17 @@ AtmosphereOutput::AtmosphereOutput(const ekat::Comm &comm, const ekat::Parameter
   EKAT_REQUIRE_MSG (m_avg_type!=OutputAvgType::Invalid,
       "Error! Unsupported averaging type '" + avg_type + "'.\n"
       "       Valid options: instant, Max, Min, Average. Case insensitive.\n");
+
+  // An instant stream evaluates its diagnostics on output steps only, so
+  // whether it writes every step decides if a one-step lag of a diagnostic
+  // can be honoured (see the FieldPrev check in the diagnostics setup).
+  if (params.isSublist("output_control")) {
+    const auto& oc = params.sublist("output_control");
+    m_output_every_step = oc.isParameter("frequency_units") and
+                          oc.get<std::string>("frequency_units")=="nsteps" and
+                          oc.isParameter("frequency") and
+                          oc.get<int>("frequency")==1;
+  }
 
   // By default, IO is done directly on the field mgr grid
   auto fm_grid = field_mgr->get_grids_manager()->get_grid(grid_name);
@@ -1058,8 +1070,15 @@ computes(const util::TimeStamp& ts, const bool allow_invalid_fields)
     if (not computed) {
       // The diag was either not computable or it may have failed to compute
       // (e.g., t=0 output with a flux-like diag).
-      // If we're allowing invalid fields, then we should simply set diag=fill_value
-      d.deep_copy(constants::fill_value<float>);
+      // If we're allowing invalid fields, then we should simply set diag=fill_value.
+      // An integer-valued diag (mask.where(..)) is never written, but it can be
+      // the operand of one that is, and it rejects a float as a narrowing
+      // conversion; give it the integer fill value.
+      if (d.data_type()==DataType::IntType) {
+        d.deep_copy(constants::fill_value<int>);
+      } else {
+        d.deep_copy(constants::fill_value<float>);
+      }
     }
   }
 }
@@ -1239,6 +1258,18 @@ process_requested_fields()
   // order, meaning that if diag A depends on diag B, then B appears *before* A.
   // This ensures we can evaluate diags in order at runtime
   bool done = false;
+
+  // The diag repo is static, shared by every stream. If this stream is refused
+  // below, take back what it put there: the destructor will not run for an
+  // object whose construction threw, and a diagnostic left behind would both
+  // be handed to the next stream and outlive Kokkos.
+  struct RepoGuard {
+    strmap_t<diag_ptr_type>& repo;
+    std::vector<std::string> added;
+    bool armed = true;
+    ~RepoGuard () { if (armed) for (const auto& n : added) repo.erase(n); }
+  } repo_guard{m_diag_repo,{}};
+
   std::set<std::string> remaining(m_fields_names.begin(),m_fields_names.end());
   // m_fields_names now holds exactly the variables that reach the nc file:
   // alias targets live in m_alias_to_orig, 'aliases' entries are intermediates.
@@ -1314,6 +1345,32 @@ process_requested_fields()
               "constant's value as a literal.\n");
         }
 
+        // X.shift(time=1) is X one MODEL STEP back. FieldPrev takes its copy
+        // of X at the start of every step, which is right when X is a model
+        // field. When X is itself a diagnostic, an instant stream evaluates it
+        // on output steps only, so the copy would be X as of the previous
+        // OUTPUT step: a lag of one output interval, with nothing in the file
+        // to say so. An averaged stream evaluates every step and is correct.
+        if (m_avg_type==OutputAvgType::Instant and not m_output_every_step and
+            std::dynamic_pointer_cast<FieldPrev>(diag)!=nullptr) {
+          auto src = diag->get_params().get<std::string>("field_name");
+          while (m_alias_to_orig.count(src)==1) {
+            src = m_alias_to_orig.at(src);
+          }
+          EKAT_REQUIRE_MSG (m_field_mgrs.at(FromModel)->has_field(src) and m_diag_repo.count(src)==0,
+              "Error! shift(time=1) of a diagnostic is not available in an instant stream\n"
+              "       that does not write every step.\n"
+              " - stream name: " + m_stream_name + "\n"
+              " - request: " + name + "\n"
+              " - shifted operand: " + src + "\n"
+              "An instant stream evaluates diagnostics on output steps only, so the\n"
+              "shifted value would lag by one output interval, not one model step.\n"
+              "Use an averaged stream, which evaluates every step, or write every step.\n");
+        }
+
+        if (m_diag_repo.count(name)==0) {
+          repo_guard.added.push_back(name);
+        }
         m_diag_repo[name] = diag;
         // Add its deps to the list of fields to process (if not already in fm_model)
         bool deps_met = true;
@@ -1353,6 +1410,23 @@ process_requested_fields()
 
     done = remaining.size()==0;
   }
+
+  // Every variable is written as a real. An integer-valued request -- in
+  // practice 'mask.where(..)' listed on its own -- used to get as far as the
+  // first write (instant) or the accumulation setup (averaged) before failing
+  // with a message about narrowing. Say what is wrong, here, and how to fix it.
+  for (const auto& name : written_names) {
+    const auto& f = fm_model->get_field(name);
+    EKAT_REQUIRE_MSG (f.data_type()==DataType::RealType,
+        "Error! Output fields must be real-valued.\n"
+        " - stream name: " + m_stream_name + "\n"
+        " - field name: " + name + "\n"
+        " - data type: " + e2str(f.data_type()) + "\n"
+        "To write an integer mask, convert it in the request: <name> := (" +
+        (m_alias_to_orig.count(name)==1 ? m_alias_to_orig.at(name) : name) + ")*1.0\n");
+  }
+
+  repo_guard.armed = false;
 }
 
 std::vector<std::string> AtmosphereOutput::
