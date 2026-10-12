@@ -99,7 +99,10 @@ void VertContract::initialize_impl()
   auto d_fid = fid.clone(diag_name).reset_layout(layout.clone().strip_dim(LEV)).reset_units(diag_units);
   m_diagnostic_output = Field(d_fid,true);
 
-  if (m_contract_method == "avg") {
+  // The avg needs the contracted weight as its denominator. The sum needs it
+  // only when the input is masked: a column with no valid level has no sum,
+  // and without a mask of its own the output would report 0 there.
+  if (m_contract_method == "avg" or f.has_valid_mask()) {
     // m_weight_sum must have the same layout as d (f's layout without vtag)
     // so that scale_inv(m_weight_sum) is valid regardless of input rank.
     auto wsum_fid = fid.clone("weight_sum")
@@ -163,14 +166,18 @@ void VertContract::compute_impl()
   // Now do the contraction itself
   vert_contraction(d, f, m_weight);
 
-  if (m_contract_method == "avg") {
+  if (m_contract_method == "avg" or d.has_valid_mask()) {
     // Denominator: sum_lev(weight * 1 * mask); layout matches d
     vert_contraction(m_weight_sum, m_ones, m_weight);
     if (d.has_valid_mask()) {
-      // Mark where denominator is nonzero, then divide, then fill elsewhere
+      // Mark where denominator is nonzero, then divide (avg only), then fill
+      // elsewhere. For the sum the contracted weight is only the witness that
+      // at least one valid level contributed.
       auto& valid_out = d.get_valid_mask();
       compute_mask(m_weight_sum, 0, Comparison::NE, valid_out);
-      d.scale_inv(m_weight_sum, valid_out);
+      if (m_contract_method == "avg") {
+        d.scale_inv(m_weight_sum, valid_out);
+      }
       // IO relies on fill_value for masked-out entries
       d.deep_copy(constants::fill_value<Real>, valid_out, true);
     } else {

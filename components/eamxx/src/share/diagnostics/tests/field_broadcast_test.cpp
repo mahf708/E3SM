@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 
+#include "share/util/eamxx_universal_constants.hpp"
 #include "share/diagnostics/register_diagnostics.hpp"
 #include "share/field/field_utils.hpp"
 #include "share/grid/point_grid.hpp"
@@ -84,7 +85,11 @@ TEST_CASE("field_broadcast") {
     auto d = diag->get();
     REQUIRE (d.has_valid_mask());
 
-    diag->compute(util::TimeStamp());
+    // Real time stamps: a diagnostic skips the evaluation when neither the
+    // requested time nor its inputs' time stamps have changed
+    util::TimeStamp t0 ({2024,1,1},{0,0,0});
+    x.get_header().get_tracking().update_time_stamp(t0);
+    diag->compute(t0);
     d.sync_to_host();
     d.get_valid_mask().sync_to_host();
     x.sync_to_host();
@@ -95,6 +100,27 @@ TEST_CASE("field_broadcast") {
       for (int k=0; k<nlevs; ++k) {
         if (k==0) {
           REQUIRE (m_v(i,k)==0);
+          REQUIRE (d_v(i,k)==constants::fill_value<Real>);
+        } else {
+          REQUIRE (m_v(i,k)==1);
+          REQUIRE (d_v(i,k)==x_v(k));
+        }
+      }
+    }
+
+    // Move the invalid level. The level that was valid a step ago must now
+    // hold the fill value, not the number the previous compute left there.
+    x.get_valid_mask().deep_copy(1);
+    x.get_valid_mask().subfield(0,1).deep_copy(0);
+    x.get_header().get_tracking().update_time_stamp(t0+1);
+    diag->compute(t0+1);
+    d.sync_to_host();
+    d.get_valid_mask().sync_to_host();
+    for (int i=0; i<nlocal; ++i) {
+      for (int k=0; k<nlevs; ++k) {
+        if (k==1) {
+          REQUIRE (m_v(i,k)==0);
+          REQUIRE (d_v(i,k)==constants::fill_value<Real>);
         } else {
           REQUIRE (m_v(i,k)==1);
           REQUIRE (d_v(i,k)==x_v(k));

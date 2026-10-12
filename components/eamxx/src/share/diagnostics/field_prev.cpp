@@ -57,14 +57,21 @@ void FieldPrev::init_timestep(const util::TimeStamp &start_of_step)
   if (prev_ts.is_valid()) {
     // Field was inited/computed at least once, so it makes sense to copy it
     if (f_prev.has_valid_mask()) {
-      m_diagnostic_output.deep_copy(f_prev,f_prev.get_valid_mask());
-      m_diagnostic_output.get_valid_mask().deep_copy(f_prev.get_valid_mask());
+      const auto& mask = m_diagnostic_output.get_valid_mask();
+      mask.deep_copy(f_prev.get_valid_mask());
+      m_diagnostic_output.deep_copy(f_prev,mask);
+      // A masked copy leaves the invalid entries holding whatever the previous
+      // step put there. IO counts an entry as data unless it equals the fill
+      // value, so an entry that was valid one step ago and is invalid now
+      // would be averaged as a stale number. Write the fill value there.
+      m_diagnostic_output.deep_copy(constants::fill_value<Real>,mask,true);
     } else {
       m_diagnostic_output.deep_copy(f_prev);
       m_diagnostic_output.get_valid_mask().deep_copy(1);
     }
   } else {
     m_diagnostic_output.get_valid_mask().deep_copy(0);
+    m_diagnostic_output.deep_copy(constants::fill_value<Real>);
   }
 }
 
