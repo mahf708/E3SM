@@ -1,5 +1,7 @@
 #include "share/diagnostics/field_broadcast.hpp"
 
+#include "share/util/eamxx_universal_constants.hpp"
+
 namespace scream {
 
 FieldBroadcast::
@@ -54,6 +56,13 @@ void FieldBroadcast::compute_impl ()
     const auto& mask = m_broadcasted.get_valid_mask();
     m_diagnostic_output.get_valid_mask().deep_copy(mask);
     m_diagnostic_output.deep_copy(m_broadcasted,mask);
+    // A masked copy leaves invalid entries holding what an earlier step wrote
+    // there, and IO counts an entry as data unless it equals the fill value.
+    if (m_diagnostic_output.data_type()==DataType::IntType) {
+      m_diagnostic_output.deep_copy(constants::fill_value<int>,mask,true);
+    } else {
+      m_diagnostic_output.deep_copy(constants::fill_value<Real>,mask,true);
+    }
   } else {
     m_diagnostic_output.deep_copy(m_broadcasted);
   }
