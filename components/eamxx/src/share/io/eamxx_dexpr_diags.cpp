@@ -8,6 +8,8 @@
 
 #include <ekat_assert.hpp>
 
+#include <array>
+#include <charconv>
 #include <map>
 #include <string>
 #include <type_traits>
@@ -95,6 +97,20 @@ std::string name_of (const ast::Expression& e) {
   return ast::to_string(e);
 }
 
+// The name of an OPERAND: of a binary operator, or of the comparison inside
+// where(..). Same as name_of(), except for a negated numeric literal. dexpr
+// parses '-2' as unary minus applied to 2 and renders it "(-2)", which the
+// diagnostics would then look up as a field; they take a scalar operand as a
+// plain number, so hand them "-2".
+std::string operand_name (const ast::Expression& e) {
+  const auto* u = as<ast::UnaryExpression>(e);
+  if (u!=nullptr and u->op==TokenTypes::Minus and
+      (as<ast::IntegerLiteral>(*u->right) or as<ast::FloatLiteral>(*u->right))) {
+    return "-" + ast::to_string(*u->right);
+  }
+  return name_of(e);
+}
+
 // dexpr renders literals: a FloatLiteral keeps a double, not its lexeme, and
 // dexpr prints the shortest form that reads back.
 std::string literal_str (const ast::Expression& e)
@@ -106,6 +122,24 @@ std::string literal_str (const ast::Expression& e)
     return s->value;
   }
   unsupported("expected a literal",e);
+}
+
+// A histogram bin edge, in plain decimal notation. The Histogram diagnostic
+// splits its configuration string on '_' and reads each piece as a number, so
+// an edge must not carry an exponent: dexpr's shortest round-trip form of 1e-4
+// is "1e-04", and of 1e15 is "1e+15". Fixed notation is still the shortest
+// string that reads back as the same double.
+std::string bin_edge_str (const ast::Expression& e)
+{
+  if (const auto* f = as<ast::FloatLiteral>(e)) {
+    std::array<char,512> buf {};
+    const auto [end,ec] = std::to_chars(buf.data(),buf.data()+buf.size(),
+                                        f->value,std::chars_format::fixed);
+    if (ec==std::errc{}) {
+      return std::string(buf.data(),end);
+    }
+  }
+  return literal_str(e);
 }
 
 int int_arg (const ast::Expression& e, const std::string& ctx)
@@ -185,7 +219,7 @@ void translate_unary (const ast::UnaryExpression& e, const ast::Expression& self
 
   diag_name = "BinaryOp";
   params.set<std::string>("arg1","-1");
-  params.set<std::string>("arg2",name_of(*e.right));
+  params.set<std::string>("arg2",operand_name(*e.right));
   params.set<std::string>("binary_op","times");
 }
 
@@ -221,8 +255,8 @@ void translate_binary (const ast::BinaryExpression& e, const ast::Expression& se
   }
 
   diag_name = "BinaryOp";
-  params.set<std::string>("arg1",name_of(*e.left));
-  params.set<std::string>("arg2",name_of(*e.right));
+  params.set<std::string>("arg1",operand_name(*e.left));
+  params.set<std::string>("arg2",operand_name(*e.right));
   params.set<std::string>("binary_op",op);
 }
 
@@ -427,9 +461,9 @@ void translate_call (const Call& call, const ast::Expression& self,
         " - note: 'and'/'or' are not supported; chain where(..) calls instead.\n");
 
     diag_name = "ConditionalSampling";
-    params.set<std::string>("condition_lhs",name_of(*cmp->left));
+    params.set<std::string>("condition_lhs",operand_name(*cmp->left));
     params.set<std::string>("condition_cmp",comparison_to_cmp(cmp->op));
-    params.set<std::string>("condition_rhs",name_of(*cmp->right));
+    params.set<std::string>("condition_rhs",operand_name(*cmp->right));
     return;
   }
 
@@ -451,9 +485,10 @@ void translate_call (const Call& call, const ast::Expression& self,
         "Error! histogram() takes 'bins', an array of at least two edges.\n"
         " - expression: " + ast::to_string(self) + "\n");
     // The diag re-splits on '_', so edges must survive: no exponents or signs.
+    // An edge may be WRITTEN with an exponent; it is rendered without one.
     std::string config;
     for (size_t i=0; i<bins->elements.size(); ++i) {
-      const auto edge = literal_str(*bins->elements[i]);
+      const auto edge = bin_edge_str(*bins->elements[i]);
       EKAT_REQUIRE_MSG (edge.find_first_not_of("0123456789.")==std::string::npos,
           "Error! Histogram bin edges must be non-negative decimals.\n"
           " - expression: " + ast::to_string(self) + "\n"
