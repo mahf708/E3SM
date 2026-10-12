@@ -390,13 +390,14 @@ TEST_CASE("create_diag")
     auto d2 = create_diagnostic("T_mid.histogram(bins=[0,1.5,2])",grid);
     REQUIRE (std::dynamic_pointer_cast<Histogram>(d2)!=nullptr);
     REQUIRE (d2->get_params().get<std::string>("bin_configuration")=="0_1.5_2");
-    // Edges render in the shortest form that reads back, so an exponent in
-    // the request need not survive into the configuration...
+    // Edges go down in plain decimal notation, so an exponent in the request
+    // does not survive into the configuration, which the diag re-splits on
+    // '_' and parses piece by piece...
     auto d2b = create_diagnostic("T_mid.histogram(bins=[0,1e3])",grid);
-    REQUIRE (d2b->get_params().get<std::string>("bin_configuration")=="0_1000.0");
-    // ...but one that cannot be written without an exponent must be rejected,
-    // since the diag re-splits the configuration on '_' and parses each piece.
-    REQUIRE_THROWS (create_diagnostic("T_mid.histogram(bins=[0,1e30])",grid));
+    REQUIRE (d2b->get_params().get<std::string>("bin_configuration")=="0_1000");
+    // ...however large the edge is.
+    auto d2c = create_diagnostic("T_mid.histogram(bins=[0,1e30])",grid);
+    REQUIRE (d2c->get_params().get<std::string>("bin_configuration").find_first_not_of("0123456789._")==std::string::npos);
     REQUIRE_THROWS (create_diagnostic("T_mid.histogram(bins=[0])",grid));
 
     auto d3 = create_diagnostic("T_mid.zonal_mean(bins=20)",grid);
@@ -453,6 +454,87 @@ TEST_CASE("create_diag")
     // A non-name on the lhs of '=' is not a keyword argument, so it counts
     // against the positional arity rather than dereferencing a null name
     REQUIRE_THROWS (create_diagnostic("T_mid.isel(1=2)",grid));
+  }
+
+  SECTION ("dexpr_negative_literals") {
+    // dexpr parses '-2' as unary minus applied to 2 and renders it "(-2)".
+    // As an operand it must reach the diagnostic as the number -2, not as the
+    // name of a field to look up.
+    auto d1 = create_diagnostic("T_mid*(-2)",grid);
+    REQUIRE (std::dynamic_pointer_cast<BinaryOp>(d1)!=nullptr);
+    REQUIRE (d1->get_params().get<std::string>("arg2")=="-2");
+    REQUIRE (d1->get_input_fields_names().size()==1);
+    REQUIRE (d1->get_input_fields_names().front()=="T_mid");
+
+    auto d2 = create_diagnostic("-2*T_mid",grid);
+    REQUIRE (d2->get_params().get<std::string>("arg1")=="-2");
+    REQUIRE (d2->get_params().get<std::string>("arg2")=="T_mid");
+    REQUIRE (d2->get_input_fields_names().size()==1);
+
+    auto d3 = create_diagnostic("T_mid.where(qv>-1)",grid);
+    REQUIRE (std::dynamic_pointer_cast<ConditionalSampling>(d3)!=nullptr);
+    REQUIRE (d3->get_params().get<std::string>("condition_rhs")=="-1");
+    auto d4 = create_diagnostic("T_mid.where(qv<=-0.5)",grid);
+    REQUIRE (d4->get_params().get<std::string>("condition_rhs")=="-0.5");
+
+    // A negated FIELD is still an operand by name
+    auto d5 = create_diagnostic("T_mid*(-qv)",grid);
+    REQUIRE (d5->get_params().get<std::string>("arg2")=="(-qv)");
+  }
+
+  SECTION ("dexpr_not_hijacked_by_underscore_patterns") {
+    // The underscore patterns run first. Each must match the WHOLE name, and a
+    // field name inside one cannot contain an operator; otherwise a pattern
+    // claims the tail of an expression. These four used to resolve, silently,
+    // to FieldPrev('T_mid-T_mid'), to T_mid_at_500hPa alone (twice), and to
+    // the diagnostic z_mid.
+    auto d1 = create_diagnostic("T_mid-T_mid_prev",grid);
+    REQUIRE (std::dynamic_pointer_cast<BinaryOp>(d1)!=nullptr);
+    REQUIRE (d1->get_params().get<std::string>("arg1")=="T_mid");
+    REQUIRE (d1->get_params().get<std::string>("arg2")=="T_mid_prev");
+    REQUIRE (d1->get_params().get<std::string>("binary_op")=="minus");
+
+    auto d2 = create_diagnostic("qv/T_mid_at_500hPa",grid);
+    REQUIRE (std::dynamic_pointer_cast<BinaryOp>(d2)!=nullptr);
+    REQUIRE (d2->get_params().get<std::string>("arg1")=="qv");
+    REQUIRE (d2->get_params().get<std::string>("arg2")=="T_mid_at_500hPa");
+
+    auto d3 = create_diagnostic("273.15 + T_mid_at_500hPa",grid);
+    REQUIRE (std::dynamic_pointer_cast<BinaryOp>(d3)!=nullptr);
+    REQUIRE (d3->get_params().get<std::string>("binary_op")=="plus");
+    REQUIRE (d3->get_params().get<std::string>("arg2")=="T_mid_at_500hPa");
+
+    auto d4 = create_diagnostic("(qc+qv)*z_mid",grid);
+    REQUIRE (std::dynamic_pointer_cast<BinaryOp>(d4)!=nullptr);
+    REQUIRE (d4->get_params().get<std::string>("arg1")=="(qc+qv)");
+    REQUIRE (d4->get_params().get<std::string>("arg2")=="z_mid");
+
+    // The underscore names themselves are unchanged, signs and exponents in
+    // their numbers included.
+    auto l1 = create_diagnostic("T_mid_where_qv_gt_1e-6",grid);
+    REQUIRE (std::dynamic_pointer_cast<ConditionalSampling>(l1)!=nullptr);
+    REQUIRE (l1->get_params().get<std::string>("condition_rhs")=="1e-6");
+    REQUIRE_FALSE (l1->get_params().isParameter("from_expression"));
+    auto l2 = create_diagnostic("T_mid_where_qv_gt_-1",grid);
+    REQUIRE (l2->get_params().get<std::string>("condition_rhs")=="-1");
+    auto l3 = create_diagnostic("T_mid_minus_T_mid_prev",grid);
+    REQUIRE (std::dynamic_pointer_cast<BinaryOp>(l3)!=nullptr);
+    REQUIRE (l3->get_params().get<std::string>("arg2")=="T_mid_prev");
+    auto l4 = create_diagnostic("T_mid_where_qv_gt_1e-6_at_500hPa",grid);
+    REQUIRE (std::dynamic_pointer_cast<FieldAtPressureLevel>(l4)!=nullptr);
+    REQUIRE (l4->get_params().get<std::string>("field_name")=="T_mid_where_qv_gt_1e-6");
+  }
+
+  SECTION ("dexpr_histogram_edges") {
+    // An edge may be written with an exponent. The diagnostic splits its
+    // configuration on '_' and cannot read one, so edges go down in plain
+    // decimal notation. 1e-4 used to be rejected: it rendered as "1e-04".
+    auto h = create_diagnostic("qc.histogram(bins=[0,1e-5,1e-4])",grid);
+    REQUIRE (h->get_params().get<std::string>("bin_configuration")=="0_0.00001_0.0001");
+    auto h2 = create_diagnostic("qc.histogram(bins=[0.5,1e15])",grid);
+    REQUIRE (h2->get_params().get<std::string>("bin_configuration")=="0.5_1000000000000000");
+    // Still no negative edges
+    REQUIRE_THROWS (create_diagnostic("qc.histogram(bins=[-1,1])",grid));
   }
 
   SECTION ("dexpr_leaves_plain_names_alone") {

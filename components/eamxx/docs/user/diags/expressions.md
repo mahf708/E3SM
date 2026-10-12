@@ -18,7 +18,13 @@ Written as an expression, it means what it looks like.
 
 Both syntaxes work, and they are resolved independently: a name is matched
 against the underscore patterns first, and only names that match none of them
-are read as an expression. Nothing you write today changes meaning.
+are read as an expression. An underscore pattern must match the *whole* name,
+and the field names inside it are made of letters, digits, `_` and `.` only
+(plus the sign of a number, as in `X_where_qv_gt_-1` or `1e-6`). So a name that
+contains an operator or a parenthesis is always read as an expression, and
+underscore names inside it are operands like any other: `T_mid-T_mid_prev` is
+`T_mid` minus `T_mid_prev`, and `qv*T_mid_horiz_avg` is `qv` times
+`T_mid_horiz_avg`.
 
 ## Expressions must be given a name
 
@@ -135,9 +141,17 @@ Notes:
 - `where` takes a single comparison. `and`/`or` are not supported; chain
   `where(..)` calls instead. A chain is the intersection of its conditions:
   `X.where(A>0).where(B>0)` is valid only where both hold.
+- A negative number is written as it reads, as a threshold or as an operand:
+  `omega.where(omega<=-0.1)`, `-2*T_mid`, `T_mid*(-2)`.
 - **`X.sum('lev')` of a masked `X` is masked where no level is valid.** Invalid
   levels are skipped, and a column with none left has no sum; it is written as
   missing rather than as 0. `mean('lev')` behaves the same way.
+- **`shift(time=1)` of a diagnostic needs a stream that evaluates every step.**
+  An instant stream evaluates diagnostics on output steps only, so the value
+  one *model step* back does not exist there unless the stream writes every
+  step. `(qv*T_mid).shift(time=1)` in an instant stream with a longer output
+  interval is rejected at setup; use an averaged stream. The shift of a model
+  field (`T_mid.shift(time=1)`) is one model step in any stream.
 - **A scalar threshold is in the field's own units, as the model stores them.**
   `T_mid.where(T_mid<273.15)` is degrees kelvin because that is what `T_mid`
   holds; `p_mid.where(p_mid>85000)` is pascals, not hectopascals. There is
@@ -163,24 +177,18 @@ Notes:
   stream (`averaging_type: average`, `max`, `min`) instead. This is a property
   of the diagnostic, not of the syntax: the underscore spellings `X_over_dt` and
   `X_atm_backtend` behave the same way.
-- **A `mask.where(..)` result cannot currently be written to file as is.** The
-  diagnostic is built, but its output has `int` data type, which IO cannot
-  handle: listing `mask.where(..)` (or the underscore `mask_where_..`) in
-  `field_names` fails with a narrowing conversion error, and reducing it first
-  does not help. Multiplying by 1 promotes it to `Real`, and
-  `mask.where(ps>100000)*1.0` writes fine. Note the `*1.0` applies to the field
-  that `where` produced, which is a perfectly ordinary field; it is not an
+- **A `mask.where(..)` result cannot be written to file as is.** Its output
+  has `int` data type and every variable is written as a real, so listing
+  `mask.where(..)` (or the underscore `mask_where_..`) in `field_names` is
+  rejected when the stream is set up. Multiplying by 1 promotes it to `Real`,
+  and `mask.where(ps>100000)*1.0` writes fine. Note the `*1.0` applies to the
+  field that `where` produced, which is a perfectly ordinary field; it is not an
   operation on `mask`, which per the bullet above cannot be multiplied.
 - `X.tend()` is shorthand for `(X - X.shift(time=1)).over_dt()`, and inherits
   the `over_dt` restriction above.
-- Histogram bin edges must be non-negative, and must be writable without an
-  exponent **after the parser has re-rendered them**, which is not the same as
-  how you typed them. The edge is checked as the printed form of the parsed
-  number, so `1e3` is fine (it comes back `1000.0`) and `1e30` is not -- and
-  neither is `0.000001`, which comes back `1e-06` although it was typed as a
-  plain decimal. In practice the usable range is about `0.0001` to `100000`.
-  Scale the field instead of reaching outside it: `(qv*1000).histogram(..)`
-  bins specific humidity in g/kg, where every edge survives the round trip.
+- Histogram bin edges must be non-negative. They may be written with an
+  exponent (`bins=[0,1e-5,1e-4]`); the edges are handed to the diagnostic in
+  plain decimal notation, so any non-negative number works.
 
 Named quantities are not operations, and stay plain names in an expression:
 `LiqWaterPath`, `RelativeHumidity`, `z_mid`, `dz`, `precip_liq_surf_mass_flux`,
