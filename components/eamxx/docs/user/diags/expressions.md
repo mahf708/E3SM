@@ -49,7 +49,13 @@ diagnostics use but that are not written), need no name of their own.
 | `( )` | grouping |
 
 Operands may be fields, other expressions, named physical constants (`Rgas`,
-`P0`, ...), or numeric literals:
+`P0`, ...), or numeric literals. **A named constant is looked up before the
+field manager**, so a constant whose name is also a field name would win
+silently and the field would never be read. That is not a hazard you have to
+watch for: a request whose operand is both is rejected, naming the operand.
+The one collision that existed, Earth's rotation rate against the vertical
+pressure velocity, is why the constant is spelled `omega_earth` and `omega`
+means the field.
 
 ```yaml
 field_names:
@@ -164,8 +170,13 @@ Notes:
 - `X.tend()` is shorthand for `(X - X.shift(time=1)).over_dt()`, and inherits
   the `over_dt` restriction above.
 - Histogram bin edges must be non-negative, and must be writable without an
-  exponent: the diagnostic joins them with `_` and splits them back apart, so
-  `1e3` is fine (it is written `1000.0`) but `1e30` is not.
+  exponent **after the parser has re-rendered them**, which is not the same as
+  how you typed them. The edge is checked as the printed form of the parsed
+  number, so `1e3` is fine (it comes back `1000.0`) and `1e30` is not -- and
+  neither is `0.000001`, which comes back `1e-06` although it was typed as a
+  plain decimal. In practice the usable range is about `0.0001` to `100000`.
+  Scale the field instead of reaching outside it: `(qv*1000).histogram(..)`
+  bins specific humidity in g/kg, where every edge survives the round trip.
 
 Named quantities are not operations, and stay plain names in an expression:
 `LiqWaterPath`, `RelativeHumidity`, `z_mid`, `dz`, `precip_liq_surf_mass_flux`,
