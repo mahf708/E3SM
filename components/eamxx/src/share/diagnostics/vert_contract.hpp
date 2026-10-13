@@ -13,16 +13,14 @@ namespace scream {
  * For "avg":   out = sum_lev(weight * f * mask) / sum_lev(weight * mask)
  * For "max":   out = max_lev(f) over entries with mask!=0
  * For "min":   out = min_lev(f) over entries with mask!=0
- * For "var":   out = avg of (f - avg(f))^2, with avg as above (population variance)
- * For "std":   out = sqrt(var)
  *
- * The weight is dp/g, dz, or 1 ("none"). "max" and "min" are unweighted,
- * and require weighting_method=none.
+ * The weight is dp/g, dz, or 1 ("none"). Only "sum" and "avg" are weighted:
+ * "max" and "min" require weighting_method=none.
  *
  * If the input field has a valid_mask, entries with mask==0 are excluded from
- * the reduction (for averages, from both numerator and denominator). For all
- * but "sum", output entries with no valid level are filled with fill_value
- * and the output field's valid_mask is set to 0.
+ * the reduction (for "avg", from both numerator and denominator). For "avg",
+ * "max" and "min", output entries with no valid level are filled with
+ * fill_value and the output field's valid_mask is set to 0.
  */
 
 class VertContract : public AbstractDiagnostic {
@@ -43,7 +41,7 @@ class VertContract : public AbstractDiagnostic {
 
   std::string m_field_name; // Input field name
 
-  // Name of contraction method (avg, sum, max, min, var, std)
+  // Name of contraction method (avg, sum, max, min)
   std::string m_contract_method;
   // Name of weighting method (dp, dz, none)
   std::string m_weighting_method;
@@ -58,9 +56,6 @@ class VertContract : public AbstractDiagnostic {
 
   // Ones field with the same layout as the input field (to compute m_weight_sum)
   Field m_ones;
-
-  // For var/std: squared deviations from the mean (same layout as the input)
-  Field m_dev;
 };
 
 }  // namespace scream

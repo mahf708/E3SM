@@ -23,11 +23,10 @@ We note that the field $F$ can have other dimensions ($\dots$).
 The weight $w$ is defined as the area fraction in column $i$,
 that is, the area in column $i$ divided by the total area in all columns.
 
-We also offer the (unweighted) sum, maximum, and minimum across all columns,
-and the area-weighted variance and standard deviation (see below).
+We also offer the (unweighted) sum, maximum, and minimum across all columns.
 
 To select a horizontal reduction, you only need to suffix
-a field name `X` with `_horiz_(avg|sum|max|min|var|std)` in the output requests.
+a field name `X` with `_horiz_(avg|sum|max|min)` in the output requests.
 
 | Reduction | Weight | Description |
 | --------- | ------ | ----------- |
@@ -35,8 +34,6 @@ a field name `X` with `_horiz_(avg|sum|max|min|var|std)` in the output requests.
 | `X_horiz_sum` | 1 | Sum across all columns |
 | `X_horiz_max` | (none) | Maximum across all columns |
 | `X_horiz_min` | (none) | Minimum across all columns |
-| `X_horiz_var` | Area fraction | Variance across all columns |
-| `X_horiz_std` | Area fraction | Standard deviation across all columns |
 
 ## Vertical reduction
 
@@ -49,12 +46,11 @@ $$
 where $F_{\dots k}$ is the field at level $k$,
 and $w_{k}$ is the weight at level $k$
 (for the average, the weights are normalized to sum to 1).
-We also offer the (unweighted) maximum and minimum across all levels,
-and the variance and standard deviation (see below).
+We also offer the (unweighted) maximum and minimum across all levels.
 
 To select the vertical reduction, you only need to suffix
-a field name `X` with `_vert_(avg|sum|var|std)_(dp|dz)_weighted` or
-`_vert_(avg|sum|max|min|var|std)` in the output yaml files.
+a field name `X` with `_vert_(avg|sum)_(dp|dz)_weighted` or
+`_vert_(avg|sum|max|min)` in the output yaml files.
 
 | Reduction | Weight | Description |
 | --------- | ------ | ----------- |
@@ -66,10 +62,6 @@ a field name `X` with `_vert_(avg|sum|var|std)_(dp|dz)_weighted` or
 | `X_vert_sum` | 1 | Sum across all levels |
 | `X_vert_max` | (none) | Maximum across all levels |
 | `X_vert_min` | (none) | Minimum across all levels |
-| `X_vert_var_dp_weighted` | $\Delta p_{k}$ | Variance across all levels, weighted by $\Delta p_{k}$ |
-| `X_vert_std_dp_weighted` | $\Delta p_{k}$ | Standard deviation across all levels, weighted by $\Delta p_{k}$ |
-| `X_vert_var` | 1 | Variance across all levels |
-| `X_vert_std` | 1 | Standard deviation across all levels |
 
 The supported weighting options for now are
 
@@ -84,27 +76,12 @@ It is important to note that in the case of dp- and dz-weighted
 reductions, the field provided to the reduction utility must be
 at least 2 in rank, e.g., (ncol, nlev).
 
-## Variance and standard deviation
-
-The variance is the weighted *population* variance, i.e., the weighted
-average of the squared deviation from the weighted average $\bar{F}$,
-
-$$
-V_{\dots} = \frac{\sum_{k} w_{k} \cdot (F_{\dots k} - \bar{F}_{\dots})^2}{\sum_{k} w_{k}}
-$$
-
-(and similarly across columns), and the standard deviation is its square root.
-They use the same weights as the corresponding average, and are computed
-in two passes over the data, to avoid the cancellation errors of computing
-$\overline{F^2} - \bar{F}^2$. The units of the variance are those of the
-field squared.
-
 ## Masked fields
 
 If the field has masked-out entries (e.g., from conditional sampling),
 they are skipped by all of the reductions above.
 Where all entries along the reduced dimension are masked out,
-the average, maximum, minimum, variance, and standard deviation are set to the fill value,
+the average, maximum, and minimum are set to the fill value,
 while the sum is set to 0.
 
 ## Zonal reduction
@@ -161,8 +138,6 @@ fields:
       - T_mid_vert_sum  # K
       - T_mid_vert_max  # K
       - T_mid_vert_min  # K
-      - T_mid_vert_std_dp_weighted  # K
-      - T_mid_horiz_var  # K * K
       - T_mid_vert_sum_horiz_sum  # K
       - T_mid_horiz_avg_vert_sum  # K
       - T_mid_vert_sum_dz_weighted_horiz_avg  # K * m
