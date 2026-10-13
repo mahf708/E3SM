@@ -1,18 +1,18 @@
 #include "share/field/field_utils.hpp"
 #include "share/field/field.hpp"
+#include "contraction_op_impl.hpp"
 
 #include <ekat_comm.hpp>
 #include <ekat_team_policy_utils.hpp>
-
-#include <type_traits>
 
 namespace scream {
 
 namespace impl {
 
-template <typename ST>
+template <typename ST, ContractionOp OP>
 void horiz_contraction(const Field &f_out, const Field &f_in, const Field &weight)
 {
+  using Op          = ContractionOpTraits<ST,OP>;
   using TeamPolicy  = Kokkos::TeamPolicy<Field::device_t::execution_space>;
   using TeamMember  = typename TeamPolicy::member_type;
   using TPF         = ekat::TeamPolicyFactory<DefaultDevice::execution_space>;
@@ -35,10 +35,10 @@ void horiz_contraction(const Field &f_out, const Field &f_in, const Field &weigh
 
       ST n = 0;
       auto policy = Kokkos::RangePolicy<Field::device_t::execution_space>(0,ncols);
-      auto reducer = Kokkos::Sum<ST>(n);
+      auto reducer = typename Op::reducer(n);
       auto accum = KOKKOS_LAMBDA(const int i, ST &acc) {
         if (not is_masked or mask(i))
-          acc += v_w(i) * v_in(i);
+          Op::join(acc, v_w(i) * v_in(i));
       };
       Kokkos::parallel_reduce(f_out.name(), policy, accum, reducer);
       Kokkos::deep_copy(v_out, n);
@@ -57,12 +57,12 @@ void horiz_contraction(const Field &f_out, const Field &f_in, const Field &weigh
         ST n = 0;
         auto inner = [&](int i, ST &acc) {
           if (not is_masked or mask(i,j)) {
-            acc += v_w(i) * v_in(i, j);
+            Op::join(acc, v_w(i) * v_in(i, j));
           }
         };
         auto tvr = Kokkos::TeamVectorRange(tm, ncols);
 
-        Kokkos::parallel_reduce(tvr, inner, Kokkos::Sum<ST>(n));
+        Kokkos::parallel_reduce(tvr, inner, typename Op::reducer(n));
         v_out(j) = n;
       };
       Kokkos::parallel_for(f_out.name(), policy, outer);
@@ -84,12 +84,12 @@ void horiz_contraction(const Field &f_out, const Field &f_in, const Field &weigh
         ST n = 0;
         auto inner = [&](int i, ST &acc) {
           if (not is_masked or mask(i,j,k)) {
-            acc += v_w(i) * v_in(i, j, k);
+            Op::join(acc, v_w(i) * v_in(i, j, k));
           }
         };
         auto tvr = Kokkos::TeamVectorRange(tm, ncols);
 
-        Kokkos::parallel_reduce(tvr, inner, Kokkos::Sum<ST>(n));
+        Kokkos::parallel_reduce(tvr, inner, typename Op::reducer(n));
         v_out(j,k) = n;
       };
       Kokkos::parallel_for(f_out.name(), policy, outer);
@@ -99,97 +99,24 @@ void horiz_contraction(const Field &f_out, const Field &f_in, const Field &weigh
   }
 }
 
-// Max (IsMax=true) or min (IsMax=false) of f_in along its first (COL) dim
-template <typename ST, bool IsMax>
-void horiz_extremum(const Field &f_out, const Field &f_in)
+// Dispatch the runtime op to the compile-time one
+template<typename ST>
+void horiz_contraction(const Field &f_out, const Field &f_in, const Field &weight,
+                       const ContractionOp op)
 {
-  using TeamPolicy  = Kokkos::TeamPolicy<Field::device_t::execution_space>;
-  using TeamMember  = typename TeamPolicy::member_type;
-  using TPF         = ekat::TeamPolicyFactory<DefaultDevice::execution_space>;
-  using Reducer     = std::conditional_t<IsMax,Kokkos::Max<ST>,Kokkos::Min<ST>>;
-
-  auto l_in  = f_in.get_header().get_identifier().get_layout();
-
-  const int ncols = l_in.dim(0);
-
-  bool is_masked = f_in.has_valid_mask();
-
-  switch(l_in.rank()) {
-    case 1: {
-      using mask_t = Field::view_dev_t<const int*>;
-
-      auto v_in  = f_in.get_view<const ST *>();
-      auto v_out = f_out.get_view<ST>();
-      auto mask  = is_masked ? f_in.get_valid_mask().get_view<const int*>() : mask_t{};
-
-      ST n = 0;
-      auto policy = Kokkos::RangePolicy<Field::device_t::execution_space>(0,ncols);
-      auto accum = KOKKOS_LAMBDA(const int i, ST &acc) {
-        if (not is_masked or mask(i))
-          acc = (IsMax ? v_in(i)>acc : v_in(i)<acc) ? v_in(i) : acc;
-      };
-      Kokkos::parallel_reduce(f_out.name(), policy, accum, Reducer(n));
-      Kokkos::deep_copy(v_out, n);
-    } break;
-    case 2: {
-      using mask_t = Field::view_dev_t<const int**>;
-
-      auto v_in   = f_in.get_view<const ST **>();
-      auto v_out  = f_out.get_view<ST *>();
-      auto d1     = l_in.dim(1);
-
-      auto mask  = is_masked ? f_in.get_valid_mask().get_view<const int**>() : mask_t{};
-      auto policy = TPF::get_default_team_policy(d1, ncols);
-      auto outer =  KOKKOS_LAMBDA(const TeamMember &tm) {
-        const int j = tm.league_rank();
-        ST n = 0;
-        auto inner = [&](int i, ST &acc) {
-          if (not is_masked or mask(i,j)) {
-            acc = (IsMax ? v_in(i,j)>acc : v_in(i,j)<acc) ? v_in(i,j) : acc;
-          }
-        };
-        auto tvr = Kokkos::TeamVectorRange(tm, ncols);
-
-        Kokkos::parallel_reduce(tvr, inner, Reducer(n));
-        v_out(j) = n;
-      };
-      Kokkos::parallel_for(f_out.name(), policy, outer);
-    } break;
-    case 3: {
-      using mask_t = Field::view_dev_t<const int***>;
-
-      auto v_in   = f_in.get_view<const ST ***>();
-      auto v_out  = f_out.get_view<ST **>();
-      auto d1     = l_in.dim(1);
-      auto d2     = l_in.dim(2);
-
-      auto mask  = is_masked ? f_in.get_valid_mask().get_view<const int***>() : mask_t{};
-      auto policy = TPF::get_default_team_policy(d1*d2, ncols);
-      auto outer =  KOKKOS_LAMBDA(const TeamMember &tm) {
-        const int idx = tm.league_rank();
-        const int j   = idx / d2;
-        const int k   = idx % d2;
-        ST n = 0;
-        auto inner = [&](int i, ST &acc) {
-          if (not is_masked or mask(i,j,k)) {
-            acc = (IsMax ? v_in(i,j,k)>acc : v_in(i,j,k)<acc) ? v_in(i,j,k) : acc;
-          }
-        };
-        auto tvr = Kokkos::TeamVectorRange(tm, ncols);
-
-        Kokkos::parallel_reduce(tvr, inner, Reducer(n));
-        v_out(j,k) = n;
-      };
-      Kokkos::parallel_for(f_out.name(), policy, outer);
-    } break;
+  switch (op) {
+    case ContractionOp::Sum: horiz_contraction<ST,ContractionOp::Sum>(f_out,f_in,weight); break;
+    case ContractionOp::Max: horiz_contraction<ST,ContractionOp::Max>(f_out,f_in,weight); break;
+    case ContractionOp::Min: horiz_contraction<ST,ContractionOp::Min>(f_out,f_in,weight); break;
     default:
-      EKAT_ERROR_MSG("Error! Unsupported field rank in horiz_" << (IsMax ? "max" : "min") << ".\n");
+      EKAT_ERROR_MSG ("[horiz_contraction] Error! Unsupported ContractionOp.\n");
   }
 }
 
 } // namespace impl
 
-void horiz_contraction(const Field& f_out, const Field& f_in, const Field& weight)
+void horiz_contraction(const Field& f_out, const Field& f_in, const Field& weight,
+                       const ContractionOp op)
 {
   using namespace ShortFieldTagsNames;
 
@@ -233,13 +160,13 @@ void horiz_contraction(const Field& f_out, const Field& f_in, const Field& weigh
 
   switch(dt) {
     case DataType::IntType:
-      impl::horiz_contraction<int>(f_out, f_in, weight);
+      impl::horiz_contraction<int>(f_out, f_in, weight, op);
       break;
     case DataType::FloatType:
-      impl::horiz_contraction<float>(f_out, f_in, weight);
+      impl::horiz_contraction<float>(f_out, f_in, weight, op);
       break;
     case DataType::DoubleType:
-      impl::horiz_contraction<double>(f_out, f_in, weight);
+      impl::horiz_contraction<double>(f_out, f_in, weight, op);
       break;
     default:
       EKAT_ERROR_MSG ("[horiz_contraction] Error! Unsupported data type.\n");
@@ -247,9 +174,14 @@ void horiz_contraction(const Field& f_out, const Field& f_in, const Field& weigh
 }
 
 void horiz_contraction(const Field& f_out, const Field& f_in,
-                       const Field& weight, const ekat::Comm& comm)
+                       const Field& weight, const ekat::Comm& comm,
+                       const ContractionOp op)
 {
-  horiz_contraction(f_out, f_in, weight);
+  horiz_contraction(f_out, f_in, weight, op);
+
+  // Ranks where no entry participated hold the op's identity, which is
+  // neutral in the global reduction too.
+  const auto mpi_op = impl::mpi_op(op);
 
   const auto& l_out = f_out.get_header().get_identifier().get_layout();
   // TODO: use device-aware MPI calls
@@ -258,13 +190,13 @@ void horiz_contraction(const Field& f_out, const Field& f_in,
   f_out.sync_to_host();
   switch (f_out.data_type()) {
     case DataType::IntType:
-      comm.all_reduce(f_out.get_internal_view_data<int, Host>(), l_out.size(), MPI_SUM);
+      comm.all_reduce(f_out.get_internal_view_data<int, Host>(), l_out.size(), mpi_op);
       break;
     case DataType::FloatType:
-      comm.all_reduce(f_out.get_internal_view_data<float, Host>(), l_out.size(), MPI_SUM);
+      comm.all_reduce(f_out.get_internal_view_data<float, Host>(), l_out.size(), mpi_op);
       break;
     case DataType::DoubleType:
-      comm.all_reduce(f_out.get_internal_view_data<double, Host>(), l_out.size(), MPI_SUM);
+      comm.all_reduce(f_out.get_internal_view_data<double, Host>(), l_out.size(), mpi_op);
       break;
     default:
       EKAT_ERROR_MSG ("[horiz_contraction] Error! Unsupported data type.\n");
@@ -272,101 +204,5 @@ void horiz_contraction(const Field& f_out, const Field& f_in,
   f_out.sync_to_dev();
 }
 
-namespace {
-
-template<bool IsMax>
-void horiz_extremum (const Field& f_out, const Field& f_in)
-{
-  using namespace ShortFieldTagsNames;
-
-  const std::string fname = IsMax ? "horiz_max" : "horiz_min";
-
-  EKAT_REQUIRE_MSG (f_out.is_allocated() and f_in.is_allocated(),
-    "[" + fname + "] Error! Output and/or input field was not yet allocated.\n");
-
-  const auto &l_out = f_out.get_header().get_identifier().get_layout();
-  const auto &l_in  = f_in.get_header().get_identifier().get_layout();
-
-  EKAT_REQUIRE_MSG (l_in.rank() >= 1 and l_in.rank() <= 3,
-    "[" + fname + "] Error! The input field must be rank-1, rank-2, or rank-3.\n"
-    " - input field rank: " << l_in.rank() << ".\n");
-  EKAT_REQUIRE_MSG (l_in.tags()[0] == COL,
-    "[" + fname + "] Error! The input field must have the COL tag as first dimension.\n"
-    " - input field layout: " << l_in.to_string() << ".\n");
-  EKAT_REQUIRE_MSG (l_out == l_in.clone().strip_dim(0),
-    "[" + fname + "] Error! The output field layout must match the input field layout (without COL).\n"
-    " - input field layout : " << l_in.to_string() << "\n"
-    " - output field layout: " << l_out.to_string() << ".\n");
-
-  const auto dt = f_in.data_type();
-  EKAT_REQUIRE_MSG (f_out.data_type() == dt,
-    "[" + fname + "] Error! Input and output fields must have the same data type.\n"
-    " - input field data type : " + e2str(dt) + "\n"
-    " - output field data type: " + e2str(f_out.data_type()) + "\n");
-
-  switch(dt) {
-    case DataType::IntType:
-      impl::horiz_extremum<int,IsMax>(f_out, f_in);
-      break;
-    case DataType::FloatType:
-      impl::horiz_extremum<float,IsMax>(f_out, f_in);
-      break;
-    case DataType::DoubleType:
-      impl::horiz_extremum<double,IsMax>(f_out, f_in);
-      break;
-    default:
-      EKAT_ERROR_MSG ("[" + fname + "] Error! Unsupported data type.\n");
-  }
-}
-
-template<bool IsMax>
-void horiz_extremum (const Field& f_out, const Field& f_in, const ekat::Comm& comm)
-{
-  horiz_extremum<IsMax>(f_out, f_in);
-
-  // Ranks with no valid entries hold the reduction identity, which is
-  // neutral for the global max/min as well.
-  const auto& l_out = f_out.get_header().get_identifier().get_layout();
-  const auto op = IsMax ? MPI_MAX : MPI_MIN;
-  // TODO: use device-aware MPI calls
-  Kokkos::fence();
-  f_out.sync_to_host();
-  switch (f_out.data_type()) {
-    case DataType::IntType:
-      comm.all_reduce(f_out.get_internal_view_data<int, Host>(), l_out.size(), op);
-      break;
-    case DataType::FloatType:
-      comm.all_reduce(f_out.get_internal_view_data<float, Host>(), l_out.size(), op);
-      break;
-    case DataType::DoubleType:
-      comm.all_reduce(f_out.get_internal_view_data<double, Host>(), l_out.size(), op);
-      break;
-    default:
-      EKAT_ERROR_MSG ("[horiz_" << (IsMax ? "max" : "min") << "] Error! Unsupported data type.\n");
-  }
-  f_out.sync_to_dev();
-}
-
-} // anonymous namespace
-
-void horiz_max (const Field& f_out, const Field& f_in)
-{
-  horiz_extremum<true>(f_out, f_in);
-}
-
-void horiz_min (const Field& f_out, const Field& f_in)
-{
-  horiz_extremum<false>(f_out, f_in);
-}
-
-void horiz_max (const Field& f_out, const Field& f_in, const ekat::Comm& comm)
-{
-  horiz_extremum<true>(f_out, f_in, comm);
-}
-
-void horiz_min (const Field& f_out, const Field& f_in, const ekat::Comm& comm)
-{
-  horiz_extremum<false>(f_out, f_in, comm);
-}
-
 } // namespace scream
+

@@ -1,4 +1,5 @@
 #include "horiz_avg.hpp"
+#include "contraction_utils.hpp"
 
 #include "share/field/field_utils.hpp"
 #include "share/util/eamxx_universal_constants.hpp"
@@ -20,13 +21,14 @@ HorizAvg(const ekat::Comm &comm,
   m_contract_method = m_params.get<std::string>("contract_method","avg");
   EKAT_REQUIRE_MSG(
       m_contract_method == "avg" || m_contract_method == "sum" ||
-      m_contract_method == "max" || m_contract_method == "min",
-      "Error! HorizAvg only supports 'avg', 'sum', 'max', or 'min' as contract_method.\n"
+      m_contract_method == "max" || m_contract_method == "min" ||
+      m_contract_method == "var" || m_contract_method == "std",
+      "Error! HorizAvg only supports 'avg', 'sum', 'max', 'min', 'var', or 'std' as contract_method.\n"
       " - contract_method: " + m_contract_method + "\n");
 
-  // Only the average is area weighted. The others get an all-ones weight in
-  // initialize_impl, since we do not have field layouts yet.
-  if (m_contract_method == "avg") {
+  // Averages (avg, var, std) are area weighted. The others get an all-ones
+  // weight in initialize_impl, since we do not have field layouts yet.
+  if (is_average()) {
     m_area = m_grid->get_geometry_data("area");
   }
 }
@@ -51,38 +53,44 @@ void HorizAvg::initialize_impl()
   const auto &fname = m_params.get<std::string>("field_name");
   const auto dname  = fname + "_horiz_" + m_contract_method;
 
-  auto d_fid = fid.clone(dname).reset_layout(layout.clone().strip_dim(COL));
+  const auto units = m_contract_method == "var" ? fid.get_units()*fid.get_units() : fid.get_units();
+  auto d_fid = fid.clone(dname).reset_layout(layout.clone().strip_dim(COL)).reset_units(units);
   m_diagnostic_output = Field(d_fid,true);
 
-  if (m_contract_method != "avg") {
-    // Unweighted: an all-ones weight. A sum needs nothing else, while max/min
-    // use it to count valid columns, to detect where none is valid.
+  if (not is_average()) {
+    // Unweighted: an all-ones weight
     FieldIdentifier w_fid("ones", m_grid->get_2d_scalar_layout(), ekat::units::none,
                           m_grid->name(), f.data_type());
     m_area = Field(w_fid,true);
     m_area.deep_copy(1);
-    if (m_contract_method != "sum" and f.has_valid_mask()) {
-      m_diagnostic_output.create_valid_mask(Field::MaskInit::None);
-      m_diagnostic_output.get_header().set_may_be_filled(true);
+  }
 
-      m_ones = f.clone();
-      m_ones.deep_copy(1);
-      m_ones.set_valid_mask(f.get_valid_mask());
-
-      m_denom = m_diagnostic_output.clone("denom");
+  if (m_contract_method == "var" || m_contract_method == "std") {
+    // Scratch for the squared deviations from the mean, masked like f
+    m_dev = f.clone("deviation");
+    if (f.has_valid_mask()) {
+      m_dev.set_valid_mask(f.get_valid_mask());
     }
-  } else if (f.has_valid_mask()) {
+  }
+
+  if (m_contract_method == "sum") {
+    // A sum over no valid column is just 0, so there is nothing else to do
+    return;
+  }
+
+  if (f.has_valid_mask()) {
     // Output valid_mask: 1 where den > 0 (i.e., at least one valid column)
     m_diagnostic_output.create_valid_mask(Field::MaskInit::None);
     m_diagnostic_output.get_header().set_may_be_filled(true);
 
-    // To use at runtime to compute sum(1*w) via horiz_avg (with f_in=1)
+    // To use at runtime to compute sum(1*w) (with f_in=1). For max/min, w=1,
+    // so this counts valid columns, to detect where none is valid.
     m_ones = f.clone();
     m_ones.deep_copy(1);
     m_ones.set_valid_mask(f.get_valid_mask());
 
     m_denom = m_diagnostic_output.clone("denom");
-  } else {
+  } else if (is_average()) {
     // Since area is constant and there is no masking, we can pre-compute
     // the area sum, and set weight = area/sum(area), so that we avoid
     // one loop at runtime.
@@ -107,38 +115,55 @@ void HorizAvg::initialize_impl()
 void HorizAvg::compute_impl()
 {
   const auto &f = m_fields_in.at(m_field_in_names.front());
+  auto& d = m_diagnostic_output;
 
-  if (m_contract_method == "max" or m_contract_method == "min") {
-    if (m_contract_method == "max") {
-      horiz_max(m_diagnostic_output, f, m_comm);
-    } else {
-      horiz_min(m_diagnostic_output, f, m_comm);
-    }
-    if (f.has_valid_mask()) {
-      // Count valid columns; where there are none, the output holds the reduction identity
-      horiz_contraction(m_denom, m_ones, m_area, m_comm);
+  if (f.has_valid_mask() && m_contract_method != "sum") {
+    // Denominator: sum(weight) masked. Its support is the output's valid mask.
+    horiz_contraction(m_denom, m_ones, m_area, m_comm);
+    compute_mask(m_denom,0,Comparison::NE,d.get_valid_mask());
+  }
 
-      auto& nonzero_denom = m_diagnostic_output.get_valid_mask();
-      compute_mask(m_denom,0,Comparison::NE,nonzero_denom);
-      // IO relies on fill_value for masked-out entries
-      m_diagnostic_output.deep_copy(constants::fill_value<Real>,nonzero_denom,true);
+  if (not is_average()) {
+    const auto op = m_contract_method == "max" ? ContractionOp::Max
+                  : m_contract_method == "min" ? ContractionOp::Min
+                                               : ContractionOp::Sum;
+    horiz_contraction(d, f, m_area, m_comm, op);
+    if (d.has_valid_mask()) {
+      // Where no column is valid, d holds the op's identity
+      d.deep_copy(constants::fill_value<Real>,d.get_valid_mask(),true);
     }
     return;
   }
 
-  // sum(w * f) possibly masked
-  horiz_contraction(m_diagnostic_output, f, m_area, m_comm);
+  // The rest are weighted averages: of f itself for avg, and of its squared
+  // deviation from that average for var/std (a two-pass algorithm, which
+  // does not suffer the cancellation of computing avg(f^2)-avg(f)^2).
+  auto weighted_avg = [&](const Field& src) {
+    // sum(w * src) possibly masked. Without a mask, w is pre-normalized.
+    horiz_contraction(d, src, m_area, m_comm);
+    if (d.has_valid_mask()) {
+      auto& valid_out = d.get_valid_mask();
+      d.scale_inv(m_denom,valid_out);
+      // IO relies on fill_value for masked-out entries
+      d.deep_copy(constants::fill_value<Real>,valid_out,true);
+    }
+  };
 
-  if (m_contract_method == "avg" and f.has_valid_mask()) {
-    // Denominator: sum(weight) masked
-    horiz_contraction(m_denom, m_ones, m_area, m_comm);
+  weighted_avg(f);
+  if (m_contract_method == "avg") {
+    return;
+  }
 
-    auto& nonzero_denom = m_diagnostic_output.get_valid_mask();
-    compute_mask(m_denom,0,Comparison::NE,nonzero_denom);
+  // dev = (f - avg)^2. Where no column is valid, avg is fill_value, but there
+  // dev is masked out anyway.
+  const auto& layout = f.get_header().get_identifier().get_layout();
+  m_dev.deep_copy(f);
+  m_dev.update(d.broadcast_to(layout), -1, 1);
+  m_dev.scale(m_dev);
+  weighted_avg(m_dev);
 
-    m_diagnostic_output.scale_inv(m_denom,nonzero_denom);
-    // IO relies on fill_value for masked-out entries
-    m_diagnostic_output.deep_copy(constants::fill_value<Real>,nonzero_denom,true);
+  if (m_contract_method == "std") {
+    sqrt_in_place(d);
   }
 }
 

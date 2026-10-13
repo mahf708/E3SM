@@ -7,6 +7,9 @@
 #include "share/core/eamxx_setup_random_test.hpp"
 #include "share/util/eamxx_universal_constants.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 namespace scream {
 
 
@@ -268,11 +271,7 @@ TEST_CASE("horiz_avg") {
 
       // Expected values where valid, fill_value elsewhere
       auto manual = diag_f.clone("manual");
-      if (method=="max") {
-        horiz_max(manual,vec_xz,comm);
-      } else {
-        horiz_min(manual,vec_xz,comm);
-      }
+      horiz_contraction(manual,vec_xz,w,comm,method=="max" ? ContractionOp::Max : ContractionOp::Min);
       manual.deep_copy(constants::fill_value<Real>,tgt_mask,true);
       REQUIRE (views_are_equal(diag_f,manual));
 
@@ -280,6 +279,81 @@ TEST_CASE("horiz_avg") {
       d_mask.sync_to_host();
       REQUIRE (d_mask.get_view<const int**,Host>()(0,0)==0);
       REQUIRE (diag_f.get_view<const Real**,Host>()(0,0)==constants::fill_value<Real>);
+    }
+  }
+
+  SECTION ("var_std") {
+    // Check against var = E[f^2] - E[f]^2 (area weighted, masked), which is a
+    // different algorithm than the diag's two-pass one, but fine for O(1) data.
+    FieldLayout layout = grid->get_3d_vector_layout(LEV,2,"dim2");
+    FieldIdentifier vec_xz_fid ("vec_xz" , layout, ekat::units::m, grid->name());
+
+    for (bool masked : {false, true}) {
+      Field vec_xz (vec_xz_fid , true);
+      randomize_uniform(vec_xz,seed++,-1,1);
+      vec_xz.get_header().get_tracking().update_time_stamp(t0);
+      if (masked) {
+        auto& mask = vec_xz.create_valid_mask();
+        randomize_uniform(mask,seed++);
+      }
+
+      auto ones = vec_xz.clone("ones");
+      auto f2   = vec_xz.clone("f2",CloneFlags::CopyData);
+      ones.deep_copy(1);
+      f2.scale(vec_xz);
+      if (masked) {
+        ones.set_valid_mask(vec_xz.get_valid_mask());
+        f2.set_valid_mask(vec_xz.get_valid_mask());
+      }
+
+      for (std::string method : {"var", "std"}) {
+        ekat::ParameterList params;
+        params.set("grid_name", grid->name());
+        params.set<std::string>("field_name", "vec_xz");
+        params.set<std::string>("contract_method", method);
+
+        auto diag = diag_factory.create("HorizAvg", comm, params, grid);
+        diag->set_input_field(vec_xz);
+        diag->initialize();
+        diag->compute(t0);
+        auto diag_f = diag->get();
+
+        REQUIRE (diag_f.name()=="vec_xz_horiz_"+method);
+        const auto tgt_units = method=="var" ? ekat::units::m*ekat::units::m : ekat::units::m;
+        REQUIRE (diag_f.get_header().get_identifier().get_units()==tgt_units);
+        REQUIRE (diag_f.has_valid_mask()==masked);
+
+        auto den = diag_f.clone("den");
+        auto e1  = diag_f.clone("e1");
+        auto e2  = diag_f.clone("e2");
+        horiz_contraction(den,ones,area,comm);
+        horiz_contraction(e1,vec_xz,area,comm);
+        horiz_contraction(e2,f2,area,comm);
+        den.sync_to_host();
+        e1.sync_to_host();
+        e2.sync_to_host();
+        diag_f.sync_to_host();
+        auto v_den = den.get_view<const Real**,Host>();
+        auto v_e1  = e1.get_view<const Real**,Host>();
+        auto v_e2  = e2.get_view<const Real**,Host>();
+        auto v_out = diag_f.get_view<const Real**,Host>();
+        for (int j=0; j<2; ++j) {
+          for (int k=0; k<nlevs; ++k) {
+            if (v_den(j,k)==0) {
+              REQUIRE (masked);
+              REQUIRE (v_out(j,k)==constants::fill_value<Real>);
+              continue;
+            }
+            const Real mean = v_e1(j,k)/v_den(j,k);
+            const Real var  = std::max(Real(0),v_e2(j,k)/v_den(j,k) - mean*mean);
+            // Compare std via its square, since sqrt amplifies the (different)
+            // roundoff of the two algorithms when var is close to 0
+            const Real out = method=="var" ? v_out(j,k) : v_out(j,k)*v_out(j,k);
+            REQUIRE (v_out(j,k)>=0);
+            REQUIRE_THAT (out, Catch::WithinAbs(var,1e3*tol));
+          }
+        }
+      }
     }
   }
 }

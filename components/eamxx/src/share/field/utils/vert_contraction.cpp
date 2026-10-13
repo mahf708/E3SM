@@ -1,18 +1,18 @@
 #include "share/field/field_utils.hpp"
 #include "share/field/field.hpp"
+#include "contraction_op_impl.hpp"
 
 #include <ekat_comm.hpp>
 #include <ekat_team_policy_utils.hpp>
-
-#include <type_traits>
 
 namespace scream {
 
 namespace impl {
 
-template <typename ST>
+template <typename ST, ContractionOp OP>
 void vert_contraction(const Field &f_out, const Field &f_in, const Field &weight)
 {
+  using Op          = ContractionOpTraits<ST,OP>;
   using TeamPolicy  = Kokkos::TeamPolicy<Field::device_t::execution_space>;
   using TeamMember  = typename TeamPolicy::member_type;
   using TPF         = ekat::TeamPolicyFactory<DefaultDevice::execution_space>;
@@ -38,10 +38,10 @@ void vert_contraction(const Field &f_out, const Field &f_in, const Field &weight
 
       auto policy = Kokkos::RangePolicy<Field::device_t::execution_space>(0,nlevs);
       ST n = 0;
-      auto reducer = Kokkos::Sum<ST>(n);
+      auto reducer = typename Op::reducer(n);
       auto accum = KOKKOS_LAMBDA(const int i, ST &acc) {
         if (not is_masked or mask(i))
-          acc += w_in(i) * v_in(i);
+          Op::join(acc, w_in(i) * v_in(i));
       };
       Kokkos::parallel_reduce(f_out.name(), policy, accum, reducer);
       Kokkos::deep_copy(v_out, n);
@@ -61,12 +61,12 @@ void vert_contraction(const Field &f_out, const Field &f_in, const Field &weight
         ST n = 0;
         auto inner = [&](int j, ST &acc) {
           if (not is_masked or mask(i,j)) {
-            acc += w_in(i, j) * v_in(i, j);
+            Op::join(acc, w_in(i, j) * v_in(i, j));
           }
         };
         auto tvr = Kokkos::TeamVectorRange(tm, nlevs);
 
-        Kokkos::parallel_reduce(tvr, inner, Kokkos::Sum<ST>(n));
+        Kokkos::parallel_reduce(tvr, inner, typename Op::reducer(n));
         v_out(i) = n;
       };
       Kokkos::parallel_for(f_out.name(), policy, outer);
@@ -89,12 +89,12 @@ void vert_contraction(const Field &f_out, const Field &f_in, const Field &weight
         ST n = 0;
         auto inner = [&](int k, ST &acc) {
           if (not is_masked or mask(i,j,k)) {
-            acc += w_in(i, j, k) * v_in(i, j, k);
+            Op::join(acc, w_in(i, j, k) * v_in(i, j, k));
           }
         };
         auto tvr = Kokkos::TeamVectorRange(tm, nlevs);
 
-        Kokkos::parallel_reduce(tvr, inner, Kokkos::Sum<ST>(n));
+        Kokkos::parallel_reduce(tvr, inner, typename Op::reducer(n));
         v_out(i,j) = n;
       };
       Kokkos::parallel_for(f_out.name(), policy, outer);
@@ -104,97 +104,24 @@ void vert_contraction(const Field &f_out, const Field &f_in, const Field &weight
   }
 }
 
-// Max (IsMax=true) or min (IsMax=false) of f_in along its last (LEV/ILEV) dim
-template <typename ST, bool IsMax>
-void vert_extremum(const Field &f_out, const Field &f_in)
+// Dispatch the runtime op to the compile-time one
+template<typename ST>
+void vert_contraction(const Field &f_out, const Field &f_in, const Field &weight,
+                       const ContractionOp op)
 {
-  using TeamPolicy  = Kokkos::TeamPolicy<Field::device_t::execution_space>;
-  using TeamMember  = typename TeamPolicy::member_type;
-  using TPF         = ekat::TeamPolicyFactory<DefaultDevice::execution_space>;
-  using Reducer     = std::conditional_t<IsMax,Kokkos::Max<ST>,Kokkos::Min<ST>>;
-
-  auto l_in = f_in.get_header().get_identifier().get_layout();
-
-  bool is_masked = f_in.has_valid_mask();
-
-  const int nlevs = l_in.dim(l_in.rank() - 1);
-
-  switch(l_in.rank()) {
-    case 1: {
-      using mask_t = Field::view_dev_t<const int*>;
-
-      auto mask  = is_masked ? f_in.get_valid_mask().get_view<const int *>() : mask_t {};
-      auto v_in  = f_in.get_view<const ST *>();
-      auto v_out = f_out.get_view<ST>();
-
-      auto policy = Kokkos::RangePolicy<Field::device_t::execution_space>(0,nlevs);
-      ST n = 0;
-      auto accum = KOKKOS_LAMBDA(const int i, ST &acc) {
-        if (not is_masked or mask(i))
-          acc = (IsMax ? v_in(i)>acc : v_in(i)<acc) ? v_in(i) : acc;
-      };
-      Kokkos::parallel_reduce(f_out.name(), policy, accum, Reducer(n));
-      Kokkos::deep_copy(v_out, n);
-    } break;
-    case 2: {
-      using mask_t = Field::view_dev_t<const int**>;
-
-      auto mask  = is_masked ? f_in.get_valid_mask().get_view<const int **>() : mask_t{};
-      auto v_in  = f_in.get_view<const ST **>();
-      auto v_out = f_out.get_view<ST *>();
-      auto d0    = l_in.dim(0);
-
-      auto policy = TPF::get_default_team_policy(d0, nlevs);
-      auto outer  =  KOKKOS_LAMBDA(const TeamMember &tm) {
-        const int i = tm.league_rank();
-        ST n = 0;
-        auto inner = [&](int j, ST &acc) {
-          if (not is_masked or mask(i,j)) {
-            acc = (IsMax ? v_in(i,j)>acc : v_in(i,j)<acc) ? v_in(i,j) : acc;
-          }
-        };
-        auto tvr = Kokkos::TeamVectorRange(tm, nlevs);
-
-        Kokkos::parallel_reduce(tvr, inner, Reducer(n));
-        v_out(i) = n;
-      };
-      Kokkos::parallel_for(f_out.name(), policy, outer);
-    } break;
-    case 3: {
-      using mask_t = Field::view_dev_t<const int***>;
-
-      auto mask  = is_masked ? f_in.get_valid_mask().get_view<const int ***>() : mask_t{};
-      auto v_in  = f_in.get_view<const ST ***>();
-      auto v_out = f_out.get_view<ST **>();
-      auto d0    = l_in.dim(0);
-      auto d1    = l_in.dim(1);
-
-      auto policy = TPF::get_default_team_policy(d0*d1, nlevs);
-      auto outer =  KOKKOS_LAMBDA(const TeamMember &tm) {
-        const int idx = tm.league_rank();
-        const int i   = idx / d1;
-        const int j   = idx % d1;
-        ST n = 0;
-        auto inner = [&](int k, ST &acc) {
-          if (not is_masked or mask(i,j,k)) {
-            acc = (IsMax ? v_in(i,j,k)>acc : v_in(i,j,k)<acc) ? v_in(i,j,k) : acc;
-          }
-        };
-        auto tvr = Kokkos::TeamVectorRange(tm, nlevs);
-
-        Kokkos::parallel_reduce(tvr, inner, Reducer(n));
-        v_out(i,j) = n;
-      };
-      Kokkos::parallel_for(f_out.name(), policy, outer);
-    } break;
+  switch (op) {
+    case ContractionOp::Sum: vert_contraction<ST,ContractionOp::Sum>(f_out,f_in,weight); break;
+    case ContractionOp::Max: vert_contraction<ST,ContractionOp::Max>(f_out,f_in,weight); break;
+    case ContractionOp::Min: vert_contraction<ST,ContractionOp::Min>(f_out,f_in,weight); break;
     default:
-      EKAT_ERROR_MSG("Error! Unsupported field rank in vert_" << (IsMax ? "max" : "min") << ".\n");
+      EKAT_ERROR_MSG ("[vert_contraction] Error! Unsupported ContractionOp.\n");
   }
 }
 
 } // namespace impl
 
-void vert_contraction (const Field& f_out, const Field& f_in, const Field& weight)
+void vert_contraction (const Field& f_out, const Field& f_in, const Field& weight,
+                       const ContractionOp op)
 {
   using namespace ShortFieldTagsNames;
 
@@ -249,76 +176,18 @@ void vert_contraction (const Field& f_out, const Field& f_in, const Field& weigh
 
   switch(dt) {
     case DataType::IntType:
-      impl::vert_contraction<int>(f_out,f_in,weight);
+      impl::vert_contraction<int>(f_out,f_in,weight,op);
       break;
     case DataType::FloatType:
-      impl::vert_contraction<float>(f_out,f_in,weight);
+      impl::vert_contraction<float>(f_out,f_in,weight,op);
       break;
     case DataType::DoubleType:
-      impl::vert_contraction<double>(f_out,f_in,weight);
+      impl::vert_contraction<double>(f_out,f_in,weight,op);
       break;
     default:
       EKAT_ERROR_MSG ("[vert_contraction] Error! Unsupported data type.\n");
   }
 }
 
-namespace {
-
-template<bool IsMax>
-void vert_extremum (const Field& f_out, const Field& f_in)
-{
-  using namespace ShortFieldTagsNames;
-
-  const std::string fname = IsMax ? "vert_max" : "vert_min";
-
-  EKAT_REQUIRE_MSG (f_out.is_allocated() and f_in.is_allocated(),
-    "[" + fname + "] Error! Output and/or input field was not yet allocated.\n");
-
-  const auto& l_out = f_out.get_header().get_identifier().get_layout();
-  const auto& l_in  = f_in.get_header().get_identifier().get_layout();
-
-  EKAT_REQUIRE_MSG (l_in.rank() >= 1 and l_in.rank() <= 3,
-    "[" + fname + "] Error! The input field must be rank-1, rank-2, or rank-3.\n"
-    " - input field rank: " << l_in.rank() << ".\n");
-  EKAT_REQUIRE_MSG (l_in.tags().back() == LEV or l_in.tags().back() == ILEV,
-    "[" + fname + "] Error! The input field layout must have a LEV (or ILEV) as its last dimension.\n"
-    " - input field layout: " << l_in.to_string() << ".\n");
-  EKAT_REQUIRE_MSG (l_out == l_in.clone().strip_dim(l_in.rank() - 1),
-    "[" + fname + "] Error! The output field layout must match the input field layout (without level tag).\n"
-    " - input field layout : " + l_in.to_string() + "\n"
-    " - output field layout: " + l_out.to_string() + ".\n");
-
-  const auto dt = f_in.data_type();
-  EKAT_REQUIRE_MSG (f_out.data_type()==dt,
-    "[" + fname + "] Error! The input and output fields must have the same data type.\n"
-    " - input field data type : " + e2str(dt) + "\n"
-    " - output field data type: " + e2str(f_out.data_type()) + "\n");
-
-  switch(dt) {
-    case DataType::IntType:
-      impl::vert_extremum<int,IsMax>(f_out,f_in);
-      break;
-    case DataType::FloatType:
-      impl::vert_extremum<float,IsMax>(f_out,f_in);
-      break;
-    case DataType::DoubleType:
-      impl::vert_extremum<double,IsMax>(f_out,f_in);
-      break;
-    default:
-      EKAT_ERROR_MSG ("[" + fname + "] Error! Unsupported data type.\n");
-  }
-}
-
-} // anonymous namespace
-
-void vert_max (const Field& f_out, const Field& f_in)
-{
-  vert_extremum<true>(f_out,f_in);
-}
-
-void vert_min (const Field& f_out, const Field& f_in)
-{
-  vert_extremum<false>(f_out,f_in);
-}
-
 } // namespace scream
+

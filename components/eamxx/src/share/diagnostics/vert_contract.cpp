@@ -1,4 +1,5 @@
 #include "vert_contract.hpp"
+#include "contraction_utils.hpp"
 
 #include "share/physics/physics_constants.hpp"
 #include "share/field/field_utils.hpp"
@@ -19,12 +20,12 @@ VertContract(const ekat::Comm &comm,
 
   m_field_in_names.push_back(m_field_name);
 
-  // we support sum, avg, max, or min
   m_contract_method = m_params.get<std::string>("contract_method");
   EKAT_REQUIRE_MSG(
       m_contract_method == "avg" || m_contract_method == "sum" ||
-      m_contract_method == "max" || m_contract_method == "min",
-      "Error! VertContract only supports 'avg', 'sum', 'max', or 'min' as contract_method.\n"
+      m_contract_method == "max" || m_contract_method == "min" ||
+      m_contract_method == "var" || m_contract_method == "std",
+      "Error! VertContract only supports 'avg', 'sum', 'max', 'min', 'var', or 'std' as contract_method.\n"
       " - contract_method: " + m_contract_method + "\n");
   // we support either dp or dz weighting, or no weighting at all (none)
   m_weighting_method = m_params.get<std::string>("weighting_method", "none");
@@ -34,8 +35,8 @@ VertContract(const ekat::Comm &comm,
       " - weighting_method: " + m_weighting_method + "\n");
   // a weighted max/min has no meaning
   EKAT_REQUIRE_MSG(
-      m_weighting_method == "none" || m_contract_method == "avg" || m_contract_method == "sum",
-      "Error! VertContract only supports weighting for 'avg' and 'sum'.\n"
+      m_weighting_method == "none" || (m_contract_method != "max" && m_contract_method != "min"),
+      "Error! VertContract does not support weighting for 'max' and 'min'.\n"
       " - contract_method : " + m_contract_method + "\n"
       " - weighting_method: " + m_weighting_method + "\n");
 
@@ -97,6 +98,8 @@ void VertContract::initialize_impl()
   // Only a sum carries the units of the weight
   if (m_contract_method == "sum") {
     diag_units = diag_units * w_units;
+  } else if (m_contract_method == "var") {
+    diag_units = diag_units * diag_units;
   }
 
   auto diag_name = m_field_name + "_vert_" + m_contract_method;
@@ -107,7 +110,7 @@ void VertContract::initialize_impl()
   m_diagnostic_output = Field(d_fid,true);
 
   const bool is_extremum = m_contract_method == "max" || m_contract_method == "min";
-  if (m_contract_method == "avg" || (is_extremum && f.has_valid_mask())) {
+  if (m_contract_method != "sum" && (not is_extremum || f.has_valid_mask())) {
     // For max/min, m_weight_sum is only used to detect where no level is
     // valid, which needs the same masked denominator as avg.
     // m_weight_sum must have the same layout as d (f's layout without vtag)
@@ -128,6 +131,14 @@ void VertContract::initialize_impl()
       // Output gets a valid_mask: 1 where at least one level was valid
       m_diagnostic_output.create_valid_mask(Field::MaskInit::None);
       m_diagnostic_output.get_header().set_may_be_filled(true);
+    }
+  }
+
+  if (m_contract_method == "var" || m_contract_method == "std") {
+    // Scratch for the squared deviations from the mean, masked like f
+    m_dev = f.clone("deviation");
+    if (f.has_valid_mask()) {
+      m_dev.set_valid_mask(f.get_valid_mask());
     }
   }
 }
@@ -171,13 +182,10 @@ void VertContract::compute_impl()
   }
 
   if (m_contract_method == "max" || m_contract_method == "min") {
-    if (m_contract_method == "max") {
-      vert_max(d, f);
-    } else {
-      vert_min(d, f);
-    }
+    const auto op = m_contract_method == "max" ? ContractionOp::Max : ContractionOp::Min;
+    vert_contraction(d, f, m_weight, op);
     if (d.has_valid_mask()) {
-      // Count valid levels; where there are none, d holds the reduction identity
+      // Count valid levels; where there are none, d holds the op's identity
       vert_contraction(m_weight_sum, m_ones, m_weight);
       auto& valid_out = d.get_valid_mask();
       compute_mask(m_weight_sum, 0, Comparison::NE, valid_out);
@@ -186,22 +194,45 @@ void VertContract::compute_impl()
     return;
   }
 
-  // Now do the contraction itself
-  vert_contraction(d, f, m_weight);
+  if (m_contract_method == "sum") {
+    vert_contraction(d, f, m_weight);
+    return;
+  }
 
-  if (m_contract_method == "avg") {
-    // Denominator: sum_lev(weight * 1 * mask); layout matches d
-    vert_contraction(m_weight_sum, m_ones, m_weight);
+  // The rest are weighted averages: of f itself for avg, and of its squared
+  // deviation from that average for var/std (a two-pass algorithm, which
+  // does not suffer the cancellation of computing avg(f^2)-avg(f)^2).
+  vert_contraction(m_weight_sum, m_ones, m_weight);
+  if (d.has_valid_mask()) {
+    compute_mask(m_weight_sum, 0, Comparison::NE, d.get_valid_mask());
+  }
+  auto weighted_avg = [&](const Field& src) {
+    vert_contraction(d, src, m_weight);
     if (d.has_valid_mask()) {
-      // Mark where denominator is nonzero, then divide, then fill elsewhere
       auto& valid_out = d.get_valid_mask();
-      compute_mask(m_weight_sum, 0, Comparison::NE, valid_out);
       d.scale_inv(m_weight_sum, valid_out);
       // IO relies on fill_value for masked-out entries
       d.deep_copy(constants::fill_value<Real>, valid_out, true);
     } else {
       d.scale_inv(m_weight_sum);
     }
+  };
+
+  weighted_avg(f);
+  if (m_contract_method == "avg") {
+    return;
+  }
+
+  // dev = (f - avg)^2. Where no level is valid, avg is fill_value, but there
+  // dev is masked out anyway.
+  const auto& layout = f.get_header().get_identifier().get_layout();
+  m_dev.deep_copy(f);
+  m_dev.update(d.broadcast_to(layout), -1, 1);
+  m_dev.scale(m_dev);
+  weighted_avg(m_dev);
+
+  if (m_contract_method == "std") {
+    sqrt_in_place(d);
   }
 }
 

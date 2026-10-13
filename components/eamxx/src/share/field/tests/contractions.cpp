@@ -290,11 +290,12 @@ TEST_CASE("field_contractions") {
   }
 }
 
-TEST_CASE("field_extrema") {
+TEST_CASE("field_contractions_max_min") {
   using namespace ShortFieldTagsNames;
   using namespace ekat::units;
 
-  // Max/min involve no arithmetic, so we can compare exactly
+  // Max/min do the same arithmetic (one product) as the manual computation,
+  // so we can compare exactly
   auto seed = get_random_test_seed();
 
   const int ncol = 129;
@@ -305,6 +306,10 @@ TEST_CASE("field_extrema") {
   const auto lowest  = Kokkos::reduction_identity<Real>::max();
   const auto highest = Kokkos::reduction_identity<Real>::min();
 
+  auto reduce = [](const ContractionOp op, const Real acc, const Real v) {
+    return op==ContractionOp::Max ? std::max(acc,v) : std::min(acc,v);
+  };
+
   FieldIdentifier scl_fid   ("s",    {{}, {}}, none, "g");
   FieldIdentifier scl_x_fid ("s_x",  {{COL}, {ncol}}, none, "g");
   FieldIdentifier scl_z_fid ("s_z",  {{LEV}, {nlev}}, none, "g");
@@ -314,214 +319,167 @@ TEST_CASE("field_extrema") {
   FieldIdentifier scl_xz_fid("s_xz", {{COL,LEV}, {ncol,nlev}}, none, "g");
   FieldIdentifier vec_xz_fid("v_xz", {{COL,CMP,LEV}, {ncol,ncmp,nlev}}, none, "g");
 
-  SECTION ("invalid_inputs") {
-    Field scl(scl_fid,true);
-    Field scl_x(scl_x_fid,true);
-    Field scl_z(scl_z_fid,true);
-    Field vec_x(vec_x_fid,true);
-
-    REQUIRE_THROWS(vert_max(scl, Field(scl_z_fid)));   // input not allocated yet
-    REQUIRE_THROWS(horiz_min(Field(scl_fid), scl_x));  // output not allocated yet
-    REQUIRE_THROWS(vert_max(scl, vec_x));              // input does not end with LEV
-    REQUIRE_THROWS(horiz_min(scl, vec_x));             // incompatible input-output layout
-    REQUIRE_THROWS(horiz_max(scl, scl_z));             // input does not start with COL
-  }
+  // Positive weights, so max(w*f) and max(f) are attained at different entries
+  Field w_x(scl_x_fid,true);
+  Field w_z(scl_z_fid,true);
+  randomize_uniform(w_x,seed++,0.5,1.5);
+  randomize_uniform(w_z,seed++,0.5,1.5);
+  w_x.sync_to_host();
+  w_z.sync_to_host();
+  auto v_wx = w_x.get_view<const Real*,Host>();
+  auto v_wz = w_z.get_view<const Real*,Host>();
 
   SECTION ("vert") {
-    // rank-1 input, masked: includes the all-masked case
-    Field s_z(scl_z_fid,true);
-    Field s(scl_fid,true);
-    randomize_uniform(s_z,seed++,-1,1);
-    auto& m_z = s_z.create_valid_mask();
-    randomize_uniform(m_z,seed++);
-    m_z.sync_to_host();
-    s_z.sync_to_host();
-    {
-      auto v_in = s_z.get_view<const Real*,Host>();
-      auto v_m  = m_z.get_view<const int*,Host>();
-      Real mx = lowest, mn = highest;
-      for (int k=0; k<nlev; ++k) {
-        if (v_m(k)) {
-          mx = std::max(mx,v_in(k));
-          mn = std::min(mn,v_in(k));
-        }
-      }
-      vert_max(s,s_z);
-      s.sync_to_host();
-      REQUIRE (s.get_view<const Real,Host>()()==mx);
-      vert_min(s,s_z);
-      s.sync_to_host();
-      REQUIRE (s.get_view<const Real,Host>()()==mn);
+    for (auto op : {ContractionOp::Max, ContractionOp::Min}) {
+      const auto identity = op==ContractionOp::Max ? lowest : highest;
 
-      m_z.deep_copy(0);
-      vert_max(s,s_z);
-      s.sync_to_host();
-      REQUIRE (s.get_view<const Real,Host>()()==lowest);
-      vert_min(s,s_z);
-      s.sync_to_host();
-      REQUIRE (s.get_view<const Real,Host>()()==highest);
-    }
-
-    // rank-2 input, unmasked
-    Field s_xz(scl_xz_fid,true);
-    Field s_x(scl_x_fid,true);
-    randomize_uniform(s_xz,seed++,-1,1);
-    s_xz.sync_to_host();
-    {
-      auto v_in = s_xz.get_view<const Real**,Host>();
-      auto v_out = s_x.get_view<const Real*,Host>();
-      vert_max(s_x,s_xz);
-      s_x.sync_to_host();
-      for (int i=0; i<ncol; ++i) {
-        Real mx = lowest;
+      // rank-1 input, masked: includes the all-masked case
+      Field s_z(scl_z_fid,true);
+      Field s(scl_fid,true);
+      randomize_uniform(s_z,seed++,-1,1);
+      auto& m_z = s_z.create_valid_mask();
+      randomize_uniform(m_z,seed++);
+      m_z.sync_to_host();
+      s_z.sync_to_host();
+      {
+        auto v_in = s_z.get_view<const Real*,Host>();
+        auto v_m  = m_z.get_view<const int*,Host>();
+        Real tgt = identity;
         for (int k=0; k<nlev; ++k) {
-          mx = std::max(mx,v_in(i,k));
+          if (v_m(k)) {
+            tgt = reduce(op,tgt,v_wz(k)*v_in(k));
+          }
         }
-        REQUIRE (v_out(i)==mx);
-      }
-      vert_min(s_x,s_xz);
-      s_x.sync_to_host();
-      for (int i=0; i<ncol; ++i) {
-        Real mn = highest;
-        for (int k=0; k<nlev; ++k) {
-          mn = std::min(mn,v_in(i,k));
-        }
-        REQUIRE (v_out(i)==mn);
-      }
-    }
+        vert_contraction(s,s_z,w_z,op);
+        s.sync_to_host();
+        REQUIRE (s.get_view<const Real,Host>()()==tgt);
 
-    // rank-3 input, masked
-    Field v_xz(vec_xz_fid,true);
-    Field v_x(vec_x_fid,true);
-    randomize_uniform(v_xz,seed++,-1,1);
-    auto& m_xz = v_xz.create_valid_mask();
-    randomize_uniform(m_xz,seed++);
-    v_xz.sync_to_host();
-    m_xz.sync_to_host();
-    {
-      auto v_in  = v_xz.get_view<const Real***,Host>();
-      auto v_m   = m_xz.get_view<const int***,Host>();
-      auto v_out = v_x.get_view<const Real**,Host>();
-      vert_max(v_x,v_xz);
-      v_x.sync_to_host();
-      for (int i=0; i<ncol; ++i) {
-        for (int j=0; j<ncmp; ++j) {
-          Real mx = lowest;
+        m_z.deep_copy(0);
+        vert_contraction(s,s_z,w_z,op);
+        s.sync_to_host();
+        REQUIRE (s.get_view<const Real,Host>()()==identity);
+      }
+
+      // rank-2 input, unmasked
+      Field s_xz(scl_xz_fid,true);
+      Field s_x(scl_x_fid,true);
+      randomize_uniform(s_xz,seed++,-1,1);
+      s_xz.sync_to_host();
+      {
+        auto v_in  = s_xz.get_view<const Real**,Host>();
+        auto v_out = s_x.get_view<const Real*,Host>();
+        vert_contraction(s_x,s_xz,w_z,op);
+        s_x.sync_to_host();
+        for (int i=0; i<ncol; ++i) {
+          Real tgt = identity;
           for (int k=0; k<nlev; ++k) {
-            if (v_m(i,j,k)) {
-              mx = std::max(mx,v_in(i,j,k));
-            }
+            tgt = reduce(op,tgt,v_wz(k)*v_in(i,k));
           }
-          REQUIRE (v_out(i,j)==mx);
+          REQUIRE (v_out(i)==tgt);
         }
       }
-      vert_min(v_x,v_xz);
-      v_x.sync_to_host();
-      for (int i=0; i<ncol; ++i) {
-        for (int j=0; j<ncmp; ++j) {
-          Real mn = highest;
-          for (int k=0; k<nlev; ++k) {
-            if (v_m(i,j,k)) {
-              mn = std::min(mn,v_in(i,j,k));
+
+      // rank-3 input, masked, with a (col,lev) weight
+      Field v_xz(vec_xz_fid,true);
+      Field v_x(vec_x_fid,true);
+      Field w_xz(scl_xz_fid,true);
+      randomize_uniform(v_xz,seed++,-1,1);
+      randomize_uniform(w_xz,seed++,0.5,1.5);
+      auto& m_xz = v_xz.create_valid_mask();
+      randomize_uniform(m_xz,seed++);
+      v_xz.sync_to_host();
+      w_xz.sync_to_host();
+      m_xz.sync_to_host();
+      {
+        auto v_in  = v_xz.get_view<const Real***,Host>();
+        auto v_w   = w_xz.get_view<const Real**,Host>();
+        auto v_m   = m_xz.get_view<const int***,Host>();
+        auto v_out = v_x.get_view<const Real**,Host>();
+        vert_contraction(v_x,v_xz,w_xz,op);
+        v_x.sync_to_host();
+        for (int i=0; i<ncol; ++i) {
+          for (int j=0; j<ncmp; ++j) {
+            Real tgt = identity;
+            for (int k=0; k<nlev; ++k) {
+              if (v_m(i,j,k)) {
+                tgt = reduce(op,tgt,v_w(i,k)*v_in(i,j,k));
+              }
             }
+            REQUIRE (v_out(i,j)==tgt);
           }
-          REQUIRE (v_out(i,j)==mn);
         }
       }
     }
   }
 
   SECTION ("horiz") {
-    // rank-1 input, unmasked
-    Field s_x(scl_x_fid,true);
-    Field s(scl_fid,true);
-    randomize_uniform(s_x,seed++,-1,1);
-    s_x.sync_to_host();
-    {
-      auto v_in = s_x.get_view<const Real*,Host>();
-      Real mx = lowest, mn = highest;
+    for (auto op : {ContractionOp::Max, ContractionOp::Min}) {
+      const auto identity = op==ContractionOp::Max ? lowest : highest;
+
+      // rank-1 input, unmasked
+      Field s_x(scl_x_fid,true);
+      Field s(scl_fid,true);
+      randomize_uniform(s_x,seed++,-1,1);
+      s_x.sync_to_host();
+      {
+        auto v_in = s_x.get_view<const Real*,Host>();
+        Real tgt = identity;
+        for (int i=0; i<ncol; ++i) {
+          tgt = reduce(op,tgt,v_wx(i)*v_in(i));
+        }
+        horiz_contraction(s,s_x,w_x,op);
+        s.sync_to_host();
+        REQUIRE (s.get_view<const Real,Host>()()==tgt);
+      }
+
+      // rank-2 input, masked, with one fully masked entry
+      Field v_x(vec_x_fid,true);
+      Field v(vec_fid,true);
+      randomize_uniform(v_x,seed++,-1,1);
+      auto& m_x = v_x.create_valid_mask();
+      randomize_uniform(m_x,seed++);
+      m_x.sync_to_host();
+      auto v_m = m_x.get_view<int**,Host>();
       for (int i=0; i<ncol; ++i) {
-        mx = std::max(mx,v_in(i));
-        mn = std::min(mn,v_in(i));
+        v_m(i,0) = 0;
       }
-      horiz_max(s,s_x);
-      s.sync_to_host();
-      REQUIRE (s.get_view<const Real,Host>()()==mx);
-      horiz_min(s,s_x);
-      s.sync_to_host();
-      REQUIRE (s.get_view<const Real,Host>()()==mn);
-    }
-
-    // rank-2 input, masked, with one fully masked entry
-    Field v_x(vec_x_fid,true);
-    Field v(vec_fid,true);
-    randomize_uniform(v_x,seed++,-1,1);
-    auto& m_x = v_x.create_valid_mask();
-    randomize_uniform(m_x,seed++);
-    m_x.sync_to_host();
-    auto v_m = m_x.get_view<int**,Host>();
-    for (int i=0; i<ncol; ++i) {
-      v_m(i,0) = 0;
-    }
-    m_x.sync_to_dev();
-    v_x.sync_to_host();
-    {
-      auto v_in  = v_x.get_view<const Real**,Host>();
-      auto v_out = v.get_view<const Real*,Host>();
-      horiz_max(v,v_x);
-      v.sync_to_host();
-      for (int j=0; j<ncmp; ++j) {
-        Real mx = lowest;
-        for (int i=0; i<ncol; ++i) {
-          if (v_m(i,j)) {
-            mx = std::max(mx,v_in(i,j));
-          }
-        }
-        REQUIRE (v_out(j)==mx);
-      }
-      REQUIRE (v_out(0)==lowest);
-      horiz_min(v,v_x);
-      v.sync_to_host();
-      for (int j=0; j<ncmp; ++j) {
-        Real mn = highest;
-        for (int i=0; i<ncol; ++i) {
-          if (v_m(i,j)) {
-            mn = std::min(mn,v_in(i,j));
-          }
-        }
-        REQUIRE (v_out(j)==mn);
-      }
-      REQUIRE (v_out(0)==highest);
-    }
-
-    // rank-3 input, unmasked
-    Field v_xz(vec_xz_fid,true);
-    Field v_z(vec_z_fid,true);
-    randomize_uniform(v_xz,seed++,-1,1);
-    v_xz.sync_to_host();
-    {
-      auto v_in  = v_xz.get_view<const Real***,Host>();
-      auto v_out = v_z.get_view<const Real**,Host>();
-      horiz_max(v_z,v_xz);
-      v_z.sync_to_host();
-      for (int j=0; j<ncmp; ++j) {
-        for (int k=0; k<nlev; ++k) {
-          Real mx = lowest;
+      m_x.sync_to_dev();
+      v_x.sync_to_host();
+      {
+        auto v_in  = v_x.get_view<const Real**,Host>();
+        auto v_out = v.get_view<const Real*,Host>();
+        horiz_contraction(v,v_x,w_x,op);
+        v.sync_to_host();
+        for (int j=0; j<ncmp; ++j) {
+          Real tgt = identity;
           for (int i=0; i<ncol; ++i) {
-            mx = std::max(mx,v_in(i,j,k));
+            if (v_m(i,j)) {
+              tgt = reduce(op,tgt,v_wx(i)*v_in(i,j));
+            }
           }
-          REQUIRE (v_out(j,k)==mx);
+          REQUIRE (v_out(j)==tgt);
         }
+        REQUIRE (v_out(0)==identity);
       }
-      horiz_min(v_z,v_xz);
-      v_z.sync_to_host();
-      for (int j=0; j<ncmp; ++j) {
-        for (int k=0; k<nlev; ++k) {
-          Real mn = highest;
-          for (int i=0; i<ncol; ++i) {
-            mn = std::min(mn,v_in(i,j,k));
+
+      // rank-3 input, unmasked
+      Field v_xz(vec_xz_fid,true);
+      Field v_z(vec_z_fid,true);
+      randomize_uniform(v_xz,seed++,-1,1);
+      v_xz.sync_to_host();
+      {
+        auto v_in  = v_xz.get_view<const Real***,Host>();
+        auto v_out = v_z.get_view<const Real**,Host>();
+        horiz_contraction(v_z,v_xz,w_x,op);
+        v_z.sync_to_host();
+        for (int j=0; j<ncmp; ++j) {
+          for (int k=0; k<nlev; ++k) {
+            Real tgt = identity;
+            for (int i=0; i<ncol; ++i) {
+              tgt = reduce(op,tgt,v_wx(i)*v_in(i,j,k));
+            }
+            REQUIRE (v_out(j,k)==tgt);
           }
-          REQUIRE (v_out(j,k)==mn);
         }
       }
     }

@@ -285,6 +285,16 @@ const dexpr::FunctionRegistry& eamxx_registry ()
            .min_positional = 1, .max_positional = 1,
            .keywords = {},
            .example = "T_mid.min('lev')"});
+    r.add({.name = "var",
+           .desc = "variance over a dimension ('col' or 'lev'), weighted like mean",
+           .min_positional = 1, .max_positional = 1,
+           .keywords = {{"weights",false}},
+           .example = "T_mid.var('lev',weights='dp')"});
+    r.add({.name = "std",
+           .desc = "standard deviation over a dimension ('col' or 'lev'), weighted like mean",
+           .min_positional = 1, .max_positional = 1,
+           .keywords = {{"weights",false}},
+           .example = "T_mid.std('lev',weights='dp')"});
     r.add({.name = "broadcast_like",
            .desc = "value repeated along the dims of another field that it lacks",
            .min_positional = 1, .max_positional = 1,
@@ -390,7 +400,8 @@ void translate_call (const Call& call, const ast::Expression& self,
     return;
   }
 
-  if (call.name=="mean" or call.name=="sum" or call.name=="max" or call.name=="min") {
+  if (call.name=="mean" or call.name=="sum" or call.name=="max" or call.name=="min" or
+      call.name=="var" or call.name=="std") {
     const auto dim = string_arg(*call.positional[0],"the dimension");
     const auto* weights = keyword(call,"weights");
     // The diags call the mean an "avg"; the other names they share with us
@@ -398,8 +409,8 @@ void translate_call (const Call& call, const ast::Expression& self,
 
     if (dim=="col") {
       EKAT_REQUIRE_MSG (weights==nullptr,
-          "Error! Reductions over 'col' take no 'weights': mean('col') is always\n"
-          "       area weighted, and sum/max/min('col') are unweighted.\n"
+          "Error! Reductions over 'col' take no 'weights': mean/var/std('col') are\n"
+          "       always area weighted, and sum/max/min('col') are unweighted.\n"
           " - expression: " + ast::to_string(self) + "\n");
       diag_name = "HorizAvg";
       params.set<std::string>("contract_method",method);

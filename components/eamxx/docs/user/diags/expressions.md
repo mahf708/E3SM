@@ -83,10 +83,14 @@ is an honest analogue.
 | `X.sum('col')` | `X_horiz_sum` |
 | `X.max('col')` | `X_horiz_max` |
 | `X.min('col')` | `X_horiz_min` |
+| `X.var('col')` | `X_horiz_var` |
+| `X.std('col')` | `X_horiz_std` |
 | `X.mean('lev')` | `X_vert_avg` |
 | `X.sum('lev')` | `X_vert_sum` |
 | `X.max('lev')` | `X_vert_max` |
 | `X.min('lev')` | `X_vert_min` |
+| `X.var('lev')` | `X_vert_var` |
+| `X.std('lev', weights='dp')` | `X_vert_std_dp_weighted` |
 | `X.mean('lev', weights='dp')` | `X_vert_avg_dp_weighted` |
 | `X.where(qv>0.01)` | `X_where_qv_gt_0.01` |
 | `X.derivative('p_mid')` | `X_pvert_derivative` |
@@ -123,13 +127,18 @@ Notes:
   model cannot know, and is rejected -- do not read it as "one step back" by
   analogy with `isel(lev=-1)`. Only `time=1` is available, since only one step
   of history is kept.
-- `mean('col')` is always area weighted, while `sum('col')`, `max('col')` and
-  `min('col')` are unweighted, so `weights` does not apply to any of them.
-  `weights` for `mean('lev')` and `sum('lev')` is `'dp'` or `'dz'`.
+- `mean('col')`, `var('col')` and `std('col')` are always area weighted, while
+  `sum('col')`, `max('col')` and `min('col')` are unweighted, so `weights` does
+  not apply to any of them. `weights` for `mean`, `sum`, `var` and `std` along
+  `'lev'` is `'dp'` or `'dz'`.
 - `max` and `min` take no `weights`, along either dimension.
+- `var` is the weighted *population* variance (xarray's default `ddof=0`):
+  the weighted mean of `(X - X.mean(..))**2`, with the same weights as `mean`.
+  `std` is its square root. They are computed in two passes, which avoids the
+  cancellation of `mean(X**2) - mean(X)**2`.
 - Reductions skip masked-out entries, e.g. those dropped by `where(..)`. Where
-  *every* entry along the reduced dimension is masked out, `mean`, `max` and
-  `min` give the missing-value marker, while `sum` gives 0 (a sum over nothing).
+  *every* entry along the reduced dimension is masked out, all but `sum` give
+  the missing-value marker, while `sum` gives 0 (a sum over nothing).
   So `T_mid.where(T_mid>273.15).max('lev')` is filled in columns that are
   below freezing all the way up.
 - `broadcast_like` repeats `X` along the dimensions of `Y` that `X` lacks, so that
@@ -177,15 +186,15 @@ and so on.
 
 ### Where this departs from xarray
 
-`isel`, `interp`, `mean`, `sum`, `max`, `min`, `where` and `shift` mean what
-they mean in xarray, on the same arguments. The rest have no xarray spelling we could adopt:
+`isel`, `interp`, `mean`, `sum`, `max`, `min`, `var`, `std`, `where` and
+`shift` mean what they mean in xarray, on the same arguments. The rest have no xarray spelling we could adopt:
 
 | | |
 | --- | --- |
 | `histogram` | not in xarray; the keyword follows [xhistogram](https://xhistogram.readthedocs.io) |
 | `zonal_mean` | xarray would be `groupby_bins('lat', 20).mean()`, a call chain we cannot represent |
 | `over_dt`, `tend` | no xarray equivalent |
-| `mean('lev', weights=..)` | xarray would be `weighted(dp).mean('lev')`, again a chain |
+| `mean('lev', weights=..)` | xarray would be `weighted(dp).mean('lev')`, again a chain (same for `sum`, `var`, `std`) |
 
 `X.mean('lev', weights='dp')` is `(X*dp).sum('lev')/dp.sum('lev')`, but computed
 in one sweep rather than as three diagnostics.

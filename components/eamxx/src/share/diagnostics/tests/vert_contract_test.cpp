@@ -8,6 +8,8 @@
 #include "share/util/eamxx_universal_constants.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 namespace scream {
 
@@ -56,6 +58,10 @@ TEST_CASE("vert_contract") {
     params.set<std::string>("weighting_method", "dp");
     // Weighted max/min -> throws in constructor
     REQUIRE_THROWS(diag_factory.create("VertContract", comm, params, grid));
+
+    // ...while weighted var/std are fine
+    params.set<std::string>("contract_method", "var");
+    REQUIRE_NOTHROW(diag_factory.create("VertContract", comm, params, grid));
   }
 
   SECTION("dp_weighted_sum") {
@@ -225,12 +231,11 @@ TEST_CASE("vert_contract") {
       REQUIRE (diag_f.get_header().get_identifier().get_units()==kg/kg);
       REQUIRE (not diag_f.has_valid_mask());
 
+      FieldLayout ones_lev_layout{{LEV}, {nlevs}};
+      Field ones_lev(FieldIdentifier("ones_lev", ones_lev_layout, none, grid->name()), true);
+      ones_lev.deep_copy(1);
       auto ref = diag_f.clone("ref");
-      if (method=="max") {
-        vert_max(ref, fin);
-      } else {
-        vert_min(ref, fin);
-      }
+      vert_contraction(ref, fin, ones_lev, method=="max" ? ContractionOp::Max : ContractionOp::Min);
       REQUIRE(views_are_equal(diag_f, ref));
 
       // Sanity check against a manual host computation
@@ -297,6 +302,128 @@ TEST_CASE("vert_contract") {
         REQUIRE (v_out(i)==(any_valid ? tgt : constants::fill_value<Real>));
       }
       // Column 0 is fully masked
+      REQUIRE (v_omask(0)==0);
+    }
+  }
+
+  SECTION("var_std_dp_weighted") {
+    // Create and randomize a 3D (COL x CMP x LEV) input field
+    Field fin(FieldIdentifier("qc", scalar3d_layout, kg/kg, grid->name()));
+    fin.allocate_view();
+    fin.get_header().get_tracking().update_time_stamp(t0);
+    randomize_uniform(fin, seed++, 1, 200);
+
+    Field dp(FieldIdentifier("pseudo_density", scalar2d_layout, Pa, grid->name()));
+    dp.allocate_view();
+    dp.get_header().get_tracking().update_time_stamp(t0);
+    randomize_uniform(dp, seed++, 1, 200);
+
+    fin.sync_to_host();
+    dp.sync_to_host();
+    auto v_in = fin.get_view<const Real***,Host>();
+    auto v_dp = dp.get_view<const Real**,Host>();
+
+    for (std::string method : {"var", "std"}) {
+      ekat::ParameterList params;
+      params.set("grid_name", grid->name());
+      params.set<std::string>("field_name", "qc");
+      params.set<std::string>("contract_method", method);
+      params.set<std::string>("weighting_method", "dp");
+      auto diag = diag_factory.create("VertContract", comm, params, grid);
+      diag->set_input_field(fin);
+      diag->set_input_field(dp);
+      diag->initialize();
+      diag->compute(t0);
+      auto diag_f = diag->get();
+
+      REQUIRE (diag_f.name()=="qc_vert_"+method+"_dp_weighted");
+      const auto tgt_units = method=="var" ? (kg/kg)*(kg/kg) : kg/kg;
+      REQUIRE (diag_f.get_header().get_identifier().get_units()==tgt_units);
+
+      // Manual two-pass reference (the 1/g in the weights cancels out)
+      diag_f.sync_to_host();
+      auto v_out = diag_f.get_view<const Real**,Host>();
+      const auto tol = std::numeric_limits<Real>::epsilon()*1000;
+      for (int i=0; i<v_out.extent_int(0); ++i) {
+        for (int j=0; j<dim5; ++j) {
+          Real wsum = 0, mean = 0, var = 0;
+          for (int k=0; k<nlevs; ++k) {
+            wsum += v_dp(i,k);
+            mean += v_dp(i,k)*v_in(i,j,k);
+          }
+          mean /= wsum;
+          for (int k=0; k<nlevs; ++k) {
+            var += v_dp(i,k)*(v_in(i,j,k)-mean)*(v_in(i,j,k)-mean);
+          }
+          var /= wsum;
+          const Real tgt = method=="var" ? var : std::sqrt(var);
+          REQUIRE_THAT (v_out(i,j), Catch::Matchers::WithinRel(tgt,tol));
+        }
+      }
+    }
+  }
+
+  SECTION("var_std_masked") {
+    // Create and randomize a 2D (COL x LEV) masked input field,
+    // with column 0 fully masked
+    Field fin(FieldIdentifier("qc", scalar2d_layout, kg/kg, grid->name()));
+    fin.allocate_view();
+    fin.get_header().get_tracking().update_time_stamp(t0);
+    randomize_uniform(fin, seed++, 1, 200);
+    auto& mask = fin.create_valid_mask();
+    randomize_uniform(mask, seed++);
+    mask.sync_to_host();
+    auto v_mask = mask.get_view<int**,Host>();
+    for (int k=0; k<nlevs; ++k) {
+      v_mask(0,k) = 0;
+    }
+    mask.sync_to_dev();
+
+    fin.sync_to_host();
+    auto v_in = fin.get_view<const Real**,Host>();
+
+    for (std::string method : {"var", "std"}) {
+      ekat::ParameterList params;
+      params.set("grid_name", grid->name());
+      params.set<std::string>("field_name", "qc");
+      params.set<std::string>("contract_method", method);
+      auto diag = diag_factory.create("VertContract", comm, params, grid);
+      diag->set_input_field(fin);
+      diag->initialize();
+      diag->compute(t0);
+      auto diag_f = diag->get();
+      REQUIRE (diag_f.has_valid_mask());
+
+      diag_f.sync_to_host();
+      diag_f.get_valid_mask().sync_to_host();
+      auto v_out   = diag_f.get_view<const Real*,Host>();
+      auto v_omask = diag_f.get_valid_mask().get_view<const int*,Host>();
+      const auto tol = std::numeric_limits<Real>::epsilon()*1000;
+      for (int i=0; i<v_out.extent_int(0); ++i) {
+        int n = 0;
+        Real mean = 0, var = 0;
+        for (int k=0; k<nlevs; ++k) {
+          if (v_mask(i,k)) {
+            ++n;
+            mean += v_in(i,k);
+          }
+        }
+        REQUIRE (v_omask(i)==(n>0 ? 1 : 0));
+        if (n==0) {
+          REQUIRE (v_out(i)==constants::fill_value<Real>);
+          continue;
+        }
+        mean /= n;
+        for (int k=0; k<nlevs; ++k) {
+          if (v_mask(i,k)) {
+            var += (v_in(i,k)-mean)*(v_in(i,k)-mean);
+          }
+        }
+        var /= n;
+        const Real tgt = method=="var" ? var : std::sqrt(var);
+        // A column with a single valid level has zero variance
+        REQUIRE_THAT (v_out(i), Catch::Matchers::WithinAbs(tgt,tol*std::max(Real(1),tgt)));
+      }
       REQUIRE (v_omask(0)==0);
     }
   }

@@ -49,36 +49,30 @@ void perturb (const Field& f,
               const Field& level_mask,
               const Field& dof_gids = Field());
 
+// The reduction operator applied by vert/horiz contractions (see below)
+enum class ContractionOp { Sum, Max, Min };
+
 // Vertical/horizontal contractions of field.
-// Computes a weighted sum of f_in along the contracted dimension:
-//   f_out[j] = sum_i( weight[i] * f_in[i,j])
-// or
-//   f_out[j] = sum_i( weight[i] * f_in[i,j] * mask[i,j] )
-// where mask = f_in.get_valid_mask() (IntType, 0=invalid) if present.
+// Computes a reduction of the weighted f_in along the contracted dimension:
+//   f_out[j] = OP_i( weight[i] * f_in[i,j] )
+// where OP is sum (the default), max, or min. Pass an all-ones weight for an
+// unweighted reduction. If f_in has a valid mask (IntType, 0=invalid), only
+// entries with nonzero mask participate.
+// Output entries where NO input entry participates are set to the identity of
+// OP: 0 for sum, and, for floating point types, -inf for max and +inf for min
+// (the lowest/highest representable value for integer types). Callers that
+// need a fill value there must detect those entries themselves (e.g., by
+// contracting an all-ones field with the same mask, to count valid entries).
 // Here, the weight is ASSUMED to be:
 //  - a 1d (ncol) field for horiz_contraction
 //  - either a 1d (nlev) or 2d (ncol,nlev) field for vert_contraction
 // For horiz, the overload with comm also performs an all_reduce across ranks
-void vert_contraction (const Field& f_out, const Field& f_in, const Field& weight);
-void horiz_contraction(const Field& f_out, const Field& f_in, const Field& weight);
-void horiz_contraction(const Field& f_out, const Field& f_in, const Field& weight, const ekat::Comm& comm);
-
-// Vertical/horizontal max/min of a field along the contracted dimension:
-//   f_out[j] = max_i( f_in[i,j] )   (or min_i)
-// If f_in has a valid mask, only entries with nonzero mask participate.
-// Output entries where NO input entry participates are set to the Kokkos
-// reduction identity, i.e., -inf (for max) or +inf (for min) for floating
-// point types, and the lowest/highest representable value for integers.
-// Callers that need a fill value there must detect those entries themselves
-// (e.g., by counting valid entries with *_contraction).
-// Layout requirements on f_in/f_out are the same as for *_contraction.
-// For horiz, the overload with comm also performs an all_reduce across ranks
-void vert_max  (const Field& f_out, const Field& f_in);
-void vert_min  (const Field& f_out, const Field& f_in);
-void horiz_max (const Field& f_out, const Field& f_in);
-void horiz_min (const Field& f_out, const Field& f_in);
-void horiz_max (const Field& f_out, const Field& f_in, const ekat::Comm& comm);
-void horiz_min (const Field& f_out, const Field& f_in, const ekat::Comm& comm);
+void vert_contraction (const Field& f_out, const Field& f_in, const Field& weight,
+                       const ContractionOp op = ContractionOp::Sum);
+void horiz_contraction(const Field& f_out, const Field& f_in, const Field& weight,
+                       const ContractionOp op = ContractionOp::Sum);
+void horiz_contraction(const Field& f_out, const Field& f_in, const Field& weight, const ekat::Comm& comm,
+                       const ContractionOp op = ContractionOp::Sum);
 
 // Reduce field to a single scalar, and return an opaque type, to allow hiding impl in cpp file.
 // NOTE: all calculations are done serially HOST

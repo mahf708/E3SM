@@ -352,7 +352,7 @@ TEST_CASE("create_diag")
     REQUIRE (legacy->get_params().get<std::string>("weighting_method")=="dp");
 
     // max/min/sum over either dimension, all mapping onto the same two diags
-    for (std::string method : {"sum", "max", "min"}) {
+    for (std::string method : {"sum", "max", "min", "var", "std"}) {
       auto dc = create_diagnostic("T_mid."+method+"('col')",grid);
       REQUIRE (std::dynamic_pointer_cast<HorizAvg>(dc)!=nullptr);
       REQUIRE (dc->get_params().get<std::string>("contract_method")==method);
@@ -380,6 +380,14 @@ TEST_CASE("create_diag")
     REQUIRE_THROWS (create_diagnostic("T_mid.max('lev',weights='dp')",grid));
     REQUIRE_THROWS (create_diagnostic("T_mid.min('col',weights='dp')",grid));
     REQUIRE_THROWS (create_diagnostic("T_mid_vert_max_dp_weighted",grid));
+    // var/std take weights along 'lev', like mean
+    auto dv = create_diagnostic("T_mid.std('lev',weights='dz')",grid);
+    REQUIRE (dv->get_params().get<std::string>("contract_method")=="std");
+    REQUIRE (dv->get_params().get<std::string>("weighting_method")=="dz");
+    auto lv = create_diagnostic("T_mid_vert_var_dp_weighted",grid);
+    REQUIRE (lv->get_params().get<std::string>("contract_method")=="var");
+    REQUIRE (lv->get_params().get<std::string>("weighting_method")=="dp");
+    REQUIRE_THROWS (create_diagnostic("T_mid.var('col',weights='dp')",grid));
     REQUIRE_THROWS (create_diagnostic("T_mid.max()",grid));
   }
 
