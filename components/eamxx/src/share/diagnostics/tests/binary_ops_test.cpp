@@ -1,5 +1,7 @@
 #include <catch2/catch.hpp>
 
+#include <algorithm>
+
 #include "share/diagnostics/register_diagnostics.hpp"
 #include "share/physics/physics_constants.hpp"
 #include "share/field/field_utils.hpp"
@@ -120,6 +122,44 @@ TEST_CASE("binary_ops") {
 
   // constant*constant diag
   REQUIRE (rgas_diag_f.get_view<Real,Host>()()==physics::Constants<Real>::dictionary().at("Rgas").value);
+}
+
+TEST_CASE("binary_op_constants_do_not_shadow_fields")
+{
+  // A constant must not have the name of a field (as 'omega' did), and BinaryOp
+  // must record which operands it took from the constants dictionary
+  const auto& dict = physics::Constants<Real>::dictionary();
+  REQUIRE (dict.find("omega")==dict.end());
+  REQUIRE (dict.find("omega_earth")!=dict.end());
+
+  ekat::Comm comm(MPI_COMM_WORLD);
+  auto grid = create_point_grid("physics",16,8,comm);
+  auto &diag_factory = DiagnosticFactory::instance();
+  register_diagnostics();
+
+  auto make = [&](const std::string& a, const std::string& b) {
+    ekat::ParameterList p;
+    p.set("grid_name", grid->name());
+    p.set<std::string>("arg1",a);
+    p.set<std::string>("arg2",b);
+    p.set<std::string>("binary_op","times");
+    return diag_factory.create("BinaryOp",comm,p,grid);
+  };
+
+  auto mixed = make("Rgas","T_mid");
+  const auto reported =
+      mixed->get_params().get<std::vector<std::string>>("constant_operands",{});
+  REQUIRE (reported.size()==1);
+  REQUIRE (reported[0]=="Rgas");
+  // T_mid is a field, not a constant
+  REQUIRE (std::find(reported.begin(),reported.end(),"T_mid")==reported.end());
+
+  auto both_fields = make("omega","qv");
+  REQUIRE (both_fields->get_params()
+               .get<std::vector<std::string>>("constant_operands",{}).empty());
+  const auto& inputs = both_fields->get_input_fields_names();
+  REQUIRE (std::find(inputs.begin(),inputs.end(),"omega")!=inputs.end());
+  REQUIRE (std::find(inputs.begin(),inputs.end(),"qv")!=inputs.end());
 }
 
 }  // namespace scream
