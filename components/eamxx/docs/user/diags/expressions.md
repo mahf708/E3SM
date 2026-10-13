@@ -80,8 +80,13 @@ is an honest analogue.
 | `X.interp(z_mid=10, reference='surface')` | `X_at_10m_above_surface` |
 | `X.interp(z_mid=1000, reference='sealevel')` | `X_at_1000m_above_sealevel` |
 | `X.mean('col')` | `X_horiz_avg` |
+| `X.sum('col')` | `X_horiz_sum` |
+| `X.max('col')` | `X_horiz_max` |
+| `X.min('col')` | `X_horiz_min` |
 | `X.mean('lev')` | `X_vert_avg` |
 | `X.sum('lev')` | `X_vert_sum` |
+| `X.max('lev')` | `X_vert_max` |
+| `X.min('lev')` | `X_vert_min` |
 | `X.mean('lev', weights='dp')` | `X_vert_avg_dp_weighted` |
 | `X.where(qv>0.01)` | `X_where_qv_gt_0.01` |
 | `X.derivative('p_mid')` | `X_pvert_derivative` |
@@ -118,8 +123,15 @@ Notes:
   model cannot know, and is rejected -- do not read it as "one step back" by
   analogy with `isel(lev=-1)`. Only `time=1` is available, since only one step
   of history is kept.
-- `mean('col')` is always area weighted, so `weights` does not apply to it.
-  `weights` for `'lev'` is `'dp'` or `'dz'`.
+- `mean('col')` is always area weighted, while `sum('col')`, `max('col')` and
+  `min('col')` are unweighted, so `weights` does not apply to any of them.
+  `weights` for `mean('lev')` and `sum('lev')` is `'dp'` or `'dz'`.
+- `max` and `min` take no `weights`, along either dimension.
+- Reductions skip masked-out entries, e.g. those dropped by `where(..)`. Where
+  *every* entry along the reduced dimension is masked out, `mean`, `max` and
+  `min` give the missing-value marker, while `sum` gives 0 (a sum over nothing).
+  So `T_mid.where(T_mid>273.15).max('lev')` is filled in columns that are
+  below freezing all the way up.
 - `broadcast_like` repeats `X` along the dimensions of `Y` that `X` lacks, so that
   `X` can be combined with `Y`. E.g., `dp.broadcast_like(horiz_winds)` would produce
   a version of `dp` (call it `dp_bcast`) with layout `(ncol,2,lev)`, where
@@ -165,8 +177,8 @@ and so on.
 
 ### Where this departs from xarray
 
-`isel`, `interp`, `mean`, `sum`, `where` and `shift` mean what they mean in
-xarray, on the same arguments. The rest have no xarray spelling we could adopt:
+`isel`, `interp`, `mean`, `sum`, `max`, `min`, `where` and `shift` mean what
+they mean in xarray, on the same arguments. The rest have no xarray spelling we could adopt:
 
 | | |
 | --- | --- |

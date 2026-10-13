@@ -271,10 +271,20 @@ const dexpr::FunctionRegistry& eamxx_registry ()
            .keywords = {{"weights",false}},
            .example = "T_mid.mean('lev',weights='dp')"});
     r.add({.name = "sum",
-           .desc = "sum over a dimension ('lev')",
+           .desc = "sum over a dimension ('col' or 'lev')",
            .min_positional = 1, .max_positional = 1,
            .keywords = {{"weights",false}},
            .example = "T_mid.sum('lev',weights='dz')"});
+    r.add({.name = "max",
+           .desc = "maximum over a dimension ('col' or 'lev')",
+           .min_positional = 1, .max_positional = 1,
+           .keywords = {},
+           .example = "T_mid.max('lev')"});
+    r.add({.name = "min",
+           .desc = "minimum over a dimension ('col' or 'lev')",
+           .min_positional = 1, .max_positional = 1,
+           .keywords = {},
+           .example = "T_mid.min('lev')"});
     r.add({.name = "broadcast_like",
            .desc = "value repeated along the dims of another field that it lacks",
            .min_positional = 1, .max_positional = 1,
@@ -380,18 +390,19 @@ void translate_call (const Call& call, const ast::Expression& self,
     return;
   }
 
-  if (call.name=="mean" or call.name=="sum") {
+  if (call.name=="mean" or call.name=="sum" or call.name=="max" or call.name=="min") {
     const auto dim = string_arg(*call.positional[0],"the dimension");
     const auto* weights = keyword(call,"weights");
+    // The diags call the mean an "avg"; the other names they share with us
+    const auto method = call.name=="mean" ? std::string("avg") : call.name;
 
     if (dim=="col") {
-      EKAT_REQUIRE_MSG (call.name=="mean",
-          "Error! Only an average is available over 'col'.\n"
-          " - expression: " + ast::to_string(self) + "\n");
       EKAT_REQUIRE_MSG (weights==nullptr,
-          "Error! Averaging over 'col' is always area weighted; 'weights' does not apply.\n"
+          "Error! Reductions over 'col' take no 'weights': mean('col') is always\n"
+          "       area weighted, and sum/max/min('col') are unweighted.\n"
           " - expression: " + ast::to_string(self) + "\n");
       diag_name = "HorizAvg";
+      params.set<std::string>("contract_method",method);
       return;
     }
 
@@ -402,7 +413,7 @@ void translate_call (const Call& call, const ast::Expression& self,
         " - valid dimensions: 'col', 'lev'\n");
 
     diag_name = "VertContract";
-    params.set<std::string>("contract_method",call.name=="mean" ? "avg" : "sum");
+    params.set<std::string>("contract_method",method);
     if (weights!=nullptr) {
       params.set<std::string>("weighting_method",string_arg(*weights,"'weights'"));
     }

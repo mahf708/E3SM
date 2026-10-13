@@ -5,6 +5,7 @@
 #include "share/field/field_utils.hpp"
 #include "share/grid/point_grid.hpp"
 #include "share/core/eamxx_setup_random_test.hpp"
+#include "share/util/eamxx_universal_constants.hpp"
 
 namespace scream {
 
@@ -177,6 +178,109 @@ TEST_CASE("horiz_avg") {
     diff.update(manual,-1,1);
     auto diff_norm = inf_norm(diff,&comm).as<Real>();
     REQUIRE_THAT (diff_norm, Catch::WithinAbs(0,tol));
+  }
+
+  SECTION ("bad_contract_method") {
+    ekat::ParameterList params;
+    params.set("grid_name", grid->name());
+    params.set<std::string>("field_name", "s_x");
+    params.set<std::string>("contract_method", "xyz");
+    REQUIRE_THROWS(diag_factory.create("HorizAvg", comm, params, grid));
+  }
+
+  SECTION ("sum_max_min_scalar_x") {
+    FieldLayout layout = grid->get_2d_scalar_layout();
+    FieldIdentifier scl_x_fid ("s_x" , layout, ekat::units::K, grid->name());
+    Field scl_x (scl_x_fid , true);
+    scl_x.get_header().get_tracking().update_time_stamp(t0);
+    randomize_uniform(scl_x,seed++,-1,1);
+
+    for (std::string method : {"sum", "max", "min"}) {
+      ekat::ParameterList params;
+      params.set("grid_name", grid->name());
+      params.set<std::string>("field_name", "s_x");
+      params.set<std::string>("contract_method", method);
+
+      auto diag = diag_factory.create("HorizAvg", comm, params, grid);
+      diag->set_input_field(scl_x);
+      diag->initialize();
+      diag->compute(t0);
+      auto diag_f = diag->get();
+
+      REQUIRE (diag_f.name()=="s_x_horiz_"+method);
+      // All three are unweighted, so units are unchanged
+      REQUIRE (diag_f.get_header().get_identifier().get_units()==ekat::units::K);
+      REQUIRE (not diag_f.has_valid_mask());
+
+      diag_f.sync_to_host();
+      const auto d = diag_f.get_view<const Real,Host>()();
+      if (method=="sum") {
+        REQUIRE_THAT (d, Catch::WithinAbs(field_sum(scl_x,&comm).as<Real>(),tol));
+      } else if (method=="max") {
+        REQUIRE (d==field_max(scl_x,&comm).as<Real>());
+      } else {
+        REQUIRE (d==field_min(scl_x,&comm).as<Real>());
+      }
+    }
+  }
+
+  SECTION ("max_min_vector_xz_masked") {
+    FieldLayout layout = grid->get_3d_vector_layout(LEV,2,"dim2");
+    FieldIdentifier vec_xz_fid ("vec_xz" , layout, ekat::units::none, grid->name());
+    Field vec_xz (vec_xz_fid , true);
+    randomize_uniform(vec_xz,seed++,-1,1);
+    vec_xz.get_header().get_tracking().update_time_stamp(t0);
+    auto& mask = vec_xz.create_valid_mask();
+    randomize_uniform(mask,seed++);
+    // Fully mask out the first component at the first level, on all ranks
+    mask.sync_to_host();
+    auto v_mask = mask.get_view<int***,Host>();
+    for (int i=0; i<v_mask.extent_int(0); ++i) {
+      v_mask(i,0,0) = 0;
+    }
+    mask.sync_to_dev();
+
+    for (std::string method : {"max", "min"}) {
+      ekat::ParameterList params;
+      params.set("grid_name", grid->name());
+      params.set<std::string>("field_name", "vec_xz");
+      params.set<std::string>("contract_method", method);
+
+      auto diag = diag_factory.create("HorizAvg", comm, params, grid);
+      diag->set_input_field(vec_xz);
+      diag->initialize();
+      diag->compute(t0);
+      auto diag_f = diag->get();
+      REQUIRE (diag_f.has_valid_mask());
+      auto& d_mask = diag_f.get_valid_mask();
+
+      // Expected valid_mask: 1 where at least one column is valid
+      auto ones = vec_xz.clone("ones");
+      ones.deep_copy(1);
+      ones.set_valid_mask(mask);
+      auto count = diag_f.clone("count");
+      auto w = grid->get_geometry_data("area").clone("w");
+      w.deep_copy(1);
+      horiz_contraction(count,ones,w,comm);
+      auto tgt_mask = d_mask.clone("tgt_mask");
+      compute_mask(count,0,Comparison::NE,tgt_mask);
+      REQUIRE (views_are_equal(tgt_mask,d_mask));
+
+      // Expected values where valid, fill_value elsewhere
+      auto manual = diag_f.clone("manual");
+      if (method=="max") {
+        horiz_max(manual,vec_xz,comm);
+      } else {
+        horiz_min(manual,vec_xz,comm);
+      }
+      manual.deep_copy(constants::fill_value<Real>,tgt_mask,true);
+      REQUIRE (views_are_equal(diag_f,manual));
+
+      diag_f.sync_to_host();
+      d_mask.sync_to_host();
+      REQUIRE (d_mask.get_view<const int**,Host>()(0,0)==0);
+      REQUIRE (diag_f.get_view<const Real**,Host>()(0,0)==constants::fill_value<Real>);
+    }
   }
 }
 

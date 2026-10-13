@@ -351,9 +351,36 @@ TEST_CASE("create_diag")
     auto legacy = create_diagnostic("T_mid_vert_avg_dp_weighted",grid);
     REQUIRE (legacy->get_params().get<std::string>("weighting_method")=="dp");
 
+    // max/min/sum over either dimension, all mapping onto the same two diags
+    for (std::string method : {"sum", "max", "min"}) {
+      auto dc = create_diagnostic("T_mid."+method+"('col')",grid);
+      REQUIRE (std::dynamic_pointer_cast<HorizAvg>(dc)!=nullptr);
+      REQUIRE (dc->get_params().get<std::string>("contract_method")==method);
+      // ...same as the legacy spelling
+      auto lc = create_diagnostic("T_mid_horiz_"+method,grid);
+      REQUIRE (std::dynamic_pointer_cast<HorizAvg>(lc)!=nullptr);
+      REQUIRE (lc->get_params().get<std::string>("contract_method")==method);
+
+      auto dl = create_diagnostic("T_mid."+method+"('lev')",grid);
+      REQUIRE (std::dynamic_pointer_cast<VertContract>(dl)!=nullptr);
+      REQUIRE (dl->get_params().get<std::string>("contract_method")==method);
+      auto ll = create_diagnostic("T_mid_vert_"+method,grid);
+      REQUIRE (std::dynamic_pointer_cast<VertContract>(ll)!=nullptr);
+      REQUIRE (ll->get_params().get<std::string>("contract_method")==method);
+    }
+    REQUIRE (d1->get_params().get<std::string>("contract_method")=="avg");
+    auto legacy_havg = create_diagnostic("T_mid_horiz_avg",grid);
+    REQUIRE (legacy_havg->get_params().get<std::string>("contract_method")=="avg");
+
     REQUIRE_THROWS (create_diagnostic("T_mid.mean('time')",grid));
-    REQUIRE_THROWS (create_diagnostic("T_mid.sum('col')",grid));
+    REQUIRE_THROWS (create_diagnostic("T_mid.max('time')",grid));
     REQUIRE_THROWS (create_diagnostic("T_mid.mean('col',weights='dp')",grid));
+    REQUIRE_THROWS (create_diagnostic("T_mid.sum('col',weights='area')",grid));
+    // max/min take no weights, along either dimension
+    REQUIRE_THROWS (create_diagnostic("T_mid.max('lev',weights='dp')",grid));
+    REQUIRE_THROWS (create_diagnostic("T_mid.min('col',weights='dp')",grid));
+    REQUIRE_THROWS (create_diagnostic("T_mid_vert_max_dp_weighted",grid));
+    REQUIRE_THROWS (create_diagnostic("T_mid.max()",grid));
   }
 
   SECTION ("dexpr_where") {

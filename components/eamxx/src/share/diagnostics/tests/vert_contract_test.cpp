@@ -5,6 +5,9 @@
 #include "share/field/field_utils.hpp"
 #include "share/grid/point_grid.hpp"
 #include "share/core/eamxx_setup_random_test.hpp"
+#include "share/util/eamxx_universal_constants.hpp"
+
+#include <algorithm>
 
 namespace scream {
 
@@ -47,6 +50,11 @@ TEST_CASE("vert_contract") {
 
     params.set<std::string>("contract_method", "xyz");
     // Invalid contract_method -> throws in constructor
+    REQUIRE_THROWS(diag_factory.create("VertContract", comm, params, grid));
+
+    params.set<std::string>("contract_method", "max");
+    params.set<std::string>("weighting_method", "dp");
+    // Weighted max/min -> throws in constructor
     REQUIRE_THROWS(diag_factory.create("VertContract", comm, params, grid));
   }
 
@@ -193,6 +201,104 @@ TEST_CASE("vert_contract") {
     ref.scale_inv(den);
 
     REQUIRE(views_are_equal(diag_f, ref));
+  }
+
+  SECTION("max_min") {
+    // Create and randomize a 3D (COL x CMP x LEV) input field
+    Field fin(FieldIdentifier("qc", scalar3d_layout, kg/kg, grid->name()));
+    fin.allocate_view();
+    fin.get_header().get_tracking().update_time_stamp(t0);
+    randomize_uniform(fin, seed++, -100, 100);
+
+    for (std::string method : {"max", "min"}) {
+      ekat::ParameterList params;
+      params.set("grid_name", grid->name());
+      params.set<std::string>("field_name", "qc");
+      params.set<std::string>("contract_method", method);
+      auto diag = diag_factory.create("VertContract", comm, params, grid);
+      diag->set_input_field(fin);
+      diag->initialize();
+      diag->compute(t0);
+      auto diag_f = diag->get();
+
+      REQUIRE (diag_f.name()=="qc_vert_"+method);
+      REQUIRE (diag_f.get_header().get_identifier().get_units()==kg/kg);
+      REQUIRE (not diag_f.has_valid_mask());
+
+      auto ref = diag_f.clone("ref");
+      if (method=="max") {
+        vert_max(ref, fin);
+      } else {
+        vert_min(ref, fin);
+      }
+      REQUIRE(views_are_equal(diag_f, ref));
+
+      // Sanity check against a manual host computation
+      fin.sync_to_host();
+      diag_f.sync_to_host();
+      auto v_in  = fin.get_view<const Real***,Host>();
+      auto v_out = diag_f.get_view<const Real**,Host>();
+      for (int i=0; i<v_out.extent_int(0); ++i) {
+        for (int j=0; j<dim5; ++j) {
+          Real tgt = v_in(i,j,0);
+          for (int k=1; k<nlevs; ++k) {
+            tgt = method=="max" ? std::max(tgt,v_in(i,j,k)) : std::min(tgt,v_in(i,j,k));
+          }
+          REQUIRE (v_out(i,j)==tgt);
+        }
+      }
+    }
+  }
+
+  SECTION("max_min_masked") {
+    // Create and randomize a 2D (COL x LEV) masked input field,
+    // with column 0 fully masked
+    Field fin(FieldIdentifier("qc", scalar2d_layout, kg/kg, grid->name()));
+    fin.allocate_view();
+    fin.get_header().get_tracking().update_time_stamp(t0);
+    randomize_uniform(fin, seed++, -100, 100);
+    auto& mask = fin.create_valid_mask();
+    randomize_uniform(mask, seed++);
+    mask.sync_to_host();
+    auto v_mask = mask.get_view<int**,Host>();
+    for (int k=0; k<nlevs; ++k) {
+      v_mask(0,k) = 0;
+    }
+    mask.sync_to_dev();
+
+    for (std::string method : {"max", "min"}) {
+      ekat::ParameterList params;
+      params.set("grid_name", grid->name());
+      params.set<std::string>("field_name", "qc");
+      params.set<std::string>("contract_method", method);
+      auto diag = diag_factory.create("VertContract", comm, params, grid);
+      diag->set_input_field(fin);
+      diag->initialize();
+      diag->compute(t0);
+      auto diag_f = diag->get();
+      REQUIRE (diag_f.has_valid_mask());
+
+      fin.sync_to_host();
+      diag_f.sync_to_host();
+      diag_f.get_valid_mask().sync_to_host();
+      auto v_in    = fin.get_view<const Real**,Host>();
+      auto v_out   = diag_f.get_view<const Real*,Host>();
+      auto v_omask = diag_f.get_valid_mask().get_view<const int*,Host>();
+      for (int i=0; i<v_out.extent_int(0); ++i) {
+        bool any_valid = false;
+        Real tgt = 0;
+        for (int k=0; k<nlevs; ++k) {
+          if (not v_mask(i,k)) continue;
+          tgt = not any_valid ? v_in(i,k)
+              : (method=="max" ? std::max(tgt,v_in(i,k)) : std::min(tgt,v_in(i,k)));
+          any_valid = true;
+        }
+        REQUIRE (v_omask(i)==(any_valid ? 1 : 0));
+        REQUIRE (v_out(i)==(any_valid ? tgt : constants::fill_value<Real>));
+      }
+      // Column 0 is fully masked
+      REQUIRE (v_omask(0)==0);
+    }
   }
 }
 

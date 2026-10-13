@@ -19,17 +19,24 @@ VertContract(const ekat::Comm &comm,
 
   m_field_in_names.push_back(m_field_name);
 
-  // we support either sum or avg
+  // we support sum, avg, max, or min
   m_contract_method = m_params.get<std::string>("contract_method");
   EKAT_REQUIRE_MSG(
-      m_contract_method == "avg" || m_contract_method == "sum",
-      "Error! VertContract only supports 'avg' or 'sum' as contract_method.\n"
+      m_contract_method == "avg" || m_contract_method == "sum" ||
+      m_contract_method == "max" || m_contract_method == "min",
+      "Error! VertContract only supports 'avg', 'sum', 'max', or 'min' as contract_method.\n"
       " - contract_method: " + m_contract_method + "\n");
   // we support either dp or dz weighting, or no weighting at all (none)
   m_weighting_method = m_params.get<std::string>("weighting_method", "none");
   EKAT_REQUIRE_MSG(
       m_weighting_method == "dp" || m_weighting_method == "dz" || m_weighting_method == "none",
       "Error! VertContract only supports 'dp' or 'dz' or 'none' as weighting_method.\n"
+      " - weighting_method: " + m_weighting_method + "\n");
+  // a weighted max/min has no meaning
+  EKAT_REQUIRE_MSG(
+      m_weighting_method == "none" || m_contract_method == "avg" || m_contract_method == "sum",
+      "Error! VertContract only supports weighting for 'avg' and 'sum'.\n"
+      " - contract_method : " + m_contract_method + "\n"
       " - weighting_method: " + m_weighting_method + "\n");
 
   if (m_weighting_method == "dp") {
@@ -87,9 +94,9 @@ void VertContract::initialize_impl()
     m_weight.deep_copy(1);
   }
 
-  diag_units = diag_units * w_units;
-  if (m_contract_method == "avg") {
-    diag_units = diag_units / w_units;
+  // Only a sum carries the units of the weight
+  if (m_contract_method == "sum") {
+    diag_units = diag_units * w_units;
   }
 
   auto diag_name = m_field_name + "_vert_" + m_contract_method;
@@ -99,7 +106,10 @@ void VertContract::initialize_impl()
   auto d_fid = fid.clone(diag_name).reset_layout(layout.clone().strip_dim(LEV)).reset_units(diag_units);
   m_diagnostic_output = Field(d_fid,true);
 
-  if (m_contract_method == "avg") {
+  const bool is_extremum = m_contract_method == "max" || m_contract_method == "min";
+  if (m_contract_method == "avg" || (is_extremum && f.has_valid_mask())) {
+    // For max/min, m_weight_sum is only used to detect where no level is
+    // valid, which needs the same masked denominator as avg.
     // m_weight_sum must have the same layout as d (f's layout without vtag)
     // so that scale_inv(m_weight_sum) is valid regardless of input rank.
     auto wsum_fid = fid.clone("weight_sum")
@@ -158,6 +168,22 @@ void VertContract::compute_impl()
           auto qv_icol   = ekat::subview(qv_v, icol);
           PF::calculate_dz(team, dp_icol, pm_icol, tm_icol, qv_icol, dz_icol);
         });
+  }
+
+  if (m_contract_method == "max" || m_contract_method == "min") {
+    if (m_contract_method == "max") {
+      vert_max(d, f);
+    } else {
+      vert_min(d, f);
+    }
+    if (d.has_valid_mask()) {
+      // Count valid levels; where there are none, d holds the reduction identity
+      vert_contraction(m_weight_sum, m_ones, m_weight);
+      auto& valid_out = d.get_valid_mask();
+      compute_mask(m_weight_sum, 0, Comparison::NE, valid_out);
+      d.deep_copy(constants::fill_value<Real>, valid_out, true);
+    }
+    return;
   }
 
   // Now do the contraction itself

@@ -63,6 +63,22 @@ void vert_contraction (const Field& f_out, const Field& f_in, const Field& weigh
 void horiz_contraction(const Field& f_out, const Field& f_in, const Field& weight);
 void horiz_contraction(const Field& f_out, const Field& f_in, const Field& weight, const ekat::Comm& comm);
 
+// Vertical/horizontal max/min of a field along the contracted dimension:
+//   f_out[j] = max_i( f_in[i,j] )   (or min_i)
+// If f_in has a valid mask, only entries with nonzero mask participate.
+// Output entries where NO input entry participates are set to the reduction
+// identity, i.e., the lowest (for max) or highest (for min) representable value.
+// Callers that need a fill value there must detect those entries themselves
+// (e.g., by counting valid entries with *_contraction).
+// Layout requirements on f_in/f_out are the same as for *_contraction.
+// For horiz, the overload with comm also performs an all_reduce across ranks
+void vert_max  (const Field& f_out, const Field& f_in);
+void vert_min  (const Field& f_out, const Field& f_in);
+void horiz_max (const Field& f_out, const Field& f_in);
+void horiz_min (const Field& f_out, const Field& f_in);
+void horiz_max (const Field& f_out, const Field& f_in, const ekat::Comm& comm);
+void horiz_min (const Field& f_out, const Field& f_in, const ekat::Comm& comm);
+
 // Reduce field to a single scalar, and return an opaque type, to allow hiding impl in cpp file.
 // NOTE: all calculations are done serially HOST
 ScalarWrapper frobenius_norm(const Field& f, const ekat::Comm* comm = nullptr);

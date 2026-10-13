@@ -38,8 +38,13 @@ fields:
       - T_10m     := T_mid.interp(z_mid=10, reference='surface')
       - T_1000msl := T_mid.interp(z_mid=1000, reference='sealevel')
       - T_colavg  := T_mid.mean('col')
+      - T_colsum  := T_mid.sum('col')
+      - T_colmax  := T_mid.max('col')
+      - T_colmin  := T_mid.min('col')
       - T_vavg    := T_mid.mean('lev')
       - T_vsum    := T_mid.sum('lev')
+      - T_vmax    := T_mid.max('lev')
+      - T_vmin    := T_mid.min('lev')
       - T_dpavg   := T_mid.mean('lev', weights='dp')
       - T_wet     := T_mid.where(qv>0.01)
       - T_dpdz    := T_mid.derivative('p_mid')
@@ -50,6 +55,9 @@ fields:
       # --- Composition ------------------------------------------------------
       # No unambiguous underscore spelling exists for this one.
       - cold_T    := T_mid.where(T_mid<273.15).mean('lev')
+      # Masked max/min: columns (levels) with no valid entry are filled
+      - warm_T_max  := T_mid.where(T_mid>273.15).max('lev')
+      - cold_T_min  := T_mid.where(T_mid<273.15).min('col')
 
       # NOTE: 'over_dt' and 'tend' are NOT here on purpose. They divide by the
       #       time elapsed since the start of the step, and an INSTANT stream
