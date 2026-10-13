@@ -167,6 +167,7 @@ std::string binary_op_to_diag_op (TokenTypes op)
     case TokenTypes::Minus:    return "minus";
     case TokenTypes::Asterisk: return "times";
     case TokenTypes::Slash:    return "over";
+    case TokenTypes::Exp:      return "pow";
     default:                   return "";
   }
 }
@@ -220,9 +221,23 @@ void translate_binary (const ast::BinaryExpression& e, const ast::Expression& se
                 dexpr::binary_op_to_string(e.op) + "'",self);
   }
 
+  // The exponent of a power must be a number, since the units of the result
+  // depend on its value. A negative one parses as unary minus, which name_of()
+  // would render as '(-1)', so spell it out as a plain number instead.
+  std::string arg2 = name_of(*e.right);
+  if (e.op==TokenTypes::Exp) {
+    const auto* neg = as<ast::UnaryExpression>(*e.right);
+    const bool negated = neg!=nullptr and neg->op==TokenTypes::Minus;
+    const auto& exponent = negated ? *neg->right : *e.right;
+    if (not as<ast::IntegerLiteral>(exponent) and not as<ast::FloatLiteral>(exponent)) {
+      unsupported("the exponent of '**' must be a number",self);
+    }
+    arg2 = (negated ? "-" : "") + literal_str(exponent);
+  }
+
   diag_name = "BinaryOp";
   params.set<std::string>("arg1",name_of(*e.left));
-  params.set<std::string>("arg2",name_of(*e.right));
+  params.set<std::string>("arg2",arg2);
   params.set<std::string>("binary_op",op);
 }
 

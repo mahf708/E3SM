@@ -9,7 +9,8 @@ namespace scream {
 
 /*
  * This diagnostic will perform binary ops
- * like +, -, *, ÷ on two inputs, which can be fields or known physical constants.
+ * like +, -, *, ÷ on two inputs, which can be fields or known physical constants,
+ * as well as powers (binary_op=pow), whose exponent must be a number.
  *
  * When requesting the diag in a IO yaml file, the syntax may look like the following:
  *

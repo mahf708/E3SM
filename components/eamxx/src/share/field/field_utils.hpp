@@ -74,6 +74,19 @@ void horiz_contraction(const Field& f_out, const Field& f_in, const Field& weigh
 void horiz_contraction(const Field& f_out, const Field& f_in, const Field& weight, const ekat::Comm& comm,
                        const ContractionOp op = ContractionOp::Sum);
 
+// Entrywise math functions, applied in place: f(i) = fn(f(i)), or
+// f(i) = f(i)^p for apply_pow. If a mask (IntType, same layout as f) is
+// given, only entries with nonzero mask are modified, which keeps fill
+// values and other invalid entries out of the math (e.g., away from an FPE).
+// Only floating point fields are supported.
+// NOTE: these are not named sqrt/pow/etc, since a scream::pow would hide
+//       ::pow for unqualified calls anywhere inside namespace scream.
+enum class MathFn { Abs, Sqrt, Cbrt, Exp, Log, Log10, Sin, Cos, Tan };
+void apply_math_fn (const Field& f, const MathFn fn);
+void apply_math_fn (const Field& f, const MathFn fn, const Field& mask);
+void apply_pow (const Field& f, const ScalarWrapper p);
+void apply_pow (const Field& f, const ScalarWrapper p, const Field& mask);
+
 // Reduce field to a single scalar, and return an opaque type, to allow hiding impl in cpp file.
 // NOTE: all calculations are done serially HOST
 ScalarWrapper frobenius_norm(const Field& f, const ekat::Comm* comm = nullptr);

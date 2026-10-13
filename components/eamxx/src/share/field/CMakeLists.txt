@@ -40,6 +40,7 @@ add_library(eamxx_field
   eti/field_update_masked_int_int.cpp
   utils/compute_mask.cpp
   utils/horiz_contraction.cpp
+  utils/math_fns.cpp
   utils/perturb.cpp
   utils/print_hyperslab.cpp
   utils/randomize.cpp

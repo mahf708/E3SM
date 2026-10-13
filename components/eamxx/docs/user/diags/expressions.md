@@ -45,6 +45,7 @@ diagnostics use but that are not written), need no name of their own.
 | -------- | ------- |
 | `a + b`, `a - b`, `a * b`, `a / b` | element-wise arithmetic |
 | `-a` | negation, shorthand for `(-1)*a` |
+| `a ** p` | power, where `p` is a number (e.g. `2`, `0.5`, `-1`) |
 | `>`, `>=`, `<`, `<=`, `==`, `!=` | comparison, **only** inside `where(..)` |
 | `( )` | grouping |
 
@@ -59,11 +60,51 @@ field_names:
   - p_ratio    := p_mid / P0
 ```
 
-Precedence is the usual one, so `qc+qv*p_mid` is `qc+(qv*p_mid)`. Note this
+Precedence is the usual one, so `qc+qv*p_mid` is `qc+(qv*p_mid)`, and, as in
+Python, `**` binds tightest of all: `-X**2` is `-(X**2)`. Note this
 differs from the underscore spelling `qc_plus_qv_times_p_mid`, which means
 `(qc+qv)*p_mid`. When in doubt, parenthesize. (That pair only illustrates
 grouping: `qc+(qv*p_mid)` adds a mixing ratio to a pressure, and is rejected at
 run time for incompatible units, while `(qc+qv)*p_mid` is fine.)
+
+### Powers
+
+`X**p` raises every entry of `X` to the power `p`, which must be a number: not
+a field, and not a named constant (`X**P0` is almost certainly a typo).
+
+- The units are raised to the same power, so `T_mid**2` is in K squared, and
+  `T_mid**0.5` in the square root of K. Units only carry rational exponents, so for a field
+  with units `p` must be a simple fraction (`2`, `-1`, `0.5`, `1.5`, ...); a
+  dimensionless field takes any `p`.
+- `X**2` is computed as `X*X`, so it is exact and identical on every platform.
+- A negative entry to a fractional power is NaN. Masked-out entries (e.g. from
+  `where(..)`) are skipped, so `X.where(X>=0)**0.5` is safe, while `X**0.5`
+  with negative values is not, and aborts the run in builds that trap floating
+  point exceptions.
+- Write `(X**2).mean('lev')`, not `X**2.mean('lev')`: the latter reads `2.` as
+  a decimal number and does not parse.
+
+#### Recipe: variance and standard deviation
+
+There is no `var` or `std` function: they compose from `mean`, `broadcast_like`
+and `**`. The (population) variance and standard deviation of `T_mid` along
+the vertical are
+
+```yaml
+aliases:
+  - T_dev := T_mid - T_mid.mean('lev').broadcast_like(T_mid)
+field_names:
+  - T_var := (T_dev**2).mean('lev')
+  - T_std := (T_dev**2).mean('lev')**0.5
+```
+
+or, as a single expression,
+`((T_mid-T_mid.mean('lev').broadcast_like(T_mid))**2).mean('lev')**0.5`.
+For a weighted variance, pass the same `weights` to *both* `mean` calls; for
+one across columns, use `'col'` in both (`mean('col')` is always area weighted).
+This is the two-pass formula, which avoids the cancellation errors of
+`mean(X**2) - mean(X)**2`. Every intermediate is a field of its own, so this
+costs one extra full-size field per step (here, `T_dev` and `T_dev**2`).
 
 ## Functions
 
@@ -203,8 +244,8 @@ at the offending part. Unknown function names come back with the list of
 available ones.
 
 ```text
-Error! Unsupported expression: no diagnostic implements the operator '**'.
- - subexpression: (T_mid**2)
+Error! Unsupported expression: no diagnostic implements the operator 'and'.
+ - subexpression: (T_mid and qv)
 ```
 
 ## Worked example

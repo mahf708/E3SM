@@ -202,6 +202,37 @@ TEST_CASE("create_diag")
     REQUIRE (d3->get_params().get<std::string>("binary_op")=="over");
   }
 
+  SECTION ("dexpr_pow") {
+    auto d1 = create_diagnostic("T_mid**2",grid);
+    REQUIRE (std::dynamic_pointer_cast<BinaryOp>(d1)!=nullptr);
+    REQUIRE (d1->get_params().get<std::string>("arg1")=="T_mid");
+    REQUIRE (d1->get_params().get<std::string>("arg2")=="2");
+    REQUIRE (d1->get_params().get<std::string>("binary_op")=="pow");
+    // The exponent is a number, not an input field
+    REQUIRE (d1->get_input_fields_names().size()==1);
+
+    // A negative exponent is spelled as a plain number, not '(-1)'
+    auto d2 = create_diagnostic("T_mid**-1",grid);
+    REQUIRE (d2->get_params().get<std::string>("arg2")=="-1");
+    auto d3 = create_diagnostic("T_mid**0.5",grid);
+    REQUIRE (d3->get_params().get<std::string>("arg2")=="0.5");
+
+    // As in Python, '**' binds tighter than unary minus: -X**2 is -(X**2)
+    auto d4 = create_diagnostic("-T_mid**2",grid);
+    REQUIRE (d4->get_params().get<std::string>("binary_op")=="times");
+    REQUIRE (d4->get_params().get<std::string>("arg2")=="(T_mid**2)");
+
+    // The std recipe from the docs builds, down to its root
+    auto d5 = create_diagnostic("((T_mid-T_mid.mean('lev').broadcast_like(T_mid))**2).mean('lev')**0.5",grid);
+    REQUIRE (d5->get_params().get<std::string>("binary_op")=="pow");
+    REQUIRE (d5->get_params().get<std::string>("arg2")=="0.5");
+
+    // The exponent must be a number
+    REQUIRE_THROWS (create_diagnostic("T_mid**qv",grid));
+    REQUIRE_THROWS (create_diagnostic("T_mid**P0",grid));
+    REQUIRE_THROWS (create_diagnostic("2**T_mid",grid));
+  }
+
   SECTION ("dexpr_unary_minus") {
     // No diagnostic negates a field, so '-X' goes through BinaryOp as (-1)*X.
     auto d1 = create_diagnostic("-T_mid",grid);
@@ -471,7 +502,7 @@ TEST_CASE("create_diag")
     // Free-standing spelling of a method
     REQUIRE_THROWS (create_diagnostic("mean(T_mid,'lev')",grid));
     // Operators with no diagnostic behind them
-    REQUIRE_THROWS (create_diagnostic("T_mid**2",grid));
+    REQUIRE_THROWS (create_diagnostic("T_mid and qv",grid));
     REQUIRE_THROWS (create_diagnostic("!T_mid",grid));
     // Attribute access with no call
     REQUIRE_THROWS (create_diagnostic("T_mid.prev",grid));

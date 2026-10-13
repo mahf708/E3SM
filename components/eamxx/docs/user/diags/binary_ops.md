@@ -37,6 +37,9 @@ using the general syntax of `<field_1>_<binary_op>_<field_2>`:
 - `binary_op` is the operator: `plus`, `minus`, `times`, or `over`
 - `field_2` is the name of the second input field
 
+Powers have no underscore spelling: write them as an expression, e.g.
+`T_sq := T_mid**2` (see [Diagnostic expressions](expressions.md)).
+
 ## Example
 
 ```yaml

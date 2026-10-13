@@ -1,5 +1,8 @@
 #include <catch2/catch.hpp>
+#include <cmath>
 #include <numeric>
+#include <utility>
+#include <vector>
 
 #include "share/field/field_identifier.hpp"
 #include "share/field/field_header.hpp"
@@ -502,6 +505,131 @@ TEST_CASE ("transpose") {
         }
       }
     }
+  }
+}
+
+TEST_CASE ("math_fns") {
+  using namespace scream;
+  using namespace ShortFieldTagsNames;
+  using namespace ekat::units;
+
+  auto seed = get_random_test_seed();
+
+  const int ncol = 7;
+  const int ncmp = 3;
+  const int nlev = 13;
+
+  // Kokkos and std math functions may differ by an ulp or so
+  const auto tol = std::numeric_limits<Real>::epsilon()*10;
+
+  // A padded (COL,CMP,LEV) field, to exercise non-contiguous storage
+  FieldIdentifier fid("f",{{COL,CMP,LEV},{ncol,ncmp,nlev}},none,"g");
+  Field f(fid);
+  f.get_header().get_alloc_properties().request_allocation(16);
+  f.allocate_view();
+
+  auto check = [&](const Field& orig, const Field& out, const Field* mask, auto ref) {
+    orig.sync_to_host();
+    out.sync_to_host();
+    auto v0 = orig.get_strided_view<const Real***,Host>();
+    auto v  = out.get_strided_view<const Real***,Host>();
+    decltype(mask->get_strided_view<const int***,Host>()) m;
+    if (mask) {
+      mask->sync_to_host();
+      m = mask->get_strided_view<const int***,Host>();
+    }
+    for (int i=0; i<ncol; ++i) {
+      for (int j=0; j<ncmp; ++j) {
+        for (int k=0; k<nlev; ++k) {
+          if (mask and not m(i,j,k)) {
+            REQUIRE (v(i,j,k)==v0(i,j,k));
+          } else {
+            REQUIRE_THAT (v(i,j,k), Catch::Matchers::WithinRel(ref(v0(i,j,k)),tol));
+          }
+        }
+      }
+    }
+  };
+
+  SECTION ("functions") {
+    using fn_t = Real(*)(Real);
+    const std::vector<std::pair<MathFn,fn_t>> fns = {
+      {MathFn::Abs,   [](Real x) { return std::abs(x);   }},
+      {MathFn::Sqrt,  [](Real x) { return std::sqrt(x);  }},
+      {MathFn::Cbrt,  [](Real x) { return std::cbrt(x);  }},
+      {MathFn::Exp,   [](Real x) { return std::exp(x);   }},
+      {MathFn::Log,   [](Real x) { return std::log(x);   }},
+      {MathFn::Log10, [](Real x) { return std::log10(x); }},
+      {MathFn::Sin,   [](Real x) { return std::sin(x);   }},
+      {MathFn::Cos,   [](Real x) { return std::cos(x);   }},
+      {MathFn::Tan,   [](Real x) { return std::tan(x);   }},
+    };
+    // Positive entries, so that every function is defined
+    randomize_uniform(f,seed++,0.5,2);
+    for (const auto& [fn,ref] : fns) {
+      auto out = f.clone("out",CloneFlags::CopyData);
+      apply_math_fn(out,fn);
+      check(f,out,nullptr,ref);
+    }
+  }
+
+  SECTION ("pow") {
+    randomize_uniform(f,seed++,0.5,2);
+    for (Real p : {2.0, 0.5, 3.0, -1.0, 1.5, 1.0, 0.0}) {
+      auto out = f.clone("out",CloneFlags::CopyData);
+      apply_pow(out,p);
+      check(f,out,nullptr,[p](Real x) { return std::pow(x,p); });
+    }
+
+    // x**2 is computed as x*x, so it is exact
+    auto sq = f.clone("sq",CloneFlags::CopyData);
+    apply_pow(sq,2);
+    auto ref = f.clone("ref",CloneFlags::CopyData);
+    ref.scale(f);
+    REQUIRE (views_are_equal(sq,ref));
+  }
+
+  SECTION ("masked") {
+    // Negative entries are masked out: sqrt never sees them
+    randomize_uniform(f,seed++,-1,1);
+    auto mask = compute_mask(f,0,Comparison::GT);
+    auto out = f.clone("out",CloneFlags::CopyData);
+    apply_math_fn(out,MathFn::Sqrt,mask);
+    check(f,out,&mask,[](Real x) { return std::sqrt(x); });
+
+    out.deep_copy(f);
+    apply_pow(out,0.25,mask);
+    check(f,out,&mask,[](Real x) { return std::pow(x,Real(0.25)); });
+  }
+
+  SECTION ("rank_0_and_1") {
+    Field s(FieldIdentifier("s",{{},{}},none,"g"),true);
+    Field v(FieldIdentifier("v",{{LEV},{nlev}},none,"g"),true);
+    s.deep_copy(4);
+    apply_math_fn(s,MathFn::Sqrt);
+    s.sync_to_host();
+    REQUIRE (s.get_view<const Real,Host>()()==2);
+
+    v.deep_copy(3);
+    apply_pow(v,2);
+    v.sync_to_host();
+    for (int k=0; k<nlev; ++k) {
+      REQUIRE (v.get_view<const Real*,Host>()(k)==9);
+    }
+  }
+
+  SECTION ("exceptions") {
+    // Not allocated
+    REQUIRE_THROWS (apply_math_fn(Field(fid),MathFn::Abs));
+    // Not floating point
+    Field i(FieldIdentifier("i",{{COL},{ncol}},none,"g",DataType::IntType),true);
+    REQUIRE_THROWS (apply_math_fn(i,MathFn::Abs));
+    // Read only
+    randomize_uniform(f,seed++);
+    REQUIRE_THROWS (apply_pow(f.get_const(),2));
+    // Mask with the wrong layout or data type
+    REQUIRE_THROWS (apply_math_fn(f,MathFn::Abs,i));
+    REQUIRE_THROWS (apply_math_fn(f,MathFn::Abs,f));
   }
 }
 

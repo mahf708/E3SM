@@ -7,6 +7,11 @@
 #include "share/core/eamxx_setup_random_test.hpp"
 #include "share/util/eamxx_universal_constants.hpp"
 
+#include <cmath>
+#include <string>
+#include <utility>
+#include <vector>
+
 namespace scream {
 
 
@@ -120,6 +125,99 @@ TEST_CASE("binary_ops") {
 
   // constant*constant diag
   REQUIRE (rgas_diag_f.get_view<Real,Host>()()==physics::Constants<Real>::dictionary().at("Rgas").value);
+}
+
+TEST_CASE("binary_ops_pow") {
+  using namespace ShortFieldTagsNames;
+  using namespace ekat::units;
+
+  ekat::Comm comm(MPI_COMM_WORLD);
+  util::TimeStamp t0({2024, 1, 1}, {0, 0, 0});
+
+  const int nlevs = 20;
+  const int ncols = 30;
+  auto grid = create_point_grid("physics",ncols,nlevs,comm);
+
+  int seed = get_random_test_seed();
+
+  auto& diag_factory = DiagnosticFactory::instance();
+  register_diagnostics();
+
+  auto make_diag = [&](const std::string& arg1, const std::string& arg2) {
+    ekat::ParameterList params;
+    params.set("grid_name", grid->name());
+    params.set<std::string>("arg1", arg1);
+    params.set<std::string>("arg2", arg2);
+    params.set<std::string>("binary_op", "pow");
+    return diag_factory.create("BinaryOp", comm, params, grid);
+  };
+
+  FieldLayout layout = grid->get_3d_scalar_layout(LEV);
+  Field T(FieldIdentifier("T", layout, K, grid->name()), true);
+  T.get_header().get_tracking().update_time_stamp(t0);
+  randomize_uniform(T, seed++, 200, 300);
+
+  SECTION ("exponent_must_be_a_number") {
+    REQUIRE_THROWS (make_diag("T","T"));   // field
+    REQUIRE_THROWS (make_diag("T","P0"));  // named constant
+    REQUIRE_THROWS (make_diag("2","T"));   // the base can't be a number with a field exponent
+  }
+
+  SECTION ("field_pow_number") {
+    const std::vector<std::pair<std::string,Units>> cases = {
+      {"2",   K*K},
+      {"0.5", sqrt(K)},
+      {"-1",  1/K},
+      {"1.5", pow(K,ekat::RationalConstant(3,2))},
+    };
+    for (const auto& [p,units] : cases) {
+      auto diag = make_diag("T",p);
+      diag->set_input_field(T);
+      diag->initialize();
+      diag->compute(t0);
+      auto d = diag->get();
+      REQUIRE (d.get_header().get_identifier().get_units()==units);
+
+      auto ref = T.clone("ref",CloneFlags::CopyData);
+      apply_pow(ref,std::stod(p));
+      REQUIRE (views_are_equal(d,ref));
+    }
+
+    // Units only take rational exponents
+    auto bad = make_diag("T","0.70710678");
+    bad->set_input_field(T);
+    REQUIRE_THROWS (bad->initialize());
+  }
+
+  SECTION ("masked") {
+    // Mask out the entries below 250K: they must come back as fill_value
+    auto mask = compute_mask(T,250,Comparison::GE);
+    T.set_valid_mask(mask);
+
+    auto diag = make_diag("T","2");
+    diag->set_input_field(T);
+    diag->initialize();
+    diag->compute(t0);
+    auto d = diag->get();
+    REQUIRE (d.has_valid_mask());
+    REQUIRE (views_are_equal(d.get_valid_mask(),mask));
+
+    auto ref = T.clone("ref",CloneFlags::CopyData);
+    ref.scale(T);
+    ref.deep_copy(constants::fill_value<Real>,mask,true);
+    REQUIRE (views_are_equal(d,ref));
+  }
+
+  SECTION ("number_pow_number") {
+    auto diag = make_diag("P0","2");
+    diag->initialize();
+    diag->compute(t0);
+    auto d = diag->get();
+    d.sync_to_host();
+    const auto P0 = physics::Constants<Real>::P0.value;
+    REQUIRE (d.get_view<const Real,Host>()()==std::pow(P0,Real(2)));
+    REQUIRE (d.get_header().get_identifier().get_units()==Pa*Pa);
+  }
 }
 
 }  // namespace scream

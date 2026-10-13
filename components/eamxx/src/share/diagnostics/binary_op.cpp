@@ -1,6 +1,7 @@
 #include "share/diagnostics/binary_op.hpp"
 
 #include "share/physics/physics_constants.hpp"
+#include "share/field/field_utils.hpp"
 
 #include <cmath>
 #include <cstdlib>
@@ -10,6 +11,7 @@ namespace {
   constexpr int OP_MINUS = 1;
   constexpr int OP_TIMES = 2;
   constexpr int OP_OVER = 3;
+  constexpr int OP_POW = 4;
 }
 
 namespace scream {
@@ -60,8 +62,27 @@ int get_binary_operator_code(const std::string& op) {
   if (op == "minus") return OP_MINUS; // subtraction
   if (op == "times") return OP_TIMES; // multiplication
   if (op == "over") return OP_OVER; // division
+  if (op == "pow") return OP_POW; // exponentiation
   return -1; // invalid operator
 }
+// Units of a field raised to the power p. Units only carry rational exponents,
+// so p must be a simple fraction (e.g., 2, -1, 0.5, 1.5), unless the base
+// is dimensionless, in which case any p will do.
+ekat::units::Units pow_units (const ekat::units::Units& u, const Real p) {
+  constexpr int max_den = 100;
+  for (int den=1; den<=max_den; ++den) {
+    const Real num = std::round(p*den);
+    if (std::abs(p*den-num) <= 1e-6*den) {
+      return pow(u,ekat::RationalConstant(static_cast<long long>(num),static_cast<long long>(den)));
+    }
+  }
+  EKAT_REQUIRE_MSG (u.is_dimensionless(),
+      "Error! Cannot raise a quantity with units to an exponent that is not a simple fraction.\n"
+      " - units   : " + u.to_string() + "\n"
+      " - exponent: " + std::to_string(p) + "\n");
+  return u;
+}
+
 // apply binary operation on two input units
 ekat::units::Units apply_binary_op(const ekat::units::Units& a, const ekat::units::Units& b, const int op_code) {
   switch (op_code) {
@@ -73,6 +94,8 @@ ekat::units::Units apply_binary_op(const ekat::units::Units& a, const ekat::unit
       return a * b;
     case OP_OVER:
       return a / b;
+    case OP_POW:
+      EKAT_ERROR_MSG("Error! Units of a power depend on the exponent's value; use pow_units.\n");
     default:
       EKAT_ERROR_MSG("Error! Unrecognized/unsupported operation code (" + std::to_string(op_code) + ").\n");
   }
@@ -108,6 +131,16 @@ void apply_binary_op(const Field& d, const Field& a, const Real b, const int op_
         d.update(a,1/b,0,0,d.get_valid_mask());
       } else {
         d.update(a,1/b,0,0);
+      }
+      break;
+    case OP_POW:
+      // Only touch valid entries, so the math never sees fill values
+      if (masked) {
+        d.deep_copy(a,d.get_valid_mask());
+        apply_pow(d,b,d.get_valid_mask());
+      } else {
+        d.deep_copy(a);
+        apply_pow(d,b);
       }
       break;
     default:
@@ -206,6 +239,9 @@ void apply_binary_op(const Field& d, const Real& a, const Real& b, const int op_
     case OP_OVER:
       d.deep_copy(a/b);
       break;
+    case OP_POW:
+      d.deep_copy(std::pow(a,b));
+      break;
     default:
       EKAT_ERROR_MSG("Error! Unrecognized/unsupported binary op code (" + std::to_string(op_code) + ")\n");
   }
@@ -225,7 +261,7 @@ BinaryOp(const ekat::Comm &comm,
   // Validate operator
   EKAT_REQUIRE_MSG(m_binary_op_code >= 0,
                    "Error! Invalid binary operator: '" + m_binary_op_str + "'\n"
-                   "Valid operators are: plus, minus, times, over\n");
+                   "Valid operators are: plus, minus, times, over, pow\n");
 
   // A non-field operand's value/units never change, so resolve them here rather
   // than on every compute_impl call.
@@ -235,6 +271,14 @@ BinaryOp(const ekat::Comm &comm,
     m_field_in_names.push_back(m_arg1_name);
   if (m_arg2_is_field)
     m_field_in_names.push_back(m_arg2_name);
+
+  // The units of a power depend on the exponent's value, so it must be known
+  // now. A number, not a named constant: X**P0 is almost certainly a typo.
+  Real exponent;
+  EKAT_REQUIRE_MSG (m_binary_op_code!=OP_POW or str2real(m_arg2_name,exponent),
+      "Error! The exponent of a power must be a number.\n"
+      " - base    : " + m_arg1_name + "\n"
+      " - exponent: " + m_arg2_name + "\n");
 }
 
 void BinaryOp::initialize_impl()
@@ -272,7 +316,8 @@ void BinaryOp::initialize_impl()
                                   : m_arg1_units;
   const auto u2 = m_arg2_is_field ? m_fields_in.at(m_arg2_name).get_header().get_identifier().get_units()
                                   : m_arg2_units;
-  auto diag_units = apply_binary_op(u1, u2, m_binary_op_code);
+  auto diag_units = m_binary_op_code==OP_POW ? pow_units(u1, m_arg2_value)
+                                             : apply_binary_op(u1, u2, m_binary_op_code);
   auto gn = m_params.get<std::string>("grid_name");
   auto diag_name = m_arg1_name + "_" + m_binary_op_str + "_" + m_arg2_name;
   FieldIdentifier d_fid(diag_name, dl, diag_units, gn);
