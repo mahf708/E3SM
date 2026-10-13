@@ -18,7 +18,13 @@ Written as an expression, it means what it looks like.
 
 Both syntaxes work, and they are resolved independently: a name is matched
 against the underscore patterns first, and only names that match none of them
-are read as an expression. Nothing you write today changes meaning.
+are read as an expression. An underscore pattern must match the *whole* name,
+and the field names inside it are made of letters, digits, `_` and `.` only
+(plus the sign of a number, as in `X_where_qv_gt_-1` or `1e-6`). So a name that
+contains an operator or a parenthesis is always read as an expression, and
+underscore names inside it are operands like any other: `T_mid-T_mid_prev` is
+`T_mid` minus `T_mid_prev`, and `qv*T_mid_horiz_avg` is `qv` times
+`T_mid_horiz_avg`.
 
 ## Expressions must be given a name
 
