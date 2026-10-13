@@ -517,7 +517,7 @@ run (const std::string& filename, const util::TimeStamp& ts,
 
   // If tracking avg count, update the count at each field location separately.
   // We do count++ only where the fields are NOT equal to the fill value.
-  // Note, we assume that all fields that share a layout are also masked/filled in the same way.
+  // Note, we assume that all fields that share a count are also masked/filled in the same way.
   if (m_track_avg_cnt) {
     // Since 2+ fields may have same avg count, make sure we update the counts only ONCE.
     for (auto& [fname, count] : m_field_to_avg_count) {
@@ -647,6 +647,15 @@ run (const std::string& filename, const util::TimeStamp& ts,
         } else {
           // Divide by steps count only when the summation is complete
           f_out.scale(Real(1.0) / nsteps_since_last_output);
+        }
+      } else if (output_step and (m_avg_type==OutputAvgType::Max or m_avg_type==OutputAvgType::Min)) {
+        // Entries that were never valid still hold the initial -/+inf: set them to fill_value
+        auto avg_count_it = m_field_to_avg_count.find(field_name);
+        if (m_track_avg_cnt and avg_count_it!=m_field_to_avg_count.end()) {
+          const auto& avg_count = avg_count_it->second;
+          const auto& mask = avg_count.get_valid_mask();
+          compute_mask(avg_count,0,Comparison::EQ,mask);
+          f_out.deep_copy(constants::fill_value<Real>,mask);
         }
       }
 
@@ -1139,16 +1148,8 @@ process_requested_fields()
     name = tokens[0];
   }
 
-  // In case someone has an alias of an alias, we need to resolve the TRUE orig names.
-  bool has_multiple_aliasing_layers = false;
-  do {
-    for (auto it : m_alias_to_orig) {
-      if (m_alias_to_orig.count(it.second)>0) {
-        it.second = m_alias_to_orig[it.second];
-        has_multiple_aliasing_layers = true;
-      }
-    }
-  } while (has_multiple_aliasing_layers);
+  // NOTE: an alias of an alias needs no special handling: the loop below defers
+  //       an alias until its target is in the FM, and errors out if it gets stuck.
 
   EKAT_REQUIRE_MSG (not has_duplicates(m_fields_names),
       "Error! The list of requested output fields contains duplicates.\n"
@@ -1213,9 +1214,20 @@ process_requested_fields()
       m_track_avg_cnt = m_track_avg_cnt || m_avg_type!=OutputAvgType::Instant;
       diag_avg_cnt_name = "_" + diag->name();
     }
-    else if (diag_field.get_header().has_extra_data("mask_data")) {
-      m_track_avg_cnt = m_track_avg_cnt || m_avg_type!=OutputAvgType::Instant;
-      diag_avg_cnt_name = "_" + diag_field.name();
+
+    // Diags at the same level share an avg count, unless their input has a mask of its own.
+    // Midpoint and interface fields do not share: the level can be in range for one only.
+    if (diag_avg_cnt_name!="" and params.isParameter("field_name")) {
+      const auto& f_in = fm_model->get_field(params.get<std::string>("field_name"));
+      if (f_in.has_valid_mask() or f_in.get_header().may_be_filled()) {
+        diag_avg_cnt_name = "";
+      } else if (f_in.get_header().get_identifier().get_layout().has_tag(ShortFieldTagsNames::ILEV)) {
+        diag_avg_cnt_name += "_int";
+      }
+    }
+    // Like model fields: any other diag gets its own avg count iff it is masked or may be filled
+    if (diag_avg_cnt_name=="") {
+      check_for_avg_cnt(diag_field);
     }
 
     // If specified, set avg_cnt tracking for this diagnostic.
@@ -1271,6 +1283,15 @@ process_requested_fields()
           const auto& orig = fm_model->get_field(m_alias_to_orig[name]);
           auto alias = orig.alias(name);
           fm_model->add_field(alias);
+          // An alias is masked like its target: use the same avg count, or one
+          // named after the alias if the target has a count of its own
+          // NOTE: the target may be a model field that this loop has yet to visit
+          check_for_avg_cnt(orig);
+          auto cnt_it = m_field_to_avg_cnt_suffix.find(orig.name());
+          if (cnt_it!=m_field_to_avg_cnt_suffix.end()) {
+            const bool own_cnt = cnt_it->second=="_"+orig.name();
+            m_field_to_avg_cnt_suffix.emplace(name, own_cnt ? "_"+name : cnt_it->second);
+          }
           remove_these.insert(name);
         }
       } else {
