@@ -301,8 +301,9 @@ TEST_CASE("field_extrema") {
   const int ncmp = 4;
   const int nlev = 17;
 
-  constexpr auto lowest  = std::numeric_limits<Real>::lowest();
-  constexpr auto highest = std::numeric_limits<Real>::max();
+  // Values left where no entry participates (-inf/+inf for floating point)
+  const auto lowest  = Kokkos::reduction_identity<Real>::max();
+  const auto highest = Kokkos::reduction_identity<Real>::min();
 
   FieldIdentifier scl_fid   ("s",    {{}, {}}, none, "g");
   FieldIdentifier scl_x_fid ("s_x",  {{COL}, {ncol}}, none, "g");

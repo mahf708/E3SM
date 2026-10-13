@@ -66,8 +66,9 @@ void horiz_contraction(const Field& f_out, const Field& f_in, const Field& weigh
 // Vertical/horizontal max/min of a field along the contracted dimension:
 //   f_out[j] = max_i( f_in[i,j] )   (or min_i)
 // If f_in has a valid mask, only entries with nonzero mask participate.
-// Output entries where NO input entry participates are set to the reduction
-// identity, i.e., the lowest (for max) or highest (for min) representable value.
+// Output entries where NO input entry participates are set to the Kokkos
+// reduction identity, i.e., -inf (for max) or +inf (for min) for floating
+// point types, and the lowest/highest representable value for integers.
 // Callers that need a fill value there must detect those entries themselves
 // (e.g., by counting valid entries with *_contraction).
 // Layout requirements on f_in/f_out are the same as for *_contraction.
