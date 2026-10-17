@@ -235,6 +235,16 @@ BinaryOp(const ekat::Comm &comm,
     m_field_in_names.push_back(m_arg1_name);
   if (m_arg2_is_field)
     m_field_in_names.push_back(m_arg2_name);
+
+  // Record the operands taken from the constants dictionary: only the caller
+  // (which has a field manager) can tell if such a name is also a field
+  const auto& dict = physics::Constants<Real>::dictionary();
+  std::vector<std::string> from_dict;
+  for (const auto& n : {m_arg1_name, m_arg2_name}) {
+    if (dict.find(n)!=dict.end())
+      from_dict.push_back(n);
+  }
+  m_params.set<std::vector<std::string>>("constant_operands",from_dict);
 }
 
 void BinaryOp::initialize_impl()

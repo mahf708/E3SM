@@ -18,7 +18,13 @@ Written as an expression, it means what it looks like.
 
 Both syntaxes work, and they are resolved independently: a name is matched
 against the underscore patterns first, and only names that match none of them
-are read as an expression. Nothing you write today changes meaning.
+are read as an expression. An underscore pattern must match the *whole* name,
+and the field names inside it are made of letters, digits, `_` and `.` only
+(plus the sign of a number, as in `X_where_qv_gt_-1` or `1e-6`). So a name that
+contains an operator or a parenthesis is always read as an expression, and
+underscore names inside it are operands like any other: `T_mid-T_mid_prev` is
+`T_mid` minus `T_mid_prev`, and `qv*T_mid_horiz_avg` is `qv` times
+`T_mid_horiz_avg`.
 
 ## Expressions must be given a name
 
@@ -49,7 +55,15 @@ diagnostics use but that are not written), need no name of their own.
 | `( )` | grouping |
 
 Operands may be fields, other expressions, named physical constants (`Rgas`,
-`P0`, ...), or numeric literals:
+`P0`, ...), or numeric literals. **A named constant is looked up before the
+field manager**, so a constant whose name is also a field name would win
+silently and the field would never be read. That is not a hazard you have to
+watch for: a request whose operand is both is rejected, naming the operand
+(this includes a name you introduce yourself with `:=`). Constant names are
+not case sensitive.
+The one collision that existed, Earth's rotation rate against the vertical
+pressure velocity, is why the constant is spelled `omega_earth` and `omega`
+means the field.
 
 ```yaml
 field_names:
@@ -118,6 +132,12 @@ Notes:
   model cannot know, and is rejected -- do not read it as "one step back" by
   analogy with `isel(lev=-1)`. Only `time=1` is available, since only one step
   of history is kept.
+- **`shift(time=1)` of a diagnostic needs a stream that evaluates every step.**
+  An instant stream evaluates diagnostics on output steps only, so the value
+  one *model step* back does not exist there unless the stream writes every
+  step. `(qv*T_mid).shift(time=1)` in an instant stream with a longer output
+  interval is rejected at setup; use an averaged stream. The shift of a model
+  field (`T_mid.shift(time=1)`) is one model step in any stream.
 - `mean('col')` is always area weighted, so `weights` does not apply to it.
   `weights` for `'lev'` is `'dp'` or `'dz'`.
 - `broadcast_like` repeats `X` along the dimensions of `Y` that `X` lacks, so that
@@ -150,25 +170,26 @@ Notes:
   `The key 'mask' is not associated to any registered product`, since it is
   neither a field nor a diagnostic. Both names are inherited from the underscore
   syntax (`mask_where_lev_gt_5`), not from xarray.
+- A negative number is written as it reads, as a threshold or as a factor:
+  `omega.where(omega<=-0.1)`, `-2*T_mid`, `T_mid*(-2)`. In a `where`
+  condition, the field goes on the left of the comparison.
 - **`over_dt` and `tend` cannot go in an `instant` stream.** An instant stream
   takes a snapshot at `t0`, before any step has run, and `dt` is zero there, so
   the diagnostic aborts with "dt must be positive". Write them to an averaged
   stream (`averaging_type: average`, `max`, `min`) instead. This is a property
   of the diagnostic, not of the syntax: the underscore spellings `X_over_dt` and
   `X_atm_backtend` behave the same way.
-- **A `mask.where(..)` result cannot currently be written to file as is.** The
-  diagnostic is built, but its output has `int` data type, which IO cannot
-  handle: listing `mask.where(..)` (or the underscore `mask_where_..`) in
-  `field_names` fails with a narrowing conversion error, and reducing it first
-  does not help. Multiplying by 1 promotes it to `Real`, and
-  `mask.where(ps>100000)*1.0` writes fine. Note the `*1.0` applies to the field
-  that `where` produced, which is a perfectly ordinary field; it is not an
+- **A `mask.where(..)` result cannot be written to file as is.** Its output
+  has `int` data type and every variable is written as a real, so listing
+  `mask.where(..)` (or the underscore `mask_where_..`) in `field_names` is
+  rejected when the stream is set up. Multiplying by 1 promotes it to `Real`,
+  and `mask.where(ps>100000)*1.0` writes fine. Note the `*1.0` applies to the
+  field that `where` produced, which is a perfectly ordinary field; it is not an
   operation on `mask`, which per the bullet above cannot be multiplied.
 - `X.tend()` is shorthand for `(X - X.shift(time=1)).over_dt()`, and inherits
   the `over_dt` restriction above.
-- Histogram bin edges must be non-negative, and must be writable without an
-  exponent: the diagnostic joins them with `_` and splits them back apart, so
-  `1e3` is fine (it is written `1000.0`) but `1e30` is not.
+- Histogram bin edges are numbers in increasing order. They may be negative,
+  and may be written with an exponent (`bins=[-1,0,1e-5,1e-4]`).
 
 Named quantities are not operations, and stay plain names in an expression:
 `LiqWaterPath`, `RelativeHumidity`, `z_mid`, `dz`, `precip_liq_surf_mass_flux`,
