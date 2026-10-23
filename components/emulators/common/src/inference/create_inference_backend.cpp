@@ -15,24 +15,23 @@
 #include "python_inference_backend.hpp"
 #endif
 
-namespace emulator {
-namespace inference {
+namespace e3sm::emulator::inference {
 
-std::shared_ptr<InferenceBackend>
+std::unique_ptr<InferenceBackend>
 create_backend(BackendType type, const InferenceConfig &config) {
   switch (type) {
   case BackendType::STUB:
-    return std::make_shared<StubBackend>(config);
+    return std::make_unique<StubBackend>(config);
   case BackendType::LIBTORCH:
 #ifdef EMULATOR_ENABLE_LIBTORCH
-    return std::make_shared<LibTorchBackend>(config);
+    return std::make_unique<LibTorchBackend>(config);
 #else
     throw InferenceError("The LibTorch backend was not built. Reconfigure "
                          "with -DEMULATOR_ENABLE_LIBTORCH=ON.");
 #endif
   case BackendType::PYTHON:
 #ifdef EMULATOR_ENABLE_PYTHON
-    return std::make_shared<PythonBackend>(config);
+    return std::make_unique<PythonBackend>(config);
 #else
     throw InferenceError("The Python backend was not built. Reconfigure "
                          "with -DEMULATOR_ENABLE_PYTHON=ON.");
@@ -42,5 +41,4 @@ create_backend(BackendType type, const InferenceConfig &config) {
   throw InferenceError("Unknown inference backend type.");
 }
 
-} // namespace inference
-} // namespace emulator
+} // namespace e3sm::emulator::inference

@@ -10,8 +10,7 @@
 
 #include "inference_backend.hpp"
 
-namespace emulator {
-namespace inference {
+namespace e3sm::emulator::inference {
 
 /**
  * @brief Create an inference backend by type.
@@ -20,10 +19,9 @@ namespace inference {
  * @return Shared pointer to new backend instance
  * @throws InferenceError if the type is unknown or was not built
  */
-std::shared_ptr<InferenceBackend>
+std::unique_ptr<InferenceBackend>
 create_backend(BackendType type, const InferenceConfig &config);
 
-} // namespace inference
-} // namespace emulator
+} // namespace e3sm::emulator::inference
 
 #endif // E3SM_EMULATOR_CREATE_INFERENCE_BACKEND_HPP

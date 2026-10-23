@@ -6,13 +6,13 @@
 #ifndef E3SM_EMULATOR_INFERENCE_BACKEND_HPP
 #define E3SM_EMULATOR_INFERENCE_BACKEND_HPP
 
+#include <memory>
 #include <string>
 
 #include "inference_config.hpp"
 #include "tensor.hpp"
 
-namespace emulator {
-namespace inference {
+namespace e3sm::emulator::inference {
 
 /**
  * @brief Enumeration of available inference backend types.
@@ -35,8 +35,13 @@ enum class BackendType {
  */
 class InferenceBackend {
 public:
-  explicit InferenceBackend(const InferenceConfig &config) : m_config(config) {}
+  explicit InferenceBackend(const InferenceConfig &config) : config_(config) {}
   virtual ~InferenceBackend() = default;
+
+  /**
+   * @brief Access the configuration for this backend.
+   */
+  const InferenceConfig &config() const { return config_; }
 
   /**
    * @brief Run inference.
@@ -70,11 +75,10 @@ public:
    */
   virtual std::string name() const = 0;
 
-protected:
-  InferenceConfig m_config; ///< Backend configuration
+private:
+  InferenceConfig config_; ///< Backend configuration
 };
 
-} // namespace inference
-} // namespace emulator
+} // namespace emulator::inference
 
 #endif // E3SM_EMULATOR_INFERENCE_BACKEND_HPP
