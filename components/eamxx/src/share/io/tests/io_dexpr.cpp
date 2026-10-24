@@ -134,8 +134,7 @@ TEST_CASE ("io_with_expressions")
         // An expression must be given a name, since field names go into the
         // nc file verbatim
         "prod := qv*T_mid",
-        // Grouping is explicit, unlike in the underscore spelling, where it
-        // falls out of regex greediness
+        // Grouping is explicit
         "shifted := (qv+qv)*T_mid",
         // Built on the intermediate below, by name
         "half := qvT/2",
@@ -143,10 +142,8 @@ TEST_CASE ("io_with_expressions")
         "col_qv := qv.mean('lev')",
         // A method call on a method call, bringing the column mean back to a 3d layout
         "col_qv_3d := qv.mean('lev').broadcast_like(qv)",
-        // Regression: expands to T_mid_minus_T_mid_prev_over_dt, so the diag
-        // names its field after the expansion. Without an explicit output
-        // name the stream throws during setup.
-        "T_mid_atm_backtend",
+        // A shorthand that expands to (T_mid-T_mid.shift(time=1)).over_dt()
+        "T_mid_atm_backtend := T_mid.tend()",
       },
       {
         // An intermediate: resolved and usable by name, but not written
@@ -190,7 +187,6 @@ TEST_CASE ("io_with_expressions")
   REQUIRE (scorpio::has_var(filename,"half"));
   REQUIRE (scorpio::has_var(filename,"col_qv"));
   REQUIRE (scorpio::has_var(filename,"col_qv_3d"));
-  // The one that used to throw during setup
   REQUIRE (scorpio::has_var(filename,"T_mid_atm_backtend"));
   // An 'aliases' entry is an intermediate: resolved, used, but not written
   REQUIRE_FALSE (scorpio::has_var(filename,"qvT"));
@@ -268,14 +264,13 @@ TEST_CASE ("io_with_expressions")
     REQUIRE_THROWS (om_bad.setup(fm,gm->get_grid_names()));
   }
 
-  // ...so a legacy name with a '.' is still fine unaliased, which a
-  // character-based rule would have broken.
+  // The underscore spellings are gone: a name no field or diag answers to fails
+  // at setup, like any other unknown name.
   {
     auto legacy = output_params("io_dexpr_legacy",gname,{"T_mid_where_qv_gt_0.01"});
     OutputManager om_legacy;
     om_legacy.initialize(comm,legacy,t0,false);
-    REQUIRE_NOTHROW (om_legacy.setup(fm,gm->get_grid_names()));
-    om_legacy.finalize();
+    REQUIRE_THROWS (om_legacy.setup(fm,gm->get_grid_names()));
   }
 
   scorpio::finalize_subsystem();

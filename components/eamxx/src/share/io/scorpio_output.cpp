@@ -1231,9 +1231,9 @@ process_requested_fields()
   // We keep scanning the fields names and process a field, removing it from the list.
   // There MUST be at least ONE field we can process at every iteration, but
   // some field MAY have to wait until another is processed. E.g., if we have
-  // 'foo_at_900hPa' and 'foo:=horiz_winds', the latter (an alias) must be
+  // 'foo.interp(p_mid=900,units="hPa")' and 'foo:=horiz_winds', the latter (an alias) must be
   // processed first, as it adds the 'foo' alias field to the fm, which the
-  // diag 'foo_at_900hPa' needs to be correctly initialized.
+  // diag needs to be correctly initialized.
   // Notice that, thanks to how we create and add diags to m_diagnostics,
   // the order in which diags appear in m_diagnostics follows the evaluation
   // order, meaning that if diag A depends on diag B, then B appears *before* A.

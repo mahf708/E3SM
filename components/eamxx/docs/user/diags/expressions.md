@@ -1,7 +1,6 @@
 # Diagnostic expressions
 
-As the underscore-based system is being deprecated, EAMxx can now
-build diagnostics from **expressions**:
+EAMxx builds derived diagnostics from **expressions**:
 
 ```yaml
 field_names:
@@ -10,15 +9,11 @@ field_names:
 ```
 
 Expressions are parsed by [`dexpr`](https://github.com/E3SM-Project/E3SM/tree/master/share/dexpr),
-the expression parser shared across E3SM components. They exist because the
-underscore syntax cannot express grouping: `qc_plus_qv_times_p_mid` is grouped
-by regex greediness, not by operator precedence (see
-[Binary arithmetics](binary_ops.md) and [Parsing precedence](parsing_precedence.md)).
-Written as an expression, it means what it looks like.
-
-Both syntaxes work, and they are resolved independently: a name is matched
-against the underscore patterns first, and only names that match none of them
-are read as an expression. Nothing you write today changes meaning.
+the expression parser shared across E3SM components. They replace the old
+underscore spellings (`T_mid_at_500hPa`, `qc_plus_qv`, ...), which are no
+longer accepted: such a name is read as a plain name, and the run aborts since
+no field or diagnostic answers to it. The table under [Functions](#functions)
+maps each old spelling to its expression.
 
 ## Expressions must be given a name
 
@@ -60,7 +55,7 @@ field_names:
 ```
 
 Precedence is the usual one, so `qc+qv*p_mid` is `qc+(qv*p_mid)`. Note this
-differs from the underscore spelling `qc_plus_qv_times_p_mid`, which means
+differs from the old underscore spelling `qc_plus_qv_times_p_mid`, which meant
 `(qc+qv)*p_mid`. When in doubt, parenthesize. (That pair only illustrates
 grouping: `qc+(qv*p_mid)` adds a mixing ratio to a pressure, and is rejected at
 run time for incompatible units, while `(qc+qv)*p_mid` is fine.)
@@ -71,7 +66,7 @@ Functions are written as methods on the field they act on, `X.f(..)`, and are
 named after their [xarray](https://docs.xarray.dev) counterparts wherever there
 is an honest analogue.
 
-| Expression | Equivalent underscore name |
+| Expression | Former underscore spelling (no longer accepted) |
 | ---------- | -------------------------- |
 | `X.isel(lev=10)` | `X_at_lev_10` |
 | `X.isel(lev=0)` | `X_at_model_top` |
@@ -91,6 +86,7 @@ is an honest analogue.
 | `X.over_dt()` | `X_over_dt` |
 | `X.tend()` | `X_atm_backtend` |
 | `X.broadcast_like(Y)` | (none) |
+| `p_mid.searchsorted(500, units='hPa')` | `lev_at_500hPa_mid` |
 
 Notes:
 
@@ -137,17 +133,15 @@ Notes:
   `mask.mean('lev')` and `lev>5` are not: each of those leaves `mask` or `lev`
   as an operand to be resolved on its own, and the run aborts with
   `The key 'mask' is not associated to any registered product`, since it is
-  neither a field nor a diagnostic. Both names are inherited from the underscore
+  neither a field nor a diagnostic. Both names come from the former underscore
   syntax (`mask_where_lev_gt_5`), not from xarray.
 - **`over_dt` and `tend` cannot go in an `instant` stream.** An instant stream
   takes a snapshot at `t0`, before any step has run, and `dt` is zero there, so
   the diagnostic aborts with "dt must be positive". Write them to an averaged
-  stream (`averaging_type: average`, `max`, `min`) instead. This is a property
-  of the diagnostic, not of the syntax: the underscore spellings `X_over_dt` and
-  `X_atm_backtend` behave the same way.
+  stream (`averaging_type: average`, `max`, `min`) instead.
 - **A `mask.where(..)` result cannot currently be written to file as is.** The
   diagnostic is built, but its output has `int` data type, which IO cannot
-  handle: listing `mask.where(..)` (or the underscore `mask_where_..`) in
+  handle: listing `mask.where(..)` in
   `field_names` fails with a narrowing conversion error, and reducing it first
   does not help. Multiplying by 1 promotes it to `Real`, and
   `mask.where(ps>100000)*1.0` writes fine. Note the `*1.0` applies to the field
@@ -155,6 +149,13 @@ Notes:
   operation on `mask`, which per the bullet above cannot be multiplied.
 - `X.tend()` is shorthand for `(X - X.shift(time=1)).over_dt()`, and inherits
   the `over_dt` restriction above.
+- `searchsorted` gives, per column, the level index that brackets a target
+  pressure or height. Its receiver picks the coordinate: `p_mid`/`p_int` for a
+  pressure (`units` defaults to `Pa`), `z_mid`/`z_int` for a height above sea
+  level, and `height_mid`/`height_int` for a height above the surface (`units`
+  defaults to `m`). `interp(..)` is built on it, so fields interpolated to the
+  same target share one search. Its output has `int` data type, so like
+  `mask.where(..)` it cannot be written as is.
 - Histogram bin edges must be non-negative, and must be writable without an
   exponent: the diagnostic joins them with `_` and splits them back apart, so
   `1e3` is fine (it is written `1000.0`) but `1e30` is not.
@@ -165,7 +166,7 @@ and so on.
 
 ### Where this departs from xarray
 
-`isel`, `interp`, `mean`, `sum`, `where` and `shift` mean what they mean in
+`isel`, `interp`, `mean`, `sum`, `where`, `shift` and `searchsorted` mean what they mean in
 xarray, on the same arguments. The rest have no xarray spelling we could adopt:
 
 | | |
@@ -179,7 +180,7 @@ xarray, on the same arguments. The rest have no xarray spelling we could adopt:
 in one sweep rather than as three diagnostics.
 
 Two operand names have no xarray analogue at all, because they are not fields:
-`mask` and `lev`, both inherited from the underscore syntax and both legal only
+`mask` and `lev`, both from the former underscore syntax and both legal only
 inside `where(..)`. See the note above for what they mean and where they may
 appear.
 

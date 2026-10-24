@@ -6,11 +6,12 @@ before and after a process updates a field within a single timestep.
 
 ## Configuration
 
-To use this diagnostic, suffix a field name `X` with `_prev` in the output
-requests:
+To use this diagnostic, request the [expression](expressions.md)
+`X.shift(time=1)`:
 
-```none
-X_prev
+```yaml
+field_names:
+  - X_prev := X.shift(time=1)
 ```
 
 The output field has the same layout, units, and grid as the input field `X`.
@@ -19,7 +20,7 @@ The output field has the same layout, units, and grid as the input field `X`.
 
 At the start of each timestep (during `init_timestep`), the current value of
 `X` is saved. When the diagnostic is evaluated (during `compute_diagnostic`),
-the saved value is written to output. This means `X_prev` always reflects the
+the saved value is written to output. This means `X.shift(time=1)` always reflects the
 state of `X` at the beginning of the current timestep (i.e., before any
 processes have modified it in the current step).
 
@@ -36,14 +37,14 @@ a valid timestamp.  The diagnostic then uses the current value of `X` as a
 stand-in for "X at t=0", producing:
 
 ```none
-X_prev = X(t=0)   →   X − X_prev = 0 on the first step
+X.shift(time=1) = X(t=0)   →   X − X.shift(time=1) = 0 on the first step
 ```
 
 This conservative initialisation prevents fill-value contamination from
 propagating into downstream arithmetic (e.g. products of fill-value-sized
 numbers overflow to Inf in single precision).
 
-From the second step onward `X_prev` reflects the normally captured
+From the second step onward `X.shift(time=1)` reflects the normally captured
 start-of-step value.
 
 ## Example
@@ -51,16 +52,13 @@ start-of-step value.
 ```yaml
 field_names:
   # T_mid has units K
-  - T_mid        # current value of T_mid
-  - T_mid_prev   # value of T_mid at the start of the current timestep
+  - T_mid                          # current value of T_mid
+  - T_mid_prev := T_mid.shift(time=1)  # value of T_mid at the start of the current timestep
 ```
 
 ## Caveats
 
-- The `_prev` suffix is stripped to identify the tracked field. If the model
-  has a registered field whose name literally ends in `_prev`, it will be
-  output directly as a model field (model fields are resolved before
-  diagnostics are considered), not treated as a `FieldPrevDiag`.
+- Only `time=1` is available, since only one step of history is kept.
 - Only fields with `Real` data type are supported.
 
 Contact developers on GitHub if you have additional questions.
