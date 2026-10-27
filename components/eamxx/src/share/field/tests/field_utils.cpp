@@ -280,6 +280,34 @@ TEST_CASE("field_utils") {
     perturb(f3_alt, 0.1, base_seed, pmask, gids);
     REQUIRE(views_are_equal(f1, f1_alt));
     REQUIRE(views_are_equal(f3, f3_alt));
+
+    // Check that the perturbation of a column depends on its GID, not on its local index,
+    // by storing the columns in reverse order
+    Field gids_rev = gids.clone();
+    auto gids_rev_h = gids_rev.get_view<int*,Host>();
+    for (int icol=0; icol<ncols; ++icol) {
+      gids_rev_h(icol) = ncols-1-icol;
+    }
+    gids_rev.sync_to_dev();
+    auto f3_rev = f3.clone(); f3_rev.deep_copy(1.0);
+    perturb(f3_rev, 0.1, base_seed, pmask, gids_rev);
+    f3_rev.sync_to_host();
+    const auto v3_rev = f3_rev.get_strided_view<Real***, Host>();
+    for (int icol=0; icol<ncols; ++icol) {
+      for (int icmp=0; icmp<ncmps; ++icmp) {
+        for (int ilev=0; ilev<nlevs; ++ilev) {
+          REQUIRE(v3(icol,icmp,ilev)==v3_rev(ncols-1-icol,icmp,ilev));
+    }}}
+
+    // Check that different components and different (gid,lev) pairs with the
+    // same gid+lev get different perturbations
+    for (int icol=0; icol<ncols; ++icol) {
+      for (int ilev=nlevs-3; ilev<nlevs; ++ilev) {
+        REQUIRE(v3(icol,0,ilev)!=v3(icol,1,ilev));
+        if (icol>0 and ilev<nlevs-1) {
+          REQUIRE(v2b(icol,ilev)!=v2b(icol-1,ilev+1));
+        }
+    }}
   }
 }
 
