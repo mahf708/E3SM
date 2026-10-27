@@ -1,5 +1,7 @@
 #include "share/field/field_utils.hpp"
 
+#include <random>
+
 namespace scream {
 
 namespace impl {
@@ -62,6 +64,27 @@ void perturb (const Field& f, const ST perturb_level,
     // have the same value no matter where it exists in an MPI rank's
     // set of local columns.
     const auto gids = dof_gids.get_strided_view<const int*, Host>();
+
+    if (has_lev_dim && fl.rank()==2 && f.data_type()==DataType::DoubleType) {
+      // Fast path for (COL,LEV) fields: draw the same numbers as the general
+      // path below (one draw per (col,lev) from an engine seeded with
+      // seed+ilev), but apply them on host in a single pass, instead of
+      // launching device kernels for every (col,lev) pair.
+      f.sync_to_host();
+      auto v = f.get_strided_view<double**,Host>();
+      std::uniform_real_distribution<double> pdf(lb,ub);
+      for (auto icol=0; icol<fl.dims().front(); ++icol) {
+        const auto seed = base_seed+gids(icol);
+        for (auto ilev=0; ilev<fl.dims().back(); ++ilev) {
+          if (lev_mask_h(ilev)) {
+            std::mt19937_64 engine(seed+ilev);
+            v(icol,ilev) *= pdf(engine);
+          }
+        }
+      }
+      f.sync_to_dev();
+      return;
+    }
 
     // Create a field to store perturbation values with layout
     // the same as f, but stripped of column and level dimension.
