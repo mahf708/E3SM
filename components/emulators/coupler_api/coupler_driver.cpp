@@ -1,0 +1,73 @@
+#include "coupler.hpp"
+#include "process.hpp"
+#include <algorithm>
+#include <coupler_driver.hpp>
+#include <iostream>
+#include <stdexcept>
+
+namespace e3sm::coupler {
+void CouplerDriver::initialize(const std::string& filename,
+                               RouteBufferMap external_buffers) {
+  if (initialized_) {
+    throw std::runtime_error("CouplerDriver: already initialized!");
+  }
+  for (auto& component : components_) {
+    component.populate_registry(coupler_.registry());
+  }
+  std::cout << coupler_.registry().to_string() << std::endl;
+
+  coupler_.build_routes(filename);
+  coupler_.build_buffers(external_buffers);
+
+  for (auto& component : components_) {
+    const auto name = component.name();
+    const auto& plan = coupler_.coupling_plan(std::string(name));
+    component.configure_coupling(plan);
+  }
+
+  coupler_.print_coupling_plan(std::cout);
+  initialized_ = true;
+}
+
+AnyComponent& CouplerDriver::get_component(std::string_view name) {
+  if (auto result = std::ranges::find_if(
+          components_,
+          [name](AnyComponent& comp) { return name == comp.name(); });
+      result != components_.end())
+    return *result;
+  else
+    throw std::runtime_error("Invalid component requested" + std::string(name));
+}
+
+void CouplerDriver::run_component(std::string_view name,
+                                  const ProcessRunOpts opts) {
+  auto& comp = get_component(name);
+  import_component(name);
+  comp.run(opts);
+  export_component(name);
+}
+
+void CouplerDriver::export_component(std::string_view name) {
+  auto& comp = get_component(name);
+  const auto& buffers = coupler_.export_buffers(name);
+  comp.export_fields(buffers);
+
+  std::cout << "Export buffers for " << name << " after export\n";
+  for (const auto& buf : buffers) {
+    coupler_.print_field_buffer(std::cout, buf.id, buf.data, 10);
+  }
+  std::cout << std::endl;
+}
+void CouplerDriver::import_component(std::string_view name) {
+  auto& comp = get_component(name);
+  const auto& buffers = coupler_.import_buffers(name);
+
+  comp.import_fields(buffers);
+  std::cout << "imported to " << name << std::endl;
+  for (const auto& buf : buffers) {
+    coupler_.print_field_buffer(std::cout, buf.id, buf.data, 10);
+  }
+  std::cout << std::endl;
+}
+
+} // namespace e3sm::coupler
