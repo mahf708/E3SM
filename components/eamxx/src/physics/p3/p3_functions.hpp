@@ -126,6 +126,7 @@ template <typename ScalarT, typename DeviceT> struct Functions {
     Scalar immersion_freezing_exponent          = 0.65;
     Scalar deposition_nucleation_exponent       = 0.304;
     Scalar ice_sedimentation_factor             = 1.0;
+    Scalar cloud_sedimentation_factor           = 1.0;
     bool do_ice_production                      = true;
     bool set_cld_frac_l_to_one                  = false;
     bool set_cld_frac_i_to_one                  = false;
@@ -167,6 +168,8 @@ template <typename ScalarT, typename DeviceT> struct Functions {
           params.get<double>("deposition_nucleation_exponent", deposition_nucleation_exponent);
       ice_sedimentation_factor =
           params.get<double>("ice_sedimentation_factor", ice_sedimentation_factor);
+      cloud_sedimentation_factor =
+          params.get<double>("cloud_sedimentation_factor", cloud_sedimentation_factor);
       do_ice_production     = params.get<bool>("do_ice_production", do_ice_production);
       set_cld_frac_l_to_one = params.get<bool>("set_cld_frac_l_to_one", set_cld_frac_l_to_one);
       set_cld_frac_i_to_one = params.get<bool>("set_cld_frac_i_to_one", set_cld_frac_i_to_one);
@@ -524,7 +527,8 @@ template <typename ScalarT, typename DeviceT> struct Functions {
       const Int &ktop, const Int &kbot, const Int &kdir, const Scalar &dt, const Scalar &inv_dt,
       const bool &do_predict_nc, const uview_1d<Pack> &qc, const uview_1d<Pack> &nc,
       const uview_1d<Pack> &nc_incld, const uview_1d<Pack> &mu_c, const uview_1d<Pack> &lamc,
-      const uview_1d<Pack> &qc_tend, const uview_1d<Pack> &nc_tend, Scalar &precip_liq_surf);
+      const uview_1d<Pack> &qc_tend, const uview_1d<Pack> &nc_tend, Scalar &precip_liq_surf,
+      const P3Runtime &runtime_options);
 
 #ifdef SCREAM_P3_SMALL_KERNELS
   static void cloud_sedimentation_disp(
@@ -537,7 +541,7 @@ template <typename ScalarT, typename DeviceT> struct Functions {
       const uview_2d<Pack> &nc, const uview_2d<Pack> &nc_incld, const uview_2d<Pack> &mu_c,
       const uview_2d<Pack> &lamc, const uview_2d<Pack> &qc_tend, const uview_2d<Pack> &nc_tend,
       const uview_1d<Scalar> &precip_liq_surf, const uview_1d<bool> &is_nucleat_possible,
-      const uview_1d<bool> &is_hydromet_present);
+      const uview_1d<bool> &is_hydromet_present, const P3Runtime &runtime_options);
 #endif
 
   // TODO: comment

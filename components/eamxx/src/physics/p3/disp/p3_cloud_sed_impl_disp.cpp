@@ -32,7 +32,8 @@ void Functions<Real,DefaultDevice>
     const uview_2d<Pack>& nc_tend,
     const uview_1d<Scalar>& precip_liq_surf,
     const uview_1d<bool>& nucleationPossible,
-    const uview_1d<bool>& hydrometeorsPresent)
+    const uview_1d<bool>& hydrometeorsPresent,
+    const P3Runtime& runtime_options)
 {
   using ExeSpace = typename KT::ExeSpace;
   using TPF      = ekat::TeamPolicyFactory<ExeSpace>;
@@ -56,7 +57,7 @@ void Functions<Real,DefaultDevice>
       nk, ktop, kbot, kdir, dt, inv_dt, do_predict_nc,
       ekat::subview(qc, i), ekat::subview(nc, i), ekat::subview(nc_incld, i), ekat::subview(mu_c, i), ekat::subview(lamc, i), ekat::subview(qc_tend, i),
       ekat::subview(nc_tend, i),
-      precip_liq_surf(i));
+      precip_liq_surf(i), runtime_options);
   });
 
 }

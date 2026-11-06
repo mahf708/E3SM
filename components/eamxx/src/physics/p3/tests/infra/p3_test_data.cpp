@@ -585,7 +585,7 @@ void cloud_sedimentation_host(
       team, wsm.get_workspace(team),
       nk, ktop, kbot, kdir, dt, inv_dt, do_predict_nc,
       qc_d, nc_d, nc_incld_d, mu_c_d, lamc_d, qc_tend_d, nc_tend_d,
-      precip_liq_surf_k);
+      precip_liq_surf_k, P3F::P3Runtime());
 
   }, *precip_liq_surf);
 

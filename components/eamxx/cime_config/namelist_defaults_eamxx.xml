@@ -253,6 +253,7 @@ be lost if SCREAM_HACK_XML is not enabled.
       <immersion_freezing_exponent type="real" doc="Immersion freezing exponent for both rain and cloud liquid">0.65</immersion_freezing_exponent>
       <deposition_nucleation_exponent type="real" doc="Deposition nucleation exponent factor">0.304</deposition_nucleation_exponent>
       <ice_sedimentation_factor type="real" doc="Ice sedimentation fall speed factor">1.0</ice_sedimentation_factor>
+      <cloud_sedimentation_factor type="real" doc="Cloud droplet sedimentation fall speed factor (scales the mass- and number-weighted fall speeds)">1.0</cloud_sedimentation_factor>
       <do_ice_production type="logical" doc="Flag to turn on ice production processes (loss processes unaffected)">true</do_ice_production>
       <set_cld_frac_l_to_one type="logical" doc="set P3 input liquid cloud fraction to 1 everywhere">false</set_cld_frac_l_to_one>
       <set_cld_frac_r_to_one type="logical" doc="set P3 input rain cloud fraction to 1 everywhere">false</set_cld_frac_r_to_one>

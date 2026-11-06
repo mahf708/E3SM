@@ -32,7 +32,8 @@ void Functions<S,D>
     const uview_1d<Pack>& lamc,
     const uview_1d<Pack>& qc_tend,
     const uview_1d<Pack>& nc_tend,
-    Scalar& precip_liq_surf)
+    Scalar& precip_liq_surf,
+    const P3Runtime& runtime_options)
 {
   // Get temporary workspaces needed for the cloud-sed calculation
   uview_1d<Pack> V_qc, V_nc, flux_qx, flux_nx;
@@ -54,6 +55,8 @@ void Functions<S,D>
   const auto sqc          = scalarize(qc);
   constexpr Scalar qsmall = C::QSMALL;
   constexpr Scalar bcn    = C::bcn;
+  // Scales the droplet fall speeds, like MG2's cld_sed (which scales acn).
+  const Scalar cloud_sedimentation_factor = runtime_options.cloud_sedimentation_factor;
   bool log_qxpresent;
   const Int k_qxtop = find_top(team, sqc, qsmall, kbot, ktop, kdir, log_qxpresent);
 
@@ -99,9 +102,9 @@ void Functions<S,D>
             nc(pk).set(qc_gt_small, nc_incld(pk)*cld_frac_l(pk));
 
             dum = 1 / pow(lamc(pk), bcn);
-            V_qc(pk).set(qc_gt_small, acn(pk)*tgamma(4 + bcn + mu_c(pk)) * dum / tgamma(mu_c(pk)+4));
+            V_qc(pk).set(qc_gt_small, cloud_sedimentation_factor*acn(pk)*tgamma(4 + bcn + mu_c(pk)) * dum / tgamma(mu_c(pk)+4));
             if (do_predict_nc) {
-              V_nc(pk).set(qc_gt_small, acn(pk)*tgamma(1 + bcn + mu_c(pk)) * dum / tgamma(mu_c(pk)+1));
+              V_nc(pk).set(qc_gt_small, cloud_sedimentation_factor*acn(pk)*tgamma(1 + bcn + mu_c(pk)) * dum / tgamma(mu_c(pk)+1));
             }
           }
 

@@ -300,7 +300,7 @@ Int Functions<S,D>
       qc_incld, rho, inv_rho, ocld_frac_l, acn, inv_dz, lookup_tables.dnu_table_vals, team, workspace,
       nk, ktop, kbot, kdir, infrastructure.dt, inv_dt, infrastructure.predictNc,
       oqc, onc, nc_incld, mu_c, lamc, oqc_sed, ntend_ignore,
-      diagnostic_outputs.precip_liq_surf(i));
+      diagnostic_outputs.precip_liq_surf(i), runtime_options);
 
     // Rain sedimentation:  (adaptive substepping)
     rain_sedimentation(

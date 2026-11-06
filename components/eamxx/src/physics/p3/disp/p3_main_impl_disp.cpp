@@ -310,7 +310,7 @@ Int Functions<Real,DefaultDevice>
     qc_incld, rho, inv_rho, cld_frac_l, acn, inv_dz, lookup_tables.dnu_table_vals, workspace_mgr,
     nj, nk, ktop, kbot, kdir, infrastructure.dt, inv_dt, infrastructure.predictNc,
     qc, nc, nc_incld, mu_c, lamc, qc_sed, ntend_ignore,
-    diagnostic_outputs.precip_liq_surf, nucleationPossible, hydrometeorsPresent);
+    diagnostic_outputs.precip_liq_surf, nucleationPossible, hydrometeorsPresent, runtime_options);
 
 
   // Rain sedimentation:  (adaptive substepping)
